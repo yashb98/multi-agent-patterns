@@ -189,6 +189,18 @@ def _get_week_start(date: datetime = None) -> str:
     return monday.strftime("%Y-%m-%d")
 
 
+def get_notion_budget_url(week_start: str = None) -> str:
+    """Get the Notion URL for this week's budget page."""
+    week_start = week_start or _get_week_start()
+    conn = _get_conn()
+    row = conn.execute("SELECT notion_page_id FROM weekly_budgets WHERE week_start=?", (week_start,)).fetchone()
+    conn.close()
+    if row and row["notion_page_id"]:
+        page_id = row["notion_page_id"].replace("-", "")
+        return f"https://www.notion.so/{page_id}"
+    return ""
+
+
 def add_transaction(amount: float, description: str, category: str,
                     section: str, txn_type: str) -> dict:
     now = datetime.now()
@@ -408,13 +420,20 @@ def log_transaction(text: str) -> str:
     section, category = classify_transaction(description, amount, txn_type)
     txn = add_transaction(amount, description, category, section, txn_type)
 
+    # Sync to Notion
+    sync_expense_to_notion(txn)
+
     today = get_today_spending()
     type_emoji = {"income": "💰", "expense": "💸", "savings": "🏦"}
     emoji = type_emoji.get(txn_type, "💸")
 
+    notion_url = get_notion_budget_url(txn["week_start"])
+    link_line = f"\n\n📎 {notion_url}" if notion_url else ""
+
     return (f"{emoji} Logged: £{amount:.2f} — {description}\n"
             f"   Category: {category} ({section})\n"
-            f"   Today: spent £{today['total_spent']:.2f} | earned £{today['total_earned']:.2f}")
+            f"   Today: spent £{today['total_spent']:.2f} | earned £{today['total_earned']:.2f}"
+            f"{link_line}")
 
 
 def set_budget(text: str) -> str:
@@ -433,7 +452,9 @@ def set_budget(text: str) -> str:
     section, category = classify_transaction(desc, amount, "expense")
     set_planned_budget(category, section, amount)
 
-    return f"📋 Budget set: {category} = £{amount:.2f}/week"
+    notion_url = get_notion_budget_url()
+    link_line = f"\n📎 {notion_url}" if notion_url else ""
+    return f"📋 Budget set: {category} = £{amount:.2f}/week{link_line}"
 
 
 # ── Formatting ──
@@ -479,6 +500,11 @@ def format_week_summary(summary: dict) -> str:
         for item in summary["recent"][:5]:
             emoji = "📥" if item["type"] == "income" else "📤" if item["type"] == "expense" else "🏦"
             lines.append(f"    {emoji} £{item['amount']:.2f} — {item['description']}")
+
+    # Notion link
+    notion_url = get_notion_budget_url(summary["week_start"])
+    if notion_url:
+        lines.append(f"\n📎 View in Notion: {notion_url}")
 
     return "\n".join(lines)
 
