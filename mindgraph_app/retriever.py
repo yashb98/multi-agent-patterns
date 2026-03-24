@@ -115,25 +115,16 @@ def temporal_search(target_date: str = None) -> dict:
     """Get everything that happened on a specific day — events + new entities."""
     target_date = target_date or date.today().isoformat()
 
-    # Use the event logger's DB path (same as mindgraph)
-    db_path = Path(__file__).parent.parent / "data" / "mindgraph.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-
-    # Get simulation events for the day
-    events = conn.execute(
-        "SELECT * FROM simulation_events WHERE day_date=? ORDER BY created_at ASC",
-        (target_date,),
-    ).fetchall()
-
-    # Get entities created/updated on this day (by checking if any event mentions them)
-    # This is approximate — based on events that mention entity names
-    conn.close()
+    try:
+        from jobpulse.event_logger import get_events_for_day
+        events_raw = get_events_for_day(target_date)
+    except Exception:
+        events_raw = []
 
     return {
         "date": target_date,
-        "events": [_row_to_dict(e) for e in events],
-        "event_count": len(events),
+        "events": events_raw,
+        "event_count": len(events_raw),
         "method": "temporal_search",
     }
 

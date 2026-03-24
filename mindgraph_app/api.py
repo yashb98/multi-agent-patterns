@@ -1,10 +1,11 @@
-"""FastAPI routes for MindGraph."""
+"""FastAPI routes for MindGraph — knowledge graph + simulation events + GraphRAG."""
 
 import httpx
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from mindgraph_app import storage, extractor
+from mindgraph_app import retriever as graphrag
 
 router = APIRouter(prefix="/api/mindgraph")
 
@@ -14,10 +15,16 @@ class IngestText(BaseModel):
     url: Optional[str] = None
 
 
+class RetrieveQuery(BaseModel):
+    query: str
+    method: str = "auto"  # auto, local, multi_hop, temporal
+
+
+# ── Knowledge Graph Endpoints ──
+
 @router.post("/ingest")
 async def ingest(text: str = Form(None), url: str = Form(None), file: UploadFile = File(None)):
-    """Ingest text, file, or URL content into the knowledge graph.
-    Accepts both form data and JSON body."""
+    """Ingest text, file, or URL content into the knowledge graph."""
     content_text = None
     filename = "paste"
 
@@ -40,9 +47,7 @@ async def ingest(text: str = Form(None), url: str = Form(None), file: UploadFile
     if not content_text or len(content_text.strip()) < 20:
         raise HTTPException(status_code=400, detail="No text provided or text too short")
 
-    text = content_text
-
-    result = extractor.extract_from_text(text, filename)
+    result = extractor.extract_from_text(content_text, filename)
     return result
 
 
@@ -67,24 +72,22 @@ async def ingest_json(body: IngestText):
     if len(text.strip()) < 20:
         raise HTTPException(status_code=400, detail="Text too short")
 
-    result = extractor.extract_from_text(text, filename)
-    return result
+    return extractor.extract_from_text(text, filename)
 
 
 @router.get("/graph")
-def get_graph(filter: str = None):
-    """Get full graph or filtered by entity name."""
+def get_graph(filter: str = None, date: str = None):
+    """Get full graph, optionally filtered by entity name or date."""
     graph = storage.get_full_graph()
+
     if filter:
-        # Filter nodes matching the query
         matching_ids = set()
         filtered_nodes = []
         for node in graph["nodes"]:
-            if filter.lower() in node["name"].lower():
+            if filter.lower() in node["name"].lower() or filter.upper() == node.get("entity_type", ""):
                 filtered_nodes.append(node)
                 matching_ids.add(node["id"])
 
-        # Include neighbors
         neighbor_ids = set()
         for edge in graph["edges"]:
             if edge["from_id"] in matching_ids:
@@ -105,9 +108,89 @@ def get_graph(filter: str = None):
     return graph
 
 
+@router.get("/entity/{entity_id}")
+def get_entity(entity_id: str):
+    """Get a single entity with all its connections and related events."""
+    conn = storage.get_conn()
+
+    entity = conn.execute(
+        "SELECT * FROM knowledge_entities WHERE id=?", (entity_id,)
+    ).fetchone()
+    if not entity:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    entity = dict(entity)
+
+    # Get all relations
+    relations = conn.execute(
+        "SELECT * FROM knowledge_relations WHERE from_id=? OR to_id=?",
+        (entity_id, entity_id),
+    ).fetchall()
+
+    # Get connected entity IDs
+    connected_ids = set()
+    for r in relations:
+        connected_ids.add(r["from_id"])
+        connected_ids.add(r["to_id"])
+    connected_ids.discard(entity_id)
+
+    # Fetch connected entities
+    connections = []
+    if connected_ids:
+        placeholders = ",".join("?" for _ in connected_ids)
+        connected_entities = conn.execute(
+            f"SELECT id, name, entity_type FROM knowledge_entities WHERE id IN ({placeholders})",
+            list(connected_ids),
+        ).fetchall()
+        entity_map = {e["id"]: dict(e) for e in connected_entities}
+
+        for r in relations:
+            r = dict(r)
+            if r["from_id"] == entity_id:
+                target = entity_map.get(r["to_id"], {})
+                connections.append({
+                    "direction": "outgoing",
+                    "type": r["type"],
+                    "context": r["context"],
+                    "entity": target,
+                })
+            else:
+                source = entity_map.get(r["from_id"], {})
+                connections.append({
+                    "direction": "incoming",
+                    "type": r["type"],
+                    "context": r["context"],
+                    "entity": source,
+                })
+
+    conn.close()
+
+    # Get related simulation events
+    try:
+        from jobpulse.event_logger import get_events_mentioning
+        events = get_events_mentioning(entity["name"], limit=10)
+    except Exception:
+        events = []
+
+    return {
+        "entity": entity,
+        "connections": connections,
+        "recent_events": events,
+    }
+
+
 @router.get("/stats")
 def get_stats():
-    return storage.get_stats()
+    """Combined stats: knowledge graph + simulation events."""
+    kg_stats = storage.get_stats()
+    try:
+        from jobpulse.event_logger import get_event_stats
+        event_stats = get_event_stats()
+    except Exception:
+        event_stats = {"total_events": 0, "today_events": 0, "by_type": {}}
+
+    return {**kg_stats, "simulation": event_stats}
 
 
 @router.get("/search")
@@ -121,3 +204,42 @@ def search(q: str = ""):
 def clear():
     storage.clear_all()
     return {"status": "cleared"}
+
+
+# ── Simulation Event Endpoints ──
+
+@router.get("/simulation/events")
+def get_simulation_events(date: str = None, agent: str = None, entity: str = None):
+    """Get simulation events filtered by date, agent, or entity mention."""
+    try:
+        from jobpulse.event_logger import get_events_for_day, get_events_for_agent, get_events_mentioning
+        from datetime import date as date_cls
+
+        if entity:
+            return {"events": get_events_mentioning(entity)}
+        elif agent:
+            return {"events": get_events_for_agent(agent)}
+        elif date:
+            return {"events": get_events_for_day(date)}
+        else:
+            return {"events": get_events_for_day(date_cls.today().isoformat())}
+    except Exception as e:
+        return {"events": [], "error": str(e)}
+
+
+@router.get("/simulation/timeline")
+def get_timeline():
+    """Day-by-day summary for the timeline bar."""
+    try:
+        from jobpulse.event_logger import get_timeline_summary
+        return {"timeline": get_timeline_summary()}
+    except Exception as e:
+        return {"timeline": [], "error": str(e)}
+
+
+# ── GraphRAG Retrieval Endpoint ──
+
+@router.post("/retrieve")
+def retrieve_knowledge(body: RetrieveQuery):
+    """Smart retrieval from knowledge graph — used by agents and frontend."""
+    return graphrag.retrieve(body.query, body.method)
