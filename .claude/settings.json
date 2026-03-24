@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hook": "grep -rn '/home/claude/' \"$CLAUDE_FILE_PATH\" 2>/dev/null && echo '⚠️  HARDCODED PATH DETECTED: Replace /home/claude/ with relative paths or os.path.dirname(__file__)' || true",
+        "description": "Warn if hardcoded /home/claude/ paths are introduced"
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(python run_all.py*)",
+      "Bash(python -m patterns.*)",
+      "Bash(pip install*)",
+      "Bash(pip freeze*)",
+      "Bash(wc -l*)",
+      "Bash(ls*)"
+    ]
+  }
+}

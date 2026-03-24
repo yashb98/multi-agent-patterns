@@ -1,0 +1,26 @@
+# Core dependencies
+langchain-core>=0.3.0
+langchain-openai>=0.3.0
+langgraph>=0.3.0
+
+# JobPulse agents
+python-dotenv>=1.0.0
+openai>=1.50.0
+
+# Google APIs (Gmail + Calendar)
+google-api-python-client>=2.160.0
+google-auth-oauthlib>=1.2.0
+
+# Optional: DSPy prompt optimization
+# dspy-ai>=2.6.0
+
+# Optional: Browser automation tool
+# playwright>=1.49.0
+
+# MindGraph (knowledge graph visualization)
+fastapi>=0.115.0
+uvicorn>=0.32.0
+tiktoken>=0.8.0
+litellm>=1.50.0
+python-multipart>=0.0.12
+httpx>=0.27.0
