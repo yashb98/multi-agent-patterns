@@ -1,11 +1,11 @@
-"""Telegram listener — polls for replies, creates Notion tasks. No claude -p dependency."""
+"""Telegram listener — polls for messages, routes to agents via command router."""
 
 import json
-import subprocess
 from datetime import datetime
-from pathlib import Path
-from jobpulse.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR
-from jobpulse import telegram_agent, notion_agent
+from jobpulse.config import TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR
+from jobpulse import telegram_agent
+from jobpulse.command_router import classify, Intent
+from jobpulse.dispatcher import dispatch
 
 
 LAST_UPDATE_FILE = DATA_DIR / "telegram_last_update_id.txt"
@@ -35,11 +35,9 @@ def _parse_tasks(text: str) -> list[str]:
         line = line.strip()
         if not line:
             continue
-        # Strip common prefixes
         for prefix in ["- ", "• ", "□ ", "* ", "✅ ", "☐ ", "And ", "and "]:
             if line.startswith(prefix):
                 line = line[len(prefix):].strip()
-        # Strip numbered prefixes like "1. " or "1) "
         if len(line) > 2 and line[0].isdigit() and line[1] in ".) ":
             line = line[2:].strip()
         elif len(line) > 3 and line[:2].isdigit() and line[2] in ".) ":
@@ -50,7 +48,7 @@ def _parse_tasks(text: str) -> list[str]:
 
 
 def poll_and_process():
-    """Main entry: check for new Telegram messages, create tasks if found."""
+    """Poll Telegram for new messages, classify intent, dispatch to agent, reply."""
     last_id = _get_last_update_id()
     _log(f"Checking (after update_id: {last_id})")
 
@@ -74,49 +72,46 @@ def poll_and_process():
         if from_id != TELEGRAM_CHAT_ID or not text:
             continue
 
-        _log(f"Got message: {text[:100]}")
-
-        # Skip if it's a simple greeting
+        # Skip greetings
         if text.lower() in ("hi", "hello", "hey"):
             continue
 
-        # Skip response
-        if text.lower() in ("skip", "no", "nah", "not today", "pass"):
-            telegram_agent.send_message("👍 Got it — no tasks for today. Enjoy your day!")
-            _log("User skipped")
-            continue
+        _log(f"Got: \"{text[:80]}\"")
 
-        # Parse as tasks
-        tasks = _parse_tasks(text)
+        # Classify intent
+        cmd = classify(text)
+        _log(f"Intent: {cmd.intent.value}")
 
-        if not tasks:
-            _log(f"Could not parse tasks from: {text[:50]}")
-            continue
+        # Dispatch to agent and get reply
+        reply = dispatch(cmd)
 
-        # Create in Notion using direct API
-        today = datetime.now().strftime("%Y-%m-%d")
-        created = 0
-        for task in tasks:
-            if notion_agent.create_task(task, today):
-                created += 1
-
-        task_list = "\n".join(f"  □ {t}" for t in tasks)
-
-        if created > 0:
-            telegram_agent.send_message(
-                f"✅ Created {created} tasks in Notion:\n\n{task_list}\n\nGet after it! 💪"
-            )
-            _log(f"Created {created} tasks in Notion")
-        else:
-            telegram_agent.send_message(
-                f"📝 Tried to create {len(tasks)} tasks but Notion API failed. Check your integration."
-            )
-            _log(f"Failed to create tasks in Notion")
+        # Send reply
+        telegram_agent.send_message(reply)
+        _log(f"Replied: {reply[:80]}...")
 
     # Save checkpoint
     if max_id > last_id:
         _save_last_update_id(max_id)
-        _log(f"Updated checkpoint to {max_id}")
+        _log(f"Checkpoint: {max_id}")
+
+
+def poll_continuous(interval: float = 2.0):
+    """Long-polling loop — runs forever, checks every `interval` seconds."""
+    import time
+    _log("Daemon started (long-polling mode)")
+    print(f"[Listener] Daemon started — polling every {interval}s. Ctrl+C to stop.")
+
+    while True:
+        try:
+            poll_and_process()
+        except KeyboardInterrupt:
+            _log("Daemon stopped by user")
+            print("\n[Listener] Stopped.")
+            break
+        except Exception as e:
+            _log(f"Error: {e}")
+            print(f"[Listener] Error: {e}")
+        time.sleep(interval)
 
 
 if __name__ == "__main__":
