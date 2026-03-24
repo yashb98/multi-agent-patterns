@@ -6,7 +6,7 @@ import sys
 def main():
     if len(sys.argv) < 2:
         print("Usage: python -m jobpulse.runner <command>")
-        print("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, listen, daemon, test")
+        print("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, budget, listen, daemon, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -48,6 +48,10 @@ def main():
         from jobpulse.notion_agent import get_today_tasks, format_tasks
         tasks = get_today_tasks()
         print(format_tasks(tasks))
+
+    elif command == "budget":
+        from jobpulse.budget_agent import get_week_summary, format_week_summary
+        print(format_week_summary(get_week_summary()))
 
     elif command == "listen":
         from jobpulse.telegram_listener import poll_and_process

@@ -1,7 +1,7 @@
 """Morning briefing — collects all agents and sends consolidated Telegram message."""
 
 from datetime import datetime
-from jobpulse import gmail_agent, calendar_agent, github_agent, notion_agent, telegram_agent
+from jobpulse import gmail_agent, calendar_agent, github_agent, notion_agent, telegram_agent, budget_agent
 
 
 def build_and_send():
@@ -42,6 +42,13 @@ def build_and_send():
     trending = github_agent.get_trending_repos()
     section_trending = github_agent.format_trending(trending)
 
+    # ── Section 6: Budget ──
+    week_summary = budget_agent.get_week_summary()
+    if week_summary["by_category"]:
+        section_budget = budget_agent.format_week_summary(week_summary)
+    else:
+        section_budget = "  No spending logged this week"
+
     # ── Build Message ──
     message = f"""☀️ Good Morning Yash! Here's your briefing for {today}:
 
@@ -72,6 +79,10 @@ def build_and_send():
 
 🔥 TRENDING ON GITHUB:
 {section_trending}
+
+━━━━━━━━━━━━━━━━━━━━
+
+{section_budget}
 
 ━━━━━━━━━━━━━━━━━━━━
 
