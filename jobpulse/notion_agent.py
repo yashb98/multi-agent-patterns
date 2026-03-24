@@ -25,31 +25,38 @@ def _notion_api(method: str, endpoint: str, data: dict = None) -> dict:
 
 
 def get_today_tasks() -> list[dict]:
-    """Fetch today's incomplete tasks from Daily Tasks database."""
+    """Fetch today's tasks from the daily todo page (reads to_do blocks)."""
     if not NOTION_TASKS_DB_ID:
         print("[Notion] NOTION_TASKS_DB_ID not set")
         return []
 
     today = datetime.now().strftime("%Y-%m-%d")
-    data = {
-        "filter": {
-            "and": [
-                {"property": "Date", "date": {"equals": today}},
-                {"property": "Status", "select": {"does_not_equal": "Done"}},
-            ]
-        },
-        "sorts": [{"property": "Task", "direction": "ascending"}]
-    }
 
-    result = _notion_api("POST", f"/databases/{NOTION_TASKS_DB_ID}/query", data)
+    # Find today's page
+    result = _notion_api("POST", f"/databases/{NOTION_TASKS_DB_ID}/query", {
+        "filter": {"property": "Date", "date": {"equals": today}}
+    })
+
+    pages = result.get("results", [])
+    if not pages:
+        return []
+
+    page_id = pages[0]["id"]
+
+    # Read the to_do blocks from the page
+    blocks_result = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
     tasks = []
-    for page in result.get("results", []):
-        props = page.get("properties", {})
-        title_arr = props.get("Task", {}).get("title", [])
-        title = "".join(t.get("plain_text", "") for t in title_arr)
-        status = props.get("Status", {}).get("select", {}).get("name", "")
-        if title:
-            tasks.append({"title": title, "status": status})
+    for block in blocks_result.get("results", []):
+        if block.get("type") == "to_do":
+            todo = block.get("to_do", {})
+            title = "".join(t.get("plain_text", "") for t in todo.get("rich_text", []))
+            checked = todo.get("checked", False)
+            if title:
+                tasks.append({
+                    "title": title,
+                    "status": "Done" if checked else "Not started",
+                    "block_id": block["id"],
+                })
 
     return tasks
 
@@ -61,21 +68,78 @@ def format_tasks(tasks: list[dict]) -> str:
     return "\n".join(f"  □ {t['title']}" for t in tasks)
 
 
-def create_task(title: str, date: str = None) -> bool:
-    """Create a single task in the Daily Tasks database."""
-    if not NOTION_TASKS_DB_ID:
-        return False
+def _get_or_create_daily_page(date: str = None) -> str:
+    """Get today's todo page ID, or create one if it doesn't exist."""
     date = date or datetime.now().strftime("%Y-%m-%d")
+    day_name = datetime.strptime(date, "%Y-%m-%d").strftime("%A, %B %d")
+
+    if not NOTION_TASKS_DB_ID:
+        return ""
+
+    # Search for existing page with this date
+    result = _notion_api("POST", f"/databases/{NOTION_TASKS_DB_ID}/query", {
+        "filter": {"property": "Date", "date": {"equals": date}}
+    })
+
+    pages = result.get("results", [])
+    if pages:
+        return pages[0]["id"]
+
+    # Create new daily page with heading
     data = {
         "parent": {"database_id": NOTION_TASKS_DB_ID},
         "properties": {
-            "Task": {"title": [{"text": {"content": title}}]},
+            "Task": {"title": [{"text": {"content": f"Tasks — {day_name}"}}]},
             "Status": {"select": {"name": "Not started"}},
             "Date": {"date": {"start": date}},
-        }
+        },
+        "children": [
+            {"object": "block", "type": "heading_2", "heading_2": {
+                "rich_text": [{"text": {"content": f"📝 Todo List — {day_name}"}}]
+            }},
+            {"object": "block", "type": "divider", "divider": {}},
+        ]
     }
     result = _notion_api("POST", "/pages", data)
-    return "id" in result
+    return result.get("id", "")
+
+
+def create_task(title: str, date: str = None) -> bool:
+    """Add a to_do checkbox item to today's daily page."""
+    date = date or datetime.now().strftime("%Y-%m-%d")
+    page_id = _get_or_create_daily_page(date)
+    if not page_id:
+        return False
+
+    # Append a to_do block to the page
+    result = _notion_api("PATCH", f"/blocks/{page_id}/children", {
+        "children": [
+            {"object": "block", "type": "to_do", "to_do": {
+                "rich_text": [{"text": {"content": title}}],
+                "checked": False,
+            }}
+        ]
+    })
+    return "results" in result
+
+
+def create_tasks_batch(tasks: list[str], date: str = None) -> int:
+    """Add multiple to_do items to today's daily page in one call."""
+    date = date or datetime.now().strftime("%Y-%m-%d")
+    page_id = _get_or_create_daily_page(date)
+    if not page_id:
+        return 0
+
+    blocks = [
+        {"object": "block", "type": "to_do", "to_do": {
+            "rich_text": [{"text": {"content": task}}],
+            "checked": False,
+        }}
+        for task in tasks
+    ]
+
+    result = _notion_api("PATCH", f"/blocks/{page_id}/children", {"children": blocks})
+    return len(result.get("results", []))
 
 
 def _normalize(text: str) -> str:
@@ -136,33 +200,28 @@ def complete_task(task_name: str) -> str:
         }
     })
 
-    # Score all tasks against the query
-    candidates = []
-    for page in result.get("results", []):
-        props = page.get("properties", {})
-        title = "".join(t.get("plain_text", "") for t in props.get("Task", {}).get("title", []))
-        if not title:
-            continue
-        score = _fuzzy_score(task_name, title)
-        candidates.append((score, title, page["id"]))
+    # Get tasks from today's page (to_do blocks)
+    tasks = get_today_tasks()
+    unchecked = [t for t in tasks if t["status"] != "Done"]
 
-    candidates.sort(key=lambda x: x[0], reverse=True)
-
-    if not candidates:
+    if not unchecked:
         return "No open tasks for today."
 
-    best_score, best_title, best_id = candidates[0]
+    # Score all tasks against the query
+    candidates = [(t, _fuzzy_score(task_name, t["title"])) for t in unchecked]
+    candidates.sort(key=lambda x: x[1], reverse=True)
 
-    # Require at least 40% word overlap to match
+    best_task, best_score = candidates[0]
+
     if best_score < 0.4:
-        task_list = "\n".join(f"  □ {t}" for _, t, _ in candidates[:5])
-        return f"Couldn't match \"{task_name}\" to any task.\n\nYour open tasks:\n{task_list}\n\nTry: done: [exact task name]"
+        task_list = "\n".join(f"  □ {t['title']}" for t, _ in candidates[:5])
+        return f"Couldn't match \"{task_name}\" to any task.\n\nYour open tasks:\n{task_list}\n\nTry: done: [task name]"
 
-    # Mark as Done
-    _notion_api("PATCH", f"/pages/{best_id}", {
-        "properties": {"Status": {"select": {"name": "Done"}}}
+    # Toggle the to_do checkbox
+    _notion_api("PATCH", f"/blocks/{best_task['block_id']}", {
+        "to_do": {"checked": True}
     })
-    return f"✅ Marked \"{best_title}\" as Done!"
+    return f"✅ Marked \"{best_task['title']}\" as Done!"
 
 
 def create_research_page(title: str, blocks: list[dict]) -> str:

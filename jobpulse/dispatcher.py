@@ -36,27 +36,25 @@ def _handle_show_tasks(cmd: ParsedCommand) -> str:
     tasks = get_today_tasks()
     if not tasks:
         return "📝 No tasks for today. Send me a list to create some!"
-    lines = [f"📝 Today's Tasks ({len(tasks)}):\n"]
-    for t in tasks:
-        status = "✅" if t["status"] == "Done" else "□"
-        lines.append(f"  {status} {t['title']}")
+    done = [t for t in tasks if t["status"] == "Done"]
+    open_tasks = [t for t in tasks if t["status"] != "Done"]
+    lines = [f"📝 Today's Tasks ({len(open_tasks)} open, {len(done)} done):\n"]
+    for t in open_tasks:
+        lines.append(f"  ☐ {t['title']}")
+    for t in done:
+        lines.append(f"  ✅ {t['title']}")
     return "\n".join(lines)
 
 
 def _handle_create_tasks(cmd: ParsedCommand) -> str:
-    from jobpulse.notion_agent import create_task
+    from jobpulse.notion_agent import create_tasks_batch
     from jobpulse.telegram_listener import _parse_tasks
 
     tasks = _parse_tasks(cmd.raw)
     if not tasks:
         return "Couldn't parse any tasks. Send them one per line:\n\nFix bug\nApply to jobs\nTailor resume"
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    created = 0
-    for task in tasks:
-        if create_task(task, today):
-            created += 1
-
+    created = create_tasks_batch(tasks)
     task_list = "\n".join(f"  □ {t}" for t in tasks)
     return f"✅ Created {created} tasks in Notion:\n\n{task_list}"
 
