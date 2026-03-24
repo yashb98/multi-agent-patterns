@@ -95,23 +95,73 @@ def poll_and_process():
         _log(f"Checkpoint: {max_id}")
 
 
-def poll_continuous(interval: float = 2.0):
-    """Long-polling loop — runs forever, checks every `interval` seconds."""
+def poll_continuous():
+    """Long-polling daemon — blocks on Telegram API, instant replies.
+
+    Uses Telegram's long-polling: the API call blocks for up to 30s waiting
+    for new messages. When one arrives, it returns immediately. This means
+    near-instant response (~1-3s) with minimal CPU/network usage.
+    """
     import time
     _log("Daemon started (long-polling mode)")
-    print(f"[Listener] Daemon started — polling every {interval}s. Ctrl+C to stop.")
+    print("[Listener] Daemon started — long-polling Telegram. Ctrl+C to stop.")
+
+    last_id = _get_last_update_id()
+    consecutive_errors = 0
 
     while True:
         try:
-            poll_and_process()
+            # Long-poll: blocks up to 30s waiting for messages
+            updates = telegram_agent.get_updates(offset=last_id + 1, long_poll=True)
+
+            if not updates:
+                consecutive_errors = 0
+                continue  # no messages, loop back to long-poll again
+
+            max_id = last_id
+
+            for update in updates:
+                uid = update.get("update_id", 0)
+                max_id = max(max_id, uid)
+
+                msg = update.get("message", {})
+                from_id = str(msg.get("from", {}).get("id", ""))
+                text = msg.get("text", "").strip()
+
+                if from_id != TELEGRAM_CHAT_ID or not text:
+                    continue
+                if text.lower() in ("hi", "hello", "hey"):
+                    continue
+
+                _log(f"Got: \"{text[:80]}\"")
+
+                # Classify and dispatch
+                cmd = classify(text)
+                _log(f"Intent: {cmd.intent.value}")
+
+                reply = dispatch(cmd)
+                telegram_agent.send_message(reply)
+                _log(f"Replied: {reply[:80]}...")
+
+            # Save checkpoint
+            if max_id > last_id:
+                last_id = max_id
+                _save_last_update_id(max_id)
+
+            consecutive_errors = 0
+
         except KeyboardInterrupt:
             _log("Daemon stopped by user")
             print("\n[Listener] Stopped.")
             break
         except Exception as e:
-            _log(f"Error: {e}")
-            print(f"[Listener] Error: {e}")
-        time.sleep(interval)
+            consecutive_errors += 1
+            _log(f"Error ({consecutive_errors}): {e}")
+            # Back off on repeated errors
+            if consecutive_errors > 5:
+                time.sleep(min(60, consecutive_errors * 5))
+            else:
+                time.sleep(2)
 
 
 if __name__ == "__main__":

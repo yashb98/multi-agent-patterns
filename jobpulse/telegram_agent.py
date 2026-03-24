@@ -31,15 +31,25 @@ def send_message(text: str, chat_id: str = None) -> bool:
         return False
 
 
-def get_updates(offset: int = 0) -> list[dict]:
-    """Get new messages from Telegram."""
+def get_updates(offset: int = 0, long_poll: bool = False) -> list[dict]:
+    """Get new messages from Telegram.
+
+    If long_poll=True, uses 30s timeout on the API side (efficient, blocks until message arrives).
+    If long_poll=False, returns immediately (for cron-based polling).
+    """
+    timeout_param = 30 if long_poll else 1
+    curl_timeout = timeout_param + 10  # give curl extra time beyond API timeout
+
     try:
         result = subprocess.run(
             ["curl", "-s",
-             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=5"],
-            capture_output=True, text=True, timeout=15
+             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+             f"?offset={offset}&timeout={timeout_param}"],
+            capture_output=True, text=True, timeout=curl_timeout
         )
         data = json.loads(result.stdout)
         return data.get("result", [])
+    except subprocess.TimeoutExpired:
+        return []  # normal for long-poll when no messages
     except Exception:
         return []

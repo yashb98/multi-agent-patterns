@@ -6,7 +6,7 @@ import sys
 def main():
     if len(sys.argv) < 2:
         print("Usage: python -m jobpulse.runner <command>")
-        print("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, listen, test")
+        print("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, listen, daemon, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -52,6 +52,10 @@ def main():
     elif command == "listen":
         from jobpulse.telegram_listener import poll_and_process
         poll_and_process()
+
+    elif command == "daemon":
+        from jobpulse.telegram_listener import poll_continuous
+        poll_continuous()
 
     elif command == "test":
         from jobpulse.telegram_agent import send_message
