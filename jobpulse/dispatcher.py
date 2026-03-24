@@ -19,6 +19,9 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.COMPLETE_TASK: _handle_complete_task,
         Intent.CREATE_EVENT: _handle_create_event,
         Intent.LOG_SPEND: _handle_log_spend,
+        Intent.LOG_INCOME: _handle_log_income,
+        Intent.LOG_SAVINGS: _handle_log_savings,
+        Intent.SET_BUDGET: _handle_set_budget,
         Intent.SHOW_BUDGET: _handle_show_budget,
         Intent.HELP: _handle_help,
     }
@@ -132,20 +135,35 @@ def _handle_create_event(cmd: ParsedCommand) -> str:
 
 
 def _handle_log_spend(cmd: ParsedCommand) -> str:
-    from jobpulse.budget_agent import log_spend
-    return log_spend(cmd.raw)
+    from jobpulse.budget_agent import log_transaction
+    return log_transaction(cmd.raw)
+
+
+def _handle_log_income(cmd: ParsedCommand) -> str:
+    from jobpulse.budget_agent import log_transaction
+    return log_transaction(cmd.raw)
+
+
+def _handle_log_savings(cmd: ParsedCommand) -> str:
+    from jobpulse.budget_agent import log_transaction
+    return log_transaction(cmd.raw)
+
+
+def _handle_set_budget(cmd: ParsedCommand) -> str:
+    from jobpulse.budget_agent import set_budget
+    return set_budget(cmd.raw)
 
 
 def _handle_show_budget(cmd: ParsedCommand) -> str:
     from jobpulse.budget_agent import get_week_summary, get_today_spending
-    from jobpulse.budget_agent import format_week_summary, format_today_spending
+    from jobpulse.budget_agent import format_week_summary, format_today
 
     today = get_today_spending()
     week = get_week_summary()
 
     parts = []
     if today["items"]:
-        parts.append(format_today_spending(today))
+        parts.append(format_today(today))
     parts.append(format_week_summary(week))
     return "\n\n".join(parts)
 
@@ -169,9 +187,12 @@ def _handle_help(cmd: ParsedCommand) -> str:
   "trending" — hot repos this week
 
 💰 BUDGET:
-  "spent 15 on lunch" — log an expense
-  "£8.50 coffee" — log with currency
-  "budget" — weekly spending summary
+  "spent 15 on lunch" — log expense
+  "£8.50 coffee" — log expense
+  "earned 500 freelance" — log income
+  "saved 100" — log savings/investment
+  "set budget groceries 50" — set weekly limit
+  "budget" — weekly summary
 
 📬 OTHER:
   "briefing" — full morning report

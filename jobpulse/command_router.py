@@ -25,6 +25,9 @@ class Intent(str, Enum):
     BRIEFING = "briefing"
     ARXIV = "arxiv"
     LOG_SPEND = "log_spend"
+    LOG_INCOME = "log_income"
+    LOG_SAVINGS = "log_savings"
+    SET_BUDGET = "set_budget"
     SHOW_BUDGET = "show_budget"
     HELP = "help"
     UNKNOWN = "unknown"
@@ -46,10 +49,26 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     ]),
     # Budget — show
     (Intent.SHOW_BUDGET, [
-        r"(budget|spending|how much.+(spent|spend)|weekly (budget|spend)|show budget)",
-        r"(today.?s|this week.?s)\s+(spend|budget|expenses?)",
+        r"(budget|spending|how much.+(spent|spend|earned)|weekly (budget|spend)|show budget|summary)",
+        r"(today.?s|this week.?s)\s+(spend|budget|expenses?|money)",
     ]),
-    # Budget — log spend (must come after show_budget so "show budget" doesn't match here)
+    # Budget — set planned budget
+    (Intent.SET_BUDGET, [
+        r"set\s+budget",
+        r"budget\s+\w+\s+\d+",
+        r"plan\s+\d+\s+(for|on)\s+\w+",
+    ]),
+    # Budget — log income
+    (Intent.LOG_INCOME, [
+        r"(earned|income|received|got paid|salary|freelance)\s+\d",
+        r"(earned|income|received|got paid|salary)\s+[£$€]?\s*\d+",
+    ]),
+    # Budget — log savings
+    (Intent.LOG_SAVINGS, [
+        r"(saved|saving|invest|moved to savings)\s+\d",
+        r"(saved|invest)\s+[£$€]?\s*\d+",
+    ]),
+    # Budget — log spend (must come last so income/savings match first)
     (Intent.LOG_SPEND, [
         r"(spent|spend|paid|bought)\s+\d",
         r"[£$€]\s*\d+",
@@ -145,6 +164,9 @@ TRENDING — user wants trending GitHub repos
 BRIEFING — user wants the full morning briefing
 ARXIV — user wants AI research papers
 LOG_SPEND — user is logging money they spent (mentions amount + item)
+LOG_INCOME — user is logging money they earned/received
+LOG_SAVINGS — user is logging money saved or invested or debt repaid
+SET_BUDGET — user wants to set a planned budget for a category
 SHOW_BUDGET — user wants to see their budget/spending summary
 UNKNOWN — doesn't match any of the above
 

@@ -43,11 +43,14 @@ def build_and_send():
     section_trending = github_agent.format_trending(trending)
 
     # ── Section 6: Budget ──
-    week_summary = budget_agent.get_week_summary()
-    if week_summary["by_category"]:
-        section_budget = budget_agent.format_week_summary(week_summary)
-    else:
-        section_budget = "  No spending logged this week"
+    try:
+        week_summary = budget_agent.get_week_summary()
+        if week_summary["by_category"]:
+            section_budget = budget_agent.format_week_summary(week_summary)
+        else:
+            section_budget = "  No transactions logged this week"
+    except Exception:
+        section_budget = "  Budget data unavailable"
 
     # ── Build Message ──
     message = f"""☀️ Good Morning Yash! Here's your briefing for {today}:
