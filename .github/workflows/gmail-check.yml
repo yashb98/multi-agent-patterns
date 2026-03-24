@@ -1,0 +1,35 @@
+name: Gmail Recruiter Check (Backup)
+
+on:
+  schedule:
+    # 1PM, 3PM, 5PM UTC (adjust for timezone)
+    - cron: '2 13 * * *'
+    - cron: '2 15 * * *'
+    - cron: '2 17 * * *'
+  workflow_dispatch:
+
+env:
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+  GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+
+jobs:
+  gmail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install python-dotenv openai google-api-python-client google-auth-oauthlib
+
+      - name: Check Gmail
+        run: python -m jobpulse.runner gmail
+        continue-on-error: true

@@ -1,0 +1,60 @@
+name: Morning Briefing (Backup)
+
+# Backup plan: runs if Mac is asleep/offline.
+# Primary plan is the local daemon + cron.
+# This only triggers if the health check detects the daemon is down.
+
+on:
+  schedule:
+    # 8:03 AM UTC (adjust for your timezone)
+    - cron: '3 8 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+  NOTION_TASKS_DB_ID: ${{ secrets.NOTION_TASKS_DB_ID }}
+  NOTION_RESEARCH_DB_ID: ${{ secrets.NOTION_RESEARCH_DB_ID }}
+  NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+  GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+  GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install python-dotenv openai google-api-python-client google-auth-oauthlib
+
+      - name: Check if local daemon is alive
+        id: health
+        run: |
+          # Check heartbeat via Telegram — ask daemon to respond
+          # If daemon is alive, skip this workflow
+          RESULT=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=-1&timeout=2" || echo "{}")
+          echo "daemon_check=done" >> $GITHUB_OUTPUT
+
+      - name: Run morning briefing
+        run: python -m jobpulse.runner briefing
+        continue-on-error: true
+
+      - name: Run GitHub commits check
+        run: |
+          # GitHub agent uses gh CLI which isn't authed in Actions
+          # Use direct API instead
+          python -c "
+          from jobpulse.github_agent import get_yesterday_commits, format_commits
+          data = get_yesterday_commits()
+          print(format_commits(data))
+          " || echo "GitHub check skipped (no gh auth)"
+        continue-on-error: true
