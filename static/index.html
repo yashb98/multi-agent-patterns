@@ -434,11 +434,33 @@ function renderGalaxyView(allNodes){
             .on('end',(e,d)=>{if(!e.active)galaxySim.alphaTarget(0);d.fx=null;d.fy=null})
         );
 
-    // Outer glow
+    // Outer nebula cloud (multiple semi-transparent rings)
+    galaxyG.append('circle')
+        .attr('r', d=>gRadius(d) * 2.0)
+        .attr('fill', d=>d.color+'05')
+        .attr('filter','url(#glowStrong)');
+
     galaxyG.append('circle')
         .attr('r', d=>gRadius(d) * 1.6)
         .attr('fill', d=>d.color+'0A')
         .attr('filter','url(#glowStrong)');
+
+    // Orbit rings (tilted ellipses for 3D depth effect)
+    galaxyG.each(function(d){
+        const gg = d3.select(this);
+        const r = gRadius(d);
+        // 3 orbit rings at different radii, tilted
+        [0.55, 0.75, 0.95].forEach((ratio, i)=>{
+            gg.append('ellipse')
+                .attr('rx', r * ratio)
+                .attr('ry', r * ratio * 0.35)  // flattened for 3D perspective
+                .attr('fill','none')
+                .attr('stroke', d.color+'20')
+                .attr('stroke-width', 0.8)
+                .attr('stroke-dasharray', '3,5')
+                .attr('transform', `rotate(${-15 + i*20})`);
+        });
+    });
 
     // Core nebula (radial gradient effect via multiple circles)
     galaxyG.append('circle')
@@ -446,32 +468,57 @@ function renderGalaxyView(allNodes){
         .attr('fill', d=>d.color+'15')
         .attr('filter','url(#glow)');
 
-    // Solid core
+    // Inner core ring
     galaxyG.append('circle')
-        .attr('r', d=>gRadius(d) * 0.35)
-        .attr('fill', d=>d.color)
-        .attr('opacity', 0.8)
+        .attr('r', d=>gRadius(d) * 0.5)
+        .attr('fill', d=>d.color+'20')
         .attr('filter','url(#glow)');
 
-    // Orbiting planet dots — show up to 20 mini dots per galaxy
+    // Solid bright core
+    galaxyG.append('circle')
+        .attr('r', d=>gRadius(d) * 0.25)
+        .attr('fill', d=>d.color)
+        .attr('opacity', 0.9)
+        .attr('filter','url(#glowStrong)');
+
+    // Core highlight (white center for star-like effect)
+    galaxyG.append('circle')
+        .attr('r', d=>gRadius(d) * 0.08)
+        .attr('fill', '#fff')
+        .attr('opacity', 0.7);
+
+    // Orbiting planet dots — show up to 25 mini dots per galaxy
     galaxyG.each(function(d){
         const gg = d3.select(this);
         const r = gRadius(d);
-        const planetCount = Math.min(20, d.nodes.length);
+        const planetCount = Math.min(25, d.nodes.length);
         const sorted = d.nodes.sort((a,b)=>(b.mention_count||1)-(a.mention_count||1)).slice(0, planetCount);
 
+        // Multiple orbit bands
         sorted.forEach((node, i) => {
-            const angle = (2 * Math.PI * i) / planetCount;
-            const orbitR = r * (0.55 + Math.random() * 0.45);
-            const planetR = Math.max(2, Math.min(6, 2 + (node.mention_count||1) * 0.5));
+            const band = i % 3;  // 3 orbit bands
+            const angleSpread = (2 * Math.PI * i) / planetCount + band * 0.3;
+            const orbitR = r * (0.45 + band * 0.2 + Math.random() * 0.1);
+            const planetR = Math.max(1.5, Math.min(5, 1.5 + (node.mention_count||1) * 0.4));
+            const yScale = 0.35 + band * 0.1;  // flatten for 3D perspective
+
+            // Planet glow
+            gg.append('circle')
+                .attr('class','orbit-planet-glow')
+                .attr('r', planetR * 2.5)
+                .attr('fill', d.color+'15')
+                .attr('pointer-events','none')
+                .datum({angle: angleSpread, orbitR, yScale, speed: 0.002 + Math.random()*0.003 - band*0.0005});
+
+            // Planet body
             gg.append('circle')
                 .attr('class','orbit-planet')
-                .attr('cx', Math.cos(angle) * orbitR)
-                .attr('cy', Math.sin(angle) * orbitR)
+                .attr('cx', Math.cos(angleSpread) * orbitR)
+                .attr('cy', Math.sin(angleSpread) * orbitR * yScale)
                 .attr('r', planetR)
                 .attr('fill', d.color)
-                .attr('opacity', 0.6)
-                .datum({angle, orbitR, speed: 0.002 + Math.random()*0.003, parentData: d});
+                .attr('opacity', 0.7)
+                .datum({angle: angleSpread, orbitR, yScale, speed: 0.002 + Math.random()*0.003 - band*0.0005, parentData: d});
         });
     });
 
@@ -515,8 +562,19 @@ function startOrbitAnimation(){
             const d = el.datum();
             if(!d) return;
             const newAngle = d.angle + t * d.speed;
+            const ys = d.yScale || 1;
             el.attr('cx', Math.cos(newAngle) * d.orbitR)
-              .attr('cy', Math.sin(newAngle) * d.orbitR);
+              .attr('cy', Math.sin(newAngle) * d.orbitR * ys);
+        });
+        // Sync glow halos with planets
+        g.selectAll('.orbit-planet-glow').each(function(_, i){
+            const el = d3.select(this);
+            const d = el.datum();
+            if(!d) return;
+            const newAngle = d.angle + t * d.speed;
+            const ys = d.yScale || 1;
+            el.attr('cx', Math.cos(newAngle) * d.orbitR)
+              .attr('cy', Math.sin(newAngle) * d.orbitR * ys);
         });
     });
 }
