@@ -32,8 +32,8 @@ textarea:focus{outline:none;border-color:#8B5CF6}
 #ui{width:100%;background:#0f172a;border:1px solid #475569;border-radius:5px;color:#e2e8f0;padding:7px 10px;font-size:12px;margin-bottom:6px}
 .xb{width:100%;padding:8px;background:#8B5CF6;color:#fff;border:none;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600;margin-top:6px}.xb:hover{background:#7c3aed}
 #prog{margin-top:8px;font-size:11px;color:#94a3b8}
-.ga{position:fixed;top:50px;left:280px;right:0;bottom:40px;position:relative}.ga.full{left:0}
-svg{width:100%;height:100%;position:relative;z-index:2}
+.ga{position:fixed;top:50px;left:280px;right:0;bottom:40px}.ga.full{left:0}
+svg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:2}
 #particles{position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;pointer-events:none}
 .dp{position:fixed;top:50px;right:-360px;bottom:40px;width:360px;background:#1e293b;border-left:1px solid #334155;z-index:85;transition:right .2s;padding:18px;overflow-y:auto}.dp.open{right:0}
 .dp h2{font-size:17px;margin-bottom:3px}.badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:10px;font-weight:600;margin-bottom:6px}
@@ -102,9 +102,9 @@ let galaxySim = null;
 let orbitTimer = null;
 
 // ── Particle & Starfield System ──
-let pCanvas, pCtx, stars=[], particles=[], pRAF=null;
-const STAR_COUNT = 200;
-const PARTICLES_PER_EDGE = 3;
+let pCanvas, pCtx, stars=[], pulses=[], pRAF=null;
+const STAR_COUNT = 150;
+const PULSES_PER_EDGE = 4;  // synaptic signals per connection
 
 function initParticleSystem(){
     pCanvas = document.getElementById('particles');
@@ -112,14 +112,16 @@ function initParticleSystem(){
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
     generateStars();
-    animateParticles();
+    animateNeural();
 }
 
 function resizeCanvas(){
     if(!pCanvas) return;
     const ga = document.getElementById('ga');
-    pCanvas.width = ga.clientWidth * devicePixelRatio;
-    pCanvas.height = ga.clientHeight * devicePixelRatio;
+    const rect = ga.getBoundingClientRect();
+    pCanvas.width = rect.width * devicePixelRatio;
+    pCanvas.height = rect.height * devicePixelRatio;
+    pCtx.setTransform(1,0,0,1,0,0);
     pCtx.scale(devicePixelRatio, devicePixelRatio);
     generateStars();
 }
@@ -131,121 +133,129 @@ function generateStars(){
     for(let i=0; i<STAR_COUNT; i++){
         stars.push({
             x: Math.random()*w, y: Math.random()*h,
-            r: Math.random()*1.2 + 0.3,
-            baseAlpha: Math.random()*0.4 + 0.1,
-            twinkleSpeed: Math.random()*0.02 + 0.005,
+            r: Math.random()*1.0 + 0.2,
+            baseAlpha: Math.random()*0.25 + 0.05,
+            twinkleSpeed: Math.random()*0.015 + 0.003,
             twinkleOffset: Math.random()*Math.PI*2,
         });
     }
 }
 
-function spawnEdgeParticles(){
-    // Called after each render — creates particles that flow along edges
-    particles = [];
-    if(!lE) return;
-    lE.each(function(d){
+// Spawn neural pulses that follow curved dendrite paths
+function spawnNeuralPulses(links, nodes){
+    pulses = [];
+    for(const d of links){
         const src = d.source, tgt = d.target;
-        if(!src || !tgt || src.x==null || tgt.x==null) return;
-        const col = C[src.entity_type] || C[tgt.entity_type] || '#8B5CF6';
-        for(let i=0; i<PARTICLES_PER_EDGE; i++){
-            particles.push({
-                sx: src.x, sy: src.y, tx: tgt.x, ty: tgt.y,
-                progress: Math.random(),  // 0-1 along the edge
-                speed: 0.003 + Math.random()*0.004,
-                size: Math.random()*1.5 + 0.5,
+        if(!src || !tgt) continue;
+        const srcNode = (typeof src === 'object') ? src : nodes.find(n=>n.id===src);
+        const tgtNode = (typeof tgt === 'object') ? tgt : nodes.find(n=>n.id===tgt);
+        if(!srcNode || !tgtNode) continue;
+        const col = C[srcNode.entity_type] || '#8B5CF6';
+        for(let i=0; i<PULSES_PER_EDGE; i++){
+            pulses.push({
+                sourceRef: srcNode, targetRef: tgtNode,
+                edgeIdx: d._idx || 0,
+                progress: Math.random(),
+                speed: 0.004 + Math.random()*0.006,  // fast synaptic speed
+                size: 1.2 + Math.random()*1.2,
                 color: col,
-                alpha: Math.random()*0.5 + 0.3,
-                sourceRef: src, targetRef: tgt,
+                trail: [],  // stores recent positions for trail effect
             });
         }
-    });
+    }
 }
 
-function animateParticles(){
+// Also keep old function name for galaxy-dive compatibility
+function spawnEdgeParticles(){ /* pulses are spawned via spawnNeuralPulses */ }
+
+function getZoomTransform(){
+    let tx=0, ty=0, sc=1;
+    const svgNode = svg?.node();
+    if(svgNode && svgNode.__zoom){
+        tx = svgNode.__zoom.x; ty = svgNode.__zoom.y; sc = svgNode.__zoom.k;
+    }
+    return {tx, ty, sc};
+}
+
+function animateNeural(){
     if(!pCtx || !pCanvas) return;
     const w = pCanvas.width / devicePixelRatio;
     const h = pCanvas.height / devicePixelRatio;
-
-    // Clear
     pCtx.setTransform(1,0,0,1,0,0);
     pCtx.scale(devicePixelRatio, devicePixelRatio);
     pCtx.clearRect(0,0,w,h);
 
     const time = Date.now() * 0.001;
+    const {tx, ty, sc} = getZoomTransform();
 
-    // Draw starfield
+    // Starfield (dim background neural dust)
     for(const s of stars){
         const twinkle = Math.sin(time * s.twinkleSpeed * 10 + s.twinkleOffset);
-        const alpha = s.baseAlpha + twinkle * 0.15;
+        const alpha = s.baseAlpha + twinkle * 0.1;
         pCtx.beginPath();
         pCtx.arc(s.x, s.y, s.r, 0, Math.PI*2);
-        pCtx.fillStyle = `rgba(200,210,230,${Math.max(0.05, alpha)})`;
+        pCtx.fillStyle = `rgba(140,160,200,${Math.max(0.02, alpha)})`;
         pCtx.fill();
     }
 
-    // Get current SVG transform to align canvas particles with SVG nodes
-    const svgEl = document.getElementById('svg');
-    const gEl = g?.node();
-    let tx=0, ty=0, sc=1;
-    if(gEl){
-        const transform = gEl.getAttribute('transform');
-        if(transform){
-            const m = transform.match(/translate\(([-\d.]+)[,\s]+([-\d.]+)\)/);
-            const s2 = transform.match(/scale\(([-\d.]+)\)/);
-            if(m){ tx=parseFloat(m[1]); ty=parseFloat(m[2]); }
-            if(s2) sc=parseFloat(s2[1]);
-        }
-    }
-    // Parse zoom transform from D3
-    const svgNode = svg?.node();
-    if(svgNode && svgNode.__zoom){
-        tx = svgNode.__zoom.x; ty = svgNode.__zoom.y; sc = svgNode.__zoom.k;
-    }
-
-    // Offset for .ga element position
-    const gaRect = document.getElementById('ga').getBoundingClientRect();
-    const svgRect = svgEl?.getBoundingClientRect();
-    const ox = 0, oy = 0;
-
-    // Draw flowing particles along edges
-    for(const p of particles){
-        // Update live positions from simulation refs
-        if(p.sourceRef && p.sourceRef.x != null){
-            p.sx = p.sourceRef.x; p.sy = p.sourceRef.y;
-        }
-        if(p.targetRef && p.targetRef.x != null){
-            p.tx = p.targetRef.x; p.ty = p.targetRef.y;
-        }
+    // Neural pulses — follow curved bezier paths
+    for(const p of pulses){
+        const src = p.sourceRef, tgt = p.targetRef;
+        if(!src || src.x==null || !tgt || tgt.x==null) continue;
 
         p.progress += p.speed;
-        if(p.progress > 1) p.progress -= 1;
+        if(p.progress > 1){
+            p.progress -= 1;
+            p.trail = [];
+        }
 
-        // Interpolate position
-        const x = p.sx + (p.tx - p.sx) * p.progress;
-        const y = p.sy + (p.ty - p.sy) * p.progress;
+        // Compute control point for this edge's curve
+        const crv = dendritePath(src.x, src.y, tgt.x, tgt.y, p.edgeIdx);
+        // Interpolate along quadratic bezier
+        const pt = bezierPoint(src.x, src.y, crv.cx, crv.cy, tgt.x, tgt.y, p.progress);
 
-        // Apply SVG transform
-        const cx = x * sc + tx + ox;
-        const cy = y * sc + ty + oy;
+        // Transform to screen
+        const cx = pt.x * sc + tx;
+        const cy = pt.y * sc + ty;
 
-        // Fade in/out at edges
-        const edgeFade = Math.sin(p.progress * Math.PI);
-        const alpha = p.alpha * edgeFade;
+        // Trail
+        p.trail.push({x: cx, y: cy});
+        if(p.trail.length > 6) p.trail.shift();
 
-        // Glow
+        // Draw trail (fading tail)
+        for(let ti=0; ti<p.trail.length-1; ti++){
+            const tp = p.trail[ti];
+            const trailAlpha = (ti / p.trail.length) * 0.3;
+            const trailSize = p.size * sc * (ti / p.trail.length) * 0.6;
+            pCtx.beginPath();
+            pCtx.arc(tp.x, tp.y, trailSize, 0, Math.PI*2);
+            pCtx.fillStyle = p.color + Math.round(trailAlpha*255).toString(16).padStart(2,'0');
+            pCtx.fill();
+        }
+
+        // Pulse brightness based on position (brighter in middle of path)
+        const brightness = Math.sin(p.progress * Math.PI);
+
+        // Outer glow
         pCtx.beginPath();
-        pCtx.arc(cx, cy, p.size * sc * 2, 0, Math.PI*2);
-        pCtx.fillStyle = p.color + Math.round(alpha*30).toString(16).padStart(2,'0');
+        pCtx.arc(cx, cy, p.size * sc * 3.5, 0, Math.PI*2);
+        pCtx.fillStyle = p.color + Math.round(brightness*25).toString(16).padStart(2,'0');
         pCtx.fill();
 
-        // Core
+        // Mid glow
         pCtx.beginPath();
-        pCtx.arc(cx, cy, p.size * sc, 0, Math.PI*2);
-        pCtx.fillStyle = p.color + Math.round(alpha*200).toString(16).padStart(2,'0');
+        pCtx.arc(cx, cy, p.size * sc * 1.8, 0, Math.PI*2);
+        pCtx.fillStyle = p.color + Math.round(brightness*80).toString(16).padStart(2,'0');
+        pCtx.fill();
+
+        // Bright core
+        pCtx.beginPath();
+        pCtx.arc(cx, cy, p.size * sc * 0.7, 0, Math.PI*2);
+        pCtx.fillStyle = `rgba(255,255,255,${brightness*0.7})`;
         pCtx.fill();
     }
 
-    pRAF = requestAnimationFrame(animateParticles);
+    pRAF = requestAnimationFrame(animateNeural);
 }
 
 function stopParticleAnimation(){ if(pRAF){cancelAnimationFrame(pRAF);pRAF=null} }
@@ -322,11 +332,34 @@ function render(){
     updateModeUI();
 }
 
-// ── Planet View (original, < 300 nodes) ──
+// ── Helper: compute curved dendrite path between two points ──
+function dendritePath(sx, sy, tx, ty, idx){
+    // Offset control point perpendicular to midpoint — creates organic curves
+    const mx = (sx+tx)/2, my = (sy+ty)/2;
+    const dx = tx-sx, dy = ty-sy;
+    const len = Math.sqrt(dx*dx+dy*dy) || 1;
+    // Alternate curve direction, with some randomness per edge
+    const sign = (idx%2===0)?1:-1;
+    const curvature = 0.2 + (idx%5)*0.05; // vary curvature
+    const cx = mx + (-dy/len)*len*curvature*sign;
+    const cy = my + (dx/len)*len*curvature*sign;
+    return {cx, cy, path:`M${sx},${sy} Q${cx},${cy} ${tx},${ty}`};
+}
+
+// ── Quadratic bezier interpolation for particles ──
+function bezierPoint(sx,sy,cpx,cpy,tx,ty,t){
+    const u=1-t;
+    return {
+        x: u*u*sx + 2*u*t*cpx + t*t*tx,
+        y: u*u*sy + 2*u*t*cpy + t*t*ty,
+    };
+}
+
+// ── Planet View — Neural Brain Mode ──
 function renderPlanetView(ns){
-    const el=document.getElementById('ga'), w=el.clientWidth, h=el.clientHeight;
+    const el=document.getElementById('ga'), rect=el.getBoundingClientRect(), w=rect.width, h=rect.height;
     const nids=new Set(ns.map(n=>n.id));
-    const ls=gD.edges.filter(e=>nids.has(e.from_id)&&nids.has(e.to_id)).map(e=>({...e,source:e.from_id,target:e.to_id}));
+    const ls=gD.edges.filter(e=>nids.has(e.from_id)&&nids.has(e.to_id)).map((e,i)=>({...e,source:e.from_id,target:e.to_id,_idx:i}));
 
     sim=d3.forceSimulation(ns)
         .force('link',d3.forceLink(ls).id(d=>d.id).distance(160))
@@ -334,27 +367,49 @@ function renderPlanetView(ns){
         .force('center',d3.forceCenter(w/2,h/2))
         .force('collision',d3.forceCollide().radius(d=>nr(d)+25));
 
-    lE=g.append('g').selectAll('line').data(ls).join('line')
-        .attr('stroke',d=>{const s=ns.find(n=>n.id===(d.source.id||d.source));return s?C[s.entity_type]+'4D':'#475569'})
-        .attr('stroke-width',1.5).attr('marker-end','url(#arr)')
+    // Curved dendrite edges (SVG paths instead of lines)
+    lE=g.append('g').selectAll('path').data(ls).join('path')
+        .attr('fill','none')
+        .attr('stroke',d=>{const s=ns.find(n=>n.id===(d.source.id||d.source));return s?C[s.entity_type]+'3A':'#47556933'})
+        .attr('stroke-width',1.5)
         .on('mouseover',(e,d)=>sT(e,`<b>${d.type}</b><br>${d.context||''}`)).on('mouseout',hT);
 
-    // Node glow halos (drawn behind nodes)
+    // Outer glow halos behind nodes (neuron soma glow)
     g.append('g').selectAll('circle').data(ns).join('circle')
-        .attr('r',d=>nr(d)*1.8).attr('fill',d=>(C[d.entity_type]||'#6B7280')+'15')
+        .attr('r',d=>nr(d)*2.2).attr('fill',d=>(C[d.entity_type]||'#6B7280')+'0A')
+        .attr('filter','url(#glowStrong)').attr('pointer-events','none')
+        .each(function(d){ d._haloOuter=this });
+
+    // Inner halo
+    g.append('g').selectAll('circle').data(ns).join('circle')
+        .attr('r',d=>nr(d)*1.5).attr('fill',d=>(C[d.entity_type]||'#6B7280')+'18')
         .attr('filter','url(#nodeGlow)').attr('pointer-events','none')
         .each(function(d){ d._halo=this });
 
+    // Neuron body (main node)
     nE=g.append('g').selectAll('circle').data(ns).join('circle')
         .attr('r',nr).attr('fill',d=>C[d.entity_type]||'#6B7280')
-        .attr('stroke','#0f172a').attr('stroke-width',1.5).style('cursor','pointer')
+        .attr('stroke',d=>(C[d.entity_type]||'#6B7280')+'66').attr('stroke-width',2)
+        .style('cursor','pointer')
         .attr('filter','url(#nodeGlow)')
         .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y}).on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
         .on('mouseover',(e,d)=>{
             const connCount = gD.edges.filter(x=>x.from_id===d.id||x.to_id===d.id).length;
+            // Flash the neuron on hover
+            d3.select(e.target).transition().duration(150).attr('filter','url(#glowStrong)').attr('stroke-width',4);
             sT(e,`<b>${d.name}</b><span class="tp">${d.entity_type}</span>${d.description?`<div class="td2">${d.description}</div>`:''}<div class="tm">${d.mention_count||1} mentions · ${connCount} connections · importance ${((d.importance||0)*100).toFixed(0)}%</div>`)
         })
-        .on('mouseout',hT).on('click',(e,d)=>{e.stopPropagation();showDP(d)}).on('dblclick',(e,d)=>{e.stopPropagation();focN(d)});
+        .on('mouseout',(e,d)=>{
+            d3.select(e.target).transition().duration(300).attr('filter','url(#nodeGlow)').attr('stroke-width',2);
+            hT();
+        })
+        .on('click',(e,d)=>{e.stopPropagation();showDP(d)}).on('dblclick',(e,d)=>{e.stopPropagation();focN(d)});
+
+    // Bright core (nucleus of the neuron)
+    g.append('g').selectAll('circle').data(ns).join('circle')
+        .attr('r',d=>nr(d)*0.3).attr('fill','#fff').attr('opacity',0.25)
+        .attr('pointer-events','none')
+        .each(function(d){ d._core=this });
 
     // Node name labels
     const labelG = g.append('g').selectAll('g').data(ns).join('g').attr('pointer-events','none');
@@ -364,7 +419,6 @@ function renderPlanetView(ns){
         .attr('fill','#f1f5f9').attr('font-weight',600)
         .attr('text-anchor','middle').attr('dy',d=>nr(d)+14)
         .text(d=>d.name.length>22?d.name.slice(0,20)+'…':d.name);
-    // Type sub-label
     labelG.append('text')
         .attr('class','type-label')
         .attr('font-size',9).attr('fill',d=>(C[d.entity_type]||'#6B7280')+'CC')
@@ -372,22 +426,30 @@ function renderPlanetView(ns){
         .text(d=>d.entity_type);
 
     sim.on('tick',()=>{
-        lE.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+        // Update curved dendrite paths
+        lE.attr('d',d=>{
+            const s=d.source, t=d.target;
+            if(!s.x||!t.x) return '';
+            return dendritePath(s.x,s.y,t.x,t.y,d._idx).path;
+        });
         nE.attr('cx',d=>d.x).attr('cy',d=>d.y);
-        // Move halos with nodes
-        ns.forEach(d=>{ if(d._halo) d3.select(d._halo).attr('cx',d.x).attr('cy',d.y) });
+        ns.forEach(d=>{
+            if(d._halo) d3.select(d._halo).attr('cx',d.x).attr('cy',d.y);
+            if(d._haloOuter) d3.select(d._haloOuter).attr('cx',d.x).attr('cy',d.y);
+            if(d._core) d3.select(d._core).attr('cx',d.x).attr('cy',d.y);
+        });
         labelG.attr('transform',d=>`translate(${d.x},${d.y})`)
     });
     nE.style('opacity',0).transition().duration(400).style('opacity',1);
 
-    // Spawn particles after simulation stabilizes
-    setTimeout(()=>spawnEdgeParticles(), 500);
+    // Spawn neural pulse particles along curved paths
+    setTimeout(()=>spawnNeuralPulses(ls, ns), 800);
 }
 
 
 // ── Galaxy View (>= 300 nodes) — each entity_type is a galaxy ──
 function renderGalaxyView(allNodes){
-    const el=document.getElementById('ga'), w=el.clientWidth, h=el.clientHeight;
+    const el=document.getElementById('ga'), rect=el.getBoundingClientRect(), w=rect.width, h=rect.height;
 
     // Build galaxy data: group nodes by entity_type
     const galaxyMap = {};
@@ -612,7 +674,7 @@ function diveIntoGalaxy(entityType){
 }
 
 function renderGalaxyDive(entityType){
-    const el=document.getElementById('ga'), w=el.clientWidth, h=el.clientHeight;
+    const el=document.getElementById('ga'), rect=el.getBoundingClientRect(), w=rect.width, h=rect.height;
     const color = C[entityType] || '#6B7280';
 
     // Primary nodes: this galaxy's nodes
