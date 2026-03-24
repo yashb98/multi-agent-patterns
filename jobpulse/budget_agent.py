@@ -244,13 +244,24 @@ def get_notion_budget_url(week_start: str = None) -> str:
     return f"https://www.notion.so/{page_id}"
 
 
-def _update_table_row(row_id: str, col2_value: str, col3_value: str = ""):
-    """Update a table row's Actual (col 2) and Notes (col 3) columns."""
+def _update_table_row(row_id: str, col2_value: str, col3_value: str = None):
+    """Update a table row's Actual (col 2) and optionally Notes (col 3).
+
+    IMPORTANT: We must read the existing row first to preserve col 0 (category name)
+    and col 1 (planned amount). Notion's PATCH replaces ALL cells — sending []
+    for a cell erases it.
+    """
+    # Read current row to preserve col 0 and col 1
+    current = _notion_api("GET", f"/blocks/{row_id}")
+    existing_cells = current.get("table_row", {}).get("cells", [[], [], [], []])
+
+    # Keep col 0 and col 1 as-is, update col 2 (actual), optionally col 3 (notes/date)
     cells = [
-        [],  # col 0: label (don't change)
-        [],  # col 1: planned (don't change)
-        [{"type": "text", "text": {"content": col2_value}}],  # col 2: actual
-        [{"type": "text", "text": {"content": col3_value}}],  # col 3: notes
+        existing_cells[0] if len(existing_cells) > 0 else [],  # preserve category name
+        existing_cells[1] if len(existing_cells) > 1 else [],  # preserve planned amount
+        [{"type": "text", "text": {"content": col2_value}}],   # update actual
+        [{"type": "text", "text": {"content": col3_value}}] if col3_value is not None
+            else (existing_cells[3] if len(existing_cells) > 3 else []),  # preserve or update notes
     ]
     _notion_api("PATCH", f"/blocks/{row_id}", {
         "table_row": {"cells": cells}
@@ -273,8 +284,8 @@ def sync_expense_to_notion(txn: dict):
     ).fetchone()[0]
     conn.close()
 
-    # Update the Actual column with the running total
-    _update_table_row(row_id, f"£{total:.2f}", txn["description"])
+    # Update the Actual column with the running total, date in notes
+    _update_table_row(row_id, f"£{total:.2f}", f"Last: {txn['description']} ({txn['date']})")
 
     # Also update the section total row
     _update_section_totals(txn["week_start"])
@@ -323,15 +334,11 @@ def _update_section_totals(week_start: str = None):
     _update_table_row(ROW_IDS["Total savings + debt (summary)"], f"£{savings_total:.2f}")
 
     # Net with difference
-    cells = [
-        [],  # col 0
-        [],  # col 1
-        [{"type": "text", "text": {"content": f"£{net:.2f}"}}],
-        [{"type": "text", "text": {"content": "✅ Positive" if net >= 0 else "⚠️ Negative"}}],
-    ]
-    _notion_api("PATCH", f"/blocks/{ROW_IDS['Net (income - spending - savings/debt)']}", {
-        "table_row": {"cells": cells}
-    })
+    _update_table_row(
+        ROW_IDS["Net (income - spending - savings/debt)"],
+        f"£{net:.2f}",
+        "✅ Positive" if net >= 0 else "⚠️ Negative"
+    )
 
 
 def add_transaction(amount: float, description: str, category: str,
@@ -585,9 +592,30 @@ def set_budget(text: str) -> str:
     section, category = classify_transaction(desc, amount, "expense")
     set_planned_budget(category, section, amount)
 
+    # Update the Planned (col 1) column in Notion
+    row_id = ROW_IDS.get(category)
+    if row_id:
+        _update_planned_column(row_id, amount)
+
     notion_url = get_notion_budget_url()
     link_line = f"\n📎 {notion_url}" if notion_url else ""
     return f"📋 Budget set: {category} = £{amount:.2f}/week{link_line}"
+
+
+def _update_planned_column(row_id: str, amount: float):
+    """Update the Planned (col 1) column of a row, preserving all other columns."""
+    current = _notion_api("GET", f"/blocks/{row_id}")
+    existing_cells = current.get("table_row", {}).get("cells", [[], [], [], []])
+
+    cells = [
+        existing_cells[0] if len(existing_cells) > 0 else [],  # preserve category name
+        [{"type": "text", "text": {"content": f"£{amount:.2f}"}}],  # update planned
+        existing_cells[2] if len(existing_cells) > 2 else [],  # preserve actual
+        existing_cells[3] if len(existing_cells) > 3 else [],  # preserve notes
+    ]
+    _notion_api("PATCH", f"/blocks/{row_id}", {
+        "table_row": {"cells": cells}
+    })
 
 
 # ── Formatting ──
