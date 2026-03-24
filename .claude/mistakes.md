@@ -27,3 +27,9 @@ Format for each entry:
 - **Root cause**: Used GitHub Events API (`/users/{user}/events`) which strips the `commits` array from older PushEvents, making `payload.commits` return empty. The event existed but appeared to have 0 commits.
 - **Fix applied**: Switched to Commits API (`/repos/{user}/{repo}/commits?since=...&until=...`) which returns full commit data. First fetches recently-pushed repos, then queries commits per-repo for the target date.
 - **Rule to prevent recurrence**: NEVER use GitHub Events API for commit counting. Always use the Commits API per-repo. Events API is unreliable for payload data on events older than ~1 hour.
+
+### [2026-03-24] sync_expense_to_notion not defined after budget_agent.py rewrite
+- **What went wrong**: User sent "Spent 5.79 on grocery" on Telegram, got error: `name 'sync_expense_to_notion' is not defined`
+- **Root cause**: When budget_agent.py was completely rewritten in Phase 1/3, the `sync_expense_to_notion()` and `_get_or_create_weekly_budget_page()` functions were not carried over from the old version. `log_transaction()` called `sync_expense_to_notion()` but it didn't exist.
+- **Fix applied**: Added both functions back to the rewritten file.
+- **Rule to prevent recurrence**: When rewriting a file completely, grep the old version for all function names called by other modules BEFORE deleting. Verify every function referenced in `log_transaction`, `dispatcher.py`, and `morning_briefing.py` exists in the new version.

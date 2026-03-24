@@ -201,6 +201,78 @@ def get_notion_budget_url(week_start: str = None) -> str:
     return ""
 
 
+def _get_or_create_weekly_budget_page(week_start: str = None) -> str:
+    """Get or create this week's budget page in Notion. Returns page ID."""
+    week_start = week_start or _get_week_start()
+    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    week_label = datetime.strptime(week_start, "%Y-%m-%d").strftime("%B %d")
+
+    conn = _get_conn()
+    row = conn.execute("SELECT notion_page_id FROM weekly_budgets WHERE week_start=?", (week_start,)).fetchone()
+    if row and row["notion_page_id"]:
+        conn.close()
+        return row["notion_page_id"]
+
+    if not NOTION_PARENT_PAGE_ID:
+        conn.close()
+        return ""
+
+    data = {
+        "parent": {"page_id": NOTION_PARENT_PAGE_ID},
+        "properties": {
+            "title": {"title": [{"text": {"content": f"💰 Budget — Week of {week_label}"}}]}
+        },
+        "children": [
+            {"object": "block", "type": "heading_1", "heading_1": {
+                "rich_text": [{"text": {"content": f"💰 Weekly Budget — {week_label}"}}]
+            }},
+            {"object": "block", "type": "paragraph", "paragraph": {
+                "rich_text": [{"text": {"content": f"Tracking from {week_start} to {week_end}"}}]
+            }},
+            {"object": "block", "type": "divider", "divider": {}},
+            {"object": "block", "type": "heading_2", "heading_2": {
+                "rich_text": [{"text": {"content": "📝 Transaction Log"}}]
+            }},
+        ]
+    }
+
+    result = _notion_api("POST", "/pages", data)
+    page_id = result.get("id", "")
+
+    if page_id:
+        conn.execute(
+            "INSERT OR REPLACE INTO weekly_budgets (week_start, notion_page_id, created_at) VALUES (?,?,?)",
+            (week_start, page_id, datetime.now().isoformat())
+        )
+        conn.commit()
+
+    conn.close()
+    return page_id
+
+
+def sync_expense_to_notion(txn: dict):
+    """Append a transaction entry to this week's Notion budget page."""
+    page_id = _get_or_create_weekly_budget_page(txn["week_start"])
+    if not page_id:
+        return
+
+    type_emoji = {"income": "📥", "expense": "📤", "savings": "🏦"}
+    emoji = type_emoji.get(txn["type"], "📤")
+
+    _notion_api("PATCH", f"/blocks/{page_id}/children", {
+        "children": [
+            {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {
+                "rich_text": [
+                    {"text": {"content": f"{emoji} £{txn['amount']:.2f}"}, "annotations": {"bold": True}},
+                    {"text": {"content": f" — {txn['description']} "}},
+                    {"text": {"content": f"[{txn['category']}]"}, "annotations": {"color": "gray"}},
+                    {"text": {"content": f" ({txn['date']})"}, "annotations": {"color": "gray"}},
+                ]
+            }}
+        ]
+    })
+
+
 def add_transaction(amount: float, description: str, category: str,
                     section: str, txn_type: str) -> dict:
     now = datetime.now()
