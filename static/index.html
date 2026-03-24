@@ -32,8 +32,9 @@ textarea:focus{outline:none;border-color:#8B5CF6}
 #ui{width:100%;background:#0f172a;border:1px solid #475569;border-radius:5px;color:#e2e8f0;padding:7px 10px;font-size:12px;margin-bottom:6px}
 .xb{width:100%;padding:8px;background:#8B5CF6;color:#fff;border:none;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600;margin-top:6px}.xb:hover{background:#7c3aed}
 #prog{margin-top:8px;font-size:11px;color:#94a3b8}
-.ga{position:fixed;top:50px;left:280px;right:0;bottom:40px}.ga.full{left:0}
-svg{width:100%;height:100%}
+.ga{position:fixed;top:50px;left:280px;right:0;bottom:40px;position:relative}.ga.full{left:0}
+svg{width:100%;height:100%;position:relative;z-index:2}
+#particles{position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;pointer-events:none}
 .dp{position:fixed;top:50px;right:-360px;bottom:40px;width:360px;background:#1e293b;border-left:1px solid #334155;z-index:85;transition:right .2s;padding:18px;overflow-y:auto}.dp.open{right:0}
 .dp h2{font-size:17px;margin-bottom:3px}.badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:10px;font-weight:600;margin-bottom:6px}
 .dp p{font-size:12px;color:#94a3b8;margin-bottom:10px}.dp h4{font-size:11px;text-transform:uppercase;color:#64748b;margin:10px 0 5px}
@@ -54,6 +55,12 @@ svg{width:100%;height:100%}
 /* Galaxy mode indicator */
 .mode-badge{position:fixed;top:56px;left:50%;transform:translateX(-50%);background:#8B5CF622;border:1px solid #8B5CF6;border-radius:5px;padding:4px 14px;font-size:11px;color:#8B5CF6;font-weight:600;z-index:80;display:none;pointer-events:none}
 .mode-badge.show{display:block}
+/* Node breathing animation */
+@keyframes breathe{0%,100%{filter:url(#nodeGlow);opacity:1}50%{filter:url(#nodeGlowBright);opacity:0.92}}
+.node-breathe{animation:breathe 3s ease-in-out infinite}
+/* Edge pulse */
+@keyframes edgePulse{0%,100%{stroke-opacity:0.3}50%{stroke-opacity:0.6}}
+.edge-pulse{animation:edgePulse 2s ease-in-out infinite}
 </style>
 </head>
 <body>
@@ -75,7 +82,7 @@ svg{width:100%;height:100%}
 <div class="tc" id="t-upload"><div class="dz" onclick="document.getElementById('fi').click()">Drop .md/.txt here or click<input type="file" id="fi" accept=".md,.txt"></div><div id="fn" style="margin-top:6px;font-size:11px;color:#64748b"></div><button class="xb" onclick="iFile()">Extract File</button></div>
 <div class="tc" id="t-url"><input type="text" id="ui" placeholder="https://..."><button class="xb" onclick="iURL()">Fetch & Extract</button></div>
 <div id="prog"></div></div>
-<div class="ga" id="ga"><svg id="svg"></svg></div>
+<div class="ga" id="ga"><canvas id="particles"></canvas><svg id="svg"></svg></div>
 <div class="sp" id="sp"></div>
 <div class="lg" id="lg"></div>
 <div class="dp" id="dp"><button class="dc" onclick="closeDP()">✕</button><div id="dpc"></div></div>
@@ -89,13 +96,162 @@ const C={PROJECT:'#8B5CF6',TECHNOLOGY:'#3B82F6',CONCEPT:'#10B981',DECISION:'#F59
 const GALAXY_THRESHOLD = 300;
 
 let sim, svg, g, nE, lE, gD={nodes:[],edges:[]}, aF=new Set(Object.keys(C)), sq='';
-let viewMode = 'planet';   // 'planet' (normal) | 'galaxy' (universe) | 'galaxy-dive' (inside one galaxy)
-let currentGalaxy = null;   // which galaxy we're inside (entity_type name)
-let galaxySim = null;       // separate simulation for galaxy view
-let orbitTimer = null;      // animation timer for orbiting planets
+let viewMode = 'planet';
+let currentGalaxy = null;
+let galaxySim = null;
+let orbitTimer = null;
+
+// ── Particle & Starfield System ──
+let pCanvas, pCtx, stars=[], particles=[], pRAF=null;
+const STAR_COUNT = 200;
+const PARTICLES_PER_EDGE = 3;
+
+function initParticleSystem(){
+    pCanvas = document.getElementById('particles');
+    pCtx = pCanvas.getContext('2d');
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    generateStars();
+    animateParticles();
+}
+
+function resizeCanvas(){
+    if(!pCanvas) return;
+    const ga = document.getElementById('ga');
+    pCanvas.width = ga.clientWidth * devicePixelRatio;
+    pCanvas.height = ga.clientHeight * devicePixelRatio;
+    pCtx.scale(devicePixelRatio, devicePixelRatio);
+    generateStars();
+}
+
+function generateStars(){
+    stars = [];
+    const w = pCanvas.width / devicePixelRatio;
+    const h = pCanvas.height / devicePixelRatio;
+    for(let i=0; i<STAR_COUNT; i++){
+        stars.push({
+            x: Math.random()*w, y: Math.random()*h,
+            r: Math.random()*1.2 + 0.3,
+            baseAlpha: Math.random()*0.4 + 0.1,
+            twinkleSpeed: Math.random()*0.02 + 0.005,
+            twinkleOffset: Math.random()*Math.PI*2,
+        });
+    }
+}
+
+function spawnEdgeParticles(){
+    // Called after each render — creates particles that flow along edges
+    particles = [];
+    if(!lE) return;
+    lE.each(function(d){
+        const src = d.source, tgt = d.target;
+        if(!src || !tgt || src.x==null || tgt.x==null) return;
+        const col = C[src.entity_type] || C[tgt.entity_type] || '#8B5CF6';
+        for(let i=0; i<PARTICLES_PER_EDGE; i++){
+            particles.push({
+                sx: src.x, sy: src.y, tx: tgt.x, ty: tgt.y,
+                progress: Math.random(),  // 0-1 along the edge
+                speed: 0.003 + Math.random()*0.004,
+                size: Math.random()*1.5 + 0.5,
+                color: col,
+                alpha: Math.random()*0.5 + 0.3,
+                sourceRef: src, targetRef: tgt,
+            });
+        }
+    });
+}
+
+function animateParticles(){
+    if(!pCtx || !pCanvas) return;
+    const w = pCanvas.width / devicePixelRatio;
+    const h = pCanvas.height / devicePixelRatio;
+
+    // Clear
+    pCtx.setTransform(1,0,0,1,0,0);
+    pCtx.scale(devicePixelRatio, devicePixelRatio);
+    pCtx.clearRect(0,0,w,h);
+
+    const time = Date.now() * 0.001;
+
+    // Draw starfield
+    for(const s of stars){
+        const twinkle = Math.sin(time * s.twinkleSpeed * 10 + s.twinkleOffset);
+        const alpha = s.baseAlpha + twinkle * 0.15;
+        pCtx.beginPath();
+        pCtx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+        pCtx.fillStyle = `rgba(200,210,230,${Math.max(0.05, alpha)})`;
+        pCtx.fill();
+    }
+
+    // Get current SVG transform to align canvas particles with SVG nodes
+    const svgEl = document.getElementById('svg');
+    const gEl = g?.node();
+    let tx=0, ty=0, sc=1;
+    if(gEl){
+        const transform = gEl.getAttribute('transform');
+        if(transform){
+            const m = transform.match(/translate\(([-\d.]+)[,\s]+([-\d.]+)\)/);
+            const s2 = transform.match(/scale\(([-\d.]+)\)/);
+            if(m){ tx=parseFloat(m[1]); ty=parseFloat(m[2]); }
+            if(s2) sc=parseFloat(s2[1]);
+        }
+    }
+    // Parse zoom transform from D3
+    const svgNode = svg?.node();
+    if(svgNode && svgNode.__zoom){
+        tx = svgNode.__zoom.x; ty = svgNode.__zoom.y; sc = svgNode.__zoom.k;
+    }
+
+    // Offset for .ga element position
+    const gaRect = document.getElementById('ga').getBoundingClientRect();
+    const svgRect = svgEl?.getBoundingClientRect();
+    const ox = 0, oy = 0;
+
+    // Draw flowing particles along edges
+    for(const p of particles){
+        // Update live positions from simulation refs
+        if(p.sourceRef && p.sourceRef.x != null){
+            p.sx = p.sourceRef.x; p.sy = p.sourceRef.y;
+        }
+        if(p.targetRef && p.targetRef.x != null){
+            p.tx = p.targetRef.x; p.ty = p.targetRef.y;
+        }
+
+        p.progress += p.speed;
+        if(p.progress > 1) p.progress -= 1;
+
+        // Interpolate position
+        const x = p.sx + (p.tx - p.sx) * p.progress;
+        const y = p.sy + (p.ty - p.sy) * p.progress;
+
+        // Apply SVG transform
+        const cx = x * sc + tx + ox;
+        const cy = y * sc + ty + oy;
+
+        // Fade in/out at edges
+        const edgeFade = Math.sin(p.progress * Math.PI);
+        const alpha = p.alpha * edgeFade;
+
+        // Glow
+        pCtx.beginPath();
+        pCtx.arc(cx, cy, p.size * sc * 2, 0, Math.PI*2);
+        pCtx.fillStyle = p.color + Math.round(alpha*30).toString(16).padStart(2,'0');
+        pCtx.fill();
+
+        // Core
+        pCtx.beginPath();
+        pCtx.arc(cx, cy, p.size * sc, 0, Math.PI*2);
+        pCtx.fillStyle = p.color + Math.round(alpha*200).toString(16).padStart(2,'0');
+        pCtx.fill();
+    }
+
+    pRAF = requestAnimationFrame(animateParticles);
+}
+
+function stopParticleAnimation(){ if(pRAF){cancelAnimationFrame(pRAF);pRAF=null} }
 
 // ── Init ──
-function init(){ bFil(); bLeg(); sSVG(); sSrch(); sDZ(); load(); loadTL() }
+function init(){ bFil(); bLeg(); sSVG(); sSrch(); sDZ(); initParticleSystem(); load(); loadTL() }
 
 function bFil(){const c=document.getElementById('fil');for(const[t,cl]of Object.entries(C)){const b=document.createElement('button');b.className='fb on';b.style.setProperty('--c',cl);b.textContent=t;b.onclick=()=>{aF.has(t)?(aF.delete(t),b.classList.remove('on')):(aF.add(t),b.classList.add('on'));render()};c.appendChild(b)}}
 function bLeg(){const c=document.getElementById('lg');for(const[t,cl]of Object.entries(C)){const i=document.createElement('div');i.className='li';i.innerHTML=`<div class="ld" style="background:${cl}"></div>${t}`;c.appendChild(i)}}
@@ -115,6 +271,16 @@ function sSVG(){
     const glowStrong = defs.append('filter').attr('id','glowStrong').attr('x','-80%').attr('y','-80%').attr('width','260%').attr('height','260%');
     glowStrong.append('feGaussianBlur').attr('stdDeviation','15').attr('result','blur');
     glowStrong.append('feComposite').attr('in','SourceGraphic').attr('in2','blur').attr('operator','over');
+
+    // Node glow (subtle)
+    const nodeGlow = defs.append('filter').attr('id','nodeGlow').attr('x','-40%').attr('y','-40%').attr('width','180%').attr('height','180%');
+    nodeGlow.append('feGaussianBlur').attr('stdDeviation','3').attr('result','blur');
+    nodeGlow.append('feComposite').attr('in','SourceGraphic').attr('in2','blur').attr('operator','over');
+
+    // Node glow bright (for breathing peak)
+    const nodeGlowB = defs.append('filter').attr('id','nodeGlowBright').attr('x','-50%').attr('y','-50%').attr('width','200%').attr('height','200%');
+    nodeGlowB.append('feGaussianBlur').attr('stdDeviation','5').attr('result','blur');
+    nodeGlowB.append('feComposite').attr('in','SourceGraphic').attr('in2','blur').attr('operator','over');
 
     g=svg.append('g');
     svg.call(d3.zoom().scaleExtent([.1,8]).on('zoom',e=>g.attr('transform',e.transform)));
@@ -173,9 +339,16 @@ function renderPlanetView(ns){
         .attr('stroke-width',1.5).attr('marker-end','url(#arr)')
         .on('mouseover',(e,d)=>sT(e,`<b>${d.type}</b><br>${d.context||''}`)).on('mouseout',hT);
 
+    // Node glow halos (drawn behind nodes)
+    g.append('g').selectAll('circle').data(ns).join('circle')
+        .attr('r',d=>nr(d)*1.8).attr('fill',d=>(C[d.entity_type]||'#6B7280')+'15')
+        .attr('filter','url(#nodeGlow)').attr('pointer-events','none')
+        .each(function(d){ d._halo=this });
+
     nE=g.append('g').selectAll('circle').data(ns).join('circle')
         .attr('r',nr).attr('fill',d=>C[d.entity_type]||'#6B7280')
         .attr('stroke','#0f172a').attr('stroke-width',1.5).style('cursor','pointer')
+        .attr('filter','url(#nodeGlow)')
         .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y}).on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
         .on('mouseover',(e,d)=>sT(e,`<b>${d.name}</b><br><span class="tp">${d.entity_type} · ${d.mention_count} mentions</span>${d.description?`<div class="td2">${d.description}</div>`:''}`))
         .on('mouseout',hT).on('click',(e,d)=>{e.stopPropagation();showDP(d)}).on('dblclick',(e,d)=>{e.stopPropagation();focN(d)});
@@ -188,9 +361,14 @@ function renderPlanetView(ns){
     sim.on('tick',()=>{
         lE.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
         nE.attr('cx',d=>d.x).attr('cy',d=>d.y);
+        // Move halos with nodes
+        ns.forEach(d=>{ if(d._halo) d3.select(d._halo).attr('cx',d.x).attr('cy',d.y) });
         g.selectAll('text').attr('x',d=>d.x).attr('y',d=>d.y)
     });
     nE.style('opacity',0).transition().duration(400).style('opacity',1);
+
+    // Spawn particles after simulation stabilizes
+    setTimeout(()=>spawnEdgeParticles(), 500);
 }
 
 
@@ -451,6 +629,8 @@ function renderGalaxyDive(entityType){
     });
 
     nE.style('opacity',0).transition().duration(400).style('opacity',d=>primaryIds.has(d.id)?1:0.4);
+
+    setTimeout(()=>spawnEdgeParticles(), 500);
 }
 
 
