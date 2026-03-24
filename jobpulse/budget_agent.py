@@ -1,49 +1,139 @@
-"""Budget agent — tracks spending, categorizes with LLM, creates weekly Notion budget pages.
+"""Budget agent — tracks income/spending, categorizes with LLM, updates Notion weekly budget sheet.
 
-Weekly budget structure in Notion:
-  One page per week: "Budget — Week of March 24, 2026"
-  Inside: category breakdown table as blocks, with running totals.
+Matches the user's exact Notion "Weekly Budget Sheet" structure:
 
-Categories:
-  🍔 Food & Dining
-  🚗 Transport
-  🛒 Groceries
-  🏠 Rent & Bills
-  💊 Health
-  🎬 Entertainment
-  👕 Shopping
-  📱 Subscriptions
-  📚 Education
-  🎁 Gifts
-  💼 Work Expenses
-  🔧 Miscellaneous
+  INCOME: Salary, Freelance, Other
+  FIXED EXPENSES: Rent/Mortgage, Utilities, Phone/Internet, Subscriptions, Insurance
+  VARIABLE SPENDING: Groceries, Eating out, Transport, Shopping, Entertainment, Health, Misc
+  SAVINGS + DEBT: Savings, Investments, Credit card/Loan payment
+  WEEKLY SUMMARY: Total income, Total spending, Total savings, Net
+
+Each week gets its own Notion page (cloned from template structure).
+The Notion tables are updated in-place as you log expenses/income.
 """
 
+import re
 import json
 import sqlite3
 from datetime import datetime, timedelta
-from jobpulse.config import NOTION_API_KEY, DATA_DIR, NOTION_PARENT_PAGE_ID
+from jobpulse.config import NOTION_API_KEY, NOTION_PARENT_PAGE_ID, DATA_DIR
 from jobpulse.notion_agent import _notion_api
 
 DB_PATH = DATA_DIR / "budget.db"
 
-CATEGORIES = {
-    "food": "🍔 Food & Dining",
-    "transport": "🚗 Transport",
-    "groceries": "🛒 Groceries",
-    "rent": "🏠 Rent & Bills",
-    "bills": "🏠 Rent & Bills",
-    "health": "💊 Health",
-    "entertainment": "🎬 Entertainment",
-    "shopping": "👕 Shopping",
-    "subscriptions": "📱 Subscriptions",
-    "education": "📚 Education",
-    "gifts": "🎁 Gifts",
-    "work": "💼 Work Expenses",
-    "misc": "🔧 Miscellaneous",
+# ── Categories matching the Notion sheet exactly ──
+
+INCOME_CATEGORIES = {
+    "salary": "Salary",
+    "wage": "Salary",
+    "pay": "Salary",
+    "paycheck": "Salary",
+    "freelance": "Freelance",
+    "contract": "Freelance",
+    "gig": "Freelance",
+    "side hustle": "Freelance",
+    "other income": "Other",
+    "refund": "Other",
+    "gift received": "Other",
+    "cashback": "Other",
 }
 
-CATEGORY_DISPLAY = list(set(CATEGORIES.values()))
+FIXED_EXPENSE_CATEGORIES = {
+    "rent": "Rent / Mortgage",
+    "mortgage": "Rent / Mortgage",
+    "utilities": "Utilities",
+    "electricity": "Utilities",
+    "water": "Utilities",
+    "gas bill": "Utilities",
+    "phone": "Phone / Internet",
+    "internet": "Phone / Internet",
+    "broadband": "Phone / Internet",
+    "mobile": "Phone / Internet",
+    "subscription": "Subscriptions",
+    "netflix": "Subscriptions",
+    "spotify": "Subscriptions",
+    "gym membership": "Subscriptions",
+    "apple": "Subscriptions",
+    "amazon prime": "Subscriptions",
+    "insurance": "Insurance",
+    "car insurance": "Insurance",
+    "health insurance": "Insurance",
+}
+
+VARIABLE_EXPENSE_CATEGORIES = {
+    "groceries": "Groceries",
+    "supermarket": "Groceries",
+    "tesco": "Groceries",
+    "aldi": "Groceries",
+    "lidl": "Groceries",
+    "sainsbury": "Groceries",
+    "eating out": "Eating out",
+    "restaurant": "Eating out",
+    "takeaway": "Eating out",
+    "coffee": "Eating out",
+    "lunch": "Eating out",
+    "dinner": "Eating out",
+    "breakfast": "Eating out",
+    "food": "Eating out",
+    "uber eats": "Eating out",
+    "deliveroo": "Eating out",
+    "transport": "Transport",
+    "uber": "Transport",
+    "taxi": "Transport",
+    "bus": "Transport",
+    "train": "Transport",
+    "fuel": "Transport",
+    "petrol": "Transport",
+    "parking": "Transport",
+    "oyster": "Transport",
+    "shopping": "Shopping",
+    "clothes": "Shopping",
+    "amazon": "Shopping",
+    "electronics": "Shopping",
+    "shoes": "Shopping",
+    "entertainment": "Entertainment",
+    "cinema": "Entertainment",
+    "movie": "Entertainment",
+    "game": "Entertainment",
+    "concert": "Entertainment",
+    "drinks": "Entertainment",
+    "pub": "Entertainment",
+    "bar": "Entertainment",
+    "health": "Health",
+    "pharmacy": "Health",
+    "doctor": "Health",
+    "dentist": "Health",
+    "medicine": "Health",
+    "gym": "Health",
+    "misc": "Misc",
+}
+
+SAVINGS_CATEGORIES = {
+    "savings": "Savings",
+    "save": "Savings",
+    "emergency fund": "Savings",
+    "investment": "Investments",
+    "invest": "Investments",
+    "stocks": "Investments",
+    "crypto": "Investments",
+    "isa": "Investments",
+    "pension": "Investments",
+    "credit card": "Credit card / Loan payment",
+    "loan": "Credit card / Loan payment",
+    "debt": "Credit card / Loan payment",
+    "repayment": "Credit card / Loan payment",
+}
+
+# Flat lookup: category_name → (section, display_name)
+ALL_CATEGORIES = {}
+for k, v in INCOME_CATEGORIES.items():
+    ALL_CATEGORIES[k] = ("income", v)
+for k, v in FIXED_EXPENSE_CATEGORIES.items():
+    ALL_CATEGORIES[k] = ("fixed", v)
+for k, v in VARIABLE_EXPENSE_CATEGORIES.items():
+    ALL_CATEGORIES[k] = ("variable", v)
+for k, v in SAVINGS_CATEGORIES.items():
+    ALL_CATEGORIES[k] = ("savings", v)
 
 
 # ── SQLite Storage ──
@@ -59,11 +149,13 @@ def _get_conn() -> sqlite3.Connection:
 def init_db():
     conn = _get_conn()
     conn.executescript("""
-        CREATE TABLE IF NOT EXISTS expenses (
+        CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             amount REAL NOT NULL,
             description TEXT NOT NULL,
             category TEXT NOT NULL,
+            section TEXT NOT NULL,
+            type TEXT NOT NULL,
             date TEXT NOT NULL,
             week_start TEXT NOT NULL,
             created_at TEXT NOT NULL
@@ -72,355 +164,334 @@ def init_db():
         CREATE TABLE IF NOT EXISTS weekly_budgets (
             week_start TEXT PRIMARY KEY,
             notion_page_id TEXT,
-            total_spent REAL DEFAULT 0,
             created_at TEXT NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_expense_week ON expenses(week_start);
-        CREATE INDEX IF NOT EXISTS idx_expense_date ON expenses(date);
+        CREATE TABLE IF NOT EXISTS planned_budgets (
+            week_start TEXT NOT NULL,
+            category TEXT NOT NULL,
+            section TEXT NOT NULL,
+            planned_amount REAL DEFAULT 0,
+            PRIMARY KEY (week_start, category)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_txn_week ON transactions(week_start);
+        CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions(date);
+        CREATE INDEX IF NOT EXISTS idx_txn_type ON transactions(type);
     """)
     conn.commit()
     conn.close()
 
 
 def _get_week_start(date: datetime = None) -> str:
-    """Get Monday of the current week as YYYY-MM-DD."""
     date = date or datetime.now()
     monday = date - timedelta(days=date.weekday())
     return monday.strftime("%Y-%m-%d")
 
 
-def add_expense(amount: float, description: str, category: str) -> dict:
-    """Store an expense. Returns the expense record."""
+def add_transaction(amount: float, description: str, category: str,
+                    section: str, txn_type: str) -> dict:
     now = datetime.now()
     week_start = _get_week_start(now)
 
     conn = _get_conn()
     cursor = conn.execute(
-        "INSERT INTO expenses (amount, description, category, date, week_start, created_at) VALUES (?,?,?,?,?,?)",
-        (amount, description, category, now.strftime("%Y-%m-%d"), week_start, now.isoformat())
+        "INSERT INTO transactions (amount, description, category, section, type, date, week_start, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (amount, description, category, section, txn_type, now.strftime("%Y-%m-%d"), week_start, now.isoformat())
     )
-    expense_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
-    return {
-        "id": expense_id,
-        "amount": amount,
-        "description": description,
-        "category": category,
-        "date": now.strftime("%Y-%m-%d"),
-        "week_start": week_start,
-    }
+    return {"id": cursor.lastrowid, "amount": amount, "description": description,
+            "category": category, "section": section, "type": txn_type,
+            "date": now.strftime("%Y-%m-%d"), "week_start": week_start}
+
+
+def set_planned_budget(category: str, section: str, amount: float, week_start: str = None):
+    week_start = week_start or _get_week_start()
+    conn = _get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO planned_budgets (week_start, category, section, planned_amount) VALUES (?,?,?,?)",
+        (week_start, category, section, amount)
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_week_summary(week_start: str = None) -> dict:
-    """Get spending summary for a week, grouped by category."""
     week_start = week_start or _get_week_start()
-
     conn = _get_conn()
+
+    # Get actuals by section and category
     rows = conn.execute(
-        "SELECT category, SUM(amount) as total, COUNT(*) as count FROM expenses WHERE week_start=? GROUP BY category ORDER BY total DESC",
+        "SELECT section, category, type, SUM(amount) as total, COUNT(*) as count "
+        "FROM transactions WHERE week_start=? GROUP BY section, category, type ORDER BY section, total DESC",
         (week_start,)
     ).fetchall()
 
-    total = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE week_start=?", (week_start,)
-    ).fetchone()[0] or 0.0
+    # Get planned budgets
+    planned = conn.execute(
+        "SELECT category, section, planned_amount FROM planned_budgets WHERE week_start=?",
+        (week_start,)
+    ).fetchall()
+
+    # Get totals
+    income_total = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND type='income'",
+        (week_start,)
+    ).fetchone()[0]
+
+    spending_total = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND type='expense'",
+        (week_start,)
+    ).fetchone()[0]
+
+    savings_total = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND type='savings'",
+        (week_start,)
+    ).fetchone()[0]
 
     recent = conn.execute(
-        "SELECT amount, description, category, date FROM expenses WHERE week_start=? ORDER BY created_at DESC LIMIT 10",
+        "SELECT amount, description, category, type, date FROM transactions WHERE week_start=? ORDER BY created_at DESC LIMIT 10",
         (week_start,)
     ).fetchall()
 
     conn.close()
 
+    net = income_total - spending_total - savings_total
+
     return {
         "week_start": week_start,
-        "total": total,
-        "by_category": [{"category": r["category"], "total": r["total"], "count": r["count"]} for r in rows],
+        "income_total": income_total,
+        "spending_total": spending_total,
+        "savings_total": savings_total,
+        "net": net,
+        "by_category": [dict(r) for r in rows],
+        "planned": {r["category"]: r["planned_amount"] for r in planned},
         "recent": [dict(r) for r in recent],
     }
 
 
 def get_today_spending() -> dict:
-    """Get today's spending."""
     today = datetime.now().strftime("%Y-%m-%d")
     conn = _get_conn()
     rows = conn.execute(
-        "SELECT amount, description, category FROM expenses WHERE date=? ORDER BY created_at DESC",
+        "SELECT amount, description, category, type FROM transactions WHERE date=? ORDER BY created_at DESC",
         (today,)
     ).fetchall()
-    total = sum(r["amount"] for r in rows)
+    total_spent = sum(r["amount"] for r in rows if r["type"] == "expense")
+    total_earned = sum(r["amount"] for r in rows if r["type"] == "income")
     conn.close()
-    return {"date": today, "total": total, "items": [dict(r) for r in rows]}
+    return {"date": today, "total_spent": total_spent, "total_earned": total_earned,
+            "items": [dict(r) for r in rows]}
 
 
 # ── LLM Category Classification ──
 
-def classify_expense(description: str, amount: float) -> str:
-    """Use LLM to classify an expense into a category."""
+def classify_transaction(description: str, amount: float, txn_type: str = "expense") -> tuple[str, str]:
+    """Classify into (section, category). First tries keyword match, then LLM."""
+
+    desc_lower = description.lower()
+
+    # Keyword match first (free)
+    for keyword, (section, category) in ALL_CATEGORIES.items():
+        if keyword in desc_lower:
+            if txn_type == "income" and section == "income":
+                return section, category
+            elif txn_type == "expense" and section in ("fixed", "variable"):
+                return section, category
+            elif txn_type == "savings" and section == "savings":
+                return section, category
+            elif txn_type == "expense":
+                return section, category
+
+    # LLM fallback
     try:
         from openai import OpenAI
         from jobpulse.config import OPENAI_API_KEY
 
+        categories_list = """
+INCOME: Salary, Freelance, Other
+FIXED EXPENSES: Rent / Mortgage, Utilities, Phone / Internet, Subscriptions, Insurance
+VARIABLE: Groceries, Eating out, Transport, Shopping, Entertainment, Health, Misc
+SAVINGS: Savings, Investments, Credit card / Loan payment"""
+
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": f"""Classify this expense into ONE category:
+            messages=[{"role": "user", "content": f"""Classify this {txn_type} into one category:
+{categories_list}
 
-food — meals, restaurants, coffee, takeaway, snacks
-transport — uber, taxi, bus, train, fuel, parking
-groceries — supermarket, weekly shop, ingredients
-rent — rent, electricity, water, gas, internet, phone bill
-health — pharmacy, doctor, gym, dentist, medicine
-entertainment — movies, concerts, games, streaming, drinks out
-shopping — clothes, electronics, furniture, amazon
-subscriptions — spotify, netflix, cloud services, apps
-education — books, courses, tutorials, certifications
-gifts — presents, donations, charity
-work — office supplies, coworking, tools
-misc — anything that doesn't fit above
+Transaction: £{amount:.2f} — "{description}"
 
-Expense: £{amount:.2f} — "{description}"
-
-Respond with ONLY the category key (food/transport/groceries/rent/health/entertainment/shopping/subscriptions/education/gifts/work/misc). Nothing else."""}],
-            max_tokens=10,
-            temperature=0,
+Respond with ONLY: section|category
+Example: variable|Eating out
+Example: income|Salary
+Example: fixed|Subscriptions"""}],
+            max_tokens=15, temperature=0,
         )
-        cat = response.choices[0].message.content.strip().lower()
-        # Validate
-        if cat in CATEGORIES:
-            return CATEGORIES[cat]
-        # Fuzzy match
-        for key, display in CATEGORIES.items():
-            if key in cat:
-                return display
-        return "🔧 Miscellaneous"
+        raw = response.choices[0].message.content.strip()
+        parts = raw.split("|")
+        if len(parts) == 2:
+            return parts[0].strip().lower(), parts[1].strip()
     except Exception as e:
-        print(f"[Budget] LLM classification failed: {e}")
-        return "🔧 Miscellaneous"
+        print(f"[Budget] LLM classify failed: {e}")
+
+    # Default
+    if txn_type == "income":
+        return "income", "Other"
+    elif txn_type == "savings":
+        return "savings", "Savings"
+    return "variable", "Misc"
 
 
-# ── Notion Integration ──
+# ── Spend/Earn Parsing ──
 
-def _get_or_create_weekly_budget_page(week_start: str = None) -> str:
-    """Get or create this week's budget page in Notion. Returns page ID."""
-    week_start = week_start or _get_week_start()
-    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
-    week_label = datetime.strptime(week_start, "%Y-%m-%d").strftime("%B %d")
-
-    # Check SQLite for cached page ID
-    conn = _get_conn()
-    row = conn.execute("SELECT notion_page_id FROM weekly_budgets WHERE week_start=?", (week_start,)).fetchone()
-    if row and row["notion_page_id"]:
-        conn.close()
-        return row["notion_page_id"]
-
-    # Create new Notion page
-    if not NOTION_PARENT_PAGE_ID:
-        conn.close()
-        return ""
-
-    data = {
-        "parent": {"page_id": NOTION_PARENT_PAGE_ID},
-        "properties": {
-            "title": {"title": [{"text": {"content": f"💰 Budget — Week of {week_label}"}}]}
-        },
-        "children": [
-            {"object": "block", "type": "heading_1", "heading_1": {
-                "rich_text": [{"text": {"content": f"💰 Weekly Budget — {week_label}"}}]
-            }},
-            {"object": "block", "type": "paragraph", "paragraph": {
-                "rich_text": [{"text": {"content": f"Tracking spending from {week_start} to {week_end}"}}]
-            }},
-            {"object": "block", "type": "divider", "divider": {}},
-            {"object": "block", "type": "heading_2", "heading_2": {
-                "rich_text": [{"text": {"content": "📊 Category Breakdown"}}]
-            }},
-            {"object": "block", "type": "paragraph", "paragraph": {
-                "rich_text": [{"text": {"content": "(Updates automatically as you log expenses)"}}]
-            }},
-            {"object": "block", "type": "divider", "divider": {}},
-            {"object": "block", "type": "heading_2", "heading_2": {
-                "rich_text": [{"text": {"content": "📝 Expense Log"}}]
-            }},
-        ]
-    }
-
-    result = _notion_api("POST", "/pages", data)
-    page_id = result.get("id", "")
-
-    if page_id:
-        conn.execute(
-            "INSERT OR REPLACE INTO weekly_budgets (week_start, notion_page_id, created_at) VALUES (?,?,?)",
-            (week_start, page_id, datetime.now().isoformat())
-        )
-        conn.commit()
-
-    conn.close()
-    return page_id
-
-
-def sync_expense_to_notion(expense: dict):
-    """Append an expense entry to this week's Notion budget page."""
-    page_id = _get_or_create_weekly_budget_page(expense["week_start"])
-    if not page_id:
-        return
-
-    # Append expense as a bulleted item
-    _notion_api("PATCH", f"/blocks/{page_id}/children", {
-        "children": [
-            {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {
-                "rich_text": [
-                    {"text": {"content": f"£{expense['amount']:.2f}"}, "annotations": {"bold": True}},
-                    {"text": {"content": f" — {expense['description']} "}},
-                    {"text": {"content": f"[{expense['category']}]"}, "annotations": {"color": "gray"}},
-                    {"text": {"content": f" ({expense['date']})"}, "annotations": {"color": "gray"}},
-                ]
-            }}
-        ]
-    })
-
-
-def update_notion_budget_summary(week_start: str = None):
-    """Update the category breakdown section of the Notion budget page."""
-    week_start = week_start or _get_week_start()
-    summary = get_week_summary(week_start)
-    page_id = _get_or_create_weekly_budget_page(week_start)
-    if not page_id:
-        return
-
-    # Build summary text
-    lines = [f"Total spent: £{summary['total']:.2f}\n"]
-    for cat in summary["by_category"]:
-        bar_len = int((cat["total"] / max(summary["total"], 1)) * 20)
-        bar = "█" * bar_len + "░" * (20 - bar_len)
-        lines.append(f"{cat['category']}: £{cat['total']:.2f} ({cat['count']}x)")
-
-    # We can't easily update existing blocks, so we append a summary callout
-    _notion_api("PATCH", f"/blocks/{page_id}/children", {
-        "children": [
-            {"object": "block", "type": "divider", "divider": {}},
-            {"object": "block", "type": "callout", "callout": {
-                "icon": {"emoji": "📊"},
-                "rich_text": [{"text": {"content": "\n".join(lines)}}],
-            }}
-        ]
-    })
-
-
-# ── Spend Parsing ──
-
-def parse_spend(text: str) -> dict | None:
-    """Parse a natural language spend message into {amount, description}.
+def parse_transaction(text: str) -> dict | None:
+    """Parse natural language into {amount, description, type}.
 
     Handles:
-      "spent 15 on lunch" → {amount: 15.0, description: "lunch"}
-      "£8.50 coffee" → {amount: 8.50, description: "coffee"}
-      "uber 12.40" → {amount: 12.40, description: "uber"}
-      "45 groceries at tesco" → {amount: 45.0, description: "groceries at tesco"}
-      "lunch 7.50" → {amount: 7.50, description: "lunch"}
+      "spent 15 on lunch" → expense
+      "earned 500 freelance" → income
+      "saved 100" → savings
+      "£8.50 coffee" → expense
+      "income 2000 salary" → income
     """
-    import re
-
     text = text.strip()
 
-    # Remove "spent" / "spend" / "paid" prefix
-    text = re.sub(r"^(spent|spend|paid|bought|got)\s+", "", text, flags=re.IGNORECASE)
+    # Detect type from keywords
+    txn_type = "expense"
+    if re.match(r"^(earned|income|received|got paid|salary|freelance)", text, re.IGNORECASE):
+        txn_type = "income"
+        text = re.sub(r"^(earned|income|received|got paid)\s+", "", text, flags=re.IGNORECASE)
+    elif re.match(r"^(saved|saving|invest|debt|loan|repay|credit card)", text, re.IGNORECASE):
+        txn_type = "savings"
+        text = re.sub(r"^(saved|saving)\s+", "", text, flags=re.IGNORECASE)
+    else:
+        text = re.sub(r"^(spent|spend|paid|bought|got)\s+", "", text, flags=re.IGNORECASE)
 
-    # Try to find amount (with or without £/$)
-    # Pattern: optional currency symbol, digits, optional decimal
-    amount_pattern = r"[£$€]?\s*(\d+(?:\.\d{1,2})?)"
-
-    match = re.search(amount_pattern, text)
+    # Extract amount
+    match = re.search(r"[£$€]?\s*(\d+(?:\.\d{1,2})?)", text)
     if not match:
         return None
 
     amount = float(match.group(1))
-    if amount <= 0 or amount > 50000:
+    if amount <= 0 or amount > 100000:
         return None
 
-    # Remove the amount (including currency symbol) from text to get description
+    # Extract description
     start = match.start()
-    # Include preceding currency symbol if present
-    if start > 0 and text[start-1] in "£$€":
+    if start > 0 and text[start - 1] in "£$€":
         start -= 1
     desc = text[:start] + " " + text[match.end():]
-    # Clean up filler words and whitespace
     desc = re.sub(r"\s+", " ", desc).strip()
     desc = re.sub(r"^(on|for|at|to)\s+", "", desc, flags=re.IGNORECASE)
-    desc = re.sub(r"\s+(on|for|at)$", "", desc, flags=re.IGNORECASE)
-    desc = desc.strip()
+    desc = desc.strip() or "Unspecified"
 
-    if not desc:
-        desc = "Unspecified"
-
-    return {"amount": amount, "description": desc}
+    return {"amount": amount, "description": desc, "type": txn_type}
 
 
-def log_spend(text: str) -> str:
-    """Full pipeline: parse → classify → store → sync to Notion → return reply."""
-    parsed = parse_spend(text)
+def log_transaction(text: str) -> str:
+    """Full pipeline: parse → classify → store → reply."""
+    parsed = parse_transaction(text)
     if not parsed:
         return ("Couldn't parse that. Try:\n"
                 "  spent 15 on lunch\n"
                 "  £8.50 coffee\n"
-                "  uber 12.40\n"
-                "  45 groceries tesco")
+                "  earned 500 freelance\n"
+                "  saved 100 emergency fund")
 
     amount = parsed["amount"]
     description = parsed["description"]
+    txn_type = parsed["type"]
 
-    # Classify category with LLM
-    category = classify_expense(description, amount)
+    section, category = classify_transaction(description, amount, txn_type)
+    txn = add_transaction(amount, description, category, section, txn_type)
 
-    # Store in SQLite
-    expense = add_expense(amount, description, category)
-
-    # Sync to Notion
-    sync_expense_to_notion(expense)
-
-    # Get today's running total
     today = get_today_spending()
+    type_emoji = {"income": "💰", "expense": "💸", "savings": "🏦"}
+    emoji = type_emoji.get(txn_type, "💸")
 
-    return (f"💸 Logged: £{amount:.2f} — {description}\n"
-            f"   Category: {category}\n"
-            f"   Today's total: £{today['total']:.2f}")
+    return (f"{emoji} Logged: £{amount:.2f} — {description}\n"
+            f"   Category: {category} ({section})\n"
+            f"   Today: spent £{today['total_spent']:.2f} | earned £{today['total_earned']:.2f}")
+
+
+def set_budget(text: str) -> str:
+    """Parse and set a planned budget. E.g. 'set budget groceries 50'"""
+    match = re.search(r"(\d+(?:\.\d{1,2})?)", text)
+    if not match:
+        return "Include an amount. E.g.: set budget groceries 50"
+
+    amount = float(match.group(1))
+    desc = re.sub(r"\d+(\.\d{1,2})?", "", text).strip()
+    desc = re.sub(r"^(set\s+)?budget\s+", "", desc, flags=re.IGNORECASE).strip()
+
+    if not desc:
+        return "Which category? E.g.: set budget groceries 50"
+
+    section, category = classify_transaction(desc, amount, "expense")
+    set_planned_budget(category, section, amount)
+
+    return f"📋 Budget set: {category} = £{amount:.2f}/week"
 
 
 # ── Formatting ──
 
 def format_week_summary(summary: dict) -> str:
-    """Format weekly budget summary for Telegram."""
-    if not summary["by_category"]:
-        return "💰 No spending logged this week yet."
+    if not summary["by_category"] and summary["income_total"] == 0:
+        return "💰 No transactions logged this week yet."
 
     lines = [f"💰 WEEKLY BUDGET (since {summary['week_start']}):\n"]
-    lines.append(f"  Total: £{summary['total']:.2f}\n")
 
-    for cat in summary["by_category"]:
-        pct = (cat["total"] / summary["total"] * 100) if summary["total"] > 0 else 0
-        lines.append(f"  {cat['category']}: £{cat['total']:.2f} ({pct:.0f}%)")
+    # Income
+    income_items = [c for c in summary["by_category"] if c["type"] == "income"]
+    if income_items:
+        lines.append("  📥 INCOME:")
+        for c in income_items:
+            lines.append(f"    {c['category']}: £{c['total']:.2f}")
+        lines.append(f"    Total: £{summary['income_total']:.2f}\n")
 
+    # Expenses
+    expense_items = [c for c in summary["by_category"] if c["type"] == "expense"]
+    if expense_items:
+        lines.append("  📤 SPENDING:")
+        for c in expense_items:
+            planned = summary["planned"].get(c["category"])
+            budget_str = f" / £{planned:.0f}" if planned else ""
+            lines.append(f"    {c['category']}: £{c['total']:.2f}{budget_str}")
+        lines.append(f"    Total: £{summary['spending_total']:.2f}\n")
+
+    # Savings
+    savings_items = [c for c in summary["by_category"] if c["type"] == "savings"]
+    if savings_items:
+        lines.append("  🏦 SAVINGS + DEBT:")
+        for c in savings_items:
+            lines.append(f"    {c['category']}: £{c['total']:.2f}")
+        lines.append(f"    Total: £{summary['savings_total']:.2f}\n")
+
+    # Net
+    lines.append(f"  📊 NET: £{summary['net']:.2f}")
+
+    # Recent
     if summary["recent"]:
         lines.append(f"\n  Recent:")
         for item in summary["recent"][:5]:
-            lines.append(f"    £{item['amount']:.2f} — {item['description']}")
+            emoji = "📥" if item["type"] == "income" else "📤" if item["type"] == "expense" else "🏦"
+            lines.append(f"    {emoji} £{item['amount']:.2f} — {item['description']}")
 
     return "\n".join(lines)
 
 
-def format_today_spending(data: dict) -> str:
-    """Format today's spending for Telegram."""
+def format_today(data: dict) -> str:
     if not data["items"]:
-        return "💰 No spending logged today."
+        return "💰 No transactions today."
 
-    lines = [f"💰 TODAY'S SPENDING: £{data['total']:.2f}\n"]
+    lines = [f"💰 TODAY ({data['date']}): spent £{data['total_spent']:.2f} | earned £{data['total_earned']:.2f}\n"]
     for item in data["items"]:
-        lines.append(f"  £{item['amount']:.2f} — {item['description']} [{item['category']}]")
+        emoji = "📥" if item["type"] == "income" else "📤" if item["type"] == "expense" else "🏦"
+        lines.append(f"  {emoji} £{item['amount']:.2f} — {item['description']} [{item['category']}]")
     return "\n".join(lines)
 
 
-# Initialize DB on import
 init_db()

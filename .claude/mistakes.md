@@ -16,6 +16,12 @@ Format for each entry:
 
 <!-- Entries below this line. Most recent first. -->
 
+### [2026-03-24] Waited for user instead of polling Notion API
+- **What went wrong**: Asked user to share Notion page, then sent Telegram asking them to reply "done" — but Telegram daemon is a separate process that can't notify this Claude session. User had to come back here to tell me.
+- **Root cause**: Treated Telegram daemon as if it could communicate with this session. They're independent systems.
+- **Fix applied**: Should have just polled the Notion API in a loop or with a short delay instead of waiting.
+- **Rule to prevent recurrence**: NEVER wait for Telegram replies inside a Claude Code session. The daemon is a separate process. If you need to check if something changed, poll the API directly.
+
 ### [2026-03-24] GitHub commits showing 0 when commits existed
 - **What went wrong**: Morning digest reported "No commits yesterday" even though Yash committed "Rag Architecture added" to Velox_AI on March 23.
 - **Root cause**: Used GitHub Events API (`/users/{user}/events`) which strips the `commits` array from older PushEvents, making `payload.commits` return empty. The event existed but appeared to have 0 commits.
