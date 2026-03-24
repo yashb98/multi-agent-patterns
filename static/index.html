@@ -47,8 +47,8 @@ svg{width:100%;height:100%;position:relative;z-index:2}
 .td .dot{position:absolute;bottom:-2px;width:4px;height:4px;border-radius:50%;background:#3B82F6}
 .td .dot.pos{background:#10B981}.td .dot.neg{background:#EF4444}
 .tll{font-size:10px;color:#64748b;white-space:nowrap;margin-right:6px}
-.tt{position:fixed;background:#1e293b;border:1px solid #475569;border-radius:5px;padding:7px 10px;font-size:11px;pointer-events:none;z-index:150;max-width:280px;opacity:0;transition:opacity .12s}.tt.show{opacity:1}
-.tt b{color:#f1f5f9}.tt .tp{color:#8B5CF6;font-size:10px}.tt .td2{color:#94a3b8;margin-top:3px}
+.tt{position:fixed;background:#1e293bee;backdrop-filter:blur(8px);border:1px solid #475569;border-radius:8px;padding:10px 14px;font-size:12px;pointer-events:none;z-index:150;max-width:340px;opacity:0;transition:opacity .12s;line-height:1.5;box-shadow:0 4px 20px #00000066}.tt.show{opacity:1}
+.tt b{color:#f1f5f9;font-size:13px;display:block;margin-bottom:2px}.tt .tp{color:#8B5CF6;font-size:11px;font-weight:600}.tt .td2{color:#b0bec5;margin-top:5px;font-size:11px;border-top:1px solid #334155;padding-top:5px}.tt .tm{color:#64748b;font-size:10px;margin-top:3px}
 .lg{position:fixed;bottom:46px;left:286px;background:#1e293b99;backdrop-filter:blur(8px);border:1px solid #334155;border-radius:7px;padding:6px 10px;z-index:80;display:flex;flex-wrap:wrap;gap:6px}.lg.full{left:6px}
 .li{display:flex;align-items:center;gap:3px;font-size:10px;color:#94a3b8;cursor:pointer}.ld{width:8px;height:8px;border-radius:50%}
 .toast{position:fixed;bottom:50px;right:16px;background:#10B981;color:#fff;padding:10px 16px;border-radius:7px;font-size:12px;z-index:200;opacity:0;transition:opacity .3s}.toast.show{opacity:1}
@@ -329,10 +329,10 @@ function renderPlanetView(ns){
     const ls=gD.edges.filter(e=>nids.has(e.from_id)&&nids.has(e.to_id)).map(e=>({...e,source:e.from_id,target:e.to_id}));
 
     sim=d3.forceSimulation(ns)
-        .force('link',d3.forceLink(ls).id(d=>d.id).distance(80))
-        .force('charge',d3.forceManyBody().strength(-180))
+        .force('link',d3.forceLink(ls).id(d=>d.id).distance(160))
+        .force('charge',d3.forceManyBody().strength(-400))
         .force('center',d3.forceCenter(w/2,h/2))
-        .force('collision',d3.forceCollide().radius(d=>nr(d)+4));
+        .force('collision',d3.forceCollide().radius(d=>nr(d)+25));
 
     lE=g.append('g').selectAll('line').data(ls).join('line')
         .attr('stroke',d=>{const s=ns.find(n=>n.id===(d.source.id||d.source));return s?C[s.entity_type]+'4D':'#475569'})
@@ -350,20 +350,33 @@ function renderPlanetView(ns){
         .attr('stroke','#0f172a').attr('stroke-width',1.5).style('cursor','pointer')
         .attr('filter','url(#nodeGlow)')
         .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y}).on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
-        .on('mouseover',(e,d)=>sT(e,`<b>${d.name}</b><br><span class="tp">${d.entity_type} · ${d.mention_count} mentions</span>${d.description?`<div class="td2">${d.description}</div>`:''}`))
+        .on('mouseover',(e,d)=>{
+            const connCount = gD.edges.filter(x=>x.from_id===d.id||x.to_id===d.id).length;
+            sT(e,`<b>${d.name}</b><span class="tp">${d.entity_type}</span>${d.description?`<div class="td2">${d.description}</div>`:''}<div class="tm">${d.mention_count||1} mentions · ${connCount} connections · importance ${((d.importance||0)*100).toFixed(0)}%</div>`)
+        })
         .on('mouseout',hT).on('click',(e,d)=>{e.stopPropagation();showDP(d)}).on('dblclick',(e,d)=>{e.stopPropagation();focN(d)});
 
-    g.append('g').selectAll('text').data(ns).join('text')
-        .attr('font-size',d=>Math.max(8,nr(d)*.5)).attr('fill','#e2e8f0')
-        .attr('text-anchor','middle').attr('dy',d=>nr(d)+12).attr('pointer-events','none')
-        .text(d=>d.name.length>16?d.name.slice(0,14)+'…':d.name);
+    // Node name labels
+    const labelG = g.append('g').selectAll('g').data(ns).join('g').attr('pointer-events','none');
+    labelG.append('text')
+        .attr('class','node-label')
+        .attr('font-size', d=>Math.max(10, Math.min(14, nr(d)*0.35)))
+        .attr('fill','#f1f5f9').attr('font-weight',600)
+        .attr('text-anchor','middle').attr('dy',d=>nr(d)+14)
+        .text(d=>d.name.length>22?d.name.slice(0,20)+'…':d.name);
+    // Type sub-label
+    labelG.append('text')
+        .attr('class','type-label')
+        .attr('font-size',9).attr('fill',d=>(C[d.entity_type]||'#6B7280')+'CC')
+        .attr('text-anchor','middle').attr('dy',d=>nr(d)+26)
+        .text(d=>d.entity_type);
 
     sim.on('tick',()=>{
         lE.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
         nE.attr('cx',d=>d.x).attr('cy',d=>d.y);
         // Move halos with nodes
         ns.forEach(d=>{ if(d._halo) d3.select(d._halo).attr('cx',d.x).attr('cy',d.y) });
-        g.selectAll('text').attr('x',d=>d.x).attr('y',d=>d.y)
+        labelG.attr('transform',d=>`translate(${d.x},${d.y})`)
     });
     nE.style('opacity',0).transition().duration(400).style('opacity',1);
 
@@ -620,10 +633,10 @@ function renderGalaxyDive(entityType){
         .map(e=>({...e, source:e.from_id, target:e.to_id}));
 
     sim = d3.forceSimulation(allNodes)
-        .force('link', d3.forceLink(links).id(d=>d.id).distance(60))
-        .force('charge', d3.forceManyBody().strength(-120))
+        .force('link', d3.forceLink(links).id(d=>d.id).distance(140))
+        .force('charge', d3.forceManyBody().strength(-350))
         .force('center', d3.forceCenter(w/2, h/2))
-        .force('collision', d3.forceCollide().radius(d=>nr(d)+3));
+        .force('collision', d3.forceCollide().radius(d=>nr(d)+20));
 
     // Background nebula ring
     g.append('circle')
@@ -655,14 +668,14 @@ function renderGalaxyDive(entityType){
             .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y})
             .on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
         .on('mouseover',(e,d)=>{
-            const inGalaxy = primaryIds.has(d.id) ? '' : ` <span style="color:${C[d.entity_type]||'#6B7280'}">(${d.entity_type})</span>`;
-            sT(e,`<b>${d.name}</b>${inGalaxy}<br><span class="tp">${d.mention_count||1} mentions</span>${d.description?`<div class="td2">${d.description}</div>`:''}`)
+            const connCount = gD.edges.filter(x=>x.from_id===d.id||x.to_id===d.id).length;
+            const fromOther = !primaryIds.has(d.id) ? `<span class="tp" style="color:${C[d.entity_type]||'#6B7280'}">${d.entity_type} (neighbor galaxy)</span>` : `<span class="tp">${d.entity_type}</span>`;
+            sT(e,`<b>${d.name}</b>${fromOther}${d.description?`<div class="td2">${d.description}</div>`:''}<div class="tm">${d.mention_count||1} mentions · ${connCount} connections</div>`)
         })
         .on('mouseout',hT)
         .on('click',(e,d)=>{e.stopPropagation();showDP(d)})
         .on('dblclick',(e,d)=>{
             e.stopPropagation();
-            // If double-click a neighbor node from another galaxy, dive into THAT galaxy
             if(!primaryIds.has(d.id)){
                 diveIntoGalaxy(d.entity_type);
             } else {
@@ -670,20 +683,24 @@ function renderGalaxyDive(entityType){
             }
         });
 
-    // Labels (only for primary nodes or high-mention neighbors)
-    const labelNodes = allNodes.filter(n=>primaryIds.has(n.id) || (n.mention_count||1)>=3);
-    g.append('g').selectAll('text').data(labelNodes).join('text')
-        .attr('font-size', d=> primaryIds.has(d.id) ? Math.max(8, nr(d)*0.5) : 8)
-        .attr('fill', d=> primaryIds.has(d.id) ? '#e2e8f0' : '#64748b')
+    // Labels for all nodes
+    const diveLabelG = g.append('g').selectAll('g').data(allNodes).join('g').attr('pointer-events','none');
+    diveLabelG.append('text')
+        .attr('font-size', d=> primaryIds.has(d.id) ? Math.max(10, nr(d)*0.35) : 9)
+        .attr('fill', d=> primaryIds.has(d.id) ? '#f1f5f9' : '#64748b')
+        .attr('font-weight', d=> primaryIds.has(d.id) ? 600 : 400)
         .attr('text-anchor','middle')
-        .attr('dy', d=> (primaryIds.has(d.id) ? nr(d) : Math.max(4,nr(d)*0.6)) + 12)
-        .attr('pointer-events','none')
-        .text(d=>d.name.length>18?d.name.slice(0,16)+'…':d.name);
+        .attr('dy', d=> {const r = primaryIds.has(d.id) ? nr(d) : Math.max(8,nr(d)*0.6); return r+14})
+        .text(d=>d.name.length>22?d.name.slice(0,20)+'…':d.name);
+    diveLabelG.filter(d=>primaryIds.has(d.id)).append('text')
+        .attr('font-size',9).attr('fill',d=>(C[d.entity_type]||'#6B7280')+'CC')
+        .attr('text-anchor','middle').attr('dy',d=>nr(d)+26)
+        .text(d=>d.entity_type);
 
     sim.on('tick',()=>{
         lE.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
         nE.attr('cx',d=>d.x).attr('cy',d=>d.y);
-        g.selectAll('text').attr('x',d=>d.x).attr('y',d=>d.y);
+        diveLabelG.attr('transform',d=>`translate(${d.x},${d.y})`);
     });
 
     nE.style('opacity',0).transition().duration(400).style('opacity',d=>primaryIds.has(d.id)?1:0.4);
@@ -723,7 +740,7 @@ function updateModeUI(){
 
 
 // ── Shared helpers ──
-function nr(d){return Math.max(6,Math.min(35,6+(d.mention_count||1)*3))}
+function nr(d){return Math.max(14,Math.min(45,14+(d.mention_count||1)*4))}
 function sT(e,h){const t=document.getElementById('tt');t.innerHTML=h;t.classList.add('show');t.style.left=(e.pageX+10)+'px';t.style.top=(e.pageY-8)+'px'}
 function hT(){document.getElementById('tt').classList.remove('show')}
 
