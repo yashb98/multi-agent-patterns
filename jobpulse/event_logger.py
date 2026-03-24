@@ -159,6 +159,20 @@ def get_event_stats() -> dict:
     }
 
 
+def cleanup_old_events(retention_days: int = 90):
+    """Delete simulation events older than retention_days. Prevents unbounded DB growth."""
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+    conn = _get_conn()
+    cursor = conn.execute("DELETE FROM simulation_events WHERE day_date < ?", (cutoff,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    if deleted > 0:
+        print(f"[EventLogger] Cleaned up {deleted} events older than {retention_days} days")
+    return deleted
+
+
 def _row_to_dict(row) -> dict:
     d = dict(row)
     if "metadata" in d and isinstance(d["metadata"], str):
@@ -169,5 +183,6 @@ def _row_to_dict(row) -> dict:
     return d
 
 
-# Initialize on import
+# Initialize on import — create table + prune old data
 init_events_db()
+cleanup_old_events(90)

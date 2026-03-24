@@ -198,6 +198,23 @@ def get_agent_stats() -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+def cleanup_old_trails(retention_days: int = 30):
+    """Delete process trails older than retention_days. Called on init to prevent unbounded growth.
+
+    Keeps the DB lean — at ~100 runs/day with ~5 steps each, 30 days = ~15K rows max.
+    Without cleanup, after 6 months you'd have 90K+ rows slowing queries.
+    """
+    conn = _get_conn()
+    cutoff = (datetime.now() - __import__('datetime').timedelta(days=retention_days)).isoformat()
+    cursor = conn.execute("DELETE FROM agent_process_trails WHERE created_at < ?", (cutoff,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    if deleted > 0:
+        print(f"[ProcessTrail] Cleaned up {deleted} trail entries older than {retention_days} days")
+    return deleted
+
+
 def _row_to_dict(row) -> dict:
     d = dict(row)
     if "metadata" in d and isinstance(d["metadata"], str):
@@ -208,5 +225,6 @@ def _row_to_dict(row) -> dict:
     return d
 
 
-# Initialize on import
+# Initialize on import — create table + prune old data
 init_process_db()
+cleanup_old_trails(30)

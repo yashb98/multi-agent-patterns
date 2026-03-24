@@ -16,8 +16,10 @@ body{background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFo
 .fb{font-size:10px;padding:2px 6px;border-radius:3px;border:1px solid #475569;background:transparent;color:#94a3b8;cursor:pointer}
 .fb.on{background:var(--c);color:#fff;border-color:var(--c)}
 .tr{margin-left:auto;display:flex;gap:6px}
-.btn{font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid #475569;background:#1e293b;color:#e2e8f0;cursor:pointer}
+.btn{font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid #475569;background:#1e293b;color:#e2e8f0;cursor:pointer;text-decoration:none}
 .btn:hover{background:#334155}
+.btn.galaxy-back{background:#8B5CF6;border-color:#8B5CF6;color:#fff;display:none}
+.btn.galaxy-back.show{display:inline-block}
 .sb{position:fixed;top:50px;left:0;bottom:40px;width:280px;background:#1e293b;border-right:1px solid #334155;z-index:90;overflow-y:auto;padding:14px;transition:transform .2s}
 .sb.hide{transform:translateX(-280px)}
 .st{position:fixed;top:56px;left:4px;z-index:95;background:#334155;border:none;color:#e2e8f0;padding:3px 7px;border-radius:3px;cursor:pointer;font-size:14px}
@@ -49,10 +51,24 @@ svg{width:100%;height:100%}
 .lg{position:fixed;bottom:46px;left:286px;background:#1e293b99;backdrop-filter:blur(8px);border:1px solid #334155;border-radius:7px;padding:6px 10px;z-index:80;display:flex;flex-wrap:wrap;gap:6px}.lg.full{left:6px}
 .li{display:flex;align-items:center;gap:3px;font-size:10px;color:#94a3b8;cursor:pointer}.ld{width:8px;height:8px;border-radius:50%}
 .toast{position:fixed;bottom:50px;right:16px;background:#10B981;color:#fff;padding:10px 16px;border-radius:7px;font-size:12px;z-index:200;opacity:0;transition:opacity .3s}.toast.show{opacity:1}
+/* Galaxy mode indicator */
+.mode-badge{position:fixed;top:56px;left:50%;transform:translateX(-50%);background:#8B5CF622;border:1px solid #8B5CF6;border-radius:5px;padding:4px 14px;font-size:11px;color:#8B5CF6;font-weight:600;z-index:80;display:none;pointer-events:none}
+.mode-badge.show{display:block}
 </style>
 </head>
 <body>
-<div class="topbar"><h1>Knowledge MindGraph</h1><input type="text" id="search" placeholder="Search entities..."><div class="fg" id="fil"></div><div class="tr"><a href="/processes.html" class="btn" style="text-decoration:none">Processes</a><button class="btn" onclick="resetV()">Reset</button><button class="btn" onclick="expPNG()">PNG</button></div></div>
+<div class="topbar">
+<h1>Knowledge MindGraph</h1>
+<input type="text" id="search" placeholder="Search entities...">
+<div class="fg" id="fil"></div>
+<div class="tr">
+<button class="btn galaxy-back" id="galaxyBack" onclick="backToUniverse()">Back to Universe</button>
+<a href="/processes.html" class="btn" style="text-decoration:none">Processes</a>
+<button class="btn" onclick="resetV()">Reset</button>
+<button class="btn" onclick="expPNG()">PNG</button>
+</div>
+</div>
+<div class="mode-badge" id="modeBadge"></div>
 <button class="st" onclick="togSB()">☰</button>
 <div class="sb" id="sb"><div class="tg"><div class="tb on" onclick="stab('paste',this)">Paste</div><div class="tb" onclick="stab('upload',this)">Upload</div><div class="tb" onclick="stab('url',this)">URL</div></div>
 <div class="tc on" id="t-paste"><textarea id="ptxt" placeholder="Paste text to extract knowledge..."></textarea><button class="xb" onclick="iPaste()">Extract</button></div>
@@ -68,34 +84,407 @@ svg{width:100%;height:100%}
 <div class="tl" id="tl"><span class="tll">Timeline:</span></div>
 
 <script>
-const A='/api/mindgraph',C={PROJECT:'#8B5CF6',TECHNOLOGY:'#3B82F6',CONCEPT:'#10B981',DECISION:'#F59E0B',PERSON:'#EC4899',COMPANY:'#EF4444',METRIC:'#6B7280',SKILL:'#14B8A6',PHASE:'#6366F1',RESEARCH_PAPER:'#EAB308',AGENT:'#A855F7',EVENT:'#F97316',EMAIL:'#FB923C',TASK:'#22D3EE'};
-let sim,svg,g,nE,lE,gD={nodes:[],edges:[]},aF=new Set(Object.keys(C)),sq='';
+const A='/api/mindgraph';
+const C={PROJECT:'#8B5CF6',TECHNOLOGY:'#3B82F6',CONCEPT:'#10B981',DECISION:'#F59E0B',PERSON:'#EC4899',COMPANY:'#EF4444',METRIC:'#6B7280',SKILL:'#14B8A6',PHASE:'#6366F1',RESEARCH_PAPER:'#EAB308',AGENT:'#A855F7',EVENT:'#F97316',EMAIL:'#FB923C',TASK:'#22D3EE'};
+const GALAXY_THRESHOLD = 300;
 
-function init(){bFil();bLeg();sSVG();sSrch();sDZ();load();loadTL()}
+let sim, svg, g, nE, lE, gD={nodes:[],edges:[]}, aF=new Set(Object.keys(C)), sq='';
+let viewMode = 'planet';   // 'planet' (normal) | 'galaxy' (universe) | 'galaxy-dive' (inside one galaxy)
+let currentGalaxy = null;   // which galaxy we're inside (entity_type name)
+let galaxySim = null;       // separate simulation for galaxy view
+let orbitTimer = null;      // animation timer for orbiting planets
+
+// ── Init ──
+function init(){ bFil(); bLeg(); sSVG(); sSrch(); sDZ(); load(); loadTL() }
 
 function bFil(){const c=document.getElementById('fil');for(const[t,cl]of Object.entries(C)){const b=document.createElement('button');b.className='fb on';b.style.setProperty('--c',cl);b.textContent=t;b.onclick=()=>{aF.has(t)?(aF.delete(t),b.classList.remove('on')):(aF.add(t),b.classList.add('on'));render()};c.appendChild(b)}}
 function bLeg(){const c=document.getElementById('lg');for(const[t,cl]of Object.entries(C)){const i=document.createElement('div');i.className='li';i.innerHTML=`<div class="ld" style="background:${cl}"></div>${t}`;c.appendChild(i)}}
 
-function sSVG(){svg=d3.select('#svg');svg.append('defs').append('marker').attr('id','arr').attr('viewBox','0 -5 10 10').attr('refX',20).attr('refY',0).attr('markerWidth',5).attr('markerHeight',5).attr('orient','auto').append('path').attr('d','M0,-5L10,0L0,5').attr('fill','#47556966');
-g=svg.append('g');svg.call(d3.zoom().scaleExtent([.1,8]).on('zoom',e=>g.attr('transform',e.transform)));svg.on('click',e=>{if(e.target.tagName==='svg'){closeDP();rHL()}})}
+function sSVG(){
+    svg=d3.select('#svg');
+    // Glow filter for galaxies
+    const defs = svg.append('defs');
+    defs.append('marker').attr('id','arr').attr('viewBox','0 -5 10 10').attr('refX',20).attr('refY',0).attr('markerWidth',5).attr('markerHeight',5).attr('orient','auto').append('path').attr('d','M0,-5L10,0L0,5').attr('fill','#47556966');
+
+    // Galaxy glow filter
+    const glow = defs.append('filter').attr('id','glow').attr('x','-50%').attr('y','-50%').attr('width','200%').attr('height','200%');
+    glow.append('feGaussianBlur').attr('stdDeviation','8').attr('result','blur');
+    glow.append('feComposite').attr('in','SourceGraphic').attr('in2','blur').attr('operator','over');
+
+    // Stronger glow for galaxy cores
+    const glowStrong = defs.append('filter').attr('id','glowStrong').attr('x','-80%').attr('y','-80%').attr('width','260%').attr('height','260%');
+    glowStrong.append('feGaussianBlur').attr('stdDeviation','15').attr('result','blur');
+    glowStrong.append('feComposite').attr('in','SourceGraphic').attr('in2','blur').attr('operator','over');
+
+    g=svg.append('g');
+    svg.call(d3.zoom().scaleExtent([.1,8]).on('zoom',e=>g.attr('transform',e.transform)));
+    svg.on('click',e=>{if(e.target.tagName==='svg'){closeDP();rHL()}})
+}
 function sSrch(){let t;document.getElementById('search').addEventListener('input',e=>{clearTimeout(t);t=setTimeout(()=>{sq=e.target.value.toLowerCase();uHL()},300)})}
 function sDZ(){const fi=document.getElementById('fi');fi.addEventListener('change',()=>{if(fi.files.length)document.getElementById('fn').textContent=fi.files[0].name})}
 
 async function load(){try{const[gr,st]=await Promise.all([fetch(`${A}/graph`).then(r=>r.json()),fetch(`${A}/stats`).then(r=>r.json())]);gD=gr;render();uSt(st)}catch(e){}}
 
-function render(){g.selectAll('*').remove();const el=document.getElementById('ga'),w=el.clientWidth,h=el.clientHeight;
-const ns=gD.nodes.filter(n=>aF.has(n.entity_type)),nids=new Set(ns.map(n=>n.id));
-const ls=gD.edges.filter(e=>nids.has(e.from_id)&&nids.has(e.to_id)).map(e=>({...e,source:e.from_id,target:e.to_id}));
-sim=d3.forceSimulation(ns).force('link',d3.forceLink(ls).id(d=>d.id).distance(80)).force('charge',d3.forceManyBody().strength(-180)).force('center',d3.forceCenter(w/2,h/2)).force('collision',d3.forceCollide().radius(d=>nr(d)+4));
-lE=g.append('g').selectAll('line').data(ls).join('line').attr('stroke',d=>{const s=ns.find(n=>n.id===(d.source.id||d.source));return s?C[s.entity_type]+'4D':'#475569'}).attr('stroke-width',1.5).attr('marker-end','url(#arr)').on('mouseover',(e,d)=>sT(e,`<b>${d.type}</b><br>${d.context||''}`)).on('mouseout',hT);
-nE=g.append('g').selectAll('circle').data(ns).join('circle').attr('r',nr).attr('fill',d=>C[d.entity_type]||'#6B7280').attr('stroke','#0f172a').attr('stroke-width',1.5).style('cursor','pointer')
-.call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y}).on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
-.on('mouseover',(e,d)=>sT(e,`<b>${d.name}</b><br><span class="tp">${d.entity_type} · ${d.mention_count} mentions</span>${d.description?`<div class="td2">${d.description}</div>`:''}`))
-.on('mouseout',hT).on('click',(e,d)=>{e.stopPropagation();showDP(d)}).on('dblclick',(e,d)=>{e.stopPropagation();focN(d)});
-g.append('g').selectAll('text').data(ns).join('text').attr('font-size',d=>Math.max(8,nr(d)*.5)).attr('fill','#e2e8f0').attr('text-anchor','middle').attr('dy',d=>nr(d)+12).attr('pointer-events','none').text(d=>d.name.length>16?d.name.slice(0,14)+'…':d.name);
-sim.on('tick',()=>{lE.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);nE.attr('cx',d=>d.x).attr('cy',d=>d.y);g.selectAll('text').attr('x',d=>d.x).attr('y',d=>d.y)});
-nE.style('opacity',0).transition().duration(400).style('opacity',1)}
+// ── Main Render — decides planet vs galaxy mode ──
+function render(){
+    stopOrbitAnimation();
+    if(galaxySim){galaxySim.stop();galaxySim=null}
+    if(sim){sim.stop();sim=null}
+    g.selectAll('*').remove();
 
+    const ns = gD.nodes.filter(n=>aF.has(n.entity_type));
+    const totalNodes = ns.length;
+    const totalEdges = gD.edges.filter(e=>{
+        const nids=new Set(ns.map(n=>n.id));
+        return nids.has(e.from_id)&&nids.has(e.to_id);
+    }).length;
+
+    // If we're inside a galaxy, always show planet view for that type
+    if(viewMode === 'galaxy-dive' && currentGalaxy){
+        renderGalaxyDive(currentGalaxy);
+        return;
+    }
+
+    // Threshold check: nodes OR edges > 300 triggers galaxy mode
+    if(totalNodes >= GALAXY_THRESHOLD || totalEdges >= GALAXY_THRESHOLD){
+        viewMode = 'galaxy';
+        renderGalaxyView(ns);
+    } else {
+        viewMode = 'planet';
+        renderPlanetView(ns);
+    }
+    updateModeUI();
+}
+
+// ── Planet View (original, < 300 nodes) ──
+function renderPlanetView(ns){
+    const el=document.getElementById('ga'), w=el.clientWidth, h=el.clientHeight;
+    const nids=new Set(ns.map(n=>n.id));
+    const ls=gD.edges.filter(e=>nids.has(e.from_id)&&nids.has(e.to_id)).map(e=>({...e,source:e.from_id,target:e.to_id}));
+
+    sim=d3.forceSimulation(ns)
+        .force('link',d3.forceLink(ls).id(d=>d.id).distance(80))
+        .force('charge',d3.forceManyBody().strength(-180))
+        .force('center',d3.forceCenter(w/2,h/2))
+        .force('collision',d3.forceCollide().radius(d=>nr(d)+4));
+
+    lE=g.append('g').selectAll('line').data(ls).join('line')
+        .attr('stroke',d=>{const s=ns.find(n=>n.id===(d.source.id||d.source));return s?C[s.entity_type]+'4D':'#475569'})
+        .attr('stroke-width',1.5).attr('marker-end','url(#arr)')
+        .on('mouseover',(e,d)=>sT(e,`<b>${d.type}</b><br>${d.context||''}`)).on('mouseout',hT);
+
+    nE=g.append('g').selectAll('circle').data(ns).join('circle')
+        .attr('r',nr).attr('fill',d=>C[d.entity_type]||'#6B7280')
+        .attr('stroke','#0f172a').attr('stroke-width',1.5).style('cursor','pointer')
+        .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y}).on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
+        .on('mouseover',(e,d)=>sT(e,`<b>${d.name}</b><br><span class="tp">${d.entity_type} · ${d.mention_count} mentions</span>${d.description?`<div class="td2">${d.description}</div>`:''}`))
+        .on('mouseout',hT).on('click',(e,d)=>{e.stopPropagation();showDP(d)}).on('dblclick',(e,d)=>{e.stopPropagation();focN(d)});
+
+    g.append('g').selectAll('text').data(ns).join('text')
+        .attr('font-size',d=>Math.max(8,nr(d)*.5)).attr('fill','#e2e8f0')
+        .attr('text-anchor','middle').attr('dy',d=>nr(d)+12).attr('pointer-events','none')
+        .text(d=>d.name.length>16?d.name.slice(0,14)+'…':d.name);
+
+    sim.on('tick',()=>{
+        lE.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+        nE.attr('cx',d=>d.x).attr('cy',d=>d.y);
+        g.selectAll('text').attr('x',d=>d.x).attr('y',d=>d.y)
+    });
+    nE.style('opacity',0).transition().duration(400).style('opacity',1);
+}
+
+
+// ── Galaxy View (>= 300 nodes) — each entity_type is a galaxy ──
+function renderGalaxyView(allNodes){
+    const el=document.getElementById('ga'), w=el.clientWidth, h=el.clientHeight;
+
+    // Build galaxy data: group nodes by entity_type
+    const galaxyMap = {};
+    for(const n of allNodes){
+        if(!galaxyMap[n.entity_type]) galaxyMap[n.entity_type] = {type:n.entity_type, nodes:[], color:C[n.entity_type]||'#6B7280'};
+        galaxyMap[n.entity_type].nodes.push(n);
+    }
+    const galaxies = Object.values(galaxyMap).filter(g=>g.nodes.length>0);
+
+    // Count cross-galaxy relations (edges between different entity types)
+    const nodeTypeMap = {};
+    for(const n of allNodes) nodeTypeMap[n.id] = n.entity_type;
+
+    const crossLinks = {};
+    for(const e of gD.edges){
+        const fromType = nodeTypeMap[e.from_id];
+        const toType = nodeTypeMap[e.to_id];
+        if(fromType && toType && fromType !== toType){
+            const key = [fromType,toType].sort().join('|');
+            crossLinks[key] = (crossLinks[key]||0) + 1;
+        }
+    }
+    const galaxyLinks = Object.entries(crossLinks).map(([key,count])=>{
+        const [a,b] = key.split('|');
+        return {source:a, target:b, count};
+    });
+
+    // Galaxy radius based on node count
+    const maxCount = Math.max(...galaxies.map(g=>g.nodes.length));
+    const gRadius = d => Math.max(30, Math.min(90, 30 + (d.nodes.length / maxCount) * 60));
+
+    // Force simulation for galaxies
+    galaxySim = d3.forceSimulation(galaxies)
+        .force('link', d3.forceLink(galaxyLinks).id(d=>d.type).distance(200).strength(0.3))
+        .force('charge', d3.forceManyBody().strength(-800))
+        .force('center', d3.forceCenter(w/2, h/2))
+        .force('collision', d3.forceCollide().radius(d=>gRadius(d)+30));
+
+    // Draw cross-galaxy links
+    const linkEl = g.append('g').selectAll('line').data(galaxyLinks).join('line')
+        .attr('stroke','#475569').attr('stroke-width', d=>Math.min(6, 1 + d.count * 0.3))
+        .attr('stroke-opacity', 0.3).attr('stroke-dasharray','6,4');
+
+    // Draw galaxy groups
+    const galaxyG = g.append('g').selectAll('g').data(galaxies).join('g')
+        .style('cursor','pointer')
+        .on('click',(e,d)=>{ e.stopPropagation(); diveIntoGalaxy(d.type) })
+        .on('mouseover',(e,d)=>{
+            const topNodes = d.nodes.sort((a,b)=>(b.mention_count||1)-(a.mention_count||1)).slice(0,5);
+            const topList = topNodes.map(n=>`<br>  · ${n.name} (${n.mention_count||1})`).join('');
+            sT(e,`<b>${d.type} Galaxy</b><br><span class="tp">${d.nodes.length} entities</span>${topList}`)
+        })
+        .on('mouseout',hT)
+        .call(d3.drag()
+            .on('start',(e,d)=>{if(!e.active)galaxySim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y})
+            .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y})
+            .on('end',(e,d)=>{if(!e.active)galaxySim.alphaTarget(0);d.fx=null;d.fy=null})
+        );
+
+    // Outer glow
+    galaxyG.append('circle')
+        .attr('r', d=>gRadius(d) * 1.6)
+        .attr('fill', d=>d.color+'0A')
+        .attr('filter','url(#glowStrong)');
+
+    // Core nebula (radial gradient effect via multiple circles)
+    galaxyG.append('circle')
+        .attr('r', d=>gRadius(d) * 1.1)
+        .attr('fill', d=>d.color+'15')
+        .attr('filter','url(#glow)');
+
+    // Solid core
+    galaxyG.append('circle')
+        .attr('r', d=>gRadius(d) * 0.35)
+        .attr('fill', d=>d.color)
+        .attr('opacity', 0.8)
+        .attr('filter','url(#glow)');
+
+    // Orbiting planet dots — show up to 20 mini dots per galaxy
+    galaxyG.each(function(d){
+        const gg = d3.select(this);
+        const r = gRadius(d);
+        const planetCount = Math.min(20, d.nodes.length);
+        const sorted = d.nodes.sort((a,b)=>(b.mention_count||1)-(a.mention_count||1)).slice(0, planetCount);
+
+        sorted.forEach((node, i) => {
+            const angle = (2 * Math.PI * i) / planetCount;
+            const orbitR = r * (0.55 + Math.random() * 0.45);
+            const planetR = Math.max(2, Math.min(6, 2 + (node.mention_count||1) * 0.5));
+            gg.append('circle')
+                .attr('class','orbit-planet')
+                .attr('cx', Math.cos(angle) * orbitR)
+                .attr('cy', Math.sin(angle) * orbitR)
+                .attr('r', planetR)
+                .attr('fill', d.color)
+                .attr('opacity', 0.6)
+                .datum({angle, orbitR, speed: 0.002 + Math.random()*0.003, parentData: d});
+        });
+    });
+
+    // Galaxy label
+    galaxyG.append('text')
+        .attr('y', d=>gRadius(d) + 18)
+        .attr('text-anchor','middle').attr('fill','#e2e8f0')
+        .attr('font-size', 12).attr('font-weight', 600)
+        .text(d=>d.type);
+
+    // Node count label
+    galaxyG.append('text')
+        .attr('y', d=>gRadius(d) + 30)
+        .attr('text-anchor','middle').attr('fill','#64748b')
+        .attr('font-size', 10)
+        .text(d=>`${d.nodes.length} entities`);
+
+    // Tick
+    galaxySim.on('tick',()=>{
+        linkEl.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
+              .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+        galaxyG.attr('transform',d=>`translate(${d.x},${d.y})`);
+    });
+
+    // Fade in
+    galaxyG.style('opacity',0).transition().duration(600).style('opacity',1);
+
+    // Start orbit animation
+    startOrbitAnimation();
+}
+
+
+// ── Orbit Animation ──
+function startOrbitAnimation(){
+    stopOrbitAnimation();
+    let t = 0;
+    orbitTimer = d3.timer(()=>{
+        t += 1;
+        g.selectAll('.orbit-planet').each(function(){
+            const el = d3.select(this);
+            const d = el.datum();
+            if(!d) return;
+            const newAngle = d.angle + t * d.speed;
+            el.attr('cx', Math.cos(newAngle) * d.orbitR)
+              .attr('cy', Math.sin(newAngle) * d.orbitR);
+        });
+    });
+}
+function stopOrbitAnimation(){ if(orbitTimer){orbitTimer.stop();orbitTimer=null} }
+
+
+// ── Dive into a Galaxy (show nodes of that type) ──
+function diveIntoGalaxy(entityType){
+    viewMode = 'galaxy-dive';
+    currentGalaxy = entityType;
+    updateModeUI();
+
+    // Reset zoom
+    svg.transition().duration(400).call(d3.zoom().transform, d3.zoomIdentity);
+
+    stopOrbitAnimation();
+    if(galaxySim){galaxySim.stop();galaxySim=null}
+    if(sim){sim.stop();sim=null}
+    g.selectAll('*').remove();
+
+    renderGalaxyDive(entityType);
+}
+
+function renderGalaxyDive(entityType){
+    const el=document.getElementById('ga'), w=el.clientWidth, h=el.clientHeight;
+    const color = C[entityType] || '#6B7280';
+
+    // Primary nodes: this galaxy's nodes
+    const primaryNodes = gD.nodes.filter(n=>n.entity_type===entityType);
+    const primaryIds = new Set(primaryNodes.map(n=>n.id));
+
+    // Find connected nodes from other galaxies (show as smaller)
+    const neighborIds = new Set();
+    for(const e of gD.edges){
+        if(primaryIds.has(e.from_id) && !primaryIds.has(e.to_id)) neighborIds.add(e.to_id);
+        if(primaryIds.has(e.to_id) && !primaryIds.has(e.from_id)) neighborIds.add(e.from_id);
+    }
+    const neighborNodes = gD.nodes.filter(n=>neighborIds.has(n.id));
+
+    const allNodes = [...primaryNodes, ...neighborNodes];
+    const allIds = new Set(allNodes.map(n=>n.id));
+    const links = gD.edges.filter(e=>allIds.has(e.from_id)&&allIds.has(e.to_id))
+        .map(e=>({...e, source:e.from_id, target:e.to_id}));
+
+    sim = d3.forceSimulation(allNodes)
+        .force('link', d3.forceLink(links).id(d=>d.id).distance(60))
+        .force('charge', d3.forceManyBody().strength(-120))
+        .force('center', d3.forceCenter(w/2, h/2))
+        .force('collision', d3.forceCollide().radius(d=>nr(d)+3));
+
+    // Background nebula ring
+    g.append('circle')
+        .attr('cx', w/2).attr('cy', h/2)
+        .attr('r', Math.min(w,h)*0.35)
+        .attr('fill','none').attr('stroke', color+'15')
+        .attr('stroke-width', 60)
+        .attr('filter','url(#glow)');
+
+    // Edges
+    lE = g.append('g').selectAll('line').data(links).join('line')
+        .attr('stroke', d=>{
+            const fromPrimary = primaryIds.has(d.source.id||d.source);
+            return fromPrimary ? color+'4D' : '#47556933';
+        })
+        .attr('stroke-width', 1.5).attr('marker-end','url(#arr)')
+        .on('mouseover',(e,d)=>sT(e,`<b>${d.type}</b><br>${d.context||''}`)).on('mouseout',hT);
+
+    // Nodes
+    nE = g.append('g').selectAll('circle').data(allNodes).join('circle')
+        .attr('r', d=> primaryIds.has(d.id) ? nr(d) : Math.max(4, nr(d)*0.6))
+        .attr('fill', d=> primaryIds.has(d.id) ? color : (C[d.entity_type]||'#6B7280'))
+        .attr('stroke', d=> primaryIds.has(d.id) ? '#0f172a' : '#0f172a')
+        .attr('stroke-width', 1.5)
+        .attr('opacity', d=> primaryIds.has(d.id) ? 1 : 0.4)
+        .style('cursor','pointer')
+        .call(d3.drag()
+            .on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y})
+            .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y})
+            .on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null}))
+        .on('mouseover',(e,d)=>{
+            const inGalaxy = primaryIds.has(d.id) ? '' : ` <span style="color:${C[d.entity_type]||'#6B7280'}">(${d.entity_type})</span>`;
+            sT(e,`<b>${d.name}</b>${inGalaxy}<br><span class="tp">${d.mention_count||1} mentions</span>${d.description?`<div class="td2">${d.description}</div>`:''}`)
+        })
+        .on('mouseout',hT)
+        .on('click',(e,d)=>{e.stopPropagation();showDP(d)})
+        .on('dblclick',(e,d)=>{
+            e.stopPropagation();
+            // If double-click a neighbor node from another galaxy, dive into THAT galaxy
+            if(!primaryIds.has(d.id)){
+                diveIntoGalaxy(d.entity_type);
+            } else {
+                focN(d);
+            }
+        });
+
+    // Labels (only for primary nodes or high-mention neighbors)
+    const labelNodes = allNodes.filter(n=>primaryIds.has(n.id) || (n.mention_count||1)>=3);
+    g.append('g').selectAll('text').data(labelNodes).join('text')
+        .attr('font-size', d=> primaryIds.has(d.id) ? Math.max(8, nr(d)*0.5) : 8)
+        .attr('fill', d=> primaryIds.has(d.id) ? '#e2e8f0' : '#64748b')
+        .attr('text-anchor','middle')
+        .attr('dy', d=> (primaryIds.has(d.id) ? nr(d) : Math.max(4,nr(d)*0.6)) + 12)
+        .attr('pointer-events','none')
+        .text(d=>d.name.length>18?d.name.slice(0,16)+'…':d.name);
+
+    sim.on('tick',()=>{
+        lE.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+        nE.attr('cx',d=>d.x).attr('cy',d=>d.y);
+        g.selectAll('text').attr('x',d=>d.x).attr('y',d=>d.y);
+    });
+
+    nE.style('opacity',0).transition().duration(400).style('opacity',d=>primaryIds.has(d.id)?1:0.4);
+}
+
+
+// ── Back to Universe ──
+function backToUniverse(){
+    viewMode = 'galaxy';
+    currentGalaxy = null;
+    svg.transition().duration(400).call(d3.zoom().transform, d3.zoomIdentity);
+    render();
+}
+
+
+// ── UI Updates ──
+function updateModeUI(){
+    const backBtn = document.getElementById('galaxyBack');
+    const badge = document.getElementById('modeBadge');
+
+    if(viewMode === 'galaxy'){
+        backBtn.classList.remove('show');
+        badge.textContent = 'UNIVERSE VIEW — ' + gD.nodes.length + ' entities across ' + Object.keys(C).length + ' galaxies';
+        badge.classList.add('show');
+    } else if(viewMode === 'galaxy-dive'){
+        backBtn.classList.add('show');
+        const count = gD.nodes.filter(n=>n.entity_type===currentGalaxy).length;
+        badge.textContent = currentGalaxy + ' Galaxy — ' + count + ' entities';
+        badge.classList.add('show');
+    } else {
+        backBtn.classList.remove('show');
+        badge.classList.remove('show');
+    }
+}
+
+
+// ── Shared helpers ──
 function nr(d){return Math.max(6,Math.min(35,6+(d.mention_count||1)*3))}
 function sT(e,h){const t=document.getElementById('tt');t.innerHTML=h;t.classList.add('show');t.style.left=(e.pageX+10)+'px';t.style.top=(e.pageY-8)+'px'}
 function hT(){document.getElementById('tt').classList.remove('show')}
@@ -111,12 +500,21 @@ p.classList.add('open')}
 
 function closeDP(){document.getElementById('dp').classList.remove('open')}
 function focN(n){const ids=new Set([n.id]);gD.edges.forEach(e=>{if(e.from_id===n.id)ids.add(e.to_id);if(e.to_id===n.id)ids.add(e.from_id)});nE.style('opacity',d=>ids.has(d.id)?1:.1);lE.style('opacity',d=>{const s=d.source.id||d.source,t=d.target.id||d.target;return ids.has(s)&&ids.has(t)?1:.05})}
-function rHL(){nE?.style('opacity',1);lE?.style('opacity',1)}
+function rHL(){nE?.style('opacity',d=>{
+    // Restore proper opacity based on view mode
+    if(viewMode==='galaxy-dive'&&currentGalaxy){
+        return d.entity_type===currentGalaxy?1:0.4;
+    }
+    return 1;
+});lE?.style('opacity',1)}
 function uHL(){if(!sq){rHL();return}nE.style('opacity',d=>d.name.toLowerCase().includes(sq)?1:.12);lE.style('opacity',.08)}
 
 function togSB(){document.getElementById('sb').classList.toggle('hide');document.getElementById('ga').classList.toggle('full');document.getElementById('lg').classList.toggle('full')}
 function stab(n,el){document.querySelectorAll('.tb').forEach(t=>t.classList.remove('on'));document.querySelectorAll('.tc').forEach(t=>t.classList.remove('on'));el.classList.add('on');document.getElementById('t-'+n).classList.add('on')}
-function resetV(){svg.transition().duration(400).call(d3.zoom().transform,d3.zoomIdentity);rHL()}
+function resetV(){
+    svg.transition().duration(400).call(d3.zoom().transform,d3.zoomIdentity);
+    if(viewMode==='galaxy-dive'){backToUniverse()}else{rHL()}
+}
 function expPNG(){const s=document.getElementById('svg'),c=document.createElement('canvas'),r=s.getBoundingClientRect();c.width=r.width*2;c.height=r.height*2;const x=c.getContext('2d');x.scale(2,2);x.fillStyle='#0f172a';x.fillRect(0,0,r.width,r.height);const d=new XMLSerializer().serializeToString(s),i=new Image();i.onload=()=>{x.drawImage(i,0,0);const a=document.createElement('a');a.download='mindgraph.png';a.href=c.toDataURL();a.click()};i.src='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(d)))}
 
 function prg(m){document.getElementById('prog').textContent=m}
@@ -125,7 +523,12 @@ async function iPaste(){const t=document.getElementById('ptxt').value;if(!t.trim
 async function iFile(){const fi=document.getElementById('fi');if(!fi.files.length)return;const fd=new FormData();fd.append('file',fi.files[0]);prg('Processing...');try{const r=await fetch(`${A}/ingest`,{method:'POST',body:fd});const d=await r.json();prg(`${d.entities_extracted||0} entities`);tst('Extracted from '+fi.files[0].name);load()}catch(e){prg('Error: '+e.message)}}
 async function iURL(){const u=document.getElementById('ui').value;if(!u.trim())return;prg('Fetching...');try{const r=await fetch(`${A}/ingest/json`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});const d=await r.json();prg(`${d.entities_extracted||0} entities`);tst('Extracted from URL');load()}catch(e){prg('Error: '+e.message)}}
 
-function uSt(s){const p=document.getElementById('sp'),sm=s.simulation||{};p.innerHTML=`<h3>Stats</h3><div class="sr"><span>Entities</span><span class="sv">${s.total_entities}</span></div><div class="sr"><span>Connections</span><span class="sv">${s.total_relations}</span></div><div class="sr"><span>Events today</span><span class="sv">${sm.today_events||0}</span></div>${(s.top_entities||[]).map(e=>`<div class="sr"><span style="color:${C[e.entity_type]||'#6B7280'}">${e.name}</span><span class="sv">${e.mention_count}</span></div>`).join('')}`}
+function uSt(s){
+    const p=document.getElementById('sp'), sm=s.simulation||{};
+    const modeLabel = viewMode==='galaxy' ? '<div class="sr"><span>Mode</span><span class="sv">Universe</span></div>' :
+                      viewMode==='galaxy-dive' ? `<div class="sr"><span>Mode</span><span class="sv">${currentGalaxy}</span></div>` : '';
+    p.innerHTML=`<h3>Stats</h3><div class="sr"><span>Entities</span><span class="sv">${s.total_entities}</span></div><div class="sr"><span>Connections</span><span class="sv">${s.total_relations}</span></div><div class="sr"><span>Events today</span><span class="sv">${sm.today_events||0}</span></div>${modeLabel}<div class="sr"><span>Threshold</span><span class="sv">${s.total_entities >= GALAXY_THRESHOLD ? 'Galaxy' : s.total_entities + '/' + GALAXY_THRESHOLD}</span></div>${(s.top_entities||[]).map(e=>`<div class="sr"><span style="color:${C[e.entity_type]||'#6B7280'}">${e.name}</span><span class="sv">${e.mention_count}</span></div>`).join('')}`
+}
 
 async function loadTL(){try{const r=await fetch(`${A}/simulation/timeline`);const d=await r.json();const tl=document.getElementById('tl'),td=new Date().toISOString().slice(0,10);
 (d.timeline||[]).reverse().forEach(x=>{const div=document.createElement('div');div.className='td'+(x.day_date===td?' now':'');div.textContent=new Date(x.day_date+'T12:00:00').getDate();
