@@ -310,6 +310,85 @@ def update_notion_budget_summary(week_start: str = None):
     })
 
 
+# ── Spend Parsing ──
+
+def parse_spend(text: str) -> dict | None:
+    """Parse a natural language spend message into {amount, description}.
+
+    Handles:
+      "spent 15 on lunch" → {amount: 15.0, description: "lunch"}
+      "£8.50 coffee" → {amount: 8.50, description: "coffee"}
+      "uber 12.40" → {amount: 12.40, description: "uber"}
+      "45 groceries at tesco" → {amount: 45.0, description: "groceries at tesco"}
+      "lunch 7.50" → {amount: 7.50, description: "lunch"}
+    """
+    import re
+
+    text = text.strip()
+
+    # Remove "spent" / "spend" / "paid" prefix
+    text = re.sub(r"^(spent|spend|paid|bought|got)\s+", "", text, flags=re.IGNORECASE)
+
+    # Try to find amount (with or without £/$)
+    # Pattern: optional currency symbol, digits, optional decimal
+    amount_pattern = r"[£$€]?\s*(\d+(?:\.\d{1,2})?)"
+
+    match = re.search(amount_pattern, text)
+    if not match:
+        return None
+
+    amount = float(match.group(1))
+    if amount <= 0 or amount > 50000:
+        return None
+
+    # Remove the amount (including currency symbol) from text to get description
+    start = match.start()
+    # Include preceding currency symbol if present
+    if start > 0 and text[start-1] in "£$€":
+        start -= 1
+    desc = text[:start] + " " + text[match.end():]
+    # Clean up filler words and whitespace
+    desc = re.sub(r"\s+", " ", desc).strip()
+    desc = re.sub(r"^(on|for|at|to)\s+", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"\s+(on|for|at)$", "", desc, flags=re.IGNORECASE)
+    desc = desc.strip()
+
+    if not desc:
+        desc = "Unspecified"
+
+    return {"amount": amount, "description": desc}
+
+
+def log_spend(text: str) -> str:
+    """Full pipeline: parse → classify → store → sync to Notion → return reply."""
+    parsed = parse_spend(text)
+    if not parsed:
+        return ("Couldn't parse that. Try:\n"
+                "  spent 15 on lunch\n"
+                "  £8.50 coffee\n"
+                "  uber 12.40\n"
+                "  45 groceries tesco")
+
+    amount = parsed["amount"]
+    description = parsed["description"]
+
+    # Classify category with LLM
+    category = classify_expense(description, amount)
+
+    # Store in SQLite
+    expense = add_expense(amount, description, category)
+
+    # Sync to Notion
+    sync_expense_to_notion(expense)
+
+    # Get today's running total
+    today = get_today_spending()
+
+    return (f"💸 Logged: £{amount:.2f} — {description}\n"
+            f"   Category: {category}\n"
+            f"   Today's total: £{today['total']:.2f}")
+
+
 # ── Formatting ──
 
 def format_week_summary(summary: dict) -> str:
