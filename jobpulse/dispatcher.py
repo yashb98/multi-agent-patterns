@@ -18,6 +18,8 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.ARXIV: _handle_arxiv,
         Intent.COMPLETE_TASK: _handle_complete_task,
         Intent.CREATE_EVENT: _handle_create_event,
+        Intent.LOG_SPEND: _handle_log_spend,
+        Intent.SHOW_BUDGET: _handle_show_budget,
         Intent.HELP: _handle_help,
     }
 
@@ -129,6 +131,25 @@ def _handle_create_event(cmd: ParsedCommand) -> str:
             "For now, add events directly in Google Calendar.")
 
 
+def _handle_log_spend(cmd: ParsedCommand) -> str:
+    from jobpulse.budget_agent import log_spend
+    return log_spend(cmd.raw)
+
+
+def _handle_show_budget(cmd: ParsedCommand) -> str:
+    from jobpulse.budget_agent import get_week_summary, get_today_spending
+    from jobpulse.budget_agent import format_week_summary, format_today_spending
+
+    today = get_today_spending()
+    week = get_week_summary()
+
+    parts = []
+    if today["items"]:
+        parts.append(format_today_spending(today))
+    parts.append(format_week_summary(week))
+    return "\n\n".join(parts)
+
+
 def _handle_help(cmd: ParsedCommand) -> str:
     return """🤖 JobPulse Commands:
 
@@ -146,6 +167,11 @@ def _handle_help(cmd: ParsedCommand) -> str:
 💻 GITHUB:
   "commits" — yesterday's activity
   "trending" — hot repos this week
+
+💰 BUDGET:
+  "spent 15 on lunch" — log an expense
+  "£8.50 coffee" — log with currency
+  "budget" — weekly spending summary
 
 📬 OTHER:
   "briefing" — full morning report

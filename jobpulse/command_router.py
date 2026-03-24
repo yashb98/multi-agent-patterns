@@ -24,6 +24,8 @@ class Intent(str, Enum):
     TRENDING = "trending"
     BRIEFING = "briefing"
     ARXIV = "arxiv"
+    LOG_SPEND = "log_spend"
+    SHOW_BUDGET = "show_budget"
     HELP = "help"
     UNKNOWN = "unknown"
 
@@ -41,6 +43,17 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     # Help
     (Intent.HELP, [
         r"^/?(help|commands|menu|what can you do)$",
+    ]),
+    # Budget — show
+    (Intent.SHOW_BUDGET, [
+        r"(budget|spending|how much.+(spent|spend)|weekly (budget|spend)|show budget)",
+        r"(today.?s|this week.?s)\s+(spend|budget|expenses?)",
+    ]),
+    # Budget — log spend (must come after show_budget so "show budget" doesn't match here)
+    (Intent.LOG_SPEND, [
+        r"(spent|spend|paid|bought)\s+\d",
+        r"[£$€]\s*\d+",
+        r"\d+(\.\d{1,2})?\s+(on|for|at)\s+\w+",
     ]),
     # Briefing
     (Intent.BRIEFING, [
@@ -131,6 +144,8 @@ GITHUB — user wants to see commits or code activity
 TRENDING — user wants trending GitHub repos
 BRIEFING — user wants the full morning briefing
 ARXIV — user wants AI research papers
+LOG_SPEND — user is logging money they spent (mentions amount + item)
+SHOW_BUDGET — user wants to see their budget/spending summary
 UNKNOWN — doesn't match any of the above
 
 Message: "{text}"
