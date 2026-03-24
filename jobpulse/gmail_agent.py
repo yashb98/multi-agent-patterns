@@ -8,6 +8,7 @@ from jobpulse.config import OPENAI_API_KEY, GOOGLE_TOKEN_PATH
 from jobpulse import db
 from jobpulse import telegram_agent
 from jobpulse import event_logger
+from jobpulse import auto_extract
 
 # Categories
 SELECTED = "SELECTED_NEXT_ROUND"
@@ -175,6 +176,12 @@ def check_emails() -> list[dict]:
                     content=f"{emoji_label}: {sender_short} — {subject}",
                     metadata={"subject": subject, "sender": sender, "category": category, "email_id": msg_id},
                 )
+
+                # Auto-extract knowledge (company names, roles, etc.)
+                try:
+                    auto_extract.extract_from_email(sender, subject, category, body[:500])
+                except Exception:
+                    pass  # extraction is best-effort, don't block email processing
 
     except Exception as e:
         print(f"[Gmail] Error fetching emails: {e}")
