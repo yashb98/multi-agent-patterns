@@ -115,6 +115,9 @@ def poll_continuous():
             # Long-poll: blocks up to 30s waiting for messages
             updates = telegram_agent.get_updates(offset=last_id + 1, long_poll=True)
 
+            # Write heartbeat every cycle (even empty polls)
+            write_heartbeat()
+
             if not updates:
                 consecutive_errors = 0
                 continue  # no messages, loop back to long-poll again
