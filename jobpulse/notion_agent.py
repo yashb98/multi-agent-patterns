@@ -78,8 +78,51 @@ def create_task(title: str, date: str = None) -> bool:
     return "id" in result
 
 
+def _normalize(text: str) -> str:
+    """Normalize text for fuzzy matching — lowercase, strip punctuation, normalize numbers."""
+    import re
+    text = text.lower().strip()
+    # Remove punctuation and extra spaces
+    text = re.sub(r"[().,!?;:'\"-]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    # Normalize number words → digits
+    word_to_num = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+                   "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10"}
+    words = text.split()
+    words = [word_to_num.get(w, w) for w in words]
+    return " ".join(words)
+
+
+def _fuzzy_score(query: str, title: str) -> float:
+    """Score how well a query matches a task title. Higher = better match.
+
+    Uses word overlap ratio instead of exact substring matching.
+    'multiagent orchestration day 1' should match 'finish the multi agent orchestration (day 1)'.
+    """
+    q_words = set(_normalize(query).split())
+    t_words = set(_normalize(title).split())
+
+    if not q_words:
+        return 0.0
+
+    # Remove common filler words from query
+    fillers = {"the", "a", "an", "my", "to", "for", "and", "of", "in", "on", "is", "it", "do", "done"}
+    q_words -= fillers
+
+    if not q_words:
+        return 0.0
+
+    # Count how many query words appear in the title
+    matches = len(q_words & t_words)
+    return matches / len(q_words)
+
+
 def complete_task(task_name: str) -> str:
-    """Find a task by name (fuzzy match) and mark it as Done. Returns result message."""
+    """Find a task by intent (fuzzy match) and mark it as Done.
+
+    Uses word overlap scoring instead of exact substring matching.
+    'multiagent orchestration day one' matches 'Finish the multi agent orchestration (day 1)'.
+    """
     if not NOTION_TASKS_DB_ID:
         return "NOTION_TASKS_DB_ID not set"
 
@@ -93,18 +136,33 @@ def complete_task(task_name: str) -> str:
         }
     })
 
-    target = task_name.lower().strip()
+    # Score all tasks against the query
+    candidates = []
     for page in result.get("results", []):
         props = page.get("properties", {})
         title = "".join(t.get("plain_text", "") for t in props.get("Task", {}).get("title", []))
-        if target in title.lower():
-            # PATCH to mark as Done
-            _notion_api("PATCH", f"/pages/{page['id']}", {
-                "properties": {"Status": {"select": {"name": "Done"}}}
-            })
-            return f"✅ Marked \"{title}\" as Done!"
+        if not title:
+            continue
+        score = _fuzzy_score(task_name, title)
+        candidates.append((score, title, page["id"]))
 
-    return f"Couldn't find task matching \"{task_name}\""
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    if not candidates:
+        return "No open tasks for today."
+
+    best_score, best_title, best_id = candidates[0]
+
+    # Require at least 40% word overlap to match
+    if best_score < 0.4:
+        task_list = "\n".join(f"  □ {t}" for _, t, _ in candidates[:5])
+        return f"Couldn't match \"{task_name}\" to any task.\n\nYour open tasks:\n{task_list}\n\nTry: done: [exact task name]"
+
+    # Mark as Done
+    _notion_api("PATCH", f"/pages/{best_id}", {
+        "properties": {"Status": {"select": {"name": "Done"}}}
+    })
+    return f"✅ Marked \"{best_title}\" as Done!"
 
 
 def create_research_page(title: str, blocks: list[dict]) -> str:
