@@ -3,6 +3,7 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Text, Billboard } from '@react-three/drei'
 import { EffectComposer, Bloom, ChromaticAberration } from '@react-three/postprocessing'
 import * as THREE from 'three'
+import Galaxy from './components/Galaxy'
 
 const COLORS = {
   PROJECT: '#8B5CF6', TECHNOLOGY: '#3B82F6', CONCEPT: '#10B981',
@@ -123,18 +124,47 @@ function Starfield({ count = 2000 }) {
   )
 }
 
-// ── Graph Scene ──
-function GraphScene({ data }) {
-  // Simple force-directed layout in 3D
+// ── Galaxy Universe Scene (>= 300 nodes) ──
+function UniverseScene({ data }) {
+  const galaxies = useMemo(() => {
+    const map = {}
+    for (const n of (data.nodes || [])) {
+      if (!map[n.entity_type]) map[n.entity_type] = { type: n.entity_type, color: COLORS[n.entity_type] || '#6B7280', nodes: [] }
+      map[n.entity_type].nodes.push(n)
+    }
+    const arr = Object.values(map).filter(g => g.nodes.length > 0)
+    // Position galaxies in a circle
+    arr.forEach((g, i) => {
+      const angle = (2 * Math.PI * i) / arr.length
+      const r = 6 + arr.length * 0.8
+      g.position = [Math.cos(angle) * r, (Math.random() - 0.5) * 3, Math.sin(angle) * r]
+    })
+    return arr
+  }, [data])
+
+  return (
+    <>
+      <Starfield count={3000} />
+      <ambientLight intensity={0.15} />
+      <pointLight position={[15, 10, 15]} intensity={0.6} />
+      <pointLight position={[-15, -5, -15]} intensity={0.3} color="#8B5CF6" />
+      {galaxies.map(g => (
+        <Galaxy key={g.type} {...g} />
+      ))}
+    </>
+  )
+}
+
+// ── Planet Scene (< 300 nodes) ──
+function PlanetScene({ data }) {
   const layout = useMemo(() => {
     const positions = {}
     const nodes = data.nodes || []
-    // Group by type for galaxy-like clustering
     const types = [...new Set(nodes.map(n => n.entity_type))]
     const typeAngles = {}
     types.forEach((t, i) => { typeAngles[t] = (2 * Math.PI * i) / types.length })
 
-    nodes.forEach((node, i) => {
+    nodes.forEach((node) => {
       const typeAngle = typeAngles[node.entity_type] || 0
       const clusterR = 4 + types.length * 0.5
       const spread = 2.5
@@ -147,8 +177,6 @@ function GraphScene({ data }) {
     return positions
   }, [data])
 
-  const [selected, setSelected] = useState(null)
-
   return (
     <>
       <Starfield />
@@ -156,17 +184,15 @@ function GraphScene({ data }) {
       <pointLight position={[10, 10, 10]} intensity={0.8} />
       <pointLight position={[-10, -5, -10]} intensity={0.3} color="#8B5CF6" />
 
-      {/* Nodes */}
       {(data.nodes || []).map(node => (
         <GraphNode
           key={node.id}
           node={node}
           position={layout[node.id] || [0, 0, 0]}
-          onClick={() => setSelected(node)}
+          onClick={() => {}}
         />
       ))}
 
-      {/* Particle Edges */}
       {(data.edges || []).map((edge, i) => {
         const from = layout[edge.from_id]
         const to = layout[edge.to_id]
@@ -176,7 +202,6 @@ function GraphScene({ data }) {
         return <ParticleEdge key={i} from={from} to={to} color={color} />
       })}
 
-      {/* Edge lines (dim) */}
       {(data.edges || []).map((edge, i) => {
         const from = layout[edge.from_id]
         const to = layout[edge.to_id]
@@ -193,6 +218,13 @@ function GraphScene({ data }) {
   )
 }
 
+// ── Graph Scene — auto-selects planet vs universe ──
+const GALAXY_THRESHOLD = 300
+function GraphScene({ data }) {
+  const isGalaxy = (data.nodes?.length || 0) >= GALAXY_THRESHOLD
+  return isGalaxy ? <UniverseScene data={data} /> : <PlanetScene data={data} />
+}
+
 // ── HUD Overlay ──
 function HUD({ data }) {
   const nodeCount = data.nodes?.length || 0
@@ -206,6 +238,9 @@ function HUD({ data }) {
     }}>
       <div style={{fontWeight: 600, color: '#8B5CF6', marginBottom: 4}}>MindGraph 3D</div>
       <div>{nodeCount} entities · {edgeCount} connections</div>
+      <div style={{fontSize: 10, color: nodeCount >= 300 ? '#8B5CF6' : '#64748b', marginTop: 2}}>
+        {nodeCount >= 300 ? 'UNIVERSE MODE' : `Planet mode (${nodeCount}/300 for galaxy)`}
+      </div>
       <div style={{marginTop: 6, fontSize: 10, color: '#64748b'}}>
         Drag to orbit · Scroll to zoom · Click node for details
       </div>
