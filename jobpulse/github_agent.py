@@ -4,6 +4,7 @@ import json
 import subprocess
 from datetime import datetime, timedelta
 from jobpulse.config import GITHUB_TOKEN, GITHUB_USERNAME
+from jobpulse import event_logger
 
 
 def _gh_api(endpoint: str) -> list:
@@ -54,12 +55,24 @@ def get_yesterday_commits() -> dict:
             commits.append({"repo": repo_name, "message": msg, "sha": sha})
             repos.add(repo_name)
 
-    return {
+    result = {
         "date": yesterday,
         "total_commits": len(commits),
         "repos": sorted(list(repos)),
         "commits": commits,
     }
+
+    # Log to simulation events
+    if commits:
+        event_logger.log_event(
+            event_type="github_activity",
+            agent_name="github_agent",
+            action="commits_fetched",
+            content=f"{len(commits)} commit(s) across {', '.join(sorted(repos))}",
+            metadata={"commit_count": len(commits), "repos": sorted(list(repos)), "date": yesterday},
+        )
+
+    return result
 
 
 def format_commits(data: dict) -> str:

@@ -3,6 +3,7 @@
 import os
 from datetime import datetime, timedelta
 from jobpulse.config import GOOGLE_TOKEN_PATH
+from jobpulse import event_logger
 
 
 def _get_calendar_service():
@@ -92,6 +93,16 @@ def get_today_and_tomorrow() -> dict:
 
     today_events = _fetch_events(service, today_start, today_end)
     tomorrow_events = _fetch_events(service, today_end, tomorrow_end)
+
+    # Log each event to simulation
+    for ev in today_events:
+        event_logger.log_event(
+            event_type="calendar_event",
+            agent_name="calendar_agent",
+            action="fetched_event",
+            content=f"{ev['start']} — {ev['title']}",
+            metadata={"title": ev["title"], "start": ev["start"], "location": ev.get("location", "")},
+        )
 
     return {
         "today_events": today_events,

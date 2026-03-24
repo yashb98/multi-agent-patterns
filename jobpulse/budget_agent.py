@@ -18,6 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from jobpulse.config import NOTION_API_KEY, NOTION_PARENT_PAGE_ID, DATA_DIR
 from jobpulse.notion_agent import _notion_api
+from jobpulse import event_logger
 
 # ── Your existing Notion Weekly Budget Sheet ──
 # Page: https://www.notion.so/Weekly-Budget-Sheet-50f750e493694f5e91e4f1680e7192fd
@@ -562,6 +563,15 @@ def log_transaction(text: str) -> str:
 
     # Sync to Notion
     sync_expense_to_notion(txn)
+
+    # Log to simulation events
+    event_logger.log_event(
+        event_type="budget_transaction",
+        agent_name="budget_agent",
+        action=f"logged_{txn_type}",
+        content=f"£{amount:.2f} — {description} [{category}]",
+        metadata={"amount": amount, "description": description, "category": category, "section": section, "type": txn_type},
+    )
 
     today = get_today_spending()
     type_emoji = {"income": "💰", "expense": "💸", "savings": "🏦"}

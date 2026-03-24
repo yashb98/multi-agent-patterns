@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from jobpulse.command_router import Intent, ParsedCommand
+from jobpulse import event_logger
 
 
 def dispatch(cmd: ParsedCommand) -> str:
@@ -31,8 +32,24 @@ def dispatch(cmd: ParsedCommand) -> str:
         return _handle_unknown(cmd)
 
     try:
-        return handler(cmd)
+        result = handler(cmd)
+        # Log every dispatched command to simulation events
+        event_logger.log_event(
+            event_type="agent_action",
+            agent_name="dispatcher",
+            action=cmd.intent.value,
+            content=result[:300] if result else "",
+            metadata={"intent": cmd.intent.value, "raw_input": cmd.raw[:200]},
+        )
+        return result
     except Exception as e:
+        event_logger.log_event(
+            event_type="error",
+            agent_name="dispatcher",
+            action=cmd.intent.value,
+            content=str(e),
+            metadata={"intent": cmd.intent.value, "raw_input": cmd.raw[:200]},
+        )
         return f"⚠️ Error running {cmd.intent.value}: {e}"
 
 

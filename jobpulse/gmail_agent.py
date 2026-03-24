@@ -7,6 +7,7 @@ from openai import OpenAI
 from jobpulse.config import OPENAI_API_KEY, GOOGLE_TOKEN_PATH
 from jobpulse import db
 from jobpulse import telegram_agent
+from jobpulse import event_logger
 
 # Categories
 SELECTED = "SELECTED_NEXT_ROUND"
@@ -165,6 +166,15 @@ def check_emails() -> list[dict]:
 
                 telegram_agent.send_message(alert)
                 print(f"[Gmail] {emoji_label}: {sender_short} — {subject}")
+
+                # Log to simulation events
+                event_logger.log_event(
+                    event_type="email_classified",
+                    agent_name="gmail_agent",
+                    action=f"classified_{category.lower()}",
+                    content=f"{emoji_label}: {sender_short} — {subject}",
+                    metadata={"subject": subject, "sender": sender, "category": category, "email_id": msg_id},
+                )
 
     except Exception as e:
         print(f"[Gmail] Error fetching emails: {e}")

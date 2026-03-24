@@ -1,7 +1,7 @@
 """Morning briefing — collects all agents and sends consolidated Telegram message."""
 
 from datetime import datetime
-from jobpulse import gmail_agent, calendar_agent, github_agent, notion_agent, telegram_agent, budget_agent
+from jobpulse import gmail_agent, calendar_agent, github_agent, notion_agent, telegram_agent, budget_agent, event_logger
 
 
 def build_and_send():
@@ -94,6 +94,15 @@ Have a productive day! 🚀"""
     # Send digest
     success = telegram_agent.send_message(message)
     print(f"[Briefing] Digest {'sent' if success else 'FAILED'}")
+
+    # Log briefing to simulation events
+    event_logger.log_event(
+        event_type="briefing_sent",
+        agent_name="morning_briefing",
+        action="daily_briefing",
+        content=message[:500],
+        metadata={"channel": "telegram", "success": success},
+    )
 
     # Send separate Notion todo prompt if no tasks
     if not tasks:
