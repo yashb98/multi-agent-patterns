@@ -47,16 +47,18 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     (Intent.HELP, [
         r"^/?(help|commands|menu|what can you do)$",
     ]),
-    # Budget — show
-    (Intent.SHOW_BUDGET, [
-        r"(budget|spending|how much.+(spent|spend|earned)|weekly (budget|spend)|show budget|summary)",
-        r"(today.?s|this week.?s)\s+(spend|budget|expenses?|money)",
-    ]),
-    # Budget — set planned budget
+    # Budget — set planned budget (MUST be before show_budget)
     (Intent.SET_BUDGET, [
         r"set\s+budget",
         r"budget\s+\w+\s+\d+",
         r"plan\s+\d+\s+(for|on)\s+\w+",
+        r"limit\s+\w+\s+(to\s+)?\d+",
+    ]),
+    # Budget — show (after set_budget so "set budget" matches first)
+    (Intent.SHOW_BUDGET, [
+        r"^budget\s*$",
+        r"(spending|how much.+(spent|spend|earned)|weekly (budget|spend)|show budget|show spending|summary)",
+        r"(today.?s|this week.?s)\s+(spend|budget|expenses?|money)",
     ]),
     # Budget — log income
     (Intent.LOG_INCOME, [
