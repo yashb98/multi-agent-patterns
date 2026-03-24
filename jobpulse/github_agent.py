@@ -20,17 +20,25 @@ def _gh_api(endpoint: str) -> list:
         return []
 
 
-def get_yesterday_commits() -> dict:
+def get_yesterday_commits(trigger: str = "scheduled_check") -> dict:
     """Fetch yesterday's commits across all repos.
 
     Uses the Commits API per-repo (not Events API) because the Events API
     strips the commits array from older PushEvents, causing 0-commit bugs.
     """
+    from jobpulse.process_logger import ProcessTrail
+    trail = ProcessTrail("github_agent", trigger)
+
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     today = datetime.now().strftime("%Y-%m-%d")
 
     # Step 1: Get recently pushed repos
-    all_repos = _gh_api(f"/users/{GITHUB_USERNAME}/repos?sort=pushed&per_page=15")
+    with trail.step("api_call", "Fetch recently pushed repos",
+                     step_input=f"User: {GITHUB_USERNAME}") as s:
+        all_repos = _gh_api(f"/users/{GITHUB_USERNAME}/repos?sort=pushed&per_page=15")
+        repo_names = [r.get("name", "") for r in all_repos]
+        s["output"] = f"Found {len(all_repos)} repos"
+        s["metadata"] = {"repos": repo_names[:5]}
 
     commits = []
     repos = set()
@@ -44,10 +52,14 @@ def get_yesterday_commits() -> dict:
             continue
 
         # Step 2: Fetch actual commits for this repo from yesterday
-        repo_commits = _gh_api(
-            f"/repos/{GITHUB_USERNAME}/{repo_name}/commits"
-            f"?since={yesterday}T00:00:00Z&until={today}T00:00:00Z&per_page=50"
-        )
+        with trail.step("api_call", f"Fetch commits for {repo_name}",
+                         step_input=f"Since: {yesterday}") as s:
+            repo_commits = _gh_api(
+                f"/repos/{GITHUB_USERNAME}/{repo_name}/commits"
+                f"?since={yesterday}T00:00:00Z&until={today}T00:00:00Z&per_page=50"
+            )
+            s["output"] = f"{len(repo_commits)} commits in {repo_name}"
+            s["metadata"] = {"repo": repo_name, "count": len(repo_commits)}
 
         for c in repo_commits:
             msg = c.get("commit", {}).get("message", "").split("\n")[0][:100]
@@ -72,6 +84,7 @@ def get_yesterday_commits() -> dict:
             metadata={"commit_count": len(commits), "repos": sorted(list(repos)), "date": yesterday},
         )
 
+    trail.finalize(f"{len(commits)} commit(s) across {len(repos)} repo(s) on {yesterday}")
     return result
 
 

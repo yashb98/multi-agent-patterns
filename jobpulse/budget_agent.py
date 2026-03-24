@@ -544,25 +544,49 @@ def parse_transaction(text: str) -> dict | None:
     return {"amount": amount, "description": desc, "type": txn_type}
 
 
-def log_transaction(text: str) -> str:
+def log_transaction(text: str, trigger: str = "telegram_command") -> str:
     """Full pipeline: parse → classify → store → reply."""
-    parsed = parse_transaction(text)
-    if not parsed:
-        return ("Couldn't parse that. Try:\n"
-                "  spent 15 on lunch\n"
-                "  £8.50 coffee\n"
-                "  earned 500 freelance\n"
-                "  saved 100 emergency fund")
+    from jobpulse.process_logger import ProcessTrail
+    trail = ProcessTrail("budget_agent", trigger)
+
+    # Step 1: Parse
+    with trail.step("decision", "Parse transaction text",
+                     step_input=text) as s:
+        parsed = parse_transaction(text)
+        if not parsed:
+            s["output"] = "Could not parse"
+            s["decision"] = "No amount found in text"
+            trail.finalize("Failed: could not parse transaction")
+            return ("Couldn't parse that. Try:\n"
+                    "  spent 15 on lunch\n"
+                    "  £8.50 coffee\n"
+                    "  earned 500 freelance\n"
+                    "  saved 100 emergency fund")
+        s["output"] = f"Amount: £{parsed['amount']:.2f}, Desc: {parsed['description']}, Type: {parsed['type']}"
+        s["metadata"] = parsed
 
     amount = parsed["amount"]
     description = parsed["description"]
     txn_type = parsed["type"]
 
-    section, category = classify_transaction(description, amount, txn_type)
-    txn = add_transaction(amount, description, category, section, txn_type)
+    # Step 2: Classify
+    with trail.step("llm_call", "Classify category",
+                     step_input=f"£{amount:.2f} — {description} ({txn_type})") as s:
+        section, category = classify_transaction(description, amount, txn_type)
+        s["output"] = f"{section} → {category}"
+        s["decision"] = f"Classified as {category} in {section}"
+        s["metadata"] = {"section": section, "category": category}
 
-    # Sync to Notion
-    sync_expense_to_notion(txn)
+    # Step 3: Store
+    with trail.step("api_call", "Store in SQLite") as s:
+        txn = add_transaction(amount, description, category, section, txn_type)
+        s["output"] = f"Transaction #{txn['id']} stored"
+
+    # Step 4: Sync to Notion
+    with trail.step("api_call", "Sync to Notion budget sheet",
+                     step_input=f"{category}: £{amount:.2f}") as s:
+        sync_expense_to_notion(txn)
+        s["output"] = f"Updated {category} row in Notion"
 
     # Log to simulation events
     event_logger.log_event(
@@ -580,10 +604,13 @@ def log_transaction(text: str) -> str:
     notion_url = get_notion_budget_url(txn["week_start"])
     link_line = f"\n\n📎 {notion_url}" if notion_url else ""
 
-    return (f"{emoji} Logged: £{amount:.2f} — {description}\n"
-            f"   Category: {category} ({section})\n"
-            f"   Today: spent £{today['total_spent']:.2f} | earned £{today['total_earned']:.2f}"
-            f"{link_line}")
+    reply = (f"{emoji} Logged: £{amount:.2f} — {description}\n"
+             f"   Category: {category} ({section})\n"
+             f"   Today: spent £{today['total_spent']:.2f} | earned £{today['total_earned']:.2f}"
+             f"{link_line}")
+
+    trail.finalize(f"Logged £{amount:.2f} {txn_type} → {category}")
+    return reply
 
 
 def set_budget(text: str) -> str:

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from mindgraph_app.api import router
+from mindgraph_app.api import router, process_router
 
 app = FastAPI(title="MindGraph", version="0.1.0")
 
@@ -21,6 +21,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(process_router)
 
 # Serve static frontend
 static_dir = Path(__file__).parent.parent / "static"

@@ -1,4 +1,4 @@
-"""FastAPI routes for MindGraph — knowledge graph + simulation events + GraphRAG."""
+"""FastAPI routes for MindGraph — knowledge graph + simulation events + GraphRAG + process trails."""
 
 import httpx
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -8,6 +8,7 @@ from mindgraph_app import storage, extractor
 from mindgraph_app import retriever as graphrag
 
 router = APIRouter(prefix="/api/mindgraph")
+process_router = APIRouter(prefix="/api/process")
 
 
 class IngestText(BaseModel):
@@ -243,3 +244,49 @@ def get_timeline():
 def retrieve_knowledge(body: RetrieveQuery):
     """Smart retrieval from knowledge graph — used by agents and frontend."""
     return graphrag.retrieve(body.query, body.method)
+
+
+class DeepQueryBody(BaseModel):
+    query: str
+
+
+@router.post("/deep-query")
+def deep_query_endpoint(body: DeepQueryBody):
+    """Complex query using RLM over the knowledge graph."""
+    result = graphrag.deep_query(body.query)
+    return {"query": body.query, "answer": result, "method": "rlm"}
+
+
+# ── Process Trail Endpoints ──
+
+@process_router.get("/runs")
+def get_process_runs(agent: str = None, date: str = None, limit: int = 20):
+    """List recent agent runs with summaries."""
+    from jobpulse.process_logger import get_recent_runs, get_runs_for_day
+    if date:
+        return {"runs": get_runs_for_day(date)}
+    return {"runs": get_recent_runs(agent, limit)}
+
+
+@process_router.get("/trail/{run_id}")
+def get_process_trail(run_id: str):
+    """Get full step-by-step trail for one agent run."""
+    from jobpulse.process_logger import get_trail
+    steps = get_trail(run_id)
+    if not steps:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {
+        "run_id": run_id,
+        "agent_name": steps[0]["agent_name"],
+        "task_trigger": steps[0]["task_trigger"],
+        "started_at": steps[0]["created_at"],
+        "total_steps": len(steps),
+        "steps": steps,
+    }
+
+
+@process_router.get("/agents")
+def get_process_agent_stats():
+    """Get stats for each agent: run count, success rate, avg duration."""
+    from jobpulse.process_logger import get_agent_stats
+    return {"agents": get_agent_stats()}

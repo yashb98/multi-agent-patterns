@@ -31,8 +31,21 @@ def dispatch(cmd: ParsedCommand) -> str:
     if not handler:
         return _handle_unknown(cmd)
 
+    from jobpulse.process_logger import ProcessTrail
+    trail = ProcessTrail("telegram_dispatcher", "telegram_message")
+
     try:
-        result = handler(cmd)
+        with trail.step("decision", "Classify intent",
+                         step_input=cmd.raw[:200]) as s:
+            s["output"] = f"Intent: {cmd.intent.value}"
+            s["decision"] = f"Routed to {cmd.intent.value} handler"
+            s["metadata"] = {"intent": cmd.intent.value, "args": cmd.args[:100] if cmd.args else ""}
+
+        with trail.step("api_call", f"Execute {cmd.intent.value}",
+                         step_input=cmd.raw[:200]) as s:
+            result = handler(cmd)
+            s["output"] = result[:500] if result else ""
+
         # Log every dispatched command to simulation events
         event_logger.log_event(
             event_type="agent_action",
@@ -41,8 +54,13 @@ def dispatch(cmd: ParsedCommand) -> str:
             content=result[:300] if result else "",
             metadata={"intent": cmd.intent.value, "raw_input": cmd.raw[:200]},
         )
+
+        trail.finalize(result[:500] if result else "")
         return result
     except Exception as e:
+        trail.log_step("error", f"Error in {cmd.intent.value}", cmd.raw[:200],
+                       str(e), None, {"error": str(e)}, "error")
+        trail.finalize(f"Error: {e}")
         event_logger.log_event(
             event_type="error",
             agent_name="dispatcher",

@@ -52,7 +52,7 @@ svg{width:100%;height:100%}
 </style>
 </head>
 <body>
-<div class="topbar"><h1>Knowledge MindGraph</h1><input type="text" id="search" placeholder="Search entities..."><div class="fg" id="fil"></div><div class="tr"><button class="btn" onclick="resetV()">Reset</button><button class="btn" onclick="expPNG()">PNG</button></div></div>
+<div class="topbar"><h1>Knowledge MindGraph</h1><input type="text" id="search" placeholder="Search entities..."><div class="fg" id="fil"></div><div class="tr"><a href="/processes.html" class="btn" style="text-decoration:none">Processes</a><button class="btn" onclick="resetV()">Reset</button><button class="btn" onclick="expPNG()">PNG</button></div></div>
 <button class="st" onclick="togSB()">☰</button>
 <div class="sb" id="sb"><div class="tg"><div class="tb on" onclick="stab('paste',this)">Paste</div><div class="tb" onclick="stab('upload',this)">Upload</div><div class="tb" onclick="stab('url',this)">URL</div></div>
 <div class="tc on" id="t-paste"><textarea id="ptxt" placeholder="Paste text to extract knowledge..."></textarea><button class="xb" onclick="iPaste()">Extract</button></div>

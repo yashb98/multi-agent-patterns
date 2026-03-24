@@ -80,19 +80,33 @@ def _fetch_events(service, start: datetime, end: datetime) -> list[dict]:
         return []
 
 
-def get_today_and_tomorrow() -> dict:
+def get_today_and_tomorrow(trigger: str = "scheduled_check") -> dict:
     """Fetch today's and tomorrow's events. Returns dict with today_events and tomorrow_events."""
-    service = _get_calendar_service()
-    if not service:
-        return {"today_events": [], "tomorrow_events": []}
+    from jobpulse.process_logger import ProcessTrail
+    trail = ProcessTrail("calendar_agent", trigger)
+
+    with trail.step("api_call", "Connect to Calendar API") as s:
+        service = _get_calendar_service()
+        if not service:
+            s["output"] = "No valid credentials"
+            trail.finalize("Failed: no Calendar credentials")
+            return {"today_events": [], "tomorrow_events": []}
+        s["output"] = "Connected successfully"
 
     now = datetime.utcnow()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     tomorrow_end = today_start + timedelta(days=2)
 
-    today_events = _fetch_events(service, today_start, today_end)
-    tomorrow_events = _fetch_events(service, today_end, tomorrow_end)
+    with trail.step("api_call", "Fetch today's events") as s:
+        today_events = _fetch_events(service, today_start, today_end)
+        s["output"] = f"Found {len(today_events)} events today"
+        s["metadata"] = {"count": len(today_events)}
+
+    with trail.step("api_call", "Fetch tomorrow's events") as s:
+        tomorrow_events = _fetch_events(service, today_end, tomorrow_end)
+        s["output"] = f"Found {len(tomorrow_events)} events tomorrow"
+        s["metadata"] = {"count": len(tomorrow_events)}
 
     # Log each event to simulation
     for ev in today_events:
@@ -104,6 +118,7 @@ def get_today_and_tomorrow() -> dict:
             metadata={"title": ev["title"], "start": ev["start"], "location": ev.get("location", "")},
         )
 
+    trail.finalize(f"Today: {len(today_events)} events. Tomorrow: {len(tomorrow_events)} events")
     return {
         "today_events": today_events,
         "tomorrow_events": tomorrow_events,

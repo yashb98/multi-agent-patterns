@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Processes — MindGraph</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+.topbar{position:fixed;top:0;left:0;right:0;height:50px;background:#1e293b;border-bottom:1px solid #334155;display:flex;align-items:center;padding:0 20px;gap:14px;z-index:100}
+.topbar h1{font-size:15px;font-weight:600;color:#8B5CF6;white-space:nowrap}
+.nav{display:flex;gap:6px;margin-left:auto}
+.nav a{font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid #475569;background:#1e293b;color:#e2e8f0;cursor:pointer;text-decoration:none}
+.nav a:hover,.nav a.active{background:#8B5CF6;border-color:#8B5CF6;color:#fff}
+.main{margin-top:50px;padding:20px;max-width:1100px;margin-left:auto;margin-right:auto}
+
+/* Agent cards */
+.agent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:24px}
+.agent-card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px;cursor:pointer;transition:border-color .2s}
+.agent-card:hover,.agent-card.sel{border-color:#8B5CF6}
+.agent-card .icon{font-size:22px;margin-bottom:4px}
+.agent-card .name{font-size:13px;font-weight:600;margin-bottom:2px}
+.agent-card .meta{font-size:10px;color:#94a3b8}
+.agent-card .meta b{color:#8B5CF6}
+
+/* Runs list */
+.section-title{font-size:13px;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.run-card{background:#1e293b;border:1px solid #334155;border-radius:8px;margin-bottom:10px;overflow:hidden;transition:border-color .2s}
+.run-card:hover{border-color:#475569}
+.run-header{padding:14px;cursor:pointer;display:flex;align-items:flex-start;gap:12px}
+.run-icon{font-size:20px;flex-shrink:0;margin-top:2px}
+.run-info{flex:1;min-width:0}
+.run-info .title{font-size:13px;font-weight:600;margin-bottom:3px}
+.run-info .subtitle{font-size:11px;color:#94a3b8;margin-bottom:4px}
+.run-info .result{font-size:11px;color:#cbd5e1;background:#0f172a;border-radius:4px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;word-break:break-word}
+.run-badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:600;flex-shrink:0}
+.run-badge.ok{background:#10B98122;color:#10B981}
+.run-badge.err{background:#EF444422;color:#EF4444}
+
+/* Expanded trail */
+.trail{display:none;border-top:1px solid #334155;padding:0 14px 14px}
+.trail.open{display:block}
+.step{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #0f172a1a;position:relative}
+.step:last-child{border-bottom:none}
+.step-line{position:absolute;left:14px;top:28px;bottom:0;width:2px;background:#334155}
+.step:last-child .step-line{display:none}
+.step-icon{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;border:2px solid #334155;background:#0f172a;z-index:1}
+.step-icon.api_call{border-color:#3B82F6;color:#3B82F6}
+.step-icon.llm_call{border-color:#A855F7;color:#A855F7}
+.step-icon.decision{border-color:#F59E0B;color:#F59E0B}
+.step-icon.extraction{border-color:#10B981;color:#10B981}
+.step-icon.output{border-color:#e2e8f0;color:#e2e8f0}
+.step-icon.error{border-color:#EF4444;color:#EF4444}
+.step-body{flex:1;min-width:0}
+.step-head{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.step-type{font-size:9px;text-transform:uppercase;font-weight:600;padding:1px 5px;border-radius:2px}
+.step-type.api_call{background:#3B82F622;color:#3B82F6}
+.step-type.llm_call{background:#A855F722;color:#A855F7}
+.step-type.decision{background:#F59E0B22;color:#F59E0B}
+.step-type.extraction{background:#10B98122;color:#10B981}
+.step-type.output{background:#e2e8f022;color:#e2e8f0}
+.step-type.error{background:#EF444422;color:#EF4444}
+.step-name{font-size:12px;font-weight:600}
+.step-dur{font-size:10px;color:#64748b;margin-left:auto;flex-shrink:0}
+.step-input,.step-output,.step-decision{font-size:11px;color:#94a3b8;margin-top:2px;word-break:break-word}
+.step-output{color:#cbd5e1}
+.step-decision{color:#F59E0B;font-style:italic}
+.step-detail{display:none;margin-top:4px;padding:6px 8px;background:#0f172a;border-radius:4px;font-size:10px;color:#94a3b8;cursor:pointer}
+.step:hover .step-detail{display:block}
+
+/* Deep query */
+.dq-box{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;margin-bottom:24px}
+.dq-box input{width:100%;background:#0f172a;border:1px solid #475569;border-radius:5px;color:#e2e8f0;padding:8px 12px;font-size:13px;margin-bottom:8px}
+.dq-box input:focus{outline:none;border-color:#8B5CF6}
+.dq-btn{padding:8px 16px;background:#8B5CF6;color:#fff;border:none;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600}
+.dq-btn:hover{background:#7c3aed}
+.dq-btn:disabled{opacity:.5;cursor:default}
+.dq-result{margin-top:12px;padding:12px;background:#0f172a;border-radius:6px;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;display:none}
+
+.empty{text-align:center;padding:40px;color:#64748b;font-size:13px}
+.loading{text-align:center;padding:20px;color:#8B5CF6;font-size:12px}
+</style>
+</head>
+<body>
+<div class="topbar">
+<h1>Agent Processes</h1>
+<div class="nav">
+<a href="/">MindGraph</a>
+<a href="/processes.html" class="active">Processes</a>
+</div>
+</div>
+
+<div class="main">
+<!-- Deep Query -->
+<div class="dq-box">
+<div style="font-size:12px;font-weight:600;margin-bottom:8px;color:#8B5CF6">Deep Knowledge Query</div>
+<input type="text" id="dq-input" placeholder="Ask a complex question across your knowledge graph...">
+<button class="dq-btn" id="dq-btn" onclick="deepQuery()">Query</button>
+<div class="dq-result" id="dq-result"></div>
+</div>
+
+<!-- Agent Cards -->
+<div class="section-title">Agent Overview</div>
+<div class="agent-grid" id="agent-grid"></div>
+
+<!-- Recent Runs -->
+<div class="section-title">Recent Runs <span id="run-filter-label" style="color:#8B5CF6;font-size:11px"></span></div>
+<div id="runs-list"></div>
+</div>
+
+<script>
+const PA='/api/process', MA='/api/mindgraph';
+const AGENT_ICONS={gmail_agent:'📧',calendar_agent:'📅',github_agent:'💻',notion_agent:'📝',budget_agent:'💰',morning_briefing:'☀️',telegram_dispatcher:'📱',arxiv_agent:'📚'};
+const STEP_ICONS={api_call:'🔌',llm_call:'🤖',decision:'💡',extraction:'🧠',output:'📤',error:'❌'};
+let selectedAgent=null;
+
+async function init(){
+    await Promise.all([loadAgents(), loadRuns()]);
+}
+
+async function loadAgents(){
+    try{
+        const r=await fetch(`${PA}/agents`);
+        const d=await r.json();
+        const grid=document.getElementById('agent-grid');
+        grid.innerHTML='';
+        const agents=d.agents||[];
+        if(!agents.length){grid.innerHTML='<div class="empty">No agent data yet. Trigger some agents via Telegram!</div>';return}
+        for(const a of agents){
+            const card=document.createElement('div');
+            card.className='agent-card'+(selectedAgent===a.agent_name?' sel':'');
+            const icon=AGENT_ICONS[a.agent_name]||'🤖';
+            const name=a.agent_name.replace(/_/g,' ');
+            const dur=a.avg_duration_ms?`${(a.avg_duration_ms/1000).toFixed(1)}s avg`:'';
+            const lastRun=a.last_run?timeAgo(a.last_run):'never';
+            card.innerHTML=`<div class="icon">${icon}</div><div class="name">${name}</div><div class="meta"><b>${a.total_runs}</b> runs · ${a.total_errors} errors<br>Last: ${lastRun}${dur?' · '+dur:''}</div>`;
+            card.onclick=()=>{selectedAgent=selectedAgent===a.agent_name?null:a.agent_name;loadAgents();loadRuns()};
+            grid.appendChild(card);
+        }
+    }catch(e){console.error('loadAgents',e)}
+}
+
+async function loadRuns(){
+    try{
+        let url=`${PA}/runs?limit=30`;
+        if(selectedAgent)url+=`&agent=${selectedAgent}`;
+        document.getElementById('run-filter-label').textContent=selectedAgent?`(${selectedAgent.replace(/_/g,' ')})`:'';
+        const r=await fetch(url);
+        const d=await r.json();
+        const list=document.getElementById('runs-list');
+        const runs=d.runs||[];
+        if(!runs.length){list.innerHTML='<div class="empty">No process trails recorded yet.</div>';return}
+        list.innerHTML='';
+        for(const run of runs){
+            const card=document.createElement('div');
+            card.className='run-card';
+            const icon=AGENT_ICONS[run.agent_name]||'🤖';
+            const name=run.agent_name.replace(/_/g,' ');
+            const time=run.started_at?formatTime(run.started_at):'';
+            const hasError=run.error_count>0;
+            const badgeCls=hasError?'err':'ok';
+            const badgeText=hasError?`${run.error_count} error${run.error_count>1?'s':''}`:'success';
+            const result=(run.final_output||'').slice(0,200);
+
+            card.innerHTML=`
+<div class="run-header" onclick="toggleTrail('${run.run_id}',this)">
+<div class="run-icon">${icon}</div>
+<div class="run-info">
+<div class="title">${name} — ${run.task_trigger.replace(/_/g,' ')}</div>
+<div class="subtitle">${time} · ${run.total_steps} steps</div>
+${result?`<div class="result">${escHtml(result)}</div>`:''}
+</div>
+<div class="run-badge ${badgeCls}">${badgeText}</div>
+</div>
+<div class="trail" id="trail-${run.run_id}"></div>`;
+            list.appendChild(card);
+        }
+    }catch(e){console.error('loadRuns',e)}
+}
+
+async function toggleTrail(runId, headerEl){
+    const el=document.getElementById('trail-'+runId);
+    if(el.classList.contains('open')){el.classList.remove('open');return}
+    el.innerHTML='<div class="loading">Loading trail...</div>';
+    el.classList.add('open');
+    try{
+        const r=await fetch(`${PA}/trail/${runId}`);
+        const d=await r.json();
+        const steps=d.steps||[];
+        el.innerHTML=steps.map((step,i)=>{
+            const icon=STEP_ICONS[step.step_type]||'⚙️';
+            const dur=step.duration_ms!=null?`${step.duration_ms}ms`:'';
+            const statusIcon=step.status==='error'?'❌':'✅';
+            const inp=step.step_input?`<div class="step-input">Input: ${escHtml(step.step_input.slice(0,300))}</div>`:'';
+            const out=step.step_output?`<div class="step-output">${statusIcon} ${escHtml(step.step_output.slice(0,500))}</div>`:'';
+            const dec=step.step_decision?`<div class="step-decision">💡 ${escHtml(step.step_decision)}</div>`:'';
+            const meta=step.metadata&&Object.keys(step.metadata).length?`<div class="step-detail">${JSON.stringify(step.metadata)}</div>`:'';
+            return `
+<div class="step">
+<div class="step-line"></div>
+<div class="step-icon ${step.step_type}">${icon}</div>
+<div class="step-body">
+<div class="step-head">
+<span class="step-type ${step.step_type}">${step.step_type}</span>
+<span class="step-name">${escHtml(step.step_name)}</span>
+<span class="step-dur">${dur}</span>
+</div>
+${inp}${out}${dec}${meta}
+</div>
+</div>`;
+        }).join('');
+    }catch(e){el.innerHTML=`<div class="empty">Error loading trail: ${e.message}</div>`}
+}
+
+async function deepQuery(){
+    const input=document.getElementById('dq-input');
+    const btn=document.getElementById('dq-btn');
+    const result=document.getElementById('dq-result');
+    const q=input.value.trim();
+    if(!q)return;
+    btn.disabled=true;btn.textContent='Querying...';
+    result.style.display='block';result.textContent='Thinking...';
+    try{
+        const r=await fetch(`${MA}/deep-query`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})});
+        const d=await r.json();
+        result.textContent=d.answer||d.error||'No answer';
+    }catch(e){result.textContent='Error: '+e.message}
+    btn.disabled=false;btn.textContent='Query';
+}
+
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function formatTime(iso){try{const d=new Date(iso);return d.toLocaleString('en-GB',{hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'})}catch(e){return iso}}
+function timeAgo(iso){try{const d=new Date(iso);const diff=Date.now()-d.getTime();const mins=Math.floor(diff/60000);if(mins<1)return 'just now';if(mins<60)return mins+'m ago';const hrs=Math.floor(mins/60);if(hrs<24)return hrs+'h ago';return Math.floor(hrs/24)+'d ago'}catch(e){return '?'}}
+
+// Enter key for deep query
+document.getElementById('dq-input').addEventListener('keydown',e=>{if(e.key==='Enter')deepQuery()});
+
+init();
+setInterval(()=>{loadAgents();loadRuns()},30000);
+</script>
+</body>
+</html>

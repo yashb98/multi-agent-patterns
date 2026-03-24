@@ -107,45 +107,66 @@ def _extract_body(payload: dict) -> str:
     return ""
 
 
-def check_emails() -> list[dict]:
+def check_emails(trigger: str = "scheduled_check") -> list[dict]:
     """Main entry: fetch new emails, classify, store, alert. Returns classified recruiter emails."""
-    service = _get_gmail_service()
-    if not service:
-        return []
+    from jobpulse.process_logger import ProcessTrail
+    trail = ProcessTrail("gmail_agent", trigger)
+
+    # Step 1: Connect to Gmail
+    with trail.step("api_call", "Connect to Gmail API") as s:
+        service = _get_gmail_service()
+        if not service:
+            s["output"] = "No valid credentials"
+            trail.finalize("Failed: no Gmail credentials")
+            return []
+        s["output"] = "Connected successfully"
 
     last_check = db.get_last_check_ts()
     now = datetime.now().isoformat()
     new_recruiter_emails = []
 
     try:
-        # Fetch messages since last check
-        query = f"after:{last_check[:10]} in:inbox"
-        results = service.users().messages().list(userId="me", q=query, maxResults=50).execute()
-        messages = results.get("messages", [])
+        # Step 2: Fetch inbox
+        with trail.step("api_call", "Fetch inbox since last check",
+                         step_input=f"Since: {last_check[:10]}") as s:
+            query = f"after:{last_check[:10]} in:inbox"
+            results = service.users().messages().list(userId="me", q=query, maxResults=50).execute()
+            messages = results.get("messages", [])
+            s["output"] = f"Found {len(messages)} messages"
+            s["metadata"] = {"email_count": len(messages)}
 
         print(f"[Gmail] Found {len(messages)} messages since {last_check[:10]}")
 
-        for msg_meta in messages:
+        for i, msg_meta in enumerate(messages):
             msg_id = msg_meta["id"]
 
             # Skip if already processed
             if db.is_email_processed(msg_id):
                 continue
 
-            # Fetch full message
-            msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
-            headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            # Step: Read email
+            with trail.step("api_call", f"Read email #{i+1}",
+                             step_input=f"Email ID: {msg_id}") as s:
+                msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
+                headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                subject = headers.get("subject", "(no subject)")
+                sender = headers.get("from", "unknown")
+                date_str = headers.get("date", now)
+                body = _extract_body(msg.get("payload", {}))[:500]
+                s["output"] = f"From: {sender}\nSubject: {subject}"
 
-            subject = headers.get("subject", "(no subject)")
-            sender = headers.get("from", "unknown")
-            date_str = headers.get("date", now)
-            body = _extract_body(msg.get("payload", {}))[:500]
+            # Step: Classify with LLM
+            with trail.step("llm_call", f"Classify email #{i+1}",
+                             step_input=f"Subject: {subject}\nBody: {body[:200]}") as s:
+                category = _classify_email(subject, body)
+                s["output"] = f"Classification: {category}"
+                s["decision"] = f"Classified as {category}"
+                s["metadata"] = {"category": category, "sender": sender}
 
-            # Classify
-            category = _classify_email(subject, body)
-
-            # Store in SQLite (all categories, for dedup)
-            db.store_email(msg_id, sender, subject, category, body[:200], date_str)
+            # Step: Store
+            with trail.step("api_call", f"Store email #{i+1} in SQLite") as s:
+                db.store_email(msg_id, sender, subject, category, body[:200], date_str)
+                s["output"] = "Stored successfully"
 
             # Alert for recruiter categories only
             if category != OTHER:
@@ -156,16 +177,19 @@ def check_emails() -> list[dict]:
                     "subject": subject, "category": category
                 })
 
-                # Instant Telegram alert
-                alert = f"📧 RECRUITER UPDATE\n\n{emoji_label}: {sender_short}\n\"{subject}\""
-                if category == SELECTED:
-                    alert += "\n\n🎉 Congratulations!"
-                elif category == INTERVIEW:
-                    alert += "\n\n🚨 Action needed — reply to schedule!"
-                elif category == REJECTED:
-                    alert += "\n\nOnward to the next one 💪"
+                # Step: Telegram alert
+                with trail.step("api_call", f"Send Telegram alert for {category}",
+                                 step_input=f"{sender_short}: {subject}") as s:
+                    alert = f"📧 RECRUITER UPDATE\n\n{emoji_label}: {sender_short}\n\"{subject}\""
+                    if category == SELECTED:
+                        alert += "\n\n🎉 Congratulations!"
+                    elif category == INTERVIEW:
+                        alert += "\n\n🚨 Action needed — reply to schedule!"
+                    elif category == REJECTED:
+                        alert += "\n\nOnward to the next one 💪"
+                    telegram_agent.send_message(alert)
+                    s["output"] = f"Alert sent for {category}"
 
-                telegram_agent.send_message(alert)
                 print(f"[Gmail] {emoji_label}: {sender_short} — {subject}")
 
                 # Log to simulation events
@@ -177,13 +201,18 @@ def check_emails() -> list[dict]:
                     metadata={"subject": subject, "sender": sender, "category": category, "email_id": msg_id},
                 )
 
-                # Auto-extract knowledge (company names, roles, etc.)
-                try:
-                    auto_extract.extract_from_email(sender, subject, category, body[:500])
-                except Exception:
-                    pass  # extraction is best-effort, don't block email processing
+                # Step: Extract knowledge
+                with trail.step("extraction", f"Extract knowledge from email #{i+1}",
+                                 step_input=f"{sender} — {subject}") as s:
+                    try:
+                        auto_extract.extract_from_email(sender, subject, category, body[:500])
+                        s["output"] = f"Extracted knowledge for {sender_short}"
+                    except Exception:
+                        s["output"] = "Extraction skipped (best-effort)"
 
     except Exception as e:
+        trail.log_step("error", "Fetch error", None, str(e), None,
+                       {"error": str(e)}, "error")
         print(f"[Gmail] Error fetching emails: {e}")
 
     # Update last check timestamp
@@ -192,6 +221,8 @@ def check_emails() -> list[dict]:
     if not new_recruiter_emails:
         print("[Gmail] No new recruiter emails")
 
+    trail.finalize(f"Processed {len(messages)} emails. "
+                   f"Recruiter: {len(new_recruiter_emails)}. Alerts sent: {len(new_recruiter_emails)}")
     return new_recruiter_emails
 
 
