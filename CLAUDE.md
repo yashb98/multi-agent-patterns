@@ -43,6 +43,34 @@ Full constraints in @docs/rules.md. The two most-violated rules:
 - IMPORTANT: All LLM calls MUST go through `get_llm()` in `shared/agents.py`. Never instantiate `ChatOpenAI` directly.
 - Agent functions return `dict` (partial state), NEVER full `AgentState`.
 
+## JobPulse Commands
+
+```bash
+python -m jobpulse.runner briefing       # Send morning digest
+python -m jobpulse.runner gmail          # Check recruiter emails
+python -m jobpulse.runner calendar       # Today + tomorrow events
+python -m jobpulse.runner tasks          # Show Notion tasks
+python -m jobpulse.runner github         # Yesterday's commits
+python -m jobpulse.runner daemon         # Start Telegram command daemon
+./scripts/install_daemon.sh install      # Auto-start daemon on login
+```
+
+## Telegram Command Interface
+
+The daemon (`python -m jobpulse.runner daemon`) provides instant Telegram replies:
+
+| You type | Agent runs |
+|----------|-----------|
+| "show tasks" | Notion → today's checklist |
+| list of items (multi-line) | Notion → creates tasks |
+| "mark X done" | Notion → marks task Done |
+| "calendar" | Calendar → today + tomorrow |
+| "check emails" | Gmail → scan + classify |
+| "commits" | GitHub → yesterday's activity |
+| "trending" | GitHub → hot repos |
+| "briefing" | All agents → full report |
+| "help" | Lists all commands |
+
 ## Env Vars
 
 - `OPENAI_API_KEY` (required)
