@@ -78,6 +78,35 @@ def create_task(title: str, date: str = None) -> bool:
     return "id" in result
 
 
+def complete_task(task_name: str) -> str:
+    """Find a task by name (fuzzy match) and mark it as Done. Returns result message."""
+    if not NOTION_TASKS_DB_ID:
+        return "NOTION_TASKS_DB_ID not set"
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    result = _notion_api("POST", f"/databases/{NOTION_TASKS_DB_ID}/query", {
+        "filter": {
+            "and": [
+                {"property": "Date", "date": {"equals": today}},
+                {"property": "Status", "select": {"does_not_equal": "Done"}},
+            ]
+        }
+    })
+
+    target = task_name.lower().strip()
+    for page in result.get("results", []):
+        props = page.get("properties", {})
+        title = "".join(t.get("plain_text", "") for t in props.get("Task", {}).get("title", []))
+        if target in title.lower():
+            # PATCH to mark as Done
+            _notion_api("PATCH", f"/pages/{page['id']}", {
+                "properties": {"Status": {"select": {"name": "Done"}}}
+            })
+            return f"✅ Marked \"{title}\" as Done!"
+
+    return f"Couldn't find task matching \"{task_name}\""
+
+
 def create_research_page(title: str, blocks: list[dict]) -> str:
     """Create a weekly research page in the Weekly AI Research database. Returns page URL."""
     if not NOTION_RESEARCH_DB_ID:

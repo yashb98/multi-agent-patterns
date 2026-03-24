@@ -116,50 +116,13 @@ def _handle_arxiv(cmd: ParsedCommand) -> str:
 
 
 def _handle_complete_task(cmd: ParsedCommand) -> str:
-    from jobpulse.notion_agent import get_today_tasks, _notion_api
-    import json
+    from jobpulse.notion_agent import complete_task
 
-    target = cmd.args.lower().strip()
+    target = cmd.args.strip()
     if not target:
         return "Which task? Say: done: task name"
 
-    tasks = get_today_tasks()
-    # Find best match
-    matched = None
-    for t in tasks:
-        if target in t["title"].lower():
-            matched = t
-            break
-
-    if not matched:
-        task_list = "\n".join(f"  □ {t['title']}" for t in tasks)
-        return f"Couldn't find task matching \"{cmd.args}\". Your tasks:\n\n{task_list}"
-
-    # We need the page ID to update — fetch it
-    from jobpulse.config import NOTION_API_KEY, NOTION_TASKS_DB_ID
-    import subprocess
-
-    today = datetime.now().strftime("%Y-%m-%d")
-    result = _notion_api("POST", f"/databases/{NOTION_TASKS_DB_ID}/query", {
-        "filter": {
-            "and": [
-                {"property": "Date", "date": {"equals": today}},
-                {"property": "Status", "select": {"does_not_equal": "Done"}},
-            ]
-        }
-    })
-
-    for page in result.get("results", []):
-        props = page.get("properties", {})
-        title = "".join(t.get("plain_text", "") for t in props.get("Task", {}).get("title", []))
-        if target in title.lower():
-            # Update status to Done
-            _notion_api("PATCH", f"/pages/{page['id']}", {
-                "properties": {"Status": {"select": {"name": "Done"}}}
-            })
-            return f"✅ Marked \"{title}\" as Done!"
-
-    return f"Couldn't find \"{cmd.args}\" in today's tasks."
+    return complete_task(target)
 
 
 def _handle_create_event(cmd: ParsedCommand) -> str:
@@ -195,30 +158,3 @@ def _handle_help(cmd: ParsedCommand) -> str:
 def _handle_unknown(cmd: ParsedCommand) -> str:
     return (f"🤔 Not sure what you mean by: \"{cmd.raw[:50]}\"\n\n"
             "Try: tasks, calendar, emails, commits, trending, briefing, help")
-
-
-# Need to add PATCH method support to notion_agent
-def _patch_notion_api():
-    """Add PATCH support to notion_agent._notion_api if not present."""
-    from jobpulse import notion_agent
-    original = notion_agent._notion_api
-
-    def patched(method, endpoint, data=None):
-        import json as _json
-        import subprocess as _sp
-        cmd = ["curl", "-s", "-X", method,
-               f"https://api.notion.com/v1{endpoint}",
-               "-H", f"Authorization: Bearer {notion_agent.NOTION_API_KEY}",
-               "-H", "Content-Type: application/json",
-               "-H", "Notion-Version: 2022-06-28"]
-        if data:
-            cmd.extend(["-d", _json.dumps(data)])
-        try:
-            result = _sp.run(cmd, capture_output=True, text=True, timeout=15)
-            return _json.loads(result.stdout) if result.stdout else {}
-        except Exception:
-            return {}
-
-    notion_agent._notion_api = patched
-
-_patch_notion_api()
