@@ -6,6 +6,7 @@ from jobpulse.config import TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR
 from jobpulse import telegram_agent
 from jobpulse.command_router import classify, Intent
 from jobpulse.dispatcher import dispatch
+from jobpulse.healthcheck import write_heartbeat
 
 
 LAST_UPDATE_FILE = DATA_DIR / "telegram_last_update_id.txt"
@@ -149,6 +150,7 @@ def poll_continuous():
                 _save_last_update_id(max_id)
 
             consecutive_errors = 0
+            write_heartbeat()
 
         except KeyboardInterrupt:
             _log("Daemon stopped by user")

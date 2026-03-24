@@ -61,6 +61,10 @@ def main():
         from jobpulse.telegram_listener import poll_continuous
         poll_continuous()
 
+    elif command == "health":
+        from jobpulse.healthcheck import alert_if_down
+        alert_if_down()
+
     elif command == "test":
         from jobpulse.telegram_agent import send_message
         success = send_message("🧪 JobPulse test message — all systems operational!")
