@@ -15,7 +15,10 @@
       "Bash(pip install*)",
       "Bash(pip freeze*)",
       "Bash(wc -l*)",
-      "Bash(ls*)"
+      "Bash(ls*)",
+      "Bash(/opt/homebrew/anaconda3/bin/python -c \":*)",
+      "Bash(pmset -g)",
+      "Bash(gh secret:*)"
     ]
   }
 }
