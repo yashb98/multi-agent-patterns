@@ -69,6 +69,9 @@ The daemon (`python -m jobpulse.runner daemon`) provides instant Telegram replie
 | "commits" | GitHub → yesterday's activity |
 | "trending" | GitHub → hot repos |
 | "briefing" | All agents → full report |
+| "spent 15 on lunch" | Budget → log + categorize + Notion |
+| "£8.50 coffee" | Budget → same |
+| "budget" | Budget → weekly summary |
 | "help" | Lists all commands |
 
 ## Env Vars
