@@ -19,6 +19,55 @@ from datetime import datetime, timedelta
 from jobpulse.config import NOTION_API_KEY, NOTION_PARENT_PAGE_ID, DATA_DIR
 from jobpulse.notion_agent import _notion_api
 
+# ── Your existing Notion Weekly Budget Sheet ──
+# Page: https://www.notion.so/Weekly-Budget-Sheet-50f750e493694f5e91e4f1680e7192fd
+BUDGET_PAGE_ID = "50f750e4-9369-4f5e-91e4-f1680e7192fd"
+
+# Table IDs inside the sheet
+TABLE_IDS = {
+    "income": "c5d42e98-fdbe-4ded-9628-fcf0d974707b",
+    "fixed": "e73bef32-25a6-4331-ad5f-6f4a101e426b",
+    "variable": "0d77a285-e62b-4190-9e5e-7e39bb025c3f",
+    "savings": "52a95f38-273f-4cb1-a586-71a359c80912",
+    "summary": "04eef488-e09a-4cbe-9177-44252f4c06de",
+}
+
+# Row IDs for each category (maps category name → row block ID)
+# Col 0 = label, Col 1 = Planned, Col 2 = Actual, Col 3 = Notes/Date
+ROW_IDS = {
+    # Income
+    "Salary": "3fba291a-3edf-498c-b5fc-c2445db935c9",
+    "Freelance": "a20ee3b5-861d-478d-b01a-1583bc99bab1",
+    "Other": "15ca2782-800c-4fef-915c-088ec71e1a2a",
+    "Total income": "0d6e9a9e-09d1-454f-a90a-25f3c39bf1b6",
+    # Fixed expenses
+    "Rent / Mortgage": "d0c830bc-2e09-4d3e-8ea6-8c9bee0d111f",
+    "Utilities": "752a0174-e663-42b2-b0c2-401476892ec5",
+    "Phone / Internet": "6dd0cce5-7b12-41b3-8c45-b26dcc34f3fe",
+    "Subscriptions": "1983caf4-69cd-4a21-9d3f-eb36f1a9cbd4",
+    "Insurance": "b1e1ee11-03d9-4ba9-bf2c-8c85f9d06a5e",
+    "Total fixed": "345049f7-ba91-4bef-ad79-86ff1420524f",
+    # Variable spending
+    "Groceries": "abd561c5-6453-49b3-9690-41e1ad6b2f53",
+    "Eating out": "908e9fc8-464e-4b19-8393-84f4597beab3",
+    "Transport": "69be65a1-0a68-4bb1-95f2-35d73341876d",
+    "Shopping": "1b430b3a-992e-4591-a61e-c6aee7ed69f2",
+    "Entertainment": "b5c87445-8f5b-4526-bd57-d32f341be02c",
+    "Health": "ec7677c1-d00c-4e04-b53a-2aa49ec4a732",
+    "Misc": "7ed615cc-98c7-4f0f-a0bf-7c76905a7a09",
+    "Total variable": "719e132c-755c-43a4-a7cf-ec8a3534e037",
+    # Savings + debt
+    "Savings": "5486409b-07dc-47cc-9250-a25ae0552c31",
+    "Investments": "21d0a510-24c8-4084-b532-423b7993911d",
+    "Credit card / Loan payment": "0f318b42-3fbf-4141-b63b-bbefd2bc1ecf",
+    "Total savings + debt": "9dd850ee-6c38-42dd-8b87-82dd59b17310",
+    # Summary
+    "Total income (summary)": "7a71026f-daca-4387-b34e-1386062a7505",
+    "Total spending (fixed + variable)": "9c4df293-1f90-43d8-8724-98b8a9875a7d",
+    "Total savings + debt (summary)": "36aec6cb-ac1e-48da-9b78-779007192a9b",
+    "Net (income - spending - savings/debt)": "8867602a-9249-49ad-b316-f03321875c02",
+}
+
 DB_PATH = DATA_DIR / "budget.db"
 
 # ── Categories matching the Notion sheet exactly ──
@@ -190,86 +239,98 @@ def _get_week_start(date: datetime = None) -> str:
 
 
 def get_notion_budget_url(week_start: str = None) -> str:
-    """Get the Notion URL for this week's budget page."""
-    week_start = week_start or _get_week_start()
-    conn = _get_conn()
-    row = conn.execute("SELECT notion_page_id FROM weekly_budgets WHERE week_start=?", (week_start,)).fetchone()
-    conn.close()
-    if row and row["notion_page_id"]:
-        page_id = row["notion_page_id"].replace("-", "")
-        return f"https://www.notion.so/{page_id}"
-    return ""
+    """Get the Notion URL for the budget sheet."""
+    page_id = BUDGET_PAGE_ID.replace("-", "")
+    return f"https://www.notion.so/{page_id}"
 
 
-def _get_or_create_weekly_budget_page(week_start: str = None) -> str:
-    """Get or create this week's budget page in Notion. Returns page ID."""
-    week_start = week_start or _get_week_start()
-    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
-    week_label = datetime.strptime(week_start, "%Y-%m-%d").strftime("%B %d")
-
-    conn = _get_conn()
-    row = conn.execute("SELECT notion_page_id FROM weekly_budgets WHERE week_start=?", (week_start,)).fetchone()
-    if row and row["notion_page_id"]:
-        conn.close()
-        return row["notion_page_id"]
-
-    if not NOTION_PARENT_PAGE_ID:
-        conn.close()
-        return ""
-
-    data = {
-        "parent": {"page_id": NOTION_PARENT_PAGE_ID},
-        "properties": {
-            "title": {"title": [{"text": {"content": f"💰 Budget — Week of {week_label}"}}]}
-        },
-        "children": [
-            {"object": "block", "type": "heading_1", "heading_1": {
-                "rich_text": [{"text": {"content": f"💰 Weekly Budget — {week_label}"}}]
-            }},
-            {"object": "block", "type": "paragraph", "paragraph": {
-                "rich_text": [{"text": {"content": f"Tracking from {week_start} to {week_end}"}}]
-            }},
-            {"object": "block", "type": "divider", "divider": {}},
-            {"object": "block", "type": "heading_2", "heading_2": {
-                "rich_text": [{"text": {"content": "📝 Transaction Log"}}]
-            }},
-        ]
-    }
-
-    result = _notion_api("POST", "/pages", data)
-    page_id = result.get("id", "")
-
-    if page_id:
-        conn.execute(
-            "INSERT OR REPLACE INTO weekly_budgets (week_start, notion_page_id, created_at) VALUES (?,?,?)",
-            (week_start, page_id, datetime.now().isoformat())
-        )
-        conn.commit()
-
-    conn.close()
-    return page_id
+def _update_table_row(row_id: str, col2_value: str, col3_value: str = ""):
+    """Update a table row's Actual (col 2) and Notes (col 3) columns."""
+    cells = [
+        [],  # col 0: label (don't change)
+        [],  # col 1: planned (don't change)
+        [{"type": "text", "text": {"content": col2_value}}],  # col 2: actual
+        [{"type": "text", "text": {"content": col3_value}}],  # col 3: notes
+    ]
+    _notion_api("PATCH", f"/blocks/{row_id}", {
+        "table_row": {"cells": cells}
+    })
 
 
 def sync_expense_to_notion(txn: dict):
-    """Append a transaction entry to this week's Notion budget page."""
-    page_id = _get_or_create_weekly_budget_page(txn["week_start"])
-    if not page_id:
+    """Update the Actual column in the correct row of your existing budget sheet."""
+    category = txn["category"]
+    row_id = ROW_IDS.get(category)
+    if not row_id:
+        print(f"[Budget] No row ID for category: {category}")
         return
 
-    type_emoji = {"income": "📥", "expense": "📤", "savings": "🏦"}
-    emoji = type_emoji.get(txn["type"], "📤")
+    # Get current total for this category from SQLite
+    conn = _get_conn()
+    total = conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE week_start=? AND category=?",
+        (txn["week_start"], category)
+    ).fetchone()[0]
+    conn.close()
 
-    _notion_api("PATCH", f"/blocks/{page_id}/children", {
-        "children": [
-            {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {
-                "rich_text": [
-                    {"text": {"content": f"{emoji} £{txn['amount']:.2f}"}, "annotations": {"bold": True}},
-                    {"text": {"content": f" — {txn['description']} "}},
-                    {"text": {"content": f"[{txn['category']}]"}, "annotations": {"color": "gray"}},
-                    {"text": {"content": f" ({txn['date']})"}, "annotations": {"color": "gray"}},
-                ]
-            }}
-        ]
+    # Update the Actual column with the running total
+    _update_table_row(row_id, f"£{total:.2f}", txn["description"])
+
+    # Also update the section total row
+    _update_section_totals(txn["week_start"])
+
+
+def _update_section_totals(week_start: str = None):
+    """Recalculate and update all Total rows and the Summary table."""
+    week_start = week_start or _get_week_start()
+    conn = _get_conn()
+
+    # Section totals
+    income_total = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND type='income'",
+        (week_start,)
+    ).fetchone()[0]
+
+    fixed_total = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND section='fixed'",
+        (week_start,)
+    ).fetchone()[0]
+
+    variable_total = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND section='variable'",
+        (week_start,)
+    ).fetchone()[0]
+
+    savings_total = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND type='savings'",
+        (week_start,)
+    ).fetchone()[0]
+
+    conn.close()
+
+    spending_total = fixed_total + variable_total
+    net = income_total - spending_total - savings_total
+
+    # Update Total rows
+    _update_table_row(ROW_IDS["Total income"], f"£{income_total:.2f}")
+    _update_table_row(ROW_IDS["Total fixed"], f"£{fixed_total:.2f}")
+    _update_table_row(ROW_IDS["Total variable"], f"£{variable_total:.2f}")
+    _update_table_row(ROW_IDS["Total savings + debt"], f"£{savings_total:.2f}")
+
+    # Update Summary table
+    _update_table_row(ROW_IDS["Total income (summary)"], f"£{income_total:.2f}")
+    _update_table_row(ROW_IDS["Total spending (fixed + variable)"], f"£{spending_total:.2f}")
+    _update_table_row(ROW_IDS["Total savings + debt (summary)"], f"£{savings_total:.2f}")
+
+    # Net with difference
+    cells = [
+        [],  # col 0
+        [],  # col 1
+        [{"type": "text", "text": {"content": f"£{net:.2f}"}}],
+        [{"type": "text", "text": {"content": "✅ Positive" if net >= 0 else "⚠️ Negative"}}],
+    ]
+    _notion_api("PATCH", f"/blocks/{ROW_IDS['Net (income - spending - savings/debt)']}", {
+        "table_row": {"cells": cells}
     })
 
 
