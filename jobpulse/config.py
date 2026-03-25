@@ -26,6 +26,15 @@ GITHUB_USERNAME = os.getenv("GITHUB_USERNAME", "yashb98")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Slack
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "")
+
+# Discord
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
+DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "")
+DISCORD_USER_ID = os.getenv("DISCORD_USER_ID", "")
+
 # LLM
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 

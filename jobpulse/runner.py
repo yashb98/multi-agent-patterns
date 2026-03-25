@@ -9,7 +9,7 @@ logger = get_logger(__name__)
 def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
-        logger.info("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, budget, listen, daemon, test")
+        logger.info("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, budget, listen, daemon, webhook, slack, discord, multi, health, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -67,6 +67,29 @@ def main():
     elif command == "health":
         from jobpulse.healthcheck import alert_if_down
         alert_if_down()
+
+    elif command == "webhook":
+        from jobpulse.webhook_server import app, register_webhook
+        import uvicorn
+        url = sys.argv[2] if len(sys.argv) > 2 else ""
+        if url:
+            register_webhook(url)
+        logger.info("Webhook server starting on port 8080")
+        uvicorn.run(app, host="0.0.0.0", port=8080)
+
+    elif command == "slack":
+        from jobpulse.platforms.slack_adapter import SlackAdapter
+        adapter = SlackAdapter()
+        adapter.poll_continuous()
+
+    elif command == "discord":
+        from jobpulse.platforms.discord_adapter import DiscordAdapter
+        adapter = DiscordAdapter()
+        adapter.poll_continuous()
+
+    elif command == "multi":
+        from jobpulse.multi_listener import start_all
+        start_all()
 
     elif command == "test":
         from jobpulse.telegram_agent import send_message
