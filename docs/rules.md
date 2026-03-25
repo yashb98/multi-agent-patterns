@@ -101,6 +101,14 @@ Commands create records only. Never wait. Supervisor monitors completion.
 | Token usage | Low | High | Medium | Very High |
 | Output quality | Good | Excellent | Good | Excellent |
 
+## Input Modes
+
+| Mode | Source | Processing |
+|------|--------|------------|
+| Text | Telegram, Slack, Discord | Rule-based → LLM fallback classification |
+| Voice | Telegram voice messages | Whisper transcription → text classification |
+| Webhook | External HTTP POST | Payload extraction → dispatcher |
+
 ## Migration Path
 
 ```

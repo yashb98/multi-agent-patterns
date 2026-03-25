@@ -50,6 +50,48 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - Evolves briefing persona after each run
 - RLM synthesis when data exceeds 5K chars
 
+### Weekly Report Agent (`weekly_report.py`)
+- Aggregates 7-day data from all agents (tasks, emails, commits, budget, calendar)
+- Generates formatted summary with trends and highlights
+- Triggered via Telegram ("weekly report") or CLI
+
+### Voice Handler (`voice_handler.py`)
+- Receives Telegram voice messages, downloads the audio file
+- Transcribes via OpenAI Whisper API
+- Passes transcribed text through normal intent classification and dispatch
+
+### A/B Testing (`ab_testing.py`)
+- Runs prompt variants side-by-side for agents (budget classification, briefing synthesis)
+- Tracks which variant produces higher scores over N trials
+- Results stored in SQLite, exportable via backup system
+
+## Platform Adapters (`jobpulse/platforms/`)
+
+### Base Adapter (`base.py`)
+- Abstract base class for all platform adapters
+- Defines `poll_continuous()`, `send_message()`, `receive_message()` interface
+
+### Telegram Adapter (`telegram_adapter.py`)
+- Long-polling implementation for Telegram Bot API
+- Voice message support via Whisper transcription
+
+### Slack Adapter (`slack_adapter.py`)
+- Polls Slack channels via Slack Web API
+- Maps Slack messages through the same command router and dispatcher
+
+### Discord Adapter (`discord_adapter.py`)
+- Polls Discord channels via Discord API
+- Filters by configured user ID to avoid responding to others
+
+### Multi-Listener (`multi_listener.py`)
+- Starts all configured platform adapters in parallel threads
+- Only starts adapters whose tokens are present in env vars
+
+### Webhook Server (`webhook_server.py`)
+- FastAPI server (port 8080) for receiving inbound webhooks
+- Registers callback URLs, routes payloads through dispatcher
+- Hosts health API and export endpoint
+
 ## Enhanced Swarm Dispatcher (`swarm_dispatcher.py`)
 
 Replaces flat dispatch with adaptive intelligence:

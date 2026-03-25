@@ -90,3 +90,55 @@ Wired into gmail_agent — after classifying recruiter emails, extracts:
 - Relations (APPLYING_TO, INTERVIEWING_AT)
 
 Feeds into Knowledge MindGraph automatically.
+
+## 7. Unified Logging Framework
+
+**File:** `shared/logging_config.py`
+
+Structured logging used across all modules:
+
+```python
+from shared.logging_config import get_logger
+logger = get_logger(__name__)
+```
+
+- Per-module loggers with consistent format
+- Log files written to `logs/` directory
+- All agents, dispatchers, and API handlers use this framework
+
+## 8. API Rate Limit Monitoring
+
+**File:** `shared/rate_monitor.py`
+
+Tracks rate limit headers from external API responses:
+
+- Records `X-RateLimit-Remaining` / `X-RateLimit-Limit` per API
+- Stored in SQLite for historical tracking
+- Exposed via `GET /api/health/rate-limits` and health dashboard gauges
+- `get_current_limits()` returns latest snapshot per API
+
+## 9. Export/Backup System
+
+**File:** `jobpulse/export.py`
+
+One-click export of all system data:
+
+- Copies all SQLite databases (mindgraph, jobpulse, budget, swarm_experience)
+- Exports persona prompts and experiences as JSON
+- Exports A/B test results and rate limit history
+- Generates manifest with checksums
+- Creates timestamped `.tar.gz` archive in `exports/` directory
+
+Triggers: Telegram ("export"), CLI (`python -m jobpulse.runner export`), API (`POST /api/health/export`), health dashboard button.
+
+## 10. A/B Testing for Prompts
+
+**File:** `jobpulse/ab_testing.py`
+
+Runs controlled experiments on prompt variants:
+
+- Define variant A and B prompts for any agent
+- System alternates between variants, scores outputs
+- After N trials, declares a winner based on average score
+- Results stored in SQLite, exported with backup system
+- Used by budget classification and briefing synthesis agents

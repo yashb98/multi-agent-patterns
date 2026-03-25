@@ -11,6 +11,12 @@ python -m jobpulse.runner daemon          # Start Telegram daemon (Enhanced Swar
 python -m jobpulse.runner briefing        # Morning digest
 python -m jobpulse.runner gmail           # Check recruiter emails
 python -m jobpulse.runner calendar        # Today + tomorrow events
+python -m jobpulse.runner weekly-report   # 7-day summary across all agents
+python -m jobpulse.runner export          # Full data backup (tar.gz)
+python -m jobpulse.runner webhook         # Start webhook server (port 8080)
+python -m jobpulse.runner slack           # Start Slack listener
+python -m jobpulse.runner discord         # Start Discord listener
+python -m jobpulse.runner multi           # Start all platform listeners
 ./scripts/install_daemon.sh install       # Auto-start daemon on login
 ```
 
@@ -54,16 +60,31 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
 | "briefing" | Enhanced Swarm → 6-agent collect → RLM synthesis |
 | "spent 15 on lunch" | Budget → classify → SQLite → Notion sync |
 | "budget" | Budget → weekly summary |
+| "weekly report" | All agents → 7-day summary |
+| "export" | Full data backup (databases, personas, experiences) |
+| voice message | Whisper transcription → intent classification → agent |
 | "help" | Lists all commands |
 
 ## Env Vars
 
 - `OPENAI_API_KEY` (required)
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`
+- `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_USER_ID`
 - `NOTION_API_KEY`, `NOTION_TASKS_DB_ID`, `NOTION_RESEARCH_DB_ID`
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
 - `JOBPULSE_SWARM=true` — Enhanced Swarm dispatch (false = flat)
 - `RLM_BACKEND=openai`, `RLM_ROOT_MODEL=gpt-4o-mini`, `RLM_MAX_BUDGET=0.10`
+
+## Dashboards
+
+- `/health.html` — daemon status, agent success rates, API rate limits, errors, data export
+- `/analytics.html` — usage trends, intent distribution, response times
+- `/processes.html` — agent run timelines, step-by-step audit trails
+
+## Logging
+
+All modules use `shared/logging_config.py` — structured logging with per-module loggers via `get_logger(__name__)`. Logs written to `logs/` directory.
 
 ## Documentation
 

@@ -108,6 +108,15 @@ tr:hover td{background:#0f172a44}
 <div class="section-title">Recent Errors</div>
 <div id="error-list"><div class="empty">Loading...</div></div>
 
+<!-- Export -->
+<div class="section-title">Data Export</div>
+<div class="status-banner" style="cursor:pointer" id="export-banner" onclick="triggerExport()">
+<div class="status-info">
+<div class="label" id="export-label">Export All Data</div>
+<div class="detail" id="export-detail">Click to create a full backup (databases, personas, experiences, A/B tests, rate limits)</div>
+</div>
+</div>
+
 <div class="refresh-note">Auto-refreshes every 30 seconds</div>
 </div>
 
@@ -243,6 +252,27 @@ async function loadErrors(){
 function escHtml(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function formatTime(iso){try{const d=new Date(iso);return d.toLocaleString('en-GB',{hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'})}catch(e){return iso}}
 function timeAgo(iso){try{const d=new Date(iso);const diff=Date.now()-d.getTime();const mins=Math.floor(diff/60000);if(mins<1)return 'just now';if(mins<60)return mins+'m ago';const hrs=Math.floor(mins/60);if(hrs<24)return hrs+'h ago';return Math.floor(hrs/24)+'d ago'}catch(e){return '?'}}
+
+async function triggerExport(){
+    const label=document.getElementById('export-label');
+    const detail=document.getElementById('export-detail');
+    label.textContent='Exporting...';
+    detail.textContent='Creating backup archive, please wait...';
+    try{
+        const r=await fetch(`${HA}/export`,{method:'POST'});
+        const d=await r.json();
+        if(d.status==='ok'){
+            label.textContent='Export Complete';
+            detail.textContent='Saved to: '+d.path;
+        }else{
+            label.textContent='Export Failed';
+            detail.textContent=d.error||'Unknown error';
+        }
+    }catch(e){
+        label.textContent='Export Failed';
+        detail.textContent=e.message;
+    }
+}
 
 init();
 setInterval(init,30000);

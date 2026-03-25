@@ -214,7 +214,12 @@ def _handle_weekly_report(cmd: ParsedCommand) -> str:
 
 
 def _handle_export(cmd: ParsedCommand) -> str:
-    return "\U0001f4e6 Export triggered. Use `python -m jobpulse.runner export` on your Mac for a full backup."
+    from jobpulse.export import export_all
+    try:
+        path = export_all()
+        return f"\U0001f4e6 Backup created!\n\nSaved to: {path}\n\nIncludes: databases, persona prompts, experiences, A/B tests, rate limits."
+    except Exception as e:
+        return f"\u26a0\ufe0f Export failed: {e}"
 
 
 def _handle_help(cmd: ParsedCommand) -> str:

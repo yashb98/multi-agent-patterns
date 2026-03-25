@@ -9,7 +9,7 @@ logger = get_logger(__name__)
 def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
-        logger.info("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, listen, daemon, webhook, slack, discord, multi, health, test")
+        logger.info("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, webhook, slack, discord, multi, health, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -59,6 +59,11 @@ def main():
     elif command == "weekly-report":
         from jobpulse.weekly_report import send_weekly_report
         send_weekly_report()
+
+    elif command == "export":
+        from jobpulse.export import export_all
+        path = export_all()
+        logger.info("Export saved to: %s", path)
 
     elif command == "listen":
         from jobpulse.telegram_listener import poll_and_process

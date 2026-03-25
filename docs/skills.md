@@ -94,3 +94,54 @@ Only activates on large contexts — small queries use direct LLM ($0.001).
 | DSPy + GEPA | Textual feedback + reflective evolution | Recommended |
 | DSPy + MIPROv2 | Automated prompt tuning | When GEPA unavailable |
 | LLM Meta-Optimization | LLM rewrites own prompts | Fallback |
+
+## 5. A/B Testing for Prompts
+
+**File:** `jobpulse/ab_testing.py`
+
+### How It Works
+
+Controlled experiments on prompt variants without changing model weights:
+
+```
+1. DEFINE VARIANTS → Two prompt versions (A and B) for the same agent
+2. ALTERNATE       → System routes requests to A or B (round-robin)
+3. SCORE           → Each output scored by the existing review pipeline
+4. AGGREGATE       → After N trials, compute average score per variant
+5. DECLARE WINNER  → Higher average wins; losing variant retired
+```
+
+### Where It's Used
+
+- Budget classification: testing category prompt phrasing
+- Briefing synthesis: testing summary structure and tone
+- Results exported with the backup system (`ab_tests.json`)
+
+### Accessing Results
+
+- SQLite table in `swarm_experience.db`
+- `get_all_tests()` returns all test data
+- Exported via `jobpulse/export.py` backup
+
+## 6. Voice Input (Whisper Transcription)
+
+**File:** `jobpulse/voice_handler.py`
+
+### How It Works
+
+Converts Telegram voice messages into text commands:
+
+```
+1. RECEIVE  → Telegram sends voice message (OGG format)
+2. DOWNLOAD → Bot downloads the audio file via Telegram File API
+3. TRANSCRIBE → OpenAI Whisper API converts speech to text
+4. CLASSIFY → Transcribed text passes through command_router.classify()
+5. DISPATCH → Normal dispatcher handles the intent
+```
+
+### Integration
+
+- Wired into `telegram_listener.py` — voice messages detected automatically
+- No extra configuration needed beyond `OPENAI_API_KEY`
+- Works with all existing commands (tasks, budget, calendar, etc.)
+- Transcription cost: ~$0.006 per minute of audio

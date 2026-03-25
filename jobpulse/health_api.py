@@ -60,3 +60,11 @@ def get_rate_limit_status():
     except Exception as e:
         logger.error("Failed to fetch rate limits: %s", e)
         return {"limits": [], "error": str(e)}
+
+
+@health_router.post("/export")
+def trigger_export():
+    """Trigger a full data export."""
+    from jobpulse.export import export_all
+    path = export_all()
+    return {"status": "ok", "path": path}
