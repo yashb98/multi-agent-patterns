@@ -4,6 +4,10 @@ Each agent has a base prompt. After each run, if the result scored well,
 we extract what worked and compress it into an evolved prompt.
 Over weeks, prompts become highly specialized to this user's patterns.
 
+Two optimization modes:
+  - QUICK (every run): Single-step evolve from latest experience
+  - DEEP (every N runs): Multi-iteration meta-optimization with reflection
+
 Example evolution:
   Week 1: "Classify emails into 4 categories"
   Week 4: "Classify emails into 4 categories. Skip Workday auto-rejections.
@@ -12,7 +16,13 @@ Example evolution:
 
 import os
 from datetime import datetime
-from jobpulse.swarm_dispatcher import get_persona, store_persona, get_experiences
+from shared.logging_config import get_logger
+from jobpulse.swarm_dispatcher import get_persona, store_persona, get_experiences, get_avg_score
+
+logger = get_logger(__name__)
+
+# How often to run deep meta-optimization (every N generations)
+DEEP_OPTIMIZE_EVERY = 10
 
 
 # Base prompts for each agent
@@ -47,21 +57,32 @@ def get_evolved_prompt(agent_name: str) -> str:
 def evolve_prompt(agent_name: str, current_result: str, score: float):
     """Evolve an agent's prompt based on a successful run.
 
-    The search-synthesize-compress cycle:
-    1. SEARCH: look at recent experiences for this agent
-    2. SYNTHESIZE: merge learnings with current prompt
-    3. COMPRESS: distill to essential instructions
+    Quick mode (every run): single-step search-synthesize-compress.
+    Deep mode (every Nth generation): multi-iteration meta-optimization
+    that reflects on failures and rewrites the prompt iteratively.
     """
     if score < 5.0:
         return  # Only learn from decent results
 
     current_prompt = get_evolved_prompt(agent_name)
-    experiences = get_experiences(agent_name, limit=5)
+    experiences = get_experiences(agent_name, limit=10)
     persona = get_persona(agent_name)
     generation = (persona["generation"] if persona else 0) + 1
 
-    # Build synthesis context
-    exp_lines = "\n".join(f"- {e['pattern']} (score: {e['score']:.1f})" for e in experiences)
+    # Every Nth generation, run deep meta-optimization
+    if generation > 1 and generation % DEEP_OPTIMIZE_EVERY == 0 and len(experiences) >= 5:
+        logger.info("%s generation %d — triggering deep meta-optimization", agent_name, generation)
+        _deep_optimize(agent_name, current_prompt, experiences, generation)
+        return
+
+    # Quick mode: single-step evolve
+    _quick_evolve(agent_name, current_prompt, experiences, current_result, score, generation)
+
+
+def _quick_evolve(agent_name: str, current_prompt: str, experiences: list,
+                  current_result: str, score: float, generation: int):
+    """Single-step prompt evolution from latest experience."""
+    exp_lines = "\n".join(f"- {e['pattern']} (score: {e['score']:.1f})" for e in experiences[:5])
 
     try:
         from openai import OpenAI
@@ -97,7 +118,98 @@ Return ONLY the evolved prompt text. No explanation."""
         evolved = response.choices[0].message.content.strip()
         if len(evolved) > 50:  # Sanity check
             store_persona(agent_name, evolved, generation, score)
-            print(f"[Persona] {agent_name} evolved to generation {generation}")
+            logger.info("%s evolved to generation %d (quick)", agent_name, generation)
 
     except Exception as e:
-        print(f"[Persona] Evolution failed for {agent_name}: {e}")
+        logger.warning("Evolution failed for %s: %s", agent_name, e)
+
+
+def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, generation: int):
+    """Multi-iteration meta-optimization with reflective prompt rewriting.
+
+    Uses shared/prompt_optimizer.py's Meta-Optimization backend:
+    1. Run agent prompt on past experiences as training data
+    2. Identify which experiences scored low (failures)
+    3. LLM reflects on WHY failures happened
+    4. LLM rewrites prompt to fix failures while preserving successes
+    5. Repeat for up to 5 iterations
+    """
+    try:
+        from shared.agents import get_llm
+        from shared.prompt_optimizer import PromptOptimizer
+
+        llm = get_llm(temperature=0.3)
+        optimizer = PromptOptimizer(llm)
+
+        # Build training data from stored experiences
+        training_data = [
+            {"input": e["pattern"][:200], "expected_quality": e["score"]}
+            for e in experiences
+        ]
+
+        # Evaluator: score a prompt against an experience pattern
+        def evaluator(prompt: str, input_text: str) -> tuple[str, float]:
+            """Evaluate how well a prompt would handle this input."""
+            from openai import OpenAI
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": f"Process this: {input_text}"},
+                    ],
+                    max_tokens=200,
+                    temperature=0.3,
+                )
+                output = response.choices[0].message.content.strip()
+
+                # Score: ask LLM to rate the output
+                score_resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Rate this agent output 0-10 for quality and relevance.\n\n"
+                            f"Agent prompt: {prompt[:200]}\n"
+                            f"Input: {input_text[:200]}\n"
+                            f"Output: {output[:300]}\n\n"
+                            f"Return ONLY a number 0-10."
+                        ),
+                    }],
+                    max_tokens=5,
+                    temperature=0,
+                )
+                try:
+                    score = float(score_resp.choices[0].message.content.strip())
+                except ValueError:
+                    score = 5.0
+                return (output, min(10.0, max(0.0, score)))
+            except Exception:
+                return ("", 5.0)
+
+        result = optimizer.optimize(
+            agent_role=agent_name,
+            current_prompt=current_prompt,
+            training_data=training_data,
+            evaluator_fn=evaluator,
+            method="meta",
+        )
+
+        if result.optimized_score > result.original_score and len(result.optimized_prompt) > 50:
+            store_persona(agent_name, result.optimized_prompt, generation, result.optimized_score)
+            logger.info(
+                "%s deep-optimized to gen %d: %.1f → %.1f (%+.1f%%)",
+                agent_name, generation,
+                result.original_score, result.optimized_score, result.improvement_pct,
+            )
+        else:
+            # No improvement — keep current prompt but bump generation
+            store_persona(agent_name, current_prompt, generation, result.original_score)
+            logger.info(
+                "%s deep-optimization found no improvement (%.1f → %.1f), keeping current",
+                agent_name, result.original_score, result.optimized_score,
+            )
+
+    except Exception as e:
+        logger.warning("Deep optimization failed for %s: %s", agent_name, e)

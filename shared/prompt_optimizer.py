@@ -31,6 +31,9 @@ training data. The module works both WITH and WITHOUT DSPy installed.
 import json
 from typing import Optional
 from dataclasses import dataclass, field
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -113,11 +116,8 @@ class PromptOptimizer:
             else:
                 method = "meta"
         
-        print(f"\n{'='*60}")
-        print(f"  PROMPT OPTIMIZATION — {agent_role.upper()}")
-        print(f"  Method: {method}")
-        print(f"  Training examples: {len(training_data)}")
-        print(f"{'='*60}")
+        logger.info("Prompt optimization — %s | method=%s | examples=%d",
+                    agent_role, method, len(training_data))
         
         if method == "gepa" and self.dspy_available:
             return self._optimize_with_gepa(
@@ -230,7 +230,7 @@ class PromptOptimizer:
         no population-based evolution) but captures the core idea
         of reflective prompt improvement.
         """
-        print(f"\n  Using meta-optimization (LLM-based reflection)")
+        logger.info("Using meta-optimization (LLM-based reflection)")
         
         current_prompt = prompt
         best_prompt = prompt
@@ -248,12 +248,12 @@ class PromptOptimizer:
         
         initial_avg = sum(s["score"] for s in scores_and_feedback) / len(scores_and_feedback)
         best_score = initial_avg
-        print(f"  Initial avg score: {initial_avg:.2f}")
+        logger.info("Initial avg score: %.2f", initial_avg)
         
         # Meta-optimization loop
         max_meta_iterations = 5
         for iteration in range(1, max_meta_iterations + 1):
-            print(f"\n  Meta-iteration {iteration}/{max_meta_iterations}")
+            logger.debug("Meta-iteration %d/%d", iteration, max_meta_iterations)
             
             # Identify failures (below-average scores)
             avg = sum(s["score"] for s in scores_and_feedback) / len(scores_and_feedback)
@@ -261,7 +261,7 @@ class PromptOptimizer:
             successes = [s for s in scores_and_feedback if s["score"] >= avg]
             
             if not failures:
-                print(f"  No failures to learn from — stopping")
+                logger.debug("No failures to learn from — stopping")
                 break
             
             # REFLECT: Ask LLM why failures happened
@@ -303,21 +303,20 @@ Return ONLY the new prompt text. No explanation."""
                 })
             
             new_avg = sum(s["score"] for s in new_scores) / len(new_scores)
-            print(f"  Candidate score: {new_avg:.2f} (prev best: {best_score:.2f})")
+            logger.debug("Candidate score: %.2f (prev best: %.2f)", new_avg, best_score)
             
             if new_avg > best_score:
                 best_prompt = candidate_prompt
                 best_score = new_avg
                 current_prompt = candidate_prompt
                 scores_and_feedback = new_scores
-                print(f"  ✅ New best prompt found!")
+                logger.info("New best prompt found (%.2f)", new_avg)
             else:
-                print(f"  ⚠️  No improvement, keeping previous best")
+                logger.debug("No improvement, keeping previous best")
         
         improvement = ((best_score - initial_avg) / max(initial_avg, 0.01)) * 100
         
-        print(f"\n  Final: {initial_avg:.2f} → {best_score:.2f} "
-              f"({improvement:+.1f}%)")
+        logger.info("Final: %.2f → %.2f (%+.1f%%)", initial_avg, best_score, improvement)
         
         return OptimizationResult(
             original_prompt=prompt,
