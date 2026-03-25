@@ -84,10 +84,6 @@ def poll_and_process():
         if from_id != TELEGRAM_CHAT_ID or not text:
             continue
 
-        # Skip greetings
-        if text.lower() in ("hi", "hello", "hey"):
-            continue
-
         _log(f"Got: \"{text[:80]}\"")
 
         # Classify intent
@@ -161,8 +157,6 @@ def poll_continuous():
                         continue
 
                 if not text:
-                    continue
-                if text.lower() in ("hi", "hello", "hey"):
                     continue
 
                 _log(f"Got: \"{text[:80]}\"")

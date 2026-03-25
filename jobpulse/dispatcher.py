@@ -30,6 +30,8 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.HELP: _handle_help,
         Intent.WEEKLY_REPORT: _handle_weekly_report,
         Intent.EXPORT: _handle_export,
+        Intent.CONVERSATION: _handle_conversation,
+        Intent.CLEAR_CHAT: _handle_clear_chat,
     }
 
     handler = handlers.get(cmd.intent)
@@ -208,6 +210,16 @@ def _handle_show_budget(cmd: ParsedCommand) -> str:
     return "\n\n".join(parts)
 
 
+def _handle_conversation(cmd: ParsedCommand) -> str:
+    from jobpulse.conversation import chat
+    return chat(cmd.raw)
+
+
+def _handle_clear_chat(cmd: ParsedCommand) -> str:
+    from jobpulse.conversation import clear_history
+    return clear_history()
+
+
 def _handle_weekly_report(cmd: ParsedCommand) -> str:
     from jobpulse.weekly_report import build_weekly_report
     return build_weekly_report()
@@ -255,7 +267,11 @@ def _handle_help(cmd: ParsedCommand) -> str:
 \U0001f4ec OTHER:
   "briefing" \u2014 full morning report
   "papers" \u2014 latest AI research
-  "help" \u2014 this message"""
+  "help" \u2014 this message
+
+\U0001f4ac CHAT:
+  Just type anything \u2014 free-form conversation
+  "clear chat" \u2014 reset conversation history"""
 
 
 def _handle_unknown(cmd: ParsedCommand) -> str:

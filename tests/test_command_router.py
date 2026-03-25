@@ -176,7 +176,8 @@ class TestClassify:
         )
         result = classify("hello world")
         mock_llm.assert_called_once_with("hello world")
-        assert result.intent == Intent.UNKNOWN
+        # LLM returned UNKNOWN → classify() routes to CONVERSATION mode
+        assert result.intent == Intent.CONVERSATION
 
     def test_set_budget_before_show_budget(self):
         """set budget X should match SET_BUDGET, not SHOW_BUDGET."""

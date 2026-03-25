@@ -128,6 +128,7 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
     SIMPLE_INTENTS = {
         Intent.SHOW_TASKS, Intent.CREATE_TASKS, Intent.COMPLETE_TASK,
         Intent.HELP, Intent.CREATE_EVENT, Intent.SHOW_BUDGET,
+        Intent.CONVERSATION, Intent.CLEAR_CHAT,
     }
     if intent in SIMPLE_INTENTS:
         return [{"agent": intent.value, "priority": 1, "description": f"Direct: {intent.value}"}]
@@ -343,6 +344,7 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         _handle_log_spend, _handle_log_income, _handle_log_savings,
         _handle_set_budget, _handle_show_budget, _handle_help, _handle_unknown,
         _handle_weekly_report, _handle_export,
+        _handle_conversation, _handle_clear_chat,
     )
 
     # Direct agent mapping
@@ -365,6 +367,8 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         Intent.HELP.value: _handle_help,
         Intent.WEEKLY_REPORT.value: _handle_weekly_report,
         Intent.EXPORT.value: _handle_export,
+        Intent.CONVERSATION.value: _handle_conversation,
+        Intent.CLEAR_CHAT.value: _handle_clear_chat,
     }
 
     # Briefing sub-agents (collect phases)

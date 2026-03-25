@@ -35,6 +35,8 @@ class Intent(str, Enum):
     HELP = "help"
     WEEKLY_REPORT = "weekly_report"
     EXPORT = "export"
+    CONVERSATION = "conversation"
+    CLEAR_CHAT = "clear_chat"
     UNKNOWN = "unknown"
 
 
@@ -48,6 +50,10 @@ class ParsedCommand:
 # ── Rule-based patterns (checked in order, first match wins) ──
 
 PATTERNS: list[tuple[Intent, list[str]]] = [
+    # Clear chat / conversation history
+    (Intent.CLEAR_CHAT, [
+        r"^(clear (chat|history|conversation)|new (chat|conversation)|reset chat)",
+    ]),
     # Help
     (Intent.HELP, [
         r"^/?(help|commands|menu|what can you do)$",
@@ -185,6 +191,8 @@ SET_BUDGET — user wants to set a planned budget for a category
 SHOW_BUDGET — user wants to see their budget/spending summary
 WEEKLY_REPORT — user wants a weekly summary report
 EXPORT — user wants to export or back up data
+CONVERSATION — user is chatting, asking a question, greeting, or having a general conversation
+CLEAR_CHAT — user wants to clear chat history or start a new conversation
 UNKNOWN — doesn't match any of the above
 
 Message: "{text}"
@@ -252,4 +260,8 @@ def classify(text: str) -> ParsedCommand:
         return ParsedCommand(intent=Intent.CREATE_TASKS, args=text, raw=text)
 
     # LLM fallback (costs ~$0.001)
-    return classify_llm(text)
+    result = classify_llm(text)
+    if result.intent == Intent.UNKNOWN:
+        # Route to conversation mode instead of "I don't know"
+        return ParsedCommand(intent=Intent.CONVERSATION, args=text, raw=text)
+    return result

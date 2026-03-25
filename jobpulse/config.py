@@ -37,6 +37,7 @@ DISCORD_USER_ID = os.getenv("DISCORD_USER_ID", "")
 
 # LLM
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+CONVERSATION_MODEL = os.getenv("CONVERSATION_MODEL", "gpt-4o-mini")
 
 # Paths
 DATA_DIR = PROJECT_DIR / "data"
