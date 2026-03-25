@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mindgraph_app.api import router, process_router, rate_router
+from jobpulse.health_api import health_router
+from jobpulse.analytics_api import analytics_router
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -26,6 +28,8 @@ app.add_middleware(
 app.include_router(router)
 app.include_router(process_router)
 app.include_router(rate_router)
+app.include_router(health_router)
+app.include_router(analytics_router)
 
 # Serve static frontend
 static_dir = Path(__file__).parent.parent / "static"

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analytics — MindGraph</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+.topbar{position:fixed;top:0;left:0;right:0;height:50px;background:#1e293b;border-bottom:1px solid #334155;display:flex;align-items:center;padding:0 20px;gap:14px;z-index:100}
+.topbar h1{font-size:15px;font-weight:600;color:#8B5CF6;white-space:nowrap}
+.nav{display:flex;gap:6px;margin-left:auto}
+.nav a{font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid #475569;background:#1e293b;color:#e2e8f0;cursor:pointer;text-decoration:none}
+.nav a:hover,.nav a.active{background:#8B5CF6;border-color:#8B5CF6;color:#fff}
+.main{margin-top:50px;padding:20px;max-width:1100px;margin-left:auto;margin-right:auto}
+
+.section-title{font-size:13px;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:10px;margin-top:24px;display:flex;align-items:center;gap:8px}
+.section-title:first-child{margin-top:0}
+
+/* Cards & tables */
+.tbl-wrap{background:#1e293b;border:1px solid #334155;border-radius:8px;overflow:hidden;margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#0f172a;padding:10px 14px;text-align:left;font-weight:600;color:#64748b;text-transform:uppercase;font-size:10px;border-bottom:1px solid #334155}
+td{padding:10px 14px;border-bottom:1px solid #1e293b}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#0f172a44}
+
+.badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:600;display:inline-block}
+.badge.high{background:#10B98122;color:#10B981}
+.badge.mid{background:#F59E0B22;color:#F59E0B}
+.badge.low{background:#EF444422;color:#EF4444}
+
+/* Chart containers */
+.chart-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:8px}
+@media(max-width:768px){.chart-row{grid-template-columns:1fr}}
+.chart-card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px}
+.chart-card .chart-title{font-size:12px;font-weight:600;margin-bottom:12px;color:#94a3b8}
+.chart-card canvas{max-height:260px}
+
+/* Persona cards */
+.persona-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:8px}
+.persona-card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px}
+.persona-card .p-name{font-size:13px;font-weight:600;margin-bottom:6px}
+.persona-card .p-row{display:flex;justify-content:space-between;font-size:11px;color:#94a3b8;margin-bottom:3px}
+.persona-card .p-row b{color:#e2e8f0}
+
+.empty{text-align:center;padding:30px;color:#64748b;font-size:13px}
+.refresh-note{font-size:10px;color:#475569;text-align:right;margin-top:12px}
+</style>
+</head>
+<body>
+<div class="topbar">
+<h1>Agent Analytics</h1>
+<div class="nav">
+<a href="/">MindGraph</a>
+<a href="/processes.html">Processes</a>
+<a href="/health.html">Health</a>
+<a href="/analytics.html" class="active">Analytics</a>
+</div>
+</div>
+
+<div class="main">
+
+<!-- GRPO + Trends charts -->
+<div class="section-title">GRPO Experience Learning</div>
+<div class="chart-row">
+<div class="chart-card">
+<div class="chart-title">GRPO Success Rates by Intent</div>
+<canvas id="grpo-chart"></canvas>
+<div class="empty" id="grpo-empty" style="display:none">No GRPO data yet</div>
+</div>
+<div class="chart-card">
+<div class="chart-title">Daily Activity (14 days)</div>
+<canvas id="trends-chart"></canvas>
+<div class="empty" id="trends-empty" style="display:none">No trend data yet</div>
+</div>
+</div>
+
+<!-- GRPO table fallback -->
+<div class="tbl-wrap" id="grpo-table-wrap" style="display:none">
+<table>
+<thead><tr><th>Intent</th><th>Count</th><th>Avg Score</th><th>Max</th><th>Min</th></tr></thead>
+<tbody id="grpo-tbody"></tbody>
+</table>
+</div>
+
+<!-- Persona Evolution -->
+<div class="section-title">Persona Evolution</div>
+<div class="persona-grid" id="persona-grid"><div class="empty">Loading...</div></div>
+
+<!-- Cost Breakdown -->
+<div class="section-title">Cost Breakdown (Estimated)</div>
+<div class="tbl-wrap">
+<table>
+<thead><tr><th>Agent</th><th>Total Runs</th><th>LLM Calls</th><th>API Calls</th><th>Est. Cost (USD)</th></tr></thead>
+<tbody id="cost-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+</table>
+</div>
+
+<!-- Trends table fallback -->
+<div class="section-title">Daily Trends</div>
+<div class="tbl-wrap">
+<table>
+<thead><tr><th>Date</th><th>Dispatches</th><th>Errors</th><th>LLM Calls</th></tr></thead>
+<tbody id="trends-tbody"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+</table>
+</div>
+
+<div class="refresh-note">Auto-refreshes every 60 seconds</div>
+</div>
+
+<script>
+const AA='/api/analytics';
+let grpoChart=null, trendsChart=null;
+
+const chartDefaults={
+    responsive:true,
+    maintainAspectRatio:false,
+    plugins:{legend:{labels:{color:'#94a3b8',font:{size:10}}}},
+    scales:{
+        x:{ticks:{color:'#64748b',font:{size:10}},grid:{color:'#334155'}},
+        y:{ticks:{color:'#64748b',font:{size:10}},grid:{color:'#334155'},beginAtZero:true}
+    }
+};
+
+async function init(){
+    await Promise.all([loadGRPO(), loadPersonas(), loadCosts(), loadTrends()]);
+}
+
+async function loadGRPO(){
+    try{
+        const r=await fetch(`${AA}/grpo`);
+        const d=await r.json();
+        const intents=d.intents||[];
+
+        if(!intents.length){
+            document.getElementById('grpo-chart').style.display='none';
+            document.getElementById('grpo-empty').style.display='block';
+            return;
+        }
+
+        // Build chart
+        const labels=intents.map(i=>i.intent);
+        const scores=intents.map(i=>parseFloat((i.avg_score||0).toFixed(2)));
+        const counts=intents.map(i=>i.count);
+
+        const ctx=document.getElementById('grpo-chart').getContext('2d');
+        if(grpoChart) grpoChart.destroy();
+        grpoChart=new Chart(ctx,{
+            type:'bar',
+            data:{
+                labels:labels,
+                datasets:[
+                    {label:'Avg Score',data:scores,backgroundColor:'#8B5CF688',borderColor:'#8B5CF6',borderWidth:1},
+                    {label:'Count',data:counts,backgroundColor:'#3B82F644',borderColor:'#3B82F6',borderWidth:1}
+                ]
+            },
+            options:{...chartDefaults,plugins:{...chartDefaults.plugins}}
+        });
+
+        // Also fill the table
+        const tbody=document.getElementById('grpo-tbody');
+        tbody.innerHTML='';
+        for(const i of intents){
+            const avg=parseFloat((i.avg_score||0).toFixed(2));
+            const cls=avg>=7?'high':avg>=4?'mid':'low';
+            const tr=document.createElement('tr');
+            tr.innerHTML=`<td style="font-weight:600">${escHtml(i.intent)}</td>
+                <td>${i.count}</td>
+                <td><span class="badge ${cls}">${avg}</span></td>
+                <td>${parseFloat((i.max_score||0).toFixed(2))}</td>
+                <td>${parseFloat((i.min_score||0).toFixed(2))}</td>`;
+            tbody.appendChild(tr);
+        }
+        document.getElementById('grpo-table-wrap').style.display='block';
+    }catch(e){
+        document.getElementById('grpo-chart').style.display='none';
+        document.getElementById('grpo-empty').style.display='block';
+        document.getElementById('grpo-empty').textContent='Error: '+e.message;
+    }
+}
+
+async function loadTrends(){
+    try{
+        const r=await fetch(`${AA}/trends?days=14`);
+        const d=await r.json();
+        const trends=d.trends||[];
+
+        // Fill table
+        const tbody=document.getElementById('trends-tbody');
+        if(!trends.length){
+            tbody.innerHTML='<tr><td colspan="4" class="empty">No trend data yet</td></tr>';
+            document.getElementById('trends-chart').style.display='none';
+            document.getElementById('trends-empty').style.display='block';
+            return;
+        }
+
+        tbody.innerHTML='';
+        for(const t of trends){
+            const tr=document.createElement('tr');
+            const errCls=t.errors>0?'style="color:#EF4444;font-weight:600"':'';
+            tr.innerHTML=`<td>${t.day}</td><td>${t.dispatches}</td><td ${errCls}>${t.errors}</td><td>${t.llm_calls}</td>`;
+            tbody.appendChild(tr);
+        }
+
+        // Build chart (reverse so oldest is left)
+        const rev=[...trends].reverse();
+        const labels=rev.map(t=>t.day.slice(5));
+        const dispatches=rev.map(t=>t.dispatches);
+        const errors=rev.map(t=>t.errors);
+        const llmCalls=rev.map(t=>t.llm_calls);
+
+        const ctx=document.getElementById('trends-chart').getContext('2d');
+        if(trendsChart) trendsChart.destroy();
+        trendsChart=new Chart(ctx,{
+            type:'line',
+            data:{
+                labels:labels,
+                datasets:[
+                    {label:'Dispatches',data:dispatches,borderColor:'#8B5CF6',backgroundColor:'#8B5CF622',fill:true,tension:0.3},
+                    {label:'Errors',data:errors,borderColor:'#EF4444',backgroundColor:'#EF444422',fill:false,tension:0.3},
+                    {label:'LLM Calls',data:llmCalls,borderColor:'#3B82F6',backgroundColor:'#3B82F622',fill:false,tension:0.3}
+                ]
+            },
+            options:{...chartDefaults,plugins:{...chartDefaults.plugins}}
+        });
+    }catch(e){
+        document.getElementById('trends-tbody').innerHTML=`<tr><td colspan="4" class="empty">Error: ${e.message}</td></tr>`;
+    }
+}
+
+async function loadPersonas(){
+    try{
+        const r=await fetch(`${AA}/personas`);
+        const d=await r.json();
+        const grid=document.getElementById('persona-grid');
+        const personas=d.personas||[];
+
+        if(!personas.length){grid.innerHTML='<div class="empty">No persona evolution data yet</div>';return}
+
+        grid.innerHTML='';
+        for(const p of personas){
+            const card=document.createElement('div');
+            card.className='persona-card';
+            const score=p.avg_score!=null?parseFloat(p.avg_score).toFixed(2):'--';
+            const scoreCls=parseFloat(score)>=7?'high':parseFloat(score)>=4?'mid':'low';
+            card.innerHTML=`
+                <div class="p-name">${escHtml(p.agent_name.replace(/_/g,' '))}</div>
+                <div class="p-row"><span>Generation</span><b>${p.generation||0}</b></div>
+                <div class="p-row"><span>Avg Score</span><b><span class="badge ${scoreCls}">${score}</span></b></div>
+                <div class="p-row"><span>Prompt Length</span><b>${p.prompt_length||0} chars</b></div>
+                <div class="p-row"><span>Last Updated</span><b style="color:#94a3b8">${p.updated_at?timeAgo(p.updated_at):'never'}</b></div>`;
+            grid.appendChild(card);
+        }
+    }catch(e){
+        document.getElementById('persona-grid').innerHTML=`<div class="empty">Error: ${e.message}</div>`;
+    }
+}
+
+async function loadCosts(){
+    try{
+        const r=await fetch(`${AA}/costs`);
+        const d=await r.json();
+        const tbody=document.getElementById('cost-tbody');
+        const agents=d.agents||[];
+
+        if(!agents.length){tbody.innerHTML='<tr><td colspan="5" class="empty">No cost data yet</td></tr>';return}
+
+        tbody.innerHTML='';
+        let totalCost=0;
+        for(const a of agents){
+            const cost=a.estimated_cost_usd||0;
+            totalCost+=cost;
+            const tr=document.createElement('tr');
+            tr.innerHTML=`<td style="font-weight:600">${escHtml(a.agent_name.replace(/_/g,' '))}</td>
+                <td>${a.total_runs||0}</td>
+                <td>${a.llm_calls||0}</td>
+                <td>${a.api_calls||0}</td>
+                <td style="color:#10B981">$${cost.toFixed(4)}</td>`;
+            tbody.appendChild(tr);
+        }
+        // Total row
+        const totalTr=document.createElement('tr');
+        totalTr.innerHTML=`<td style="font-weight:600;color:#8B5CF6">TOTAL</td><td></td><td></td><td></td><td style="color:#10B981;font-weight:600">$${totalCost.toFixed(4)}</td>`;
+        tbody.appendChild(totalTr);
+    }catch(e){
+        document.getElementById('cost-tbody').innerHTML=`<tr><td colspan="5" class="empty">Error: ${e.message}</td></tr>`;
+    }
+}
+
+function escHtml(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function timeAgo(iso){try{const d=new Date(iso);const diff=Date.now()-d.getTime();const mins=Math.floor(diff/60000);if(mins<1)return 'just now';if(mins<60)return mins+'m ago';const hrs=Math.floor(mins/60);if(hrs<24)return hrs+'h ago';return Math.floor(hrs/24)+'d ago'}catch(e){return '?'}}
+
+init();
+setInterval(init,60000);
+</script>
+</body>
+</html>

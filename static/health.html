@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System Health — MindGraph</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+.topbar{position:fixed;top:0;left:0;right:0;height:50px;background:#1e293b;border-bottom:1px solid #334155;display:flex;align-items:center;padding:0 20px;gap:14px;z-index:100}
+.topbar h1{font-size:15px;font-weight:600;color:#8B5CF6;white-space:nowrap}
+.nav{display:flex;gap:6px;margin-left:auto}
+.nav a{font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid #475569;background:#1e293b;color:#e2e8f0;cursor:pointer;text-decoration:none}
+.nav a:hover,.nav a.active{background:#8B5CF6;border-color:#8B5CF6;color:#fff}
+.main{margin-top:50px;padding:20px;max-width:1100px;margin-left:auto;margin-right:auto}
+
+.section-title{font-size:13px;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:10px;margin-top:24px;display:flex;align-items:center;gap:8px}
+.section-title:first-child{margin-top:0}
+
+/* Status banner */
+.status-banner{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:18px 20px;display:flex;align-items:center;gap:16px;margin-bottom:8px}
+.status-dot{width:14px;height:14px;border-radius:50%;flex-shrink:0}
+.status-dot.alive{background:#10B981;box-shadow:0 0 8px #10B98166}
+.status-dot.dead{background:#EF4444;box-shadow:0 0 8px #EF444466}
+.status-info{flex:1}
+.status-info .label{font-size:14px;font-weight:600;margin-bottom:2px}
+.status-info .detail{font-size:11px;color:#94a3b8}
+.platform-badges{display:flex;gap:6px;flex-wrap:wrap}
+.platform-badge{font-size:10px;padding:3px 8px;border-radius:3px;background:#8B5CF622;color:#8B5CF6;font-weight:600;text-transform:uppercase}
+
+/* Tables */
+.tbl-wrap{background:#1e293b;border:1px solid #334155;border-radius:8px;overflow:hidden;margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#0f172a;padding:10px 14px;text-align:left;font-weight:600;color:#64748b;text-transform:uppercase;font-size:10px;border-bottom:1px solid #334155}
+td{padding:10px 14px;border-bottom:1px solid #1e293b}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#0f172a44}
+
+/* Badges */
+.badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:600;display:inline-block}
+.badge.ok{background:#10B98122;color:#10B981}
+.badge.warn{background:#F59E0B22;color:#F59E0B}
+.badge.err{background:#EF444422;color:#EF4444}
+
+/* Rate limit gauges */
+.gauge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:8px}
+.gauge-card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:14px}
+.gauge-card .api-name{font-size:13px;font-weight:600;margin-bottom:8px}
+.gauge-card .gauge-bar{height:8px;background:#0f172a;border-radius:4px;overflow:hidden;margin-bottom:6px}
+.gauge-card .gauge-fill{height:100%;border-radius:4px;transition:width .3s}
+.gauge-card .gauge-fill.green{background:#10B981}
+.gauge-card .gauge-fill.yellow{background:#F59E0B}
+.gauge-card .gauge-fill.red{background:#EF4444}
+.gauge-card .gauge-meta{font-size:10px;color:#94a3b8;display:flex;justify-content:space-between}
+
+/* Error list */
+.error-card{background:#1e293b;border:1px solid #334155;border-radius:8px;margin-bottom:8px;overflow:hidden}
+.error-header{padding:12px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;font-size:12px}
+.error-header:hover{background:#0f172a44}
+.error-header .agent{font-weight:600;color:#EF4444}
+.error-header .step{color:#94a3b8}
+.error-header .time{margin-left:auto;color:#64748b;font-size:10px;flex-shrink:0}
+.error-detail{display:none;padding:0 14px 12px;font-size:11px;color:#cbd5e1;background:#0f172a;margin:0 10px 10px;border-radius:4px;padding:8px 10px;word-break:break-word;white-space:pre-wrap}
+.error-detail.open{display:block}
+
+.empty{text-align:center;padding:30px;color:#64748b;font-size:13px}
+.refresh-note{font-size:10px;color:#475569;text-align:right;margin-top:12px}
+</style>
+</head>
+<body>
+<div class="topbar">
+<h1>System Health</h1>
+<div class="nav">
+<a href="/">MindGraph</a>
+<a href="/processes.html">Processes</a>
+<a href="/health.html" class="active">Health</a>
+<a href="/analytics.html">Analytics</a>
+</div>
+</div>
+
+<div class="main">
+
+<!-- Daemon Status -->
+<div class="section-title">Daemon Status</div>
+<div class="status-banner" id="status-banner">
+<div class="status-dot dead" id="status-dot"></div>
+<div class="status-info">
+<div class="label" id="status-label">Loading...</div>
+<div class="detail" id="status-detail"></div>
+</div>
+<div class="platform-badges" id="platform-badges"></div>
+</div>
+
+<!-- Agent Success Rates -->
+<div class="section-title">Agent Health</div>
+<div class="tbl-wrap">
+<table id="agent-table">
+<thead><tr><th>Agent</th><th>Runs</th><th>Errors</th><th>Success Rate</th><th>Avg Duration</th><th>Last Run</th></tr></thead>
+<tbody id="agent-tbody"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+</table>
+</div>
+
+<!-- Rate Limit Gauges -->
+<div class="section-title">API Rate Limits</div>
+<div class="gauge-grid" id="gauge-grid"><div class="empty">Loading...</div></div>
+
+<!-- Recent Errors -->
+<div class="section-title">Recent Errors</div>
+<div id="error-list"><div class="empty">Loading...</div></div>
+
+<div class="refresh-note">Auto-refreshes every 30 seconds</div>
+</div>
+
+<script>
+const HA='/api/health';
+
+async function init(){
+    await Promise.all([loadStatus(), loadAgents(), loadRateLimits(), loadErrors()]);
+}
+
+async function loadStatus(){
+    try{
+        const r=await fetch(`${HA}/status`);
+        const d=await r.json();
+        const daemon=d.daemon||{};
+        const dot=document.getElementById('status-dot');
+        const label=document.getElementById('status-label');
+        const detail=document.getElementById('status-detail');
+        const badges=document.getElementById('platform-badges');
+
+        if(daemon.alive){
+            dot.className='status-dot alive';
+            label.textContent='Daemon Online';
+            detail.textContent=`Last heartbeat: ${daemon.last_seen||'unknown'} (${daemon.age_minutes||'?'}min ago)`;
+        }else{
+            dot.className='status-dot dead';
+            label.textContent='Daemon Offline';
+            detail.textContent=daemon.reason||'No heartbeat detected';
+        }
+
+        badges.innerHTML='';
+        const platforms=d.platforms||[];
+        if(platforms.length===0){
+            badges.innerHTML='<span style="font-size:10px;color:#64748b">No platforms configured</span>';
+        }else{
+            for(const p of platforms){
+                const b=document.createElement('span');
+                b.className='platform-badge';
+                b.textContent=p;
+                badges.appendChild(b);
+            }
+        }
+    }catch(e){
+        document.getElementById('status-label').textContent='Error loading status';
+        document.getElementById('status-detail').textContent=e.message;
+    }
+}
+
+async function loadAgents(){
+    try{
+        const r=await fetch(`${HA}/agents`);
+        const d=await r.json();
+        const tbody=document.getElementById('agent-tbody');
+        const agents=d.agents||[];
+        if(!agents.length){tbody.innerHTML='<tr><td colspan="6" class="empty">No agent data yet</td></tr>';return}
+        tbody.innerHTML='';
+        for(const a of agents){
+            const runs=a.total_runs||0;
+            const errors=a.total_errors||0;
+            const successRate=runs>0?((1-errors/Math.max(runs,1))*100).toFixed(1):'--';
+            const dur=a.avg_duration_ms?(a.avg_duration_ms/1000).toFixed(1)+'s':'--';
+            const last=a.last_run?timeAgo(a.last_run):'never';
+            const badgeCls=parseFloat(successRate)>=90?'ok':parseFloat(successRate)>=70?'warn':'err';
+            const tr=document.createElement('tr');
+            tr.innerHTML=`<td style="font-weight:600">${a.agent_name.replace(/_/g,' ')}</td>
+                <td>${runs}</td>
+                <td>${errors}</td>
+                <td><span class="badge ${badgeCls}">${successRate}%</span></td>
+                <td>${dur}</td>
+                <td style="color:#94a3b8;font-size:11px">${last}</td>`;
+            tbody.appendChild(tr);
+        }
+    }catch(e){
+        document.getElementById('agent-tbody').innerHTML=`<tr><td colspan="6" class="empty">Error: ${e.message}</td></tr>`;
+    }
+}
+
+async function loadRateLimits(){
+    try{
+        const r=await fetch(`${HA}/rate-limits`);
+        const d=await r.json();
+        const grid=document.getElementById('gauge-grid');
+        const limits=d.limits||[];
+        if(!limits.length){grid.innerHTML='<div class="empty">No rate limit data recorded yet</div>';return}
+        grid.innerHTML='';
+        for(const lim of limits){
+            const total=lim.limit_total||0;
+            const remaining=lim.limit_remaining||0;
+            const pct=total>0?Math.round((remaining/total)*100):0;
+            const colorCls=pct>50?'green':pct>20?'yellow':'red';
+            const card=document.createElement('div');
+            card.className='gauge-card';
+            card.innerHTML=`
+                <div class="api-name">${escHtml(lim.api_name)}</div>
+                <div class="gauge-bar"><div class="gauge-fill ${colorCls}" style="width:${pct}%"></div></div>
+                <div class="gauge-meta">
+                    <span>${remaining} / ${total} remaining</span>
+                    <span>${lim.recorded_at?timeAgo(lim.recorded_at):''}</span>
+                </div>`;
+            grid.appendChild(card);
+        }
+    }catch(e){
+        document.getElementById('gauge-grid').innerHTML=`<div class="empty">Error: ${e.message}</div>`;
+    }
+}
+
+async function loadErrors(){
+    try{
+        const r=await fetch(`${HA}/errors?limit=25`);
+        const d=await r.json();
+        const list=document.getElementById('error-list');
+        const errors=d.errors||[];
+        if(!errors.length){list.innerHTML='<div class="empty">No errors recorded</div>';return}
+        list.innerHTML='';
+        for(const err of errors){
+            const card=document.createElement('div');
+            card.className='error-card';
+            const detailId='err-'+Math.random().toString(36).slice(2,8);
+            card.innerHTML=`
+                <div class="error-header" onclick="document.getElementById('${detailId}').classList.toggle('open')">
+                    <span class="agent">${escHtml(err.agent_name||'unknown')}</span>
+                    <span class="step">${escHtml(err.step_name||'')}</span>
+                    <span class="time">${err.created_at?formatTime(err.created_at):''}</span>
+                </div>
+                <div class="error-detail" id="${detailId}">${escHtml(err.step_output||'No details')}</div>`;
+            list.appendChild(card);
+        }
+    }catch(e){
+        document.getElementById('error-list').innerHTML=`<div class="empty">Error: ${e.message}</div>`;
+    }
+}
+
+function escHtml(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function formatTime(iso){try{const d=new Date(iso);return d.toLocaleString('en-GB',{hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'})}catch(e){return iso}}
+function timeAgo(iso){try{const d=new Date(iso);const diff=Date.now()-d.getTime();const mins=Math.floor(diff/60000);if(mins<1)return 'just now';if(mins<60)return mins+'m ago';const hrs=Math.floor(mins/60);if(hrs<24)return hrs+'h ago';return Math.floor(hrs/24)+'d ago'}catch(e){return '?'}}
+
+init();
+setInterval(init,30000);
+</script>
+</body>
+</html>
