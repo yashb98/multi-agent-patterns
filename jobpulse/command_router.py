@@ -62,7 +62,7 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     # Budget — show (after set_budget so "set budget" matches first)
     (Intent.SHOW_BUDGET, [
         r"^budget\s*$",
-        r"(spending|how much.+(spent|spend|earned)|weekly (budget|spend)|show budget|show spending|summary)",
+        r"(spending|how much.+(spent|spend|earned)|weekly (budget|spend)|show budget|show spending|^summary$)",
         r"(today.?s|this week.?s)\s+(spend|budget|expenses?|money)",
     ]),
     # Budget — log income

@@ -52,7 +52,7 @@ class TestDispatchRouting:
     def test_unknown_intent_returns_not_sure(self, mock_evt, mock_trail):
         cmd = ParsedCommand(intent=Intent.UNKNOWN, args="xyz", raw="xyz")
         result = dispatch(cmd)
-        assert "Not sure" in result
+        assert "didn't" in result
 
     @patch("jobpulse.dispatcher._handle_show_tasks")
     @patch("jobpulse.process_logger.ProcessTrail")
@@ -140,8 +140,13 @@ class TestHandleUnknown:
     def test_unknown_suggests_alternatives(self):
         cmd = ParsedCommand(intent=Intent.UNKNOWN, args="", raw="xyz")
         result = _handle_unknown(cmd)
-        assert "tasks" in result.lower()
         assert "help" in result.lower()
+
+    def test_unknown_suggests_closest_match(self):
+        cmd = ParsedCommand(intent=Intent.UNKNOWN, args="", raw="show me my github stuff")
+        result = _handle_unknown(cmd)
+        assert "commits" in result.lower()
+        assert "Did you mean" in result
 
 
 class TestDispatchLogsEvents:

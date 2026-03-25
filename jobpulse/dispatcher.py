@@ -259,5 +259,44 @@ def _handle_help(cmd: ParsedCommand) -> str:
 
 
 def _handle_unknown(cmd: ParsedCommand) -> str:
-    return (f"🤔 Not sure what you mean by: \"{cmd.raw[:50]}\"\n\n"
-            "Try: tasks, calendar, emails, commits, trending, briefing, help")
+    """Suggest the closest matching command when intent is unknown."""
+    text = cmd.raw.lower().strip()
+
+    # Map keywords to their likely intent + example command
+    SUGGESTIONS = [
+        (["task", "todo", "to do", "checklist", "list"], "show tasks", "see your todo list"),
+        (["done", "mark", "complete", "finish", "checked"], 'done: <task name>', "complete a task"),
+        (["calendar", "schedule", "event", "day", "tomorrow"], "calendar", "see today's events"),
+        (["email", "mail", "inbox", "recruiter", "gmail"], "check emails", "scan for recruiter emails"),
+        (["commit", "github", "push", "code"], "commits", "see yesterday's GitHub activity"),
+        (["trend", "hot", "popular", "repo"], "trending", "see trending repos"),
+        (["budget", "spend", "money", "expense", "cost"], "budget", "see weekly spending"),
+        (["earn", "income", "salary", "paid", "freelance"], "earned 500 freelance", "log income"),
+        (["save", "saving", "invest"], "saved 100", "log savings"),
+        (["brief", "morning", "update", "digest", "report"], "briefing", "get full morning report"),
+        (["week", "weekly", "summary"], "weekly report", "7-day summary"),
+        (["paper", "arxiv", "research", "ai paper"], "papers", "latest AI research"),
+        (["export", "backup", "dump", "download"], "export", "backup all data"),
+        (["help", "command", "menu", "what can"], "help", "see all commands"),
+    ]
+
+    # Find best matching suggestion by keyword overlap
+    best_match = None
+    best_score = 0
+    words = set(text.split())
+
+    for keywords, example, description in SUGGESTIONS:
+        score = sum(1 for kw in keywords if kw in text or any(kw in w for w in words))
+        if score > best_score:
+            best_score = score
+            best_match = (example, description)
+
+    if best_match and best_score > 0:
+        example, description = best_match
+        return (f"🤔 I didn't quite get: \"{cmd.raw[:50]}\"\n\n"
+                f"Did you mean: \"{example}\" — {description}?\n\n"
+                f"If not, type \"help\" to see all commands.")
+    else:
+        return (f"🤔 I didn't recognize: \"{cmd.raw[:50]}\"\n\n"
+                f"Type \"help\" to see all available commands, "
+                f"or just tell me what you need!")
