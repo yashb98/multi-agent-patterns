@@ -235,6 +235,10 @@ def classify(text: str) -> ParsedCommand:
     # Strip bot mentions
     text = re.sub(r"@\w+bot\s*", "", text, flags=re.IGNORECASE).strip()
 
+    # Strip trailing punctuation added by voice transcription (Whisper)
+    # e.g. "Help." → "Help", "Show tasks!" → "Show tasks"
+    text = re.sub(r"[.!?]+$", "", text).strip()
+
     if not text:
         return ParsedCommand(intent=Intent.UNKNOWN, args="", raw="")
 
