@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python scripts/telegram_approve.py",
-            "timeout": 120
+            "timeout": 3700
           }
         ]
       }

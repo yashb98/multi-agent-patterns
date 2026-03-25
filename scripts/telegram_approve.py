@@ -135,13 +135,13 @@ def main():
     last_id = get_current_update_id()
 
     # Ask on Telegram
-    msg = f"🔐 CLAUDE CODE APPROVAL\n\nCommand:\n{command[:500]}\n\nReply yes or no (60s timeout)"
+    msg = f"🔐 CLAUDE CODE APPROVAL\n\nCommand:\n{command[:500]}\n\nReply yes or no (1 hour timeout)"
     sent = send_telegram(msg)
     if not sent:
         sys.exit(0)  # Telegram failed, fall back to CLI
 
-    # Poll for reply (max 60 seconds)
-    deadline = time.time() + 60
+    # Poll for reply (max 1 hour)
+    deadline = time.time() + 3600
     while time.time() < deadline:
         reply = get_latest_reply(last_id)
         if reply:
