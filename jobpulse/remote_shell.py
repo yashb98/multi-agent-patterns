@@ -31,6 +31,7 @@ ALLOWED_PREFIXES = [
     "pip list", "pip show",
     "which", "pwd", "df -h", "uptime", "date",
     "grep", "tree", "du -sh", "echo", "curl -s",
+    "vercel", "npm", "node --version",
 ]
 
 BLOCKED_PATTERNS = [
