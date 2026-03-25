@@ -86,6 +86,14 @@ def poll_and_process():
 
         _log(f"Got: \"{text[:80]}\"")
 
+        # Check for pending approval reply
+        from jobpulse.approval import process_reply as check_approval
+        approval_response = check_approval(text)
+        if approval_response:
+            telegram_agent.send_message(approval_response)
+            _log(f"Approval: {approval_response[:80]}")
+            continue
+
         # Classify intent
         cmd = classify(text)
         _log(f"Intent: {cmd.intent.value}")
@@ -160,6 +168,14 @@ def poll_continuous():
                     continue
 
                 _log(f"Got: \"{text[:80]}\"")
+
+                # Check for pending approval reply
+                from jobpulse.approval import process_reply as check_approval
+                approval_response = check_approval(text)
+                if approval_response:
+                    telegram_agent.send_message(approval_response)
+                    _log(f"Approval: {approval_response[:80]}")
+                    continue
 
                 # Classify and dispatch
                 cmd = classify(text)
