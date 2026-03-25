@@ -217,26 +217,36 @@ def deep_query(query: str) -> str:
     except Exception:
         pass
 
-    # Step 5: Use RLM if available and context is large, else direct LLM
+    # Step 5: Use RLM if context is large (>10K chars), else direct LLM
     try:
         if len(subgraph_text) > 10000:
             from rlm import RLM
-            rlm_model = os.getenv("RLM_ROOT_MODEL", "anthropic/claude-sonnet-4-20250514")
-            rlm_sub = os.getenv("RLM_SUB_MODEL", "anthropic/claude-sonnet-4-20250514")
+            backend = os.getenv("RLM_BACKEND", "openai")
             rlm = RLM(
-                model=rlm_model,
-                recursive_model=rlm_sub,
+                backend=backend,
+                backend_kwargs={"model": os.getenv("RLM_ROOT_MODEL", "gpt-4o-mini")},
                 max_depth=1,
                 max_iterations=int(os.getenv("RLM_MAX_ITERATIONS", "10")),
+                max_budget=float(os.getenv("RLM_MAX_BUDGET", "0.10")),
+                verbose=False,
             )
-            result = rlm.complete(query=query, context=subgraph_text)
-            return result
+            prompt = (
+                f"You have a knowledge graph with {len(expanded_entities)} entities "
+                f"and {len(seen_rels)} relationships.\n\n"
+                f"{subgraph_text}\n\n"
+                f"Question: {query}\n\n"
+                f"Analyze the graph data recursively. Break it into chunks by entity type, "
+                f"summarize each chunk, then synthesize a comprehensive answer."
+            )
+            result = rlm.completion(prompt)
+            rlm.close()
+            return result.choices[0].message.content
     except ImportError:
-        pass  # RLM not installed, fall through to direct LLM
+        pass
     except Exception as e:
         print(f"[Retriever] RLM error: {e}")
 
-    # Direct LLM fallback
+    # Direct LLM fallback (small graphs or RLM unavailable)
     try:
         import litellm
         response = litellm.completion(
