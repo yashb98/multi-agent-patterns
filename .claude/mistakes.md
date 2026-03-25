@@ -16,6 +16,18 @@ Format for each entry:
 
 <!-- Entries below this line. Most recent first. -->
 
+### [2026-03-25] Test suite wiped production knowledge graph on every pytest run
+- **What went wrong**: Knowledge graph (mindgraph) showed 0 entities despite auto_extract logging successful extractions. All entities extracted from recruiter emails were gone.
+- **Root cause**: `tests/test_mindgraph.py` called `storage.clear_all()` 4 times, operating on the **production** `data/mindgraph.db` instead of a temporary test database. Every `pytest` run deleted all knowledge entities, relations, and processed file records.
+- **Fix applied**: Added a `use_temp_db` fixture (autouse) that patches `storage.DB_PATH` to a `tmp_path` SQLite file. Tests now run against isolated temporary databases. Removed all `clear_all()` calls from tests.
+- **Rule to prevent recurrence**: Tests must NEVER operate on production databases. Any test that writes to SQLite must patch the DB_PATH to a tmp_path fixture. Before adding `clear_all()` or `DELETE` to any test, verify the DB path is temporary.
+
+### [2026-03-25] Voice commands failed — Whisper adds trailing punctuation
+- **What went wrong**: Saying "help" via Telegram voice produced "Help." which didn't match the `^help$` regex pattern. Same issue for all voice commands.
+- **Root cause**: OpenAI Whisper transcription adds proper punctuation (periods, exclamation marks, question marks) to transcribed text. The command router's regex patterns used strict anchors (`$`) that don't account for trailing punctuation.
+- **Fix applied**: Added `text = re.sub(r"[.!?]+$", "", text).strip()` in `classify()` to strip trailing punctuation before pattern matching. Fixes all voice commands, not just "help".
+- **Rule to prevent recurrence**: When adding regex patterns for command matching, always account for voice input adding punctuation. The `classify()` function now strips trailing `.!?` — new patterns don't need to handle this individually.
+
 ### [2026-03-25] GitHub commits showing 0 again — pushed_at filter too strict
 - **What went wrong**: Agent reported 0 commits for March 24, even though 42 commits existed in multi-agent-patterns repo.
 - **Root cause**: Code filtered repos with `pushed_at != yesterday`. But `pushed_at` reflects the *most recent* push. The repo was pushed both on March 24 (42 commits) AND March 25 (10 commits), so `pushed_at` showed `2026-03-25`, which didn't equal `2026-03-24`, causing the repo to be skipped entirely.

@@ -1,9 +1,16 @@
-"""Shared fixtures for the multi-agent test suite."""
+"""Shared fixtures for the multi-agent test suite.
+
+SAFETY: Sets JOBPULSE_TEST_MODE=1 so storage modules can guard against
+accidentally writing to production databases during test runs.
+"""
 
 import pytest
 import sqlite3
 import os
 from unittest.mock import patch, MagicMock
+
+# Global safety flag — set before ANY imports touch storage modules
+os.environ["JOBPULSE_TEST_MODE"] = "1"
 
 
 @pytest.fixture

@@ -171,6 +171,19 @@ def get_stats() -> dict:
 
 
 def clear_all():
+    """Delete all entities, relations, and processed files.
+
+    SAFETY: In test mode (JOBPULSE_TEST_MODE=1), this only works if DB_PATH
+    has been patched to a temp path. Prevents tests from wiping production data.
+    """
+    import os
+    if os.getenv("JOBPULSE_TEST_MODE"):
+        db_str = str(DB_PATH).lower()
+        if "tmp" not in db_str and "test" not in db_str and "temp" not in db_str:
+            raise RuntimeError(
+                f"clear_all() blocked: tests must not wipe production DB ({DB_PATH}). "
+                "Patch storage.DB_PATH to a tmp_path fixture."
+            )
     conn = get_conn()
     conn.executescript("""
         DELETE FROM knowledge_relations;
