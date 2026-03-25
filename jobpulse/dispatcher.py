@@ -21,6 +21,7 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.BRIEFING: _handle_briefing,
         Intent.ARXIV: _handle_arxiv,
         Intent.COMPLETE_TASK: _handle_complete_task,
+        Intent.REMOVE_TASK: _handle_remove_task,
         Intent.CREATE_EVENT: _handle_create_event,
         Intent.LOG_SPEND: _handle_log_spend,
         Intent.LOG_INCOME: _handle_log_income,
@@ -98,16 +99,45 @@ def _handle_show_tasks(cmd: ParsedCommand) -> str:
 
 
 def _handle_create_tasks(cmd: ParsedCommand) -> str:
-    from jobpulse.notion_agent import create_tasks_batch
+    from jobpulse.notion_agent import create_tasks_batch_smart, suggest_subtasks, create_tasks_batch
     from jobpulse.telegram_listener import _parse_tasks
 
     tasks = _parse_tasks(cmd.raw)
     if not tasks:
         return "Couldn't parse any tasks. Send them one per line:\n\nFix bug\nApply to jobs\nTailor resume"
 
-    created = create_tasks_batch(tasks)
-    task_list = "\n".join(f"  □ {t}" for t in tasks)
-    return f"✅ Created {created} tasks in Notion:\n\n{task_list}"
+    result = create_tasks_batch_smart(tasks)
+    lines = []
+
+    if result["created"]:
+        lines.append(f"✅ Created {len(result['created'])} tasks:")
+        for t in result["created"]:
+            lines.append(f"  □ {t}")
+
+    if result["duplicates"]:
+        lines.append(f"\n⚠️ Skipped {len(result['duplicates'])} duplicate(s):")
+        for d in result["duplicates"]:
+            lines.append(f"  ↳ \"{d['new']}\" — already exists as \"{d['existing']}\"")
+
+    if result["big_tasks"]:
+        lines.append(f"\n📋 {len(result['big_tasks'])} task(s) seem too big:")
+        for bt in result["big_tasks"]:
+            subtasks = suggest_subtasks(bt)
+            if subtasks:
+                lines.append(f"\n  \"{bt}\"")
+                lines.append(f"  Want me to split into:")
+                for st in subtasks:
+                    lines.append(f"    □ {st}")
+                lines.append(f"  Reply \"split: {bt[:30]}\" to create these subtasks")
+            else:
+                # Couldn't suggest subtasks, create as-is
+                create_tasks_batch([bt])
+                lines.append(f"  □ {bt} (created as-is)")
+
+    if not lines:
+        return "No tasks to create."
+
+    return "\n".join(lines)
 
 
 def _handle_calendar(cmd: ParsedCommand) -> str:
@@ -172,6 +202,16 @@ def _handle_complete_task(cmd: ParsedCommand) -> str:
         return "Which task? Say: done: task name"
 
     return complete_task(target)
+
+
+def _handle_remove_task(cmd: ParsedCommand) -> str:
+    from jobpulse.notion_agent import remove_task
+
+    target = cmd.args.strip()
+    if not target:
+        return "Which task? Say: remove: task name"
+
+    return remove_task(target)
 
 
 def _handle_create_event(cmd: ParsedCommand) -> str:
@@ -304,7 +344,8 @@ def _handle_help(cmd: ParsedCommand) -> str:
 \U0001f4dd TASKS:
   "show tasks" \u2014 see today's todo list
   "mark X done" \u2014 complete a task
-  Send a list of items \u2014 creates tasks
+  "remove: X" \u2014 delete a task
+  Send a list of items \u2014 creates tasks (auto-dedup + big task splitting)
 
 \U0001f4c5 CALENDAR:
   "calendar" \u2014 today + tomorrow events

@@ -227,6 +227,111 @@ def complete_task(task_name: str) -> str:
     return f"✅ Marked \"{best_task['title']}\" as Done!"
 
 
+def remove_task(task_name: str) -> str:
+    """Find a task by fuzzy match and delete the block from Notion."""
+    if not NOTION_TASKS_DB_ID:
+        return "NOTION_TASKS_DB_ID not set"
+
+    tasks = get_today_tasks()
+    if not tasks:
+        return "No tasks for today."
+
+    candidates = [(t, _fuzzy_score(task_name, t["title"])) for t in tasks]
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    best_task, best_score = candidates[0]
+
+    if best_score < 0.4:
+        task_list = "\n".join(f"  {'✅' if t['status'] == 'Done' else '☐'} {t['title']}" for t, _ in candidates[:5])
+        return f"Couldn't match \"{task_name}\" to any task.\n\nYour tasks:\n{task_list}\n\nTry: remove: [task name]"
+
+    # Delete the block
+    _notion_api("DELETE", f"/blocks/{best_task['block_id']}")
+    logger.info("Removed task: %s", best_task["title"])
+    return f"🗑️ Removed \"{best_task['title']}\" from today's tasks."
+
+
+def check_duplicate(new_title: str) -> str | None:
+    """Check if a task with similar title already exists today. Returns match or None."""
+    tasks = get_today_tasks()
+    if not tasks:
+        return None
+
+    new_norm = _normalize(new_title)
+    for t in tasks:
+        score = _fuzzy_score(new_title, t["title"])
+        if score >= 0.7:
+            return t["title"]
+        # Also check exact normalized match
+        if _normalize(t["title"]) == new_norm:
+            return t["title"]
+    return None
+
+
+def create_tasks_batch_smart(tasks: list[str], date: str = None) -> dict:
+    """Create tasks with dedup checking and big-task detection.
+
+    Returns:
+        {"created": [...], "duplicates": [...], "big_tasks": [...]}
+    """
+    created = []
+    duplicates = []
+    big_tasks = []
+
+    for task in tasks:
+        task = task.strip()
+        if not task:
+            continue
+
+        # Check for duplicates
+        existing = check_duplicate(task)
+        if existing:
+            duplicates.append({"new": task, "existing": existing})
+            continue
+
+        # Check if task is too big (heuristic: >10 words or contains "and"/"then"/"also")
+        words = task.split()
+        has_conjunction = any(w.lower() in ("and", "then", "also", "plus", "&") for w in words)
+        if len(words) > 12 or (len(words) > 6 and has_conjunction):
+            big_tasks.append(task)
+            continue
+
+        # Create normally
+        success = create_task(task, date)
+        if success:
+            created.append(task)
+
+    return {"created": created, "duplicates": duplicates, "big_tasks": big_tasks}
+
+
+def suggest_subtasks(big_task: str) -> list[str]:
+    """Use LLM to suggest subtasks for a large task."""
+    import os
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": f"""Break this task into 2-5 small, actionable subtasks.
+Each subtask should be completable in under 30 minutes.
+
+Task: {big_task}
+
+Return ONLY the subtasks, one per line, no numbering or bullets. Keep each under 8 words."""
+            }],
+            max_tokens=150,
+            temperature=0.3,
+        )
+
+        lines = response.choices[0].message.content.strip().split("\n")
+        return [line.strip() for line in lines if line.strip() and len(line.strip()) > 3]
+    except Exception as e:
+        logger.warning("Subtask suggestion failed: %s", e)
+        return []
+
+
 def create_research_page(title: str, blocks: list[dict]) -> str:
     """Create a weekly research page in the Weekly AI Research database. Returns page URL."""
     if not NOTION_RESEARCH_DB_ID:

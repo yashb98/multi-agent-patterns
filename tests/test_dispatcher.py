@@ -19,7 +19,7 @@ class TestDispatchMap:
         handlers_covered = {
             Intent.SHOW_TASKS, Intent.CREATE_TASKS, Intent.CALENDAR,
             Intent.GMAIL, Intent.GITHUB, Intent.TRENDING, Intent.BRIEFING,
-            Intent.ARXIV, Intent.COMPLETE_TASK, Intent.CREATE_EVENT,
+            Intent.ARXIV, Intent.COMPLETE_TASK, Intent.REMOVE_TASK, Intent.CREATE_EVENT,
             Intent.LOG_SPEND, Intent.LOG_INCOME, Intent.LOG_SAVINGS,
             Intent.SET_BUDGET, Intent.SHOW_BUDGET, Intent.HELP,
             Intent.WEEKLY_REPORT, Intent.EXPORT,

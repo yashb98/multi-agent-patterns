@@ -20,6 +20,7 @@ class Intent(str, Enum):
     CREATE_TASKS = "create_tasks"
     SHOW_TASKS = "show_tasks"
     COMPLETE_TASK = "complete_task"
+    REMOVE_TASK = "remove_task"
     CALENDAR = "calendar"
     CREATE_EVENT = "create_event"
     GMAIL = "gmail"
@@ -132,6 +133,11 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"^done[:\s]+(.+)",
         r"^✅\s*(.+)",
     ]),
+    # Remove task
+    (Intent.REMOVE_TASK, [
+        r"(remove|delete|drop|cancel)[:\s]+(.+)",
+        r"^🗑️?\s*(.+)",
+    ]),
     # Show tasks
     (Intent.SHOW_TASKS, [
         r"(show|list|view|get|see|display|fetch)\s+(my\s+)?(tasks?|todo|to.?do|checklist)",
@@ -204,6 +210,7 @@ def classify_llm(text: str) -> ParsedCommand:
 CREATE_TASKS — user wants to add tasks/todos
 SHOW_TASKS — user wants to see their tasks
 COMPLETE_TASK — user wants to mark a task as done
+REMOVE_TASK — user wants to delete or remove a task
 CALENDAR — user wants to see their schedule
 CREATE_EVENT — user wants to add a calendar event or reminder
 GMAIL — user wants to check email or recruiter updates

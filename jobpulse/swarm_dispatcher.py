@@ -126,7 +126,7 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
 
     # Simple intents — single agent, no swarm overhead
     SIMPLE_INTENTS = {
-        Intent.SHOW_TASKS, Intent.CREATE_TASKS, Intent.COMPLETE_TASK,
+        Intent.SHOW_TASKS, Intent.CREATE_TASKS, Intent.COMPLETE_TASK, Intent.REMOVE_TASK,
         Intent.HELP, Intent.CREATE_EVENT, Intent.SHOW_BUDGET,
         Intent.CONVERSATION, Intent.CLEAR_CHAT,
         Intent.REMOTE_SHELL, Intent.GIT_OPS,
@@ -342,7 +342,7 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
     from jobpulse.dispatcher import (
         _handle_show_tasks, _handle_create_tasks, _handle_calendar,
         _handle_gmail, _handle_github, _handle_trending, _handle_briefing,
-        _handle_arxiv, _handle_complete_task, _handle_create_event,
+        _handle_arxiv, _handle_complete_task, _handle_remove_task, _handle_create_event,
         _handle_log_spend, _handle_log_income, _handle_log_savings,
         _handle_set_budget, _handle_show_budget, _handle_help, _handle_unknown,
         _handle_weekly_report, _handle_export,
@@ -362,6 +362,7 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         Intent.BRIEFING.value: _handle_briefing,
         Intent.ARXIV.value: _handle_arxiv,
         Intent.COMPLETE_TASK.value: _handle_complete_task,
+        Intent.REMOVE_TASK.value: _handle_remove_task,
         Intent.CREATE_EVENT.value: _handle_create_event,
         Intent.LOG_SPEND.value: _handle_log_spend,
         Intent.LOG_INCOME.value: _handle_log_income,
