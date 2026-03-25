@@ -56,6 +56,9 @@ from shared.agents import (
     get_llm,
 )
 from langchain_core.messages import SystemMessage, HumanMessage
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # ─── TASK ANALYZER NODE ─────────────────────────────────────────

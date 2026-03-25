@@ -3,13 +3,16 @@
 import json
 import subprocess
 from jobpulse.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def send_message(text: str, chat_id: str = None) -> bool:
     """Send a message to Telegram. Returns True on success."""
     cid = chat_id or TELEGRAM_CHAT_ID
     if not TELEGRAM_BOT_TOKEN or not cid:
-        print("[Telegram] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+        logger.warning("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
         return False
 
     payload = json.dumps({"chat_id": cid, "text": text})
@@ -24,10 +27,10 @@ def send_message(text: str, chat_id: str = None) -> bool:
         resp = json.loads(result.stdout)
         if resp.get("ok"):
             return True
-        print(f"[Telegram] API error: {resp}")
+        logger.error("API error: %s", resp)
         return False
     except Exception as e:
-        print(f"[Telegram] Failed: {e}")
+        logger.error("Failed: %s", e)
         return False
 
 
@@ -51,5 +54,6 @@ def get_updates(offset: int = 0, long_poll: bool = False) -> list[dict]:
         return data.get("result", [])
     except subprocess.TimeoutExpired:
         return []  # normal for long-poll when no messages
-    except Exception:
+    except Exception as e:
+        logger.debug("Telegram get_updates error: %s", e)
         return []

@@ -21,6 +21,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from patterns.hierarchical import run_hierarchical
 from patterns.peer_debate import run_debate
 from patterns.dynamic_swarm import run_swarm
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def compare_patterns(topic: str):

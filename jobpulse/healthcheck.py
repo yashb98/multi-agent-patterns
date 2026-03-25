@@ -5,6 +5,9 @@ from datetime import datetime
 from pathlib import Path
 from jobpulse.config import DATA_DIR, LOGS_DIR
 from jobpulse import telegram_agent
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 HEARTBEAT_FILE = DATA_DIR / "daemon_heartbeat.txt"
 HEALTH_LOG = LOGS_DIR / "health.log"
@@ -60,6 +63,6 @@ def alert_if_down():
             f"  ./scripts/install_daemon.sh restart\n\n"
             f"Or the GitHub Actions backup will handle scheduled jobs."
         )
-        print(f"[Health] ALERT sent — daemon down since {health['last_seen']}")
+        logger.warning("ALERT sent — daemon down since %s", health['last_seen'])
     else:
-        print(f"[Health] OK — last heartbeat {health['age_minutes']}min ago")
+        logger.info("OK — last heartbeat %smin ago", health['age_minutes'])

@@ -12,6 +12,9 @@ import sqlite3
 from datetime import datetime, date
 from pathlib import Path
 from mindgraph_app.storage import get_conn, get_full_graph, search_entities
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def local_search(query: str, limit: int = 10) -> dict:
@@ -118,7 +121,8 @@ def temporal_search(target_date: str = None) -> dict:
     try:
         from jobpulse.event_logger import get_events_for_day
         events_raw = get_events_for_day(target_date)
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to get events for day: %s", e)
         events_raw = []
 
     return {
@@ -214,8 +218,8 @@ def deep_query(query: str) -> str:
         for event in events[:30]:
             content = event.get("content", "")[:100]
             subgraph_text += f"[{event.get('event_type', '')}] {event.get('agent_name', '')}: {content}\n"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get recent events for deep query: %s", e)
 
     # Step 5: Use RLM if context is large (>10K chars), else direct LLM
     try:
@@ -242,9 +246,9 @@ def deep_query(query: str) -> str:
             rlm.close()
             return result.choices[0].message.content
     except ImportError:
-        pass
+        logger.debug("RLM package not available, falling back to direct LLM")
     except Exception as e:
-        print(f"[Retriever] RLM error: {e}")
+        logger.warning("RLM error: %s", e)
 
     # Direct LLM fallback (small graphs or RLM unavailable)
     try:
@@ -268,6 +272,6 @@ def _row_to_dict(row) -> dict:
     if "metadata" in d and isinstance(d["metadata"], str):
         try:
             d["metadata"] = json.loads(d["metadata"])
-        except (json.JSONDecodeError, TypeError):
-            pass
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.debug("Failed to parse metadata JSON: %s", e)
     return d

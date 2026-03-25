@@ -3,6 +3,9 @@
 from datetime import datetime
 from jobpulse.command_router import Intent, ParsedCommand
 from jobpulse import event_logger
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def dispatch(cmd: ParsedCommand) -> str:

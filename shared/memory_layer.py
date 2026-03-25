@@ -63,6 +63,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from collections import deque
 
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 # ─── MEMORY ENTRIES ──────────────────────────────────────────────
 
@@ -98,8 +102,8 @@ class EpisodicEntry:
         try:
             age = (datetime.now() - datetime.fromisoformat(self.timestamp)).days
             score += max(0, 3.0 - age * 0.3)
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as e:
+            logger.debug("Failed to parse episode timestamp: %s", e)
         # Quality bonus (high-scoring episodes are more useful)
         score += self.final_score * 0.5
         return score
@@ -294,7 +298,7 @@ class EpisodicMemory:
             with open(self.storage_path, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"  [Memory] Failed to save episodic memory: {e}")
+            logger.warning("Failed to save episodic memory: %s", e)
     
     def _load(self):
         try:
@@ -303,7 +307,7 @@ class EpisodicMemory:
                     data = json.load(f)
                 self.episodes = [EpisodicEntry(**d) for d in data]
         except Exception as e:
-            print(f"  [Memory] Failed to load episodic memory: {e}")
+            logger.warning("Failed to load episodic memory: %s", e)
             self.episodes = []
 
 
@@ -425,9 +429,9 @@ class SemanticMemory:
             os.makedirs(os.path.dirname(self.storage_path) or ".", exist_ok=True)
             with open(self.storage_path, "w") as f:
                 json.dump(data, f, indent=2)
-        except Exception:
-            pass
-    
+        except Exception as e:
+            logger.debug("Failed to save semantic memory: %s", e)
+
     def _load(self):
         try:
             if os.path.exists(self.storage_path):
@@ -436,7 +440,8 @@ class SemanticMemory:
                 self.facts = {
                     fid: SemanticEntry(**d) for fid, d in data.items()
                 }
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to load semantic memory: %s", e)
             self.facts = {}
 
 
@@ -540,16 +545,17 @@ class ProceduralMemory:
             os.makedirs(os.path.dirname(self.storage_path) or ".", exist_ok=True)
             with open(self.storage_path, "w") as f:
                 json.dump(data, f, indent=2)
-        except Exception:
-            pass
-    
+        except Exception as e:
+            logger.debug("Failed to save procedural memory: %s", e)
+
     def _load(self):
         try:
             if os.path.exists(self.storage_path):
                 with open(self.storage_path, "r") as f:
                     data = json.load(f)
                 self.procedures = [ProceduralEntry(**d) for d in data]
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to load procedural memory: %s", e)
             self.procedures = []
 
 
@@ -609,7 +615,7 @@ class PatternMemory:
         If score <= 0.7, returns (None, score).
         """
         if not self.patterns:
-            print("  [PatternMemory] No patterns stored yet — building from scratch")
+            logger.info("No patterns stored yet — building from scratch")
             return None, 0.0
 
         scored = [
@@ -620,15 +626,15 @@ class PatternMemory:
         best_pattern, best_score = scored[0]
 
         if best_score > 0.7:
-            print(f"  [PatternMemory] REUSE pattern from '{best_pattern.topic}' "
-                  f"(score: {best_score:.2f}, original score: {best_pattern.final_score}/10)")
+            logger.info("REUSE pattern from '%s' (score: %.2f, original score: %s/10)",
+                        best_pattern.topic, best_score, best_pattern.final_score)
             return best_pattern, best_score
         elif best_score > 0.4:
-            print(f"  [PatternMemory] PARTIAL match from '{best_pattern.topic}' "
-                  f"(score: {best_score:.2f}) — use as starting point")
+            logger.info("PARTIAL match from '%s' (score: %.2f) — use as starting point",
+                        best_pattern.topic, best_score)
             return best_pattern, best_score
         else:
-            print(f"  [PatternMemory] No good match (best: {best_score:.2f}) — building from scratch")
+            logger.info("No good match (best: %.2f) — building from scratch", best_score)
             return None, best_score
 
     def store(self, topic: str, domain: str, agents_used: list[str],
@@ -638,7 +644,7 @@ class PatternMemory:
         Store a successful pattern. Only call when final_score >= 7.0.
         """
         if final_score < 7.0:
-            print(f"  [PatternMemory] Score {final_score} < 7.0 — not storing")
+            logger.info("Score %s < 7.0 — not storing", final_score)
             return
 
         pattern = PatternEntry(
@@ -661,7 +667,7 @@ class PatternMemory:
             self.patterns.sort(key=lambda p: p.final_score, reverse=True)
             self.patterns = self.patterns[:50]
         self._save()
-        print(f"  [PatternMemory] Stored pattern: '{topic}' (score: {final_score}/10)")
+        logger.info("Stored pattern: '%s' (score: %s/10)", topic, final_score)
 
     def _save(self):
         try:
@@ -680,7 +686,7 @@ class PatternMemory:
             with open(self.storage_path, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"  [PatternMemory] Save failed: {e}")
+            logger.warning("PatternMemory save failed: %s", e)
 
     def _load(self):
         try:
@@ -688,7 +694,8 @@ class PatternMemory:
                 with open(self.storage_path, "r") as f:
                     data = json.load(f)
                 self.patterns = [PatternEntry(**d) for d in data]
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to load pattern memory: %s", e)
             self.patterns = []
 
 
@@ -727,19 +734,19 @@ class TieredRouter:
 
         # ── Tier 1: CACHED ──
         if task_hash in self._cache:
-            print(f"  [TieredRouter] TIER 1 HIT: Returning cached result for {agent_name}")
+            logger.info("TIER 1 HIT: Returning cached result for %s", agent_name)
             return self._cache[task_hash]
 
         # ── Tier 2: LIGHTWEIGHT / BOOSTER ──
         if self.AGENT_BOOSTER_AVAILABLE:
             lightweight_result = self._try_lightweight(agent_name, state)
             if lightweight_result is not None:
-                print(f"  [TieredRouter] TIER 2 HIT: Lightweight resolve for {agent_name}")
+                logger.info("TIER 2 HIT: Lightweight resolve for %s", agent_name)
                 self._cache[task_hash] = lightweight_result
                 return lightweight_result
 
         # ── Tier 3: FULL AGENT ──
-        print(f"  [TieredRouter] TIER 3: Full agent needed for {agent_name}")
+        logger.info("TIER 3: Full agent needed for %s", agent_name)
         return None
 
     def cache_result(self, agent_name: str, state: dict, result: dict):
@@ -751,7 +758,7 @@ class TieredRouter:
     def enable_booster(cls):
         """Enable tier-2 lightweight routing."""
         cls.AGENT_BOOSTER_AVAILABLE = True
-        print("  [TieredRouter] [AGENT_BOOSTER_AVAILABLE] = True")
+        logger.info("[AGENT_BOOSTER_AVAILABLE] = True")
 
     @classmethod
     def disable_booster(cls):
@@ -983,7 +990,7 @@ class MemoryManager:
             domain=domain,
         )
         self.episodic.store(episode)
-        print(f"  [Memory] Stored episode: {topic} (score: {final_score:.1f})")
+        logger.info("Stored episode: %s (score: %.1f)", topic, final_score)
     
     def learn_fact(self, domain: str, fact: str, run_id: str = "manual"):
         """Add or reinforce a semantic fact."""

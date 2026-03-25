@@ -7,6 +7,9 @@ from jobpulse.config import TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR
 from jobpulse import telegram_agent
 from jobpulse.command_router import classify, Intent
 from jobpulse.healthcheck import write_heartbeat
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # Use Enhanced Swarm dispatcher if enabled, else flat dispatcher
 USE_SWARM = os.getenv("JOBPULSE_SWARM", "true").lower() in ("true", "1", "yes")
@@ -31,6 +34,7 @@ def _save_last_update_id(uid: int):
 
 
 def _log(msg: str):
+    logger.info(msg)
     log_file = LOGS_DIR / "telegram-listener.log"
     with open(log_file, "a") as f:
         f.write(f"[{datetime.now().isoformat()}] {msg}\n")
@@ -112,7 +116,7 @@ def poll_continuous():
     """
     import time
     _log("Daemon started (long-polling mode)")
-    print("[Listener] Daemon started — long-polling Telegram. Ctrl+C to stop.")
+    logger.info("Daemon started — long-polling Telegram. Ctrl+C to stop.")
 
     last_id = _get_last_update_id()
     consecutive_errors = 0
@@ -164,7 +168,7 @@ def poll_continuous():
 
         except KeyboardInterrupt:
             _log("Daemon stopped by user")
-            print("\n[Listener] Stopped.")
+            logger.info("Stopped.")
             break
         except Exception as e:
             consecutive_errors += 1

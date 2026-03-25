@@ -66,6 +66,9 @@ from shared.persona_evolution import (
 from shared.prompt_optimizer import PromptOptimizer
 
 from langchain_core.messages import SystemMessage, HumanMessage
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # ─── GLOBAL LEARNING SYSTEMS ────────────────────────────────────

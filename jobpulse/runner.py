@@ -1,12 +1,15 @@
 """CLI runner — invoke any agent from command line or cron."""
 
 import sys
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python -m jobpulse.runner <command>")
-        print("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, budget, listen, daemon, test")
+        logger.info("Usage: python -m jobpulse.runner <command>")
+        logger.info("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, budget, listen, daemon, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -18,15 +21,15 @@ def main():
     elif command == "gmail":
         from jobpulse.gmail_agent import check_emails
         results = check_emails()
-        print(f"Found {len(results)} recruiter emails")
+        logger.info("Found %d recruiter emails", len(results))
 
     elif command == "calendar":
         from jobpulse.calendar_agent import get_today_and_tomorrow, format_events
         cal = get_today_and_tomorrow()
-        print("TODAY:")
-        print(format_events(cal["today_events"]))
-        print("TOMORROW:")
-        print(format_events(cal["tomorrow_events"]))
+        logger.info("TODAY:")
+        logger.info(format_events(cal["today_events"]))
+        logger.info("TOMORROW:")
+        logger.info(format_events(cal["tomorrow_events"]))
 
     elif command == "calendar-remind":
         from jobpulse.calendar_agent import get_upcoming_reminders
@@ -35,23 +38,23 @@ def main():
         for r in reminders:
             loc = f" ({r['location']})" if r.get("location") else ""
             send_message(f"⏰ REMINDER: \"{r['title']}\"{loc} starts in {r['in']} — {r['start']}")
-            print(f"Sent reminder: {r['title']}")
+            logger.info("Sent reminder: %s", r['title'])
         if not reminders:
-            print("No upcoming events in next 2 hours")
+            logger.info("No upcoming events in next 2 hours")
 
     elif command == "github":
         from jobpulse.github_agent import get_yesterday_commits, format_commits
         data = get_yesterday_commits()
-        print(format_commits(data))
+        logger.info(format_commits(data))
 
     elif command == "tasks":
         from jobpulse.notion_agent import get_today_tasks, format_tasks
         tasks = get_today_tasks()
-        print(format_tasks(tasks))
+        logger.info(format_tasks(tasks))
 
     elif command == "budget":
         from jobpulse.budget_agent import get_week_summary, format_week_summary
-        print(format_week_summary(get_week_summary()))
+        logger.info(format_week_summary(get_week_summary()))
 
     elif command == "listen":
         from jobpulse.telegram_listener import poll_and_process
@@ -68,10 +71,10 @@ def main():
     elif command == "test":
         from jobpulse.telegram_agent import send_message
         success = send_message("🧪 JobPulse test message — all systems operational!")
-        print(f"Telegram: {'OK' if success else 'FAILED'}")
+        logger.info("Telegram: %s", "OK" if success else "FAILED")
 
     else:
-        print(f"Unknown command: {command}")
+        logger.error("Unknown command: %s", command)
         sys.exit(1)
 
 

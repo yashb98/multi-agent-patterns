@@ -15,6 +15,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from jobpulse.config import DATA_DIR
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 DB_PATH = DATA_DIR / "mindgraph.db"
 
@@ -92,7 +95,7 @@ class ProcessTrail:
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"[ProcessTrail] Error logging step: {e}")
+            logger.error("Error logging step: %s", e)
 
     @contextmanager
     def step(self, step_type: str, step_name: str, step_input: str = None):
@@ -211,7 +214,7 @@ def cleanup_old_trails(retention_days: int = 30):
     conn.commit()
     conn.close()
     if deleted > 0:
-        print(f"[ProcessTrail] Cleaned up {deleted} trail entries older than {retention_days} days")
+        logger.info("Cleaned up %d trail entries older than %d days", deleted, retention_days)
     return deleted
 
 

@@ -31,6 +31,9 @@ from langchain_openai import ChatOpenAI
 
 from shared.state import AgentState
 from shared.prompts import RESEARCHER_PROMPT, WRITER_PROMPT, REVIEWER_PROMPT
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # ─── LLM INITIALISATION ─────────────────────────────────────────
@@ -73,9 +76,9 @@ def researcher_node(state: AgentState) -> dict:
     so returning a list APPENDS to existing notes rather than
     replacing them. This means research accumulates across iterations.
     """
-    print(f"\n{'='*50}")
-    print(f"🔍 RESEARCHER AGENT - Iteration {state.get('iteration', 0)}")
-    print(f"{'='*50}")
+    logger.info("=" * 50)
+    logger.info("RESEARCHER AGENT - Iteration %d", state.get('iteration', 0))
+    logger.info("=" * 50)
     
     # Build the user message based on current state
     topic = state["topic"]
@@ -105,7 +108,7 @@ details, current trends, and notable perspectives."""
     ])
     
     research = response.content
-    print(f"📝 Research produced: {len(research)} characters")
+    logger.info("Research produced: %d characters", len(research))
     
     # Return PARTIAL state update
     # research_notes is Annotated[list, operator.add] → this APPENDS
@@ -130,9 +133,9 @@ def writer_node(state: AgentState) -> dict:
     latest version. This is intentional: we want the Writer to
     produce a complete, standalone article each time.
     """
-    print(f"\n{'='*50}")
-    print(f"✍️  WRITER AGENT - Iteration {state.get('iteration', 0)}")
-    print(f"{'='*50}")
+    logger.info("=" * 50)
+    logger.info("WRITER AGENT - Iteration %d", state.get('iteration', 0))
+    logger.info("=" * 50)
     
     topic = state["topic"]
     research = "\n\n---\n\n".join(state.get("research_notes", []))
@@ -172,7 +175,7 @@ Write a complete, polished technical blog article based on these research notes.
     ])
     
     draft = response.content
-    print(f"📄 Draft produced: {len(draft)} characters, ~{len(draft.split())} words")
+    logger.info("Draft produced: %d characters, ~%d words", len(draft), len(draft.split()))
     
     return {
         "draft": draft,
@@ -200,9 +203,9 @@ def reviewer_node(state: AgentState) -> dict:
     LLM call just to interpret the review. Structured output
     eliminates that overhead and ambiguity.
     """
-    print(f"\n{'='*50}")
-    print(f"📋 REVIEWER AGENT - Evaluating draft")
-    print(f"{'='*50}")
+    logger.info("=" * 50)
+    logger.info("REVIEWER AGENT - Evaluating draft")
+    logger.info("=" * 50)
     
     draft = state.get("draft", "")
     topic = state["topic"]
@@ -242,14 +245,14 @@ specified in your instructions."""
         passed = review.get("passed", False)
         feedback_text = json.dumps(review, indent=2)
         
-        print(f"⭐ Score: {score}/10 | Passed: {'✅' if passed else '❌'}")
+        logger.info("Score: %s/10 | Passed: %s", score, passed)
         if not passed:
             improvements = review.get("improvements_needed", [])
             for imp in improvements[:3]:
-                print(f"   → {imp}")
+                logger.info("   -> %s", imp)
     except (json.JSONDecodeError, ValueError) as e:
         # Fallback if JSON parsing fails
-        print(f"⚠️  Could not parse review JSON: {e}")
+        logger.warning("Could not parse review JSON: %s", e)
         score = 5.0
         passed = False
         feedback_text = raw

@@ -17,6 +17,9 @@ Does NOT extract from:
 
 from mindgraph_app.extractor import extract_from_text
 from jobpulse import event_logger
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def extract_from_email(sender: str, subject: str, category: str, body_snippet: str):
@@ -38,7 +41,7 @@ def extract_from_email(sender: str, subject: str, category: str, body_snippet: s
                 metadata=result,
             )
     except Exception as e:
-        print(f"[AutoExtract] Email extraction failed: {e}")
+        logger.warning("Email extraction failed: %s", e)
 
 
 def extract_from_paper_summary(title: str, authors: str, summary: str, arxiv_id: str = ""):
@@ -56,7 +59,7 @@ def extract_from_paper_summary(title: str, authors: str, summary: str, arxiv_id:
                 metadata={**result, "arxiv_id": arxiv_id, "title": title},
             )
     except Exception as e:
-        print(f"[AutoExtract] Paper extraction failed: {e}")
+        logger.warning("Paper extraction failed: %s", e)
 
 
 def extract_from_conversation(transcript: str, topic: str = "", agents: list[str] = None):
@@ -75,7 +78,7 @@ def extract_from_conversation(transcript: str, topic: str = "", agents: list[str
                 metadata=result,
             )
     except Exception as e:
-        print(f"[AutoExtract] Conversation extraction failed: {e}")
+        logger.warning("Conversation extraction failed: %s", e)
 
 
 def extract_from_text_input(text: str, source: str = "manual"):
@@ -92,5 +95,5 @@ def extract_from_text_input(text: str, source: str = "manual"):
             )
         return result
     except Exception as e:
-        print(f"[AutoExtract] Manual extraction failed: {e}")
+        logger.warning("Manual extraction failed: %s", e)
         return {"status": "error", "error": str(e)}

@@ -8,6 +8,9 @@ Uses Enhanced Swarm architecture:
 
 from datetime import datetime
 from jobpulse import gmail_agent, calendar_agent, github_agent, notion_agent, telegram_agent, budget_agent, event_logger
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def build_and_send(trigger: str = "cron_morning"):
@@ -16,7 +19,7 @@ def build_and_send(trigger: str = "cron_morning"):
     trail = ProcessTrail("morning_briefing", trigger)
 
     today = datetime.now().strftime("%A, %B %d, %Y")
-    print(f"[Briefing] Building morning digest for {today}...")
+    logger.info("Building morning digest for %s...", today)
 
     # ── Section 1: Recruiter Emails ──
     with trail.step("api_call", "Collect recruiter emails") as s:
@@ -70,7 +73,8 @@ def build_and_send(trigger: str = "cron_morning"):
             else:
                 section_budget = "  No transactions logged this week"
             s["output"] = f"Income: £{week_summary['income_total']:.2f}, Spent: £{week_summary['spending_total']:.2f}"
-        except Exception:
+        except Exception as e:
+            logger.warning("Budget data unavailable: %s", e)
             section_budget = "  Budget data unavailable"
             s["output"] = "Budget unavailable"
 
@@ -118,7 +122,7 @@ Have a productive day! 🚀"""
                      step_input=f"Message: {len(message)} chars") as s:
         success = telegram_agent.send_message(message)
         s["output"] = f"{'Sent' if success else 'FAILED'}"
-        print(f"[Briefing] Digest {'sent' if success else 'FAILED'}")
+        logger.info("Digest %s", "sent" if success else "FAILED")
 
     # Log briefing to simulation events
     event_logger.log_event(
@@ -151,8 +155,8 @@ Or reply 'skip' if you're good for today."""
         # Score: higher if more data was included
         data_richness = min(10.0, (len(emails) + len(cal['today_events']) + len(tasks) + commits_data['total_commits']) * 0.5 + 3)
         evolve_prompt("briefing_synthesizer", message[:500], data_richness)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Persona evolution skipped: %s", e)
 
     trail.finalize(f"Briefing {'sent' if success else 'FAILED'} — "
                    f"{len(emails)} emails, {len(cal['today_events'])} events, "

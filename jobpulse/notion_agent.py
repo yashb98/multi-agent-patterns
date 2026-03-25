@@ -4,6 +4,9 @@ import json
 import subprocess
 from datetime import datetime
 from jobpulse.config import NOTION_API_KEY, NOTION_TASKS_DB_ID, NOTION_RESEARCH_DB_ID
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _notion_api(method: str, endpoint: str, data: dict = None) -> dict:
@@ -20,14 +23,14 @@ def _notion_api(method: str, endpoint: str, data: dict = None) -> dict:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         return json.loads(result.stdout) if result.stdout else {}
     except Exception as e:
-        print(f"[Notion] API error: {e}")
+        logger.error("API error: %s", e)
         return {}
 
 
 def get_today_tasks() -> list[dict]:
     """Fetch today's tasks from the daily todo page (reads to_do blocks)."""
     if not NOTION_TASKS_DB_ID:
-        print("[Notion] NOTION_TASKS_DB_ID not set")
+        logger.warning("NOTION_TASKS_DB_ID not set")
         return []
 
     today = datetime.now().strftime("%Y-%m-%d")
@@ -227,7 +230,7 @@ def complete_task(task_name: str) -> str:
 def create_research_page(title: str, blocks: list[dict]) -> str:
     """Create a weekly research page in the Weekly AI Research database. Returns page URL."""
     if not NOTION_RESEARCH_DB_ID:
-        print("[Notion] NOTION_RESEARCH_DB_ID not set")
+        logger.warning("NOTION_RESEARCH_DB_ID not set")
         return ""
 
     data = {

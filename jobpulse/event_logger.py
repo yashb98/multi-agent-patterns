@@ -14,6 +14,9 @@ import sqlite3
 from datetime import datetime, date
 from pathlib import Path
 from jobpulse.config import DATA_DIR
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # Use the same mindgraph.db so knowledge graph and events live together
 DB_PATH = DATA_DIR / "mindgraph.db"
@@ -169,7 +172,7 @@ def cleanup_old_events(retention_days: int = 90):
     conn.commit()
     conn.close()
     if deleted > 0:
-        print(f"[EventLogger] Cleaned up {deleted} events older than {retention_days} days")
+        logger.info("Cleaned up %d events older than %d days", deleted, retention_days)
     return deleted
 
 

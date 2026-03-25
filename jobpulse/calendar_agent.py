@@ -4,6 +4,9 @@ import os
 from datetime import datetime, timedelta
 from jobpulse.config import GOOGLE_TOKEN_PATH
 from jobpulse import event_logger
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _get_calendar_service():
@@ -24,15 +27,15 @@ def _get_calendar_service():
                 with open(GOOGLE_TOKEN_PATH, "w") as f:
                     f.write(creds.to_json())
             else:
-                print("[Calendar] No valid credentials. Run: python scripts/setup_integrations.py")
+                logger.warning("No valid credentials. Run: python scripts/setup_integrations.py")
                 return None
 
         return build("calendar", "v3", credentials=creds)
     except ImportError:
-        print("[Calendar] Install: pip install google-auth-oauthlib google-api-python-client")
+        logger.warning("Install: pip install google-auth-oauthlib google-api-python-client")
         return None
     except Exception as e:
-        print(f"[Calendar] Auth error: {e}")
+        logger.error("Auth error: %s", e)
         return None
 
 
@@ -56,7 +59,8 @@ def _fetch_events(service, start: datetime, end: datetime) -> list[dict]:
             try:
                 dt = datetime.fromisoformat(start_dt.replace("Z", "+00:00"))
                 time_str = dt.strftime("%I:%M %p")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.debug("Could not parse start time %s: %s", start_dt, e)
                 time_str = start_dt
 
             end_raw = event.get("end", {})
@@ -64,7 +68,8 @@ def _fetch_events(service, start: datetime, end: datetime) -> list[dict]:
             try:
                 edt = datetime.fromisoformat(end_dt.replace("Z", "+00:00"))
                 end_str = edt.strftime("%I:%M %p")
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.debug("Could not parse end time %s: %s", end_dt, e)
                 end_str = end_dt
 
             events.append({
@@ -76,7 +81,7 @@ def _fetch_events(service, start: datetime, end: datetime) -> list[dict]:
             })
         return events
     except Exception as e:
-        print(f"[Calendar] Error fetching events: {e}")
+        logger.error("Error fetching events: %s", e)
         return []
 
 
@@ -150,8 +155,8 @@ def get_upcoming_reminders(within_minutes: int = 120) -> list[dict]:
                     "location": event.get("location", ""),
                     "in": time_str,
                 })
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as e:
+            logger.debug("Could not parse reminder time: %s", e)
     return reminders
 
 

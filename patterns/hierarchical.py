@@ -55,6 +55,9 @@ from shared.agents import (
 from shared.prompts import SUPERVISOR_PROMPT
 from shared.memory_layer import MemoryManager
 from langchain_core.messages import SystemMessage, HumanMessage
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # ─── THE SUPERVISOR NODE ────────────────────────────────────────

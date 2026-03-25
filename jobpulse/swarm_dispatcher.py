@@ -19,6 +19,9 @@ from datetime import datetime
 from jobpulse.command_router import Intent, ParsedCommand
 from jobpulse import event_logger
 from jobpulse.process_logger import ProcessTrail
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # ── Experience Memory (persists across runs in SQLite) ──
 
@@ -235,7 +238,7 @@ def rlm_synthesize(sections: dict, query: str) -> str | None:
     except ImportError:
         return None
     except Exception as e:
-        print(f"[Swarm] RLM synthesis error: {e}")
+        logger.error("RLM synthesis error: %s", e)
         return None
 
 
@@ -390,7 +393,8 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         try:
             summary = get_week_summary()
             return format_week_summary(summary) if summary["by_category"] else "No transactions this week"
-        except Exception:
+        except Exception as e:
+            logger.debug("Budget collect failed: %s", e)
             return "Budget unavailable"
 
     elif agent_name == "synthesize_briefing":
@@ -402,7 +406,8 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         try:
             from mindgraph_app.retriever import deep_query
             return deep_query("What connections exist between recent emails and calendar events?")
-        except Exception:
+        except Exception as e:
+            logger.debug("Cross-reference failed: %s", e)
             return ""
 
     # Standard agent

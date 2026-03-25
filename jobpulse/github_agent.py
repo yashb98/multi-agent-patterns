@@ -5,6 +5,9 @@ import subprocess
 from datetime import datetime, timedelta
 from jobpulse.config import GITHUB_TOKEN, GITHUB_USERNAME
 from jobpulse import event_logger
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _gh_api(endpoint: str) -> list:
@@ -16,7 +19,7 @@ def _gh_api(endpoint: str) -> list:
         )
         return json.loads(result.stdout) if result.stdout else []
     except Exception as e:
-        print(f"[GitHub] API error: {e}")
+        logger.error("API error: %s", e)
         return []
 
 

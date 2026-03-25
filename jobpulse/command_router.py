@@ -11,6 +11,9 @@ import re
 from enum import Enum
 from dataclasses import dataclass
 from typing import Optional, Callable
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class Intent(str, Enum):
@@ -195,7 +198,7 @@ Respond with ONLY the intent name. Nothing else."""}],
         return ParsedCommand(intent=intent, args=text, raw=text)
 
     except Exception as e:
-        print(f"[Router] LLM classification failed: {e}")
+        logger.error("LLM classification failed: %s", e)
         return ParsedCommand(intent=Intent.UNKNOWN, args=text, raw=text)
 
 

@@ -6,6 +6,9 @@ from pydantic import BaseModel
 from typing import Optional
 from mindgraph_app import storage, extractor
 from mindgraph_app import retriever as graphrag
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/mindgraph")
 process_router = APIRouter(prefix="/api/process")
@@ -171,7 +174,8 @@ def get_entity(entity_id: str):
     try:
         from jobpulse.event_logger import get_events_mentioning
         events = get_events_mentioning(entity["name"], limit=10)
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to get events mentioning entity: %s", e)
         events = []
 
     return {
@@ -188,7 +192,8 @@ def get_stats():
     try:
         from jobpulse.event_logger import get_event_stats
         event_stats = get_event_stats()
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to get event stats: %s", e)
         event_stats = {"total_events": 0, "today_events": 0, "by_type": {}}
 
     return {**kg_stats, "simulation": event_stats}
@@ -290,3 +295,22 @@ def get_process_agent_stats():
     """Get stats for each agent: run count, success rate, avg duration."""
     from jobpulse.process_logger import get_agent_stats
     return {"agents": get_agent_stats()}
+
+
+# ── Rate Limit Monitoring Endpoints ──
+
+rate_router = APIRouter(prefix="/api/rate-limits")
+
+
+@rate_router.get("")
+def get_rate_limits():
+    """Get current rate limit status for all tracked APIs."""
+    from shared.rate_monitor import get_current_limits
+    return {"limits": get_current_limits()}
+
+
+@rate_router.get("/{api_name}")
+def get_rate_limit_history(api_name: str, limit: int = 50):
+    """Get rate limit history for a specific API."""
+    from shared.rate_monitor import get_history
+    return {"api": api_name, "history": get_history(api_name, limit)}

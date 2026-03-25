@@ -9,6 +9,9 @@ from jobpulse import db
 from jobpulse import telegram_agent
 from jobpulse import event_logger
 from jobpulse import auto_extract
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # Categories
 SELECTED = "SELECTED_NEXT_ROUND"
@@ -42,15 +45,15 @@ def _get_gmail_service():
                 with open(GOOGLE_TOKEN_PATH, "w") as f:
                     f.write(creds.to_json())
             else:
-                print("[Gmail] No valid credentials. Run: python scripts/setup_integrations.py")
+                logger.warning("No valid credentials. Run: python scripts/setup_integrations.py")
                 return None
 
         return build("gmail", "v1", credentials=creds)
     except ImportError:
-        print("[Gmail] Install: pip install google-auth-oauthlib google-api-python-client")
+        logger.warning("Install: pip install google-auth-oauthlib google-api-python-client")
         return None
     except Exception as e:
-        print(f"[Gmail] Auth error: {e}")
+        logger.error("Auth error: %s", e)
         return None
 
 
@@ -65,8 +68,8 @@ def _classify_email(subject: str, body_snippet: str) -> str:
         evolved = get_evolved_prompt("gmail_agent")
         if evolved:
             extra_context = f"\n\nLearned patterns:\n{evolved}\n"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Persona evolution unavailable: %s", e)
 
     prompt = f"""Classify this email into EXACTLY ONE category:{extra_context}
 
@@ -97,7 +100,7 @@ Respond with ONLY the category name. Nothing else."""
             return REJECTED
         return OTHER
     except Exception as e:
-        print(f"[Gmail] LLM classification error: {e}")
+        logger.error("LLM classification error: %s", e)
         return OTHER
 
 
@@ -145,7 +148,7 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
             s["output"] = f"Found {len(messages)} messages"
             s["metadata"] = {"email_count": len(messages)}
 
-        print(f"[Gmail] Found {len(messages)} messages since {last_check[:10]}")
+        logger.info("Found %d messages since %s", len(messages), last_check[:10])
 
         for i, msg_meta in enumerate(messages):
             msg_id = msg_meta["id"]
@@ -200,7 +203,7 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
                     telegram_agent.send_message(alert)
                     s["output"] = f"Alert sent for {category}"
 
-                print(f"[Gmail] {emoji_label}: {sender_short} — {subject}")
+                logger.info("%s: %s — %s", emoji_label, sender_short, subject)
 
                 # Log to simulation events
                 event_logger.log_event(
@@ -223,13 +226,13 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
     except Exception as e:
         trail.log_step("error", "Fetch error", None, str(e), None,
                        {"error": str(e)}, "error")
-        print(f"[Gmail] Error fetching emails: {e}")
+        logger.error("Error fetching emails: %s", e)
 
     # Update last check timestamp
     db.update_last_check_ts(now)
 
     if not new_recruiter_emails:
-        print("[Gmail] No new recruiter emails")
+        logger.info("No new recruiter emails")
 
     trail.finalize(f"Processed {len(messages)} emails. "
                    f"Recruiter: {len(new_recruiter_emails)}. Alerts sent: {len(new_recruiter_emails)}")
