@@ -1,89 +1,75 @@
-# Multi-Agent Orchestration Patterns
+# Multi-Agent Orchestration + JobPulse Automation + Knowledge MindGraph
 
-LangGraph + LangChain + OpenAI. Four orchestration patterns for multi-agent blog generation.
+LangGraph + OpenAI + Enhanced Swarm + RLM. Production autonomous agent system.
 
 ## Commands
 
 ```bash
 pip install -r requirements.txt
-export OPENAI_API_KEY="sk-..."
-python run_all.py "topic"                 # Compare all patterns
-python -m patterns.hierarchical           # Individual runs
-python -m patterns.peer_debate
-python -m patterns.dynamic_swarm
-python -m patterns.enhanced_swarm
+python run_all.py "topic"                 # Compare all 4 patterns
+python -m jobpulse.runner daemon          # Start Telegram daemon (Enhanced Swarm)
+python -m jobpulse.runner briefing        # Morning digest
+python -m jobpulse.runner gmail           # Check recruiter emails
+python -m jobpulse.runner calendar        # Today + tomorrow events
+./scripts/install_daemon.sh install       # Auto-start daemon on login
 ```
+
+## Architecture (3 Systems)
+
+**1. Orchestration Engine** — 4 LangGraph patterns: hierarchical, peer debate, dynamic swarm, enhanced swarm
+**2. JobPulse Automation** — Gmail, Calendar, GitHub, Notion, Budget, Telegram agents running 24/7
+**3. Knowledge MindGraph** — Entity extraction, GraphRAG retrieval, D3.js + Three.js visualization
+
+**Current dispatch mode:** Enhanced Swarm (set `JOBPULSE_SWARM=false` in .env to revert to flat)
 
 ## Operational Principles
 
-IMPORTANT: These are non-negotiable. Violating any of these is a mistake — log it.
+IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
 
-1. **Memory before action** — ALWAYS search memory/patterns before starting any task. If a matching pattern exists with score > 0.7, reuse it. Do not reinvent.
-2. **ORCHESTRATOR, not EXECUTOR** — Claude tracks state and coordinates. Your agents do the actual work. Never do agent work yourself.
-3. **Hierarchical topology for production** — Always use hierarchical supervisor pattern with 6-8 max specialized agents for production work. Other patterns are for experimentation only.
-4. **Learn after success** — ALWAYS store successful patterns (score >= 7.0) to memory. Namespace: `patterns`. Future runs must benefit from past wins.
-5. **3-Tier routing saves 250%** — Check for `[AGENT_BOOSTER_AVAILABLE]` before spawning expensive agents. Route: cached → lightweight → full agent. Skip tiers only when lower tiers explicitly fail.
-6. **Commands return instantly** — Commands create records only. Never wait. Immediately continue with execution after issuing a command.
+1. **Memory before action** — Search memory/patterns before any task. Score > 0.7 = reuse.
+2. **ORCHESTRATOR, not EXECUTOR** — Claude coordinates. Agents do the work.
+3. **Enhanced Swarm for production** — Task analyzer → dynamic routing → GRPO sampling → persona evolution → RLM synthesis.
+4. **Learn after success** — Store patterns scoring >= 7.0 to experience memory. Future runs benefit.
+5. **3-Tier routing** — Cached → lightweight → full agent. Skip tiers only when lower fail.
+6. **Commands return instantly** — Create records only. Never wait.
 
 ## Self-Correction Protocol
 
-YOU MUST follow this protocol — no exceptions:
+1. **Before every session**: Read @.claude/mistakes.md
+2. **On error**: IMMEDIATELY append to `.claude/mistakes.md`
+3. **Before committing**: Re-check mistakes log
+4. **On user correction**: Log it, even if minor
 
-1. **Before every session**: Read @.claude/mistakes.md to avoid repeating past errors.
-2. **When you make a mistake or hit an error**: IMMEDIATELY append an entry to `.claude/mistakes.md` with what went wrong, root cause, fix applied, and the rule to prevent recurrence.
-3. **Before committing code**: Re-check `.claude/mistakes.md` to verify you haven't violated any learned rules.
-4. **When the user corrects you**: Log it as a mistake even if it seems minor. Small corrections compound.
+## Telegram Commands
 
-The mistakes log is append-only. Never delete entries. Never skip logging.
-
-## Code Rules
-
-Full constraints in @docs/rules.md. The two most-violated rules:
-
-- IMPORTANT: All LLM calls MUST go through `get_llm()` in `shared/agents.py`. Never instantiate `ChatOpenAI` directly.
-- Agent functions return `dict` (partial state), NEVER full `AgentState`.
-
-## JobPulse Commands
-
-```bash
-python -m jobpulse.runner briefing       # Send morning digest
-python -m jobpulse.runner gmail          # Check recruiter emails
-python -m jobpulse.runner calendar       # Today + tomorrow events
-python -m jobpulse.runner tasks          # Show Notion tasks
-python -m jobpulse.runner github         # Yesterday's commits
-python -m jobpulse.runner daemon         # Start Telegram command daemon
-./scripts/install_daemon.sh install      # Auto-start daemon on login
-```
-
-## Telegram Command Interface
-
-The daemon (`python -m jobpulse.runner daemon`) provides instant Telegram replies:
-
-| You type | Agent runs |
-|----------|-----------|
+| You type | What happens |
+|----------|-------------|
 | "show tasks" | Notion → today's checklist |
-| list of items (multi-line) | Notion → creates tasks |
-| "mark X done" | Notion → marks task Done |
+| list of items | Notion → creates tasks |
+| "mark X done" | Notion → fuzzy match + complete |
 | "calendar" | Calendar → today + tomorrow |
-| "check emails" | Gmail → scan + classify |
+| "check emails" | Gmail → scan + classify + alert |
 | "commits" | GitHub → yesterday's activity |
 | "trending" | GitHub → hot repos |
-| "briefing" | All agents → full report |
-| "spent 15 on lunch" | Budget → log + categorize + Notion |
-| "£8.50 coffee" | Budget → same |
+| "briefing" | Enhanced Swarm → 6-agent collect → RLM synthesis |
+| "spent 15 on lunch" | Budget → classify → SQLite → Notion sync |
 | "budget" | Budget → weekly summary |
 | "help" | Lists all commands |
 
 ## Env Vars
 
 - `OPENAI_API_KEY` (required)
-- `GMAIL_CREDENTIALS_PATH`, `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `LINKEDIN_ACCESS_TOKEN` (optional, for tools)
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- `NOTION_API_KEY`, `NOTION_TASKS_DB_ID`, `NOTION_RESEARCH_DB_ID`
+- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
+- `JOBPULSE_SWARM=true` — Enhanced Swarm dispatch (false = flat)
+- `RLM_BACKEND=openai`, `RLM_ROOT_MODEL=gpt-4o-mini`, `RLM_MAX_BUDGET=0.10`
 
 ## Documentation
 
-- @.claude/mistakes.md — MUST READ FIRST. Learned mistakes and error prevention rules.
-- @docs/rules.md — MUST READ. All rules: operational, convergence, constraints, pattern selection.
-- @docs/agents.md — Agent roles, state model, topologies
-- @docs/skills.md — GRPO, persona evolution, prompt optimization
-- @docs/subagents.md — Dynamic agent factory, templates, spawning
-- @docs/hooks.md — Memory injection, tool integration, audit logging
+- @.claude/mistakes.md — MUST READ FIRST
+- @docs/rules.md — Constraints, convergence, pattern selection
+- @docs/agents.md — All agents (orchestration + JobPulse)
+- @docs/skills.md — GRPO, persona evolution, RLM, prompt optimization
+- @docs/subagents.md — Dynamic agent factory, templates
+- @docs/hooks.md — Process trails, memory injection, audit logging
