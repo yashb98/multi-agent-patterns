@@ -16,6 +16,12 @@ Format for each entry:
 
 <!-- Entries below this line. Most recent first. -->
 
+### [2026-03-25] GitHub commits showing 0 again — pushed_at filter too strict
+- **What went wrong**: Agent reported 0 commits for March 24, even though 42 commits existed in multi-agent-patterns repo.
+- **Root cause**: Code filtered repos with `pushed_at != yesterday`. But `pushed_at` reflects the *most recent* push. The repo was pushed both on March 24 (42 commits) AND March 25 (10 commits), so `pushed_at` showed `2026-03-25`, which didn't equal `2026-03-24`, causing the repo to be skipped entirely.
+- **Fix applied**: Changed filter from `pushed_at != yesterday` to `pushed_at < yesterday`. Any repo pushed on or after the target date could have commits from that date.
+- **Rule to prevent recurrence**: The `pushed_at` field on GitHub repos is the LATEST push timestamp, not a list. NEVER use exact date equality (`==`) to filter — use `>=` or `<` comparisons. A repo pushed today may still have commits from yesterday.
+
 ### [2026-03-24] Waited for user instead of polling Notion API
 - **What went wrong**: Asked user to share Notion page, then sent Telegram asking them to reply "done" — but Telegram daemon is a separate process that can't notify this Claude session. User had to come back here to tell me.
 - **Root cause**: Treated Telegram daemon as if it could communicate with this session. They're independent systems.

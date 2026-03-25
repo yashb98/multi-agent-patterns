@@ -50,8 +50,12 @@ def get_yesterday_commits(trigger: str = "scheduled_check") -> dict:
         repo_name = repo_obj.get("name", "")
         pushed_at = repo_obj.get("pushed_at", "")[:10]
 
-        # Skip repos not pushed yesterday
-        if pushed_at != yesterday:
+        # Skip repos not pushed recently (yesterday or later).
+        # pushed_at reflects the LATEST push, so a repo pushed both
+        # yesterday and today shows today's date. Using >= yesterday
+        # ensures we don't miss repos that were pushed again after the
+        # target date.
+        if pushed_at < yesterday:
             continue
 
         # Step 2: Fetch actual commits for this repo from yesterday
