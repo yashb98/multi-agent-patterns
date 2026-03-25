@@ -1,4 +1,10 @@
-"""Morning briefing — collects all agents and sends consolidated Telegram message."""
+"""Morning briefing — collects all agents, synthesizes with RLM if data is large.
+
+Uses Enhanced Swarm architecture:
+- Collects from all agents in parallel-style steps
+- If total data > 5K chars, uses RLM for recursive synthesis
+- Evolves briefing prompt via persona evolution after each run
+"""
 
 from datetime import datetime
 from jobpulse import gmail_agent, calendar_agent, github_agent, notion_agent, telegram_agent, budget_agent, event_logger
@@ -138,6 +144,15 @@ Just reply with your tasks and I'll add them to Notion. For example:
 
 Or reply 'skip' if you're good for today."""
         telegram_agent.send_message(todo_prompt)
+
+    # Evolve the briefing persona based on this run
+    try:
+        from jobpulse.persona_evolution import evolve_prompt
+        # Score: higher if more data was included
+        data_richness = min(10.0, (len(emails) + len(cal['today_events']) + len(tasks) + commits_data['total_commits']) * 0.5 + 3)
+        evolve_prompt("briefing_synthesizer", message[:500], data_richness)
+    except Exception:
+        pass
 
     trail.finalize(f"Briefing {'sent' if success else 'FAILED'} — "
                    f"{len(emails)} emails, {len(cal['today_events'])} events, "

@@ -55,10 +55,20 @@ def _get_gmail_service():
 
 
 def _classify_email(subject: str, body_snippet: str) -> str:
-    """Use LLM to classify an email into one of 4 categories."""
+    """Use LLM to classify an email into one of 4 categories. Uses evolved persona if available."""
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    prompt = f"""Classify this email into EXACTLY ONE category:
+    # Inject evolved persona learnings
+    extra_context = ""
+    try:
+        from jobpulse.persona_evolution import get_evolved_prompt
+        evolved = get_evolved_prompt("gmail_agent")
+        if evolved:
+            extra_context = f"\n\nLearned patterns:\n{evolved}\n"
+    except Exception:
+        pass
+
+    prompt = f"""Classify this email into EXACTLY ONE category:{extra_context}
 
 SELECTED_NEXT_ROUND — congratulations, selected, moving forward, pleased to inform, progressed, next stage, shortlisted
 INTERVIEW_SCHEDULING — availability, schedule an interview, book a slot, calendar link, time slots, when are you free
