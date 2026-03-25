@@ -24,6 +24,8 @@ class TestDispatchMap:
             Intent.SET_BUDGET, Intent.SHOW_BUDGET, Intent.HELP,
             Intent.WEEKLY_REPORT, Intent.EXPORT,
             Intent.CONVERSATION, Intent.CLEAR_CHAT,
+            Intent.REMOTE_SHELL, Intent.GIT_OPS,
+            Intent.FILE_OPS, Intent.SYSTEM_STATUS,
         }
         all_intents = set(Intent) - {Intent.UNKNOWN}
         missing = all_intents - handlers_covered
