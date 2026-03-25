@@ -1,10 +1,26 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/telegram_approve.py",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit",
-        "hook": "grep -rn '/home/claude/' \"$CLAUDE_FILE_PATH\" 2>/dev/null && echo '⚠️  HARDCODED PATH DETECTED: Replace /home/claude/ with relative paths or os.path.dirname(__file__)' || true",
-        "description": "Warn if hardcoded /home/claude/ paths are introduced"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "grep -rn '/home/claude/' \"$CLAUDE_FILE_PATH\" 2>/dev/null && echo '⚠️  HARDCODED PATH DETECTED: Replace /home/claude/ with relative paths or os.path.dirname(__file__)' || true"
+          }
+        ]
       }
     ]
   },
