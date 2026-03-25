@@ -143,7 +143,24 @@ def poll_continuous():
                 from_id = str(msg.get("from", {}).get("id", ""))
                 text = msg.get("text", "").strip()
 
-                if from_id != TELEGRAM_CHAT_ID or not text:
+                # Only process messages from Yash
+                if from_id != TELEGRAM_CHAT_ID:
+                    continue
+
+                # Handle voice messages
+                voice = msg.get("voice") or msg.get("audio")
+                if voice and not text:
+                    from jobpulse.voice_handler import transcribe_voice
+                    text = transcribe_voice(voice["file_id"])
+                    if text:
+                        _log(f"Voice transcribed: \"{text[:80]}\"")
+                        # Send transcription back so user sees what was understood
+                        telegram_agent.send_message(f"\U0001f3a4 Heard: \"{text}\"")
+                    else:
+                        telegram_agent.send_message("\U0001f3a4 Couldn't understand the voice message. Try again or type your message.")
+                        continue
+
+                if not text:
                     continue
                 if text.lower() in ("hi", "hello", "hey"):
                     continue

@@ -28,6 +28,8 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.SET_BUDGET: _handle_set_budget,
         Intent.SHOW_BUDGET: _handle_show_budget,
         Intent.HELP: _handle_help,
+        Intent.WEEKLY_REPORT: _handle_weekly_report,
+        Intent.EXPORT: _handle_export,
     }
 
     handler = handlers.get(cmd.intent)
@@ -206,36 +208,49 @@ def _handle_show_budget(cmd: ParsedCommand) -> str:
     return "\n\n".join(parts)
 
 
+def _handle_weekly_report(cmd: ParsedCommand) -> str:
+    from jobpulse.weekly_report import build_weekly_report
+    return build_weekly_report()
+
+
+def _handle_export(cmd: ParsedCommand) -> str:
+    return "\U0001f4e6 Export triggered. Use `python -m jobpulse.runner export` on your Mac for a full backup."
+
+
 def _handle_help(cmd: ParsedCommand) -> str:
-    return """🤖 JobPulse Commands:
+    return """\U0001f916 JobPulse Commands:
 
-📝 TASKS:
-  "show tasks" — see today's todo list
-  "mark X done" — complete a task
-  Send a list of items — creates tasks
+\U0001f4dd TASKS:
+  "show tasks" \u2014 see today's todo list
+  "mark X done" \u2014 complete a task
+  Send a list of items \u2014 creates tasks
 
-📅 CALENDAR:
-  "calendar" — today + tomorrow events
+\U0001f4c5 CALENDAR:
+  "calendar" \u2014 today + tomorrow events
 
-📧 EMAIL:
-  "check emails" — scan for recruiter emails
+\U0001f4e7 EMAIL:
+  "check emails" \u2014 scan for recruiter emails
 
-💻 GITHUB:
-  "commits" — yesterday's activity
-  "trending" — hot repos this week
+\U0001f4bb GITHUB:
+  "commits" \u2014 yesterday's activity
+  "trending" \u2014 hot repos this week
 
-💰 BUDGET:
-  "spent 15 on lunch" — log expense
-  "£8.50 coffee" — log expense
-  "earned 500 freelance" — log income
-  "saved 100" — log savings/investment
-  "set budget groceries 50" — set weekly limit
-  "budget" — weekly summary
+\U0001f4b0 BUDGET:
+  "spent 15 on lunch" \u2014 log expense
+  "\u00a38.50 coffee" \u2014 log expense
+  "earned 500 freelance" \u2014 log income
+  "saved 100" \u2014 log savings/investment
+  "set budget groceries 50" \u2014 set weekly limit
+  "budget" \u2014 weekly summary
 
-📬 OTHER:
-  "briefing" — full morning report
-  "papers" — latest AI research
-  "help" — this message"""
+\U0001f4ca REPORTS:
+  "weekly report" \u2014 7-day summary
+  "export" \u2014 data backup instructions
+
+\U0001f4ec OTHER:
+  "briefing" \u2014 full morning report
+  "papers" \u2014 latest AI research
+  "help" \u2014 this message"""
 
 
 def _handle_unknown(cmd: ParsedCommand) -> str:

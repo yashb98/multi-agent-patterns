@@ -167,6 +167,12 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
     if intent == Intent.ARXIV:
         return [{"agent": "arxiv", "priority": 1, "description": "Fetch papers"}]
 
+    if intent == Intent.WEEKLY_REPORT:
+        return [{"agent": "weekly_report", "priority": 1, "description": "Build weekly summary"}]
+
+    if intent == Intent.EXPORT:
+        return [{"agent": "export", "priority": 1, "description": "Export data"}]
+
     # Unknown — try LLM classification
     return [{"agent": intent.value, "priority": 1, "description": f"Handle: {intent.value}"}]
 
@@ -336,6 +342,7 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         _handle_arxiv, _handle_complete_task, _handle_create_event,
         _handle_log_spend, _handle_log_income, _handle_log_savings,
         _handle_set_budget, _handle_show_budget, _handle_help, _handle_unknown,
+        _handle_weekly_report, _handle_export,
     )
 
     # Direct agent mapping
@@ -356,6 +363,8 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         Intent.SET_BUDGET.value: _handle_set_budget,
         Intent.SHOW_BUDGET.value: _handle_show_budget,
         Intent.HELP.value: _handle_help,
+        Intent.WEEKLY_REPORT.value: _handle_weekly_report,
+        Intent.EXPORT.value: _handle_export,
     }
 
     # Briefing sub-agents (collect phases)

@@ -33,6 +33,8 @@ class Intent(str, Enum):
     SET_BUDGET = "set_budget"
     SHOW_BUDGET = "show_budget"
     HELP = "help"
+    WEEKLY_REPORT = "weekly_report"
+    EXPORT = "export"
     UNKNOWN = "unknown"
 
 
@@ -78,6 +80,14 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"(spent|spend|paid|bought)\s+\d",
         r"[£$€]\s*\d+",
         r"\d+(\.\d{1,2})?\s+(on|for|at)\s+\w+",
+    ]),
+    # Weekly report
+    (Intent.WEEKLY_REPORT, [
+        r"(weekly (report|summary)|week.?s? (report|summary)|this week|last week.?s? (summary|report))",
+    ]),
+    # Export
+    (Intent.EXPORT, [
+        r"(export|backup|download data|save data|dump)",
     ]),
     # Briefing
     (Intent.BRIEFING, [
@@ -173,6 +183,8 @@ LOG_INCOME — user is logging money they earned/received
 LOG_SAVINGS — user is logging money saved or invested or debt repaid
 SET_BUDGET — user wants to set a planned budget for a category
 SHOW_BUDGET — user wants to see their budget/spending summary
+WEEKLY_REPORT — user wants a weekly summary report
+EXPORT — user wants to export or back up data
 UNKNOWN — doesn't match any of the above
 
 Message: "{text}"

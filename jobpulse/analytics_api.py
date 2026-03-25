@@ -69,6 +69,13 @@ def get_cost_estimates():
         return {"agents": [], "error": str(e)}
 
 
+@analytics_router.get("/ab-tests")
+def get_ab_tests():
+    """Get all A/B tests with results."""
+    from jobpulse.ab_testing import get_all_tests
+    return {"tests": get_all_tests()}
+
+
 @analytics_router.get("/trends")
 def get_trends(days: int = 14):
     """Daily dispatch counts, errors, and LLM calls over time."""
