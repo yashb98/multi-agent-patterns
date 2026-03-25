@@ -1,8 +1,14 @@
-"""Tests for knowledge extraction with mock LLM responses."""
+"""Tests for knowledge extraction with mock LLM responses.
+
+IMPORTANT: Uses a temporary SQLite database to avoid wiping production data.
+"""
 
 import json
+import os
+import tempfile
 import pytest
 from unittest.mock import patch, MagicMock
+from pathlib import Path
 
 
 MOCK_EXTRACTION = {
@@ -16,6 +22,16 @@ MOCK_EXTRACTION = {
         {"from": "LangGraph", "to": "Multi-Agent Systems", "type": "PART_OF", "context": "Framework for multi-agent coordination"},
     ]
 }
+
+
+@pytest.fixture(autouse=True)
+def use_temp_db(tmp_path):
+    """Redirect storage to a temp DB so tests don't wipe production data."""
+    test_db = tmp_path / "test_mindgraph.db"
+    with patch("mindgraph_app.storage.DB_PATH", test_db):
+        from mindgraph_app.storage import init_db
+        init_db()
+        yield
 
 
 def test_chunk_text():
@@ -70,9 +86,6 @@ def test_extract_from_text_full_pipeline(mock_completion):
     from mindgraph_app.extractor import extract_from_text
     from mindgraph_app import storage
 
-    # Clear any existing data
-    storage.clear_all()
-
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = json.dumps(MOCK_EXTRACTION)
@@ -92,13 +105,9 @@ def test_extract_from_text_full_pipeline(mock_completion):
     result2 = extract_from_text("Test text about LangGraph.", "test.txt")
     assert result2["status"] == "already_processed"
 
-    storage.clear_all()
-
 
 def test_storage_crud():
     from mindgraph_app import storage
-
-    storage.clear_all()
 
     # Create entities
     eid1 = storage.upsert_entity("Python", "TECHNOLOGY", "Programming language")
@@ -125,8 +134,6 @@ def test_storage_crud():
     results = storage.search_entities("pyth")
     assert len(results) == 1
     assert results[0]["name"] == "Python"
-
-    storage.clear_all()
 
 
 if __name__ == "__main__":
