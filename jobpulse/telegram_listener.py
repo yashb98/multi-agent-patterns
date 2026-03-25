@@ -1,12 +1,19 @@
-"""Telegram listener — polls for messages, routes to agents via command router."""
+"""Telegram listener — polls for messages, routes to agents via Enhanced Swarm dispatcher."""
 
 import json
+import os
 from datetime import datetime
 from jobpulse.config import TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR
 from jobpulse import telegram_agent
 from jobpulse.command_router import classify, Intent
-from jobpulse.dispatcher import dispatch
 from jobpulse.healthcheck import write_heartbeat
+
+# Use Enhanced Swarm dispatcher if enabled, else flat dispatcher
+USE_SWARM = os.getenv("JOBPULSE_SWARM", "true").lower() in ("true", "1", "yes")
+if USE_SWARM:
+    from jobpulse.swarm_dispatcher import dispatch
+else:
+    from jobpulse.dispatcher import dispatch
 
 
 LAST_UPDATE_FILE = DATA_DIR / "telegram_last_update_id.txt"

@@ -25,6 +25,5 @@ litellm>=1.50.0
 python-multipart>=0.0.12
 httpx>=0.27.0
 
-# Optional: RLM (Recursive Language Model) for deep queries
-# pip install rlm   (or: pip install git+https://github.com/alexzhang13/rlm.git)
-# rlm>=0.1.0
+# RLM (Recursive Language Model) for deep queries + enhanced swarm synthesis
+rlms>=0.1.0
