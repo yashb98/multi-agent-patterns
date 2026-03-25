@@ -44,5 +44,12 @@ DATA_DIR = PROJECT_DIR / "data"
 LOGS_DIR = PROJECT_DIR / "logs"
 DB_PATH = DATA_DIR / "jobpulse.db"
 
+# Remote shell
+SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "30"))
+SHELL_MAX_OUTPUT = int(os.getenv("SHELL_MAX_OUTPUT", "4000"))
+
+# File operations
+MAX_FILE_LINES = int(os.getenv("MAX_FILE_LINES", "100"))
+
 DATA_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)

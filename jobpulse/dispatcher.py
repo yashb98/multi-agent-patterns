@@ -32,6 +32,10 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.EXPORT: _handle_export,
         Intent.CONVERSATION: _handle_conversation,
         Intent.CLEAR_CHAT: _handle_clear_chat,
+        Intent.REMOTE_SHELL: _handle_remote_shell,
+        Intent.GIT_OPS: _handle_git_ops,
+        Intent.FILE_OPS: _handle_file_ops,
+        Intent.SYSTEM_STATUS: _handle_system_status,
     }
 
     handler = handlers.get(cmd.intent)
@@ -234,6 +238,66 @@ def _handle_export(cmd: ParsedCommand) -> str:
         return f"\u26a0\ufe0f Export failed: {e}"
 
 
+def _handle_remote_shell(cmd: ParsedCommand) -> str:
+    import re
+    from jobpulse.remote_shell import execute
+    # Strip prefix: run:, shell:, exec:, cmd:, or $
+    raw = cmd.raw.strip()
+    command = re.sub(r"^(run|shell|exec|cmd):\s*", "", raw, flags=re.IGNORECASE)
+    command = re.sub(r"^\$\s+", "", command)
+    return execute(command)
+
+
+def _handle_git_ops(cmd: ParsedCommand) -> str:
+    import re
+    from jobpulse.git_ops import git_status, git_log, git_diff, git_branch, git_commit, git_push
+    raw = cmd.raw.strip().lower()
+    if raw.startswith("git status"):
+        return git_status()
+    if raw.startswith("git log"):
+        # Extract N from "git log N" or "git log -N"
+        m = re.search(r"git log\s+[-]?(\d+)", raw)
+        n = int(m.group(1)) if m else 5
+        return git_log(n)
+    if raw.startswith("git diff"):
+        return git_diff()
+    if raw.startswith("git branch"):
+        return git_branch()
+    if raw.startswith("git stash"):
+        return "Stash not supported remotely."
+    if raw.startswith("git pull"):
+        return "Pull not supported remotely. Use the approval flow for push."
+    if raw.startswith("commit:"):
+        message = cmd.raw.strip()[len("commit:"):].strip()
+        return git_commit(message)
+    if raw == "push":
+        return git_push()
+    return "Unknown git command. Try: git status, git log, git diff, git branch, commit: msg, push"
+
+
+def _handle_file_ops(cmd: ParsedCommand) -> str:
+    import re
+    from jobpulse.file_ops import show_file, show_logs, show_errors, continue_pagination
+    raw = cmd.raw.strip().lower()
+    if re.match(r"^(more|next)\s*$", raw):
+        return continue_pagination()
+    if re.match(r"^(logs?|show logs?|tail logs?)\s*$", raw):
+        return show_logs()
+    if re.match(r"^(errors?|show errors?|recent errors?)\s*$", raw):
+        return show_errors()
+    # File path extraction: "show: path" / "read: path" / "cat: path" / "view: path"
+    m = re.match(r"^(show|read|cat|view):\s*(.+)", raw)
+    if m:
+        filepath = m.group(2).strip()
+        return show_file(filepath)
+    return "Usage: show: <filepath>, logs, errors, more/next"
+
+
+def _handle_system_status(cmd: ParsedCommand) -> str:
+    from jobpulse.file_ops import system_status
+    return system_status()
+
+
 def _handle_help(cmd: ParsedCommand) -> str:
     return """\U0001f916 JobPulse Commands:
 
@@ -268,6 +332,30 @@ def _handle_help(cmd: ParsedCommand) -> str:
   "briefing" \u2014 full morning report
   "papers" \u2014 latest AI research
   "help" \u2014 this message
+
+\U0001f5a5 REMOTE SHELL:
+  "run: git status" \u2014 execute a command
+  "$ ls -la" \u2014 shorthand
+
+\U0001f500 GIT:
+  "git status" \u2014 working tree status
+  "git log 5" \u2014 last N commits
+  "git diff" \u2014 changes summary
+  "git branch" \u2014 current branch
+  "commit: fix bug" \u2014 commit (requires approval)
+  "push" \u2014 push (requires approval)
+
+\U0001f4c4 FILES:
+  "show: path/to/file" \u2014 view file contents
+  "logs" \u2014 tail recent logs
+  "errors" \u2014 recent agent errors
+  "more" / "next" \u2014 paginate
+
+\U0001f4ca SYSTEM:
+  "status" \u2014 daemon health + agent stats
+
+\U0001f91d APPROVAL:
+  Destructive ops (commit, push) ask for yes/no confirmation
 
 \U0001f4ac CHAT:
   Just type anything \u2014 free-form conversation

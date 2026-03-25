@@ -36,6 +36,10 @@ class Intent(str, Enum):
     WEEKLY_REPORT = "weekly_report"
     EXPORT = "export"
     CONVERSATION = "conversation"
+    REMOTE_SHELL = "remote_shell"
+    GIT_OPS = "git_ops"
+    FILE_OPS = "file_ops"
+    SYSTEM_STATUS = "system_status"
     CLEAR_CHAT = "clear_chat"
     UNKNOWN = "unknown"
 
@@ -50,6 +54,29 @@ class ParsedCommand:
 # ── Rule-based patterns (checked in order, first match wins) ──
 
 PATTERNS: list[tuple[Intent, list[str]]] = [
+    # Remote shell (highest priority — explicit prefix)
+    (Intent.REMOTE_SHELL, [
+        r"^(run|shell|exec|cmd):\s*(.+)",
+        r"^\$\s+(.+)",
+    ]),
+    # Git operations (before GITHUB to avoid conflict)
+    (Intent.GIT_OPS, [
+        r"^git\s+(status|log|diff|branch|stash|pull)",
+        r"^commit:\s*(.+)",
+        r"^push\s*$",
+    ]),
+    # File operations
+    (Intent.FILE_OPS, [
+        r"^(show|read|cat|view):\s*(.+)",
+        r"^(logs?|show logs?|tail logs?)\s*$",
+        r"^(errors?|show errors?|recent errors?)\s*$",
+        r"^(more|next)\s*$",
+    ]),
+    # System status
+    (Intent.SYSTEM_STATUS, [
+        r"^status\s*$",
+        r"^(system|daemon|health)\s+(status|check|info)",
+    ]),
     # Clear chat / conversation history
     (Intent.CLEAR_CHAT, [
         r"^(clear (chat|history|conversation)|new (chat|conversation)|reset chat)",
@@ -192,6 +219,10 @@ SHOW_BUDGET — user wants to see their budget/spending summary
 WEEKLY_REPORT — user wants a weekly summary report
 EXPORT — user wants to export or back up data
 CONVERSATION — user is chatting, asking a question, greeting, or having a general conversation
+REMOTE_SHELL — user wants to run a shell command (prefixed with run:, shell:, cmd:, exec:, or $)
+GIT_OPS — user wants git status, log, diff, branch, commit, or push
+FILE_OPS — user wants to view a file, see logs, see errors, or paginate
+SYSTEM_STATUS — user wants system/daemon health status
 CLEAR_CHAT — user wants to clear chat history or start a new conversation
 UNKNOWN — doesn't match any of the above
 
