@@ -31,6 +31,7 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.LOG_HOURS: _handle_log_hours,
         Intent.SHOW_HOURS: _handle_show_hours,
         Intent.CONFIRM_SAVINGS: _handle_confirm_savings,
+        Intent.UNDO_HOURS: _handle_undo_hours,
         Intent.UNDO_BUDGET: _handle_undo_budget,
         Intent.RECURRING_BUDGET: _handle_recurring_budget,
         Intent.WEEKLY_PLAN: _handle_weekly_plan,
@@ -403,6 +404,21 @@ def _handle_show_hours(cmd: ParsedCommand) -> str:
 def _handle_confirm_savings(cmd: ParsedCommand) -> str:
     from jobpulse.budget_agent import confirm_savings_transfer
     return confirm_savings_transfer()
+
+
+def _handle_undo_hours(cmd: ParsedCommand) -> str:
+    import re
+    from jobpulse.budget_agent import undo_hours
+
+    numbers = re.findall(r"\d+", cmd.raw.replace("hour", ""))
+    if numbers:
+        picks = sorted(set(int(n) for n in numbers), reverse=True)
+        results = []
+        for pick in picks:
+            results.append(undo_hours(pick=pick))
+        return "\n\n".join(results)
+
+    return undo_hours()
 
 
 def _handle_undo_budget(cmd: ParsedCommand) -> str:

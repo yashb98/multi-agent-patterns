@@ -45,6 +45,7 @@ class Intent(str, Enum):
     LOG_HOURS = "log_hours"
     SHOW_HOURS = "show_hours"
     CONFIRM_SAVINGS = "confirm_savings"
+    UNDO_HOURS = "undo_hours"
     UNDO_BUDGET = "undo_budget"
     RECURRING_BUDGET = "recurring_budget"
     WEEKLY_PLAN = "weekly_plan"
@@ -106,6 +107,13 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     (Intent.CONFIRM_SAVINGS, [
         r"^(saved|transferred|moved to savings|confirm savings|done saving)\s*$",
         r"^(saved|transferred|moved to savings|confirm savings|done saving)[.!]?\s*$",
+    ]),
+    # Undo hours (MUST be before undo budget)
+    (Intent.UNDO_HOURS, [
+        r"^undo\s+hours?\s*$",
+        r"^undo\s+hours?\s+\d+",
+        r"^undo\s+hours?\s+[\d,\s]+",
+        r"^undo (last )?(shift|salary|work|hours? log)",
     ]),
     # Undo budget (MUST be before other budget patterns)
     (Intent.UNDO_BUDGET, [

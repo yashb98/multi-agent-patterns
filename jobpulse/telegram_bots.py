@@ -93,7 +93,7 @@ def send_alert(text: str) -> bool:
 BUDGET_INTENTS = {
     "log_spend", "log_income", "log_savings", "set_budget",
     "show_budget", "undo_budget", "recurring_budget",
-    "log_hours", "show_hours", "confirm_savings",
+    "log_hours", "show_hours", "confirm_savings", "undo_hours",
 }
 
 RESEARCH_INTENTS = {

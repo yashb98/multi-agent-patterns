@@ -1490,4 +1490,64 @@ def get_hours_summary(week_start: str = None) -> str:
     return "\n".join(lines) + page_url
 
 
+def undo_hours(pick: int = None) -> str:
+    """Show last 5 hour entries for selection, or delete a specific one by number."""
+    conn = _get_conn()
+    recent = conn.execute(
+        "SELECT * FROM work_hours ORDER BY created_at DESC LIMIT 5"
+    ).fetchall()
+    conn.close()
+
+    if not recent:
+        return "No hours logged to undo."
+
+    recent = [dict(r) for r in recent]
+
+    # Show list
+    if pick is None:
+        lines = ["↩️ UNDO HOURS — Select an entry to remove:\n"]
+        for i, entry in enumerate(recent, 1):
+            lines.append(f"  {i}. ⏱️ {entry['hours']:.1f}h × £{entry['hourly_rate']:.2f} = £{entry['total_earned']:.2f} ({entry['date']})")
+        lines.append("\nReply: undo hours 1, undo hours 2, or undo hours 1,3")
+        return "\n".join(lines)
+
+    # Delete specific entry
+    if pick < 1 or pick > len(recent):
+        return f"Invalid number. Choose 1-{len(recent)}."
+
+    target = recent[pick - 1]
+
+    conn = _get_conn()
+    conn.execute("DELETE FROM work_hours WHERE id=?", (target["id"],))
+    conn.commit()
+    conn.close()
+
+    # Also remove the matching salary income transaction
+    conn2 = _get_conn()
+    conn2.execute(
+        "DELETE FROM transactions WHERE id = ("
+        "  SELECT id FROM transactions WHERE description LIKE ? AND date=? AND type='income' "
+        "  ORDER BY created_at DESC LIMIT 1"
+        ")",
+        (f"Salary ({target['hours']}%", target["date"])
+    )
+    conn2.commit()
+    conn2.close()
+
+    # Recalculate Notion
+    try:
+        week_start = target["week_start"]
+        budget_week = _get_week_start(datetime.strptime(week_start, "%Y-%m-%d"))
+        sync_expense_to_notion({"category": "Salary", "week_start": budget_week,
+                                "description": "Salary (recalc)", "date": target["date"]})
+        _update_section_totals(budget_week)
+    except Exception as e:
+        logger.warning("Undo hours Notion sync: %s", e)
+
+    notion_url = get_notion_budget_url()
+    return (f"✅ Removed: {target['hours']:.1f}h × £{target['hourly_rate']:.2f} "
+            f"= £{target['total_earned']:.2f} ({target['date']})\n\n"
+            f"Budget + timesheet updated.\n📎 {notion_url}")
+
+
 init_db()
