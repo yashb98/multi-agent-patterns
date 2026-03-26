@@ -1217,12 +1217,80 @@ def _parse_date_from_text(text: str) -> tuple[str, datetime]:
     return text, now
 
 
+WORD_TO_NUM = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40, "forty-five": 45, "fifty": 50,
+}
+
+
+def _words_to_numbers(text: str) -> str:
+    """Convert word-based hours+minutes to decimal hours.
+
+    Handles:
+      "six hours" → "6 hours"
+      "seven and a half hours" → "7.5 hours"
+      "six hours and thirty minutes" → "6.5 hours"
+      "eight hours and forty-five minutes" → "8.75 hours"
+      "six and a quarter hours" → "6.25 hours"
+    """
+    result = text.lower()
+
+    # 1. "X hours and Y minutes" → decimal (must be before simple word replacement)
+    def _hours_and_minutes(m):
+        h_word = m.group(1)
+        m_word = m.group(2)
+        h = WORD_TO_NUM.get(h_word)
+        mins = WORD_TO_NUM.get(m_word)
+        if h is not None and mins is not None:
+            return f"{h + mins / 60:.2f} hours"
+        return m.group(0)
+
+    result = re.sub(
+        r"\b(\w+(?:-\w+)?)\s+hours?\s+and\s+(\w+(?:-\w+)?)\s+minutes?\b",
+        _hours_and_minutes, result, flags=re.IGNORECASE
+    )
+
+    # 2. "X and a half hours" → decimal
+    def _and_a_half(m):
+        w = m.group(1)
+        n = WORD_TO_NUM.get(w)
+        if n is not None:
+            return f"{n + 0.5} hours"
+        return m.group(0)
+
+    result = re.sub(r"\b(\w+)\s+and\s+a\s+half\s+hours?\b", _and_a_half, result, flags=re.IGNORECASE)
+
+    # 3. "X and a quarter hours" → decimal
+    def _and_a_quarter(m):
+        w = m.group(1)
+        n = WORD_TO_NUM.get(w)
+        if n is not None:
+            return f"{n + 0.25} hours"
+        return m.group(0)
+
+    result = re.sub(r"\b(\w+)\s+and\s+a\s+quarter\s+hours?\b", _and_a_quarter, result, flags=re.IGNORECASE)
+
+    # 4. Simple word → digit (only before "hours/h/hr")
+    for word, num in WORD_TO_NUM.items():
+        result = re.sub(rf"\b{re.escape(word)}\b(?=\s*(?:hours?|hrs?|h)\b)", str(num), result, flags=re.IGNORECASE)
+
+    return result
+
+
 def log_hours(text: str) -> str:
     """Parse 'worked X hours' and log to SQLite + Notion salary timesheet.
 
     Week starts Sunday. Shows tax (20%) and savings suggestion (30% of after-tax).
-    Supports past dates: "worked 7 hours yesterday", "worked 8h on monday", "worked 6h march 24"
+    Supports: numbers, floats, words ("six hours", "seven and a half hours")
+    Supports past dates: "yesterday", "on monday", "march 24"
     """
+    # Convert word numbers to digits first
+    text = _words_to_numbers(text)
+
     match = re.search(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b", text, re.IGNORECASE)
     if not match:
         return ("Couldn't parse hours. Try:\n"

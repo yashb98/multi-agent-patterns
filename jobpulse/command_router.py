@@ -97,6 +97,8 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"(worked|work)\s+\d+(\.\d+)?\s*(hours?|hrs?|h)\b",
         r"^\d+(\.\d+)?\s*(hours?|hrs?|h)\s*(worked|work|today)?",
         r"^log\s+\d+(\.\d+)?\s*(hours?|hrs?|h)",
+        r"(worked|work)\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(and\s+)?(a\s+)?(half\s+|quarter\s+)?(hours?|hrs?)",
+        r"(worked|work)\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+hours?\s+and\s+\w+\s+minutes?",
     ]),
     (Intent.SHOW_HOURS, [
         r"^(hours|work hours|my hours|show hours|timesheet|salary hours)",
