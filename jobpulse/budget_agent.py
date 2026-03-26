@@ -1143,22 +1143,101 @@ def _add_row_to_salary_page(page_id: str, hours: float, rate: float, date_str: s
     })
 
 
+def _parse_date_from_text(text: str) -> tuple[str, datetime]:
+    """Extract a date from text. Returns (cleaned_text, target_date).
+
+    Supports: "yesterday", "monday", "tuesday", ..., "march 25", "25/03", "2026-03-25"
+    If no date found, returns today.
+    """
+    now = datetime.now()
+    text_lower = text.lower()
+
+    # "yesterday"
+    m = re.search(r"\byesterday\b", text_lower)
+    if m:
+        cleaned = text[:m.start()] + text[m.end():]
+        return re.sub(r"\s+", " ", cleaned).strip(), now - timedelta(days=1)
+
+    # Day names: "monday", "tuesday", etc. (most recent past occurrence)
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    for i, day in enumerate(day_names):
+        m = re.search(rf"\b(on\s+)?{day}\b", text_lower)
+        if m:
+            current_day = now.weekday()
+            days_ago = (current_day - i) % 7
+            if days_ago == 0:
+                days_ago = 7  # "monday" means last monday, not today
+            cleaned = text[:m.start()] + text[m.end():]
+            return re.sub(r"\s+", " ", cleaned).strip(), now - timedelta(days=days_ago)
+
+    # "march 25" or "mar 25"
+    month_names = {
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+        "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    month_pattern = "|".join(month_names.keys())
+    m = re.search(rf"\b(on\s+)?({month_pattern})\s+(\d{{1,2}})\b", text_lower)
+    if m:
+        month = month_names[m.group(2)]
+        day = int(m.group(3))
+        try:
+            target = datetime(now.year, month, day)
+            if target > now:
+                target = datetime(now.year - 1, month, day)
+            cleaned = text[:m.start()] + text[m.end():]
+            return re.sub(r"\s+", " ", cleaned).strip(), target
+        except ValueError:
+            pass
+
+    # "25/03" or "25-03"
+    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})\b", text)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        try:
+            target = datetime(now.year, month, day)
+            if target > now:
+                target = datetime(now.year - 1, month, day)
+            cleaned = text[:m.start()] + text[m.end():]
+            return re.sub(r"\s+", " ", cleaned).strip(), target
+        except ValueError:
+            pass
+
+    # ISO: "2026-03-25"
+    m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    if m:
+        try:
+            target = datetime.strptime(m.group(1), "%Y-%m-%d")
+            cleaned = text[:m.start()] + text[m.end():]
+            return re.sub(r"\s+", " ", cleaned).strip(), target
+        except ValueError:
+            pass
+
+    return text, now
+
+
 def log_hours(text: str) -> str:
     """Parse 'worked X hours' and log to SQLite + Notion salary timesheet.
 
     Week starts Sunday. Shows tax (20%) and savings suggestion (30% of after-tax).
-    Examples: "worked 7 hours", "worked 3.5h", "8 hours"
+    Supports past dates: "worked 7 hours yesterday", "worked 8h on monday", "worked 6h march 24"
     """
     match = re.search(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b", text, re.IGNORECASE)
     if not match:
         return ("Couldn't parse hours. Try:\n"
                 "  worked 7 hours\n"
-                "  worked 3.5h\n"
-                "  8 hours")
+                "  worked 3.5h yesterday\n"
+                "  worked 8h on monday\n"
+                "  worked 6h march 24")
 
     hours = float(match.group(1))
     if hours <= 0 or hours > 24:
         return "Hours must be between 0 and 24."
+
+    # Extract date (remove hours part first to avoid confusing date parser)
+    text_without_hours = text[:match.start()] + text[match.end():]
+    _, target_date = _parse_date_from_text(text_without_hours)
 
     rate = HOURLY_RATE
     gross = round(hours * rate, 2)
@@ -1166,9 +1245,8 @@ def log_hours(text: str) -> str:
     after_tax = round(gross - tax, 2)
     savings_suggestion = round(after_tax * SAVINGS_RATE, 2)
 
-    now = datetime.now()
-    date_str = now.strftime("%Y-%m-%d")
-    week_start = _get_salary_week_start(now)
+    date_str = target_date.strftime("%Y-%m-%d")
+    week_start = _get_salary_week_start(target_date)
 
     # Get or create Notion timesheet page for this week
     page_id = _get_or_create_salary_page(week_start)
@@ -1178,7 +1256,7 @@ def log_hours(text: str) -> str:
     conn.execute(
         "INSERT INTO work_hours (hours, hourly_rate, total_earned, date, week_start, notion_page_id, created_at) "
         "VALUES (?,?,?,?,?,?,?)",
-        (hours, rate, gross, date_str, week_start, page_id, now.isoformat())
+        (hours, rate, gross, date_str, week_start, page_id, datetime.now().isoformat())
     )
     conn.commit()
 
@@ -1200,7 +1278,7 @@ def log_hours(text: str) -> str:
 
     # Also log as income in the main budget
     add_transaction(gross, f"Salary ({hours}h)", "Salary", "income", "income")
-    sync_expense_to_notion({"category": "Salary", "week_start": _get_week_start(now),
+    sync_expense_to_notion({"category": "Salary", "week_start": _get_week_start(target_date),
                             "description": f"Salary ({hours}h)", "date": date_str})
 
     event_logger.log_event(
@@ -1215,7 +1293,8 @@ def log_hours(text: str) -> str:
     notion_link = f"\n📎 Timesheet: {page_url}" if page_url else ""
     budget_link = f"\n📎 Budget: {get_notion_budget_url()}"
 
-    return (f"⏱️ Logged: {hours}h × £{rate:.2f} = £{gross:.2f}\n"
+    date_label = f" ({date_str})" if date_str != datetime.now().strftime("%Y-%m-%d") else ""
+    return (f"⏱️ Logged: {hours}h × £{rate:.2f} = £{gross:.2f}{date_label}\n"
             f"  Tax (20%): -£{tax:.2f}\n"
             f"  After tax: £{after_tax:.2f}\n\n"
             f"📊 This week (Sun–Sat): {week_hours:.1f}h\n"
