@@ -109,6 +109,21 @@ def build_and_send(trigger: str = "cron_morning"):
             logger.debug("Budget alerts skipped: %s", e)
             s["output"] = "Skipped"
 
+    # ── Section 9: Weekly spending comparison ──
+    section_comparison = ""
+    with trail.step("decision", "Weekly spending comparison") as s:
+        try:
+            from jobpulse.budget_tracker import get_weekly_comparison
+            comparison = get_weekly_comparison()
+            if "No spending data" not in comparison:
+                section_comparison = comparison
+                s["output"] = "Comparison generated"
+            else:
+                s["output"] = "Not enough data yet"
+        except Exception as e:
+            logger.debug("Weekly comparison skipped: %s", e)
+            s["output"] = "Skipped"
+
     # ── Build Message ──
     message = f"""☀️ Good Morning Yash! Here's your briefing for {today}:
 
@@ -153,6 +168,10 @@ def build_and_send(trigger: str = "cron_morning"):
 
 ⚠️ BUDGET ALERTS:
 {section_alerts}""" if section_alerts else ""}
+{f"""
+━━━━━━━━━━━━━━━━━━━━
+
+{section_comparison}""" if section_comparison else ""}
 
 ━━━━━━━━━━━━━━━━━━━━
 

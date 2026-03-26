@@ -995,6 +995,32 @@ def check_budget_alerts() -> list[str]:
                 f"⚠️ {category}: £{actual:.0f}/£{planned:.0f} ({pct}%) — {days_left} day{'s' if days_left != 1 else ''} left in the week"
             )
 
+    # Historical pace alerts (compare to last week's spending by this day)
+    day_of_week = today.weekday()  # 0=Mon .. 6=Sun
+    last_week = (datetime.strptime(week_start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    for row in planned_rows:
+        category = row["category"]
+        planned = row["planned_amount"]
+        actual = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE week_start=? AND category=?",
+            (week_start, category)
+        ).fetchone()[0]
+
+        # What was spent by this day last week?
+        last_week_by_now = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions "
+            "WHERE week_start=? AND category=? AND CAST(strftime('%w', date) AS INTEGER) <= ?",
+            (last_week, category, day_of_week)
+        ).fetchone()[0]
+
+        if last_week_by_now > 0 and actual > last_week_by_now * 1.5:
+            # Spending 50%+ more than usual pace
+            pct_over = int(((actual - last_week_by_now) / last_week_by_now) * 100)
+            alert = f"📈 {category}: £{actual:.0f} so far (was £{last_week_by_now:.0f} by this day last week, +{pct_over}%)"
+            if alert not in [a for a in alerts]:  # avoid duplicates with threshold alerts
+                alerts.append(alert)
+
     conn.close()
     return alerts
 
