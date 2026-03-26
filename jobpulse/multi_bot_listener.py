@@ -67,11 +67,14 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 consecutive_errors = 0
                 continue
 
-            max_id = last_id
+            # Save checkpoint IMMEDIATELY — prevents re-processing on crash/restart
+            max_id = max(u.get("update_id", 0) for u in updates)
+            if max_id > last_id:
+                last_id = max_id
+                save_last_id(max_id)
 
             for update in updates:
                 uid = update.get("update_id", 0)
-                max_id = max(max_id, uid)
 
                 msg = update.get("message", {})
                 from_id = str(msg.get("from", {}).get("id", ""))
@@ -141,10 +144,6 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 reply = dispatch(cmd)
                 send_fn(reply)
                 _log(f"[{bot_name}] Replied: {reply[:80]}...")
-
-            if max_id > last_id:
-                last_id = max_id
-                save_last_id(max_id)
 
             consecutive_errors = 0
             write_heartbeat()
