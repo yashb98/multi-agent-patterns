@@ -277,8 +277,11 @@ def get_notion_budget_url(week_start: str = None) -> str:
     return f"https://www.notion.so/{page_id}"
 
 
-def _update_table_row(row_id: str, col2_value: str, col3_value: str = None):
+def _update_table_row(row_id: str, col2_value: str, col3_value: str = None, col0_link: str = None):
     """Update a table row's Actual (col 2) and optionally Notes (col 3).
+
+    If col0_link is provided, the category name (col 0) becomes a clickable link
+    to the category's detail sub-page in Notion.
 
     IMPORTANT: We must read the existing row first to preserve col 0 (category name)
     and col 1 (planned amount). Notion's PATCH replaces ALL cells — sending []
@@ -288,9 +291,19 @@ def _update_table_row(row_id: str, col2_value: str, col3_value: str = None):
     current = _notion_api("GET", f"/blocks/{row_id}")
     existing_cells = current.get("table_row", {}).get("cells", [[], [], [], []])
 
-    # Keep col 0 and col 1 as-is, update col 2 (actual), optionally col 3 (notes/date)
+    # If we have a link, make col 0 (category name) clickable
+    if col0_link and existing_cells and existing_cells[0]:
+        # Get the original category name text
+        orig_text = "".join(t.get("plain_text", "") for t in existing_cells[0])
+        if orig_text:
+            col0_cell = [{"type": "text", "text": {"content": orig_text, "link": {"url": col0_link}}}]
+        else:
+            col0_cell = existing_cells[0]
+    else:
+        col0_cell = existing_cells[0] if len(existing_cells) > 0 else []
+
     cells = [
-        existing_cells[0] if len(existing_cells) > 0 else [],  # preserve category name
+        col0_cell,
         existing_cells[1] if len(existing_cells) > 1 else [],  # preserve planned amount
         [{"type": "text", "text": {"content": col2_value}}],   # update actual
         [{"type": "text", "text": {"content": col3_value}}] if col3_value is not None
@@ -335,11 +348,9 @@ def sync_expense_to_notion(txn: dict):
             sub_url = f"https://www.notion.so/{ts_row['notion_page_id'].replace('-', '')}"
 
     notes = f"Last: {txn['description']} ({txn['date']})"
-    if sub_url:
-        notes += f" | Detail: {sub_url}"
 
-    # Update the Actual column with the running total + link in notes
-    _update_table_row(row_id, f"£{total:.2f}", notes)
+    # Update the Actual column + make category name a clickable link to sub-page
+    _update_table_row(row_id, f"£{total:.2f}", notes, col0_link=sub_url)
 
     # Also update the section total row
     _update_section_totals(txn["week_start"])
