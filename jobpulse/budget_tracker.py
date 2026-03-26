@@ -270,9 +270,6 @@ def get_or_create_category_page(category: str, week_start: str) -> str:
         conn.close()
         logger.info("Created category page: %s (%s)", category, page_id)
 
-        # Add a link block to the main budget page so user can click through
-        _add_category_link_to_budget_page(parent_id, category, page_id)
-
     return page_id
 
 
