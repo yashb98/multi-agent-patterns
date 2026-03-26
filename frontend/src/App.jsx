@@ -266,13 +266,13 @@ function BrainScene({ data, onSelectNode }) {
     const types = [...new Set(nodes.map(n => n.entity_type))]
     const typePositions = {}
 
-    // Distribute types in 3D space like brain regions — scale with node count
+    // Distribute types in 3D space like brain regions — 30% of previous spacing
     const nodeCount = nodes.length
-    const regionScale = Math.max(1, nodeCount / 30)  // grows with more nodes
+    const regionScale = Math.max(1, nodeCount / 30)
     types.forEach((t, i) => {
       const phi = Math.acos(-1 + (2 * i) / Math.max(types.length, 1))
       const theta = Math.sqrt(types.length * Math.PI) * phi
-      const regionR = (10 + types.length * 1.5) * Math.sqrt(regionScale)
+      const regionR = (3 + types.length * 0.45) * Math.sqrt(regionScale)
       typePositions[t] = [
         regionR * Math.cos(theta) * Math.sin(phi),
         regionR * Math.cos(phi) * 0.6,
@@ -280,7 +280,7 @@ function BrainScene({ data, onSelectNode }) {
       ]
     })
 
-    // Place nodes within their region with generous spacing
+    // Place nodes within their region — 30% of previous spread
     const typeCounts = {}
     nodes.forEach((node) => {
       const t = node.entity_type
@@ -288,9 +288,7 @@ function BrainScene({ data, onSelectNode }) {
       const idx = typeCounts[t]
       const center = typePositions[t] || [0, 0, 0]
       const clusterSize = nodes.filter(n => n.entity_type === t).length
-      // Spread scales with cluster size so labels don't overlap
-      const spread = Math.max(4.0, 2.0 + clusterSize * 0.6) * Math.sqrt(regionScale * 0.5)
-      // Fibonacci sphere distribution within the cluster
+      const spread = Math.max(1.2, 0.6 + clusterSize * 0.18) * Math.sqrt(regionScale * 0.5)
       const fi = Math.acos(-1 + (2 * idx) / (clusterSize + 1))
       const ft = Math.sqrt(clusterSize * Math.PI) * fi * 0.8
       positions[node.id] = [
@@ -467,14 +465,14 @@ export default function App() {
       <HUD data={data} />
       <DetailPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
       <Canvas
-        camera={{ position: [0, 15, 45], fov: 55 }}
+        camera={{ position: [0, 6, 18], fov: 55 }}
         gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
         style={{ background: '#050a15' }}
       >
         <GraphScene data={data} onSelectNode={setSelectedNode} />
         <OrbitControls
           enableDamping dampingFactor={0.05}
-          minDistance={8} maxDistance={150}
+          minDistance={4} maxDistance={50}
           autoRotate autoRotateSpeed={0.15}
           maxPolarAngle={Math.PI * 0.85}
         />
