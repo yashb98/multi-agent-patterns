@@ -18,13 +18,12 @@ from jobpulse.config import (
 logger = get_logger(__name__)
 
 
-def _send(token: str, text: str, chat_id: str = None) -> bool:
-    """Send a message via a specific bot token."""
-    cid = chat_id or TELEGRAM_CHAT_ID
-    if not token or not cid:
-        return False
+MAX_MSG_LEN = 4000  # Telegram limit is 4096, leave room for safety
 
-    payload = json.dumps({"chat_id": cid, "text": text})
+
+def _send_one(token: str, text: str, chat_id: str) -> bool:
+    """Send a single message (must be under 4096 chars)."""
+    payload = json.dumps({"chat_id": chat_id, "text": text})
     try:
         result = subprocess.run(
             ["curl", "-s", "-X", "POST",
@@ -34,9 +33,45 @@ def _send(token: str, text: str, chat_id: str = None) -> bool:
             capture_output=True, text=True, timeout=15
         )
         resp = json.loads(result.stdout)
+        if not resp.get("ok"):
+            logger.warning("Telegram API error: %s", resp.get("description", "unknown"))
         return resp.get("ok", False)
     except Exception as e:
         logger.warning("Telegram send failed: %s", e)
+        return False
+
+
+def _send(token: str, text: str, chat_id: str = None) -> bool:
+    """Send a message via a specific bot token. Auto-splits long messages."""
+    cid = chat_id or TELEGRAM_CHAT_ID
+    if not token or not cid:
+        return False
+
+    # If short enough, send directly
+    if len(text) <= MAX_MSG_LEN:
+        return _send_one(token, text, cid)
+
+    # Split on section dividers first, then on newlines
+    chunks = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > MAX_MSG_LEN:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current = current + "\n" + line if current else line
+
+    if current:
+        chunks.append(current)
+
+    # Send each chunk
+    all_ok = True
+    for i, chunk in enumerate(chunks):
+        ok = _send_one(token, chunk.strip(), cid)
+        if not ok:
+            all_ok = False
+    return all_ok
         return False
 
 

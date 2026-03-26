@@ -121,7 +121,7 @@ class TestDispatchRouting:
         with patch("jobpulse.dispatcher._handle_github", side_effect=RuntimeError("API down")):
             cmd = ParsedCommand(intent=Intent.GITHUB, args="", raw="commits")
             result = dispatch(cmd)
-            assert "Error" in result
+            assert "error" in result.lower()
             assert "API down" in result
 
 

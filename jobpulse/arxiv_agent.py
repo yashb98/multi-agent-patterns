@@ -288,6 +288,159 @@ def get_reading_stats() -> dict:
     return {"total": total, "read": read, "unread": total - read, "this_week": this_week}
 
 
+# ── Notion Paper Pages ──
+
+def create_notion_paper_pages(summaries: list[tuple[dict, str]], digest_date: str) -> dict:
+    """Create a Notion page for each paper's summary + a daily index page.
+
+    Returns: {arxiv_id: notion_url, ...}
+    """
+    from jobpulse.notion_agent import _notion_api
+    from jobpulse.config import NOTION_RESEARCH_DB_ID
+
+    if not NOTION_RESEARCH_DB_ID:
+        return {}
+
+    urls = {}
+
+    # 1. Create the daily index page
+    index_title = f"AI Papers — {digest_date}"
+    index_data = {
+        "parent": {"database_id": NOTION_RESEARCH_DB_ID},
+        "properties": {
+            "Title": {"title": [{"text": {"content": index_title}}]},
+        },
+        "icon": {"emoji": "📚"},
+        "children": [
+            {"object": "block", "type": "heading_2", "heading_2": {
+                "rich_text": [{"text": {"content": f"Top 5 AI Papers — {digest_date}"}}]
+            }},
+            {"object": "block", "type": "divider", "divider": {}},
+            # Papers table
+            {"object": "block", "type": "table", "table": {
+                "table_width": 4,
+                "has_column_header": True,
+                "has_row_header": False,
+                "children": [
+                    {"object": "block", "type": "table_row", "table_row": {
+                        "cells": [
+                            [{"type": "text", "text": {"content": "#"}}],
+                            [{"type": "text", "text": {"content": "Paper"}}],
+                            [{"type": "text", "text": {"content": "Category"}}],
+                            [{"type": "text", "text": {"content": "Score"}}],
+                        ]
+                    }},
+                ]
+            }},
+            {"object": "block", "type": "divider", "divider": {}},
+            {"object": "block", "type": "heading_3", "heading_3": {
+                "rich_text": [{"text": {"content": "Blog Posts"}}]
+            }},
+            {"object": "block", "type": "paragraph", "paragraph": {
+                "rich_text": [{"text": {"content": "Say \"blog 1\" to generate a 2000-word blog post for any paper above."}}]
+            }},
+        ],
+    }
+
+    index_result = _notion_api("POST", "/pages", index_data)
+    index_page_id = index_result.get("id", "")
+
+    if not index_page_id:
+        logger.warning("Failed to create daily index page")
+        return {}
+
+    index_url = f"https://www.notion.so/{index_page_id.replace('-', '')}"
+    logger.info("Created daily index page: %s", index_url)
+
+    # Find the table block to append rows
+    index_blocks = _notion_api("GET", f"/blocks/{index_page_id}/children?page_size=100")
+    table_id = None
+    for block in index_blocks.get("results", []):
+        if block.get("type") == "table":
+            table_id = block["id"]
+            break
+
+    # 2. Create a sub-page for each paper's summary
+    for i, (paper, summary) in enumerate(summaries, 1):
+        authors = ", ".join(paper["authors"][:3]) if isinstance(paper["authors"], list) else paper["authors"]
+        tag = paper.get("category_tag", "AI")
+        score = paper.get("impact_score", 0)
+
+        # Create the paper's summary page
+        paper_data = {
+            "parent": {"page_id": index_page_id},
+            "properties": {
+                "title": {"title": [{"text": {"content": paper["title"][:100]}}]},
+            },
+            "icon": {"emoji": "📄"},
+            "children": [
+                {"object": "block", "type": "callout", "callout": {
+                    "rich_text": [{"text": {"content":
+                        f"Score: {score:.0f}/10 | Category: {tag} | Authors: {authors}"
+                    }}],
+                    "icon": {"emoji": "📊"},
+                }},
+                {"object": "block", "type": "divider", "divider": {}},
+            ],
+        }
+
+        # Add summary paragraphs
+        for para in summary.split("\n"):
+            para = para.strip()
+            if not para:
+                continue
+            if para.startswith("1.") or para.startswith("2.") or para.startswith("3.") or para.startswith("4."):
+                paper_data["children"].append({
+                    "object": "block", "type": "paragraph", "paragraph": {
+                        "rich_text": [{"text": {"content": para[:2000]}}]
+                    }
+                })
+            else:
+                paper_data["children"].append({
+                    "object": "block", "type": "paragraph", "paragraph": {
+                        "rich_text": [{"text": {"content": para[:2000]}}]
+                    }
+                })
+
+        # Add links
+        paper_data["children"].append({"object": "block", "type": "divider", "divider": {}})
+        paper_data["children"].append({
+            "object": "block", "type": "paragraph", "paragraph": {
+                "rich_text": [
+                    {"text": {"content": "arXiv: ", "link": None}},
+                    {"text": {"content": paper.get("arxiv_url", ""), "link": {"url": paper.get("arxiv_url", "")}}},
+                    {"text": {"content": " | PDF: "}},
+                    {"text": {"content": paper.get("pdf_url", ""), "link": {"url": paper.get("pdf_url", paper.get("arxiv_url", ""))}}},
+                ]
+            }
+        })
+
+        paper_result = _notion_api("POST", "/pages", paper_data)
+        paper_page_id = paper_result.get("id", "")
+
+        if paper_page_id:
+            paper_url = f"https://www.notion.so/{paper_page_id.replace('-', '')}"
+            urls[paper["arxiv_id"]] = paper_url
+
+            # Add row to the index table with linked paper name
+            if table_id:
+                _notion_api("PATCH", f"/blocks/{table_id}/children", {
+                    "children": [
+                        {"object": "block", "type": "table_row", "table_row": {
+                            "cells": [
+                                [{"type": "text", "text": {"content": str(i)}}],
+                                [{"type": "text", "text": {"content": paper["title"][:80], "link": {"url": paper_url}}}],
+                                [{"type": "text", "text": {"content": tag}}],
+                                [{"type": "text", "text": {"content": f"{score:.0f}/10"}}],
+                            ]
+                        }},
+                    ]
+                })
+
+    logger.info("Created %d paper pages under %s", len(urls), index_url)
+    return urls
+
+
 # ── Digest Builder ──
 
 def build_digest(top_n: int = 5) -> str:
@@ -324,6 +477,16 @@ def build_digest(top_n: int = 5) -> str:
         store_papers(ranked, today)
         s["output"] = f"Stored {len(ranked)} papers"
 
+    # Step 4b: Create Notion pages for each paper + daily index page
+    notion_urls = {}
+    with trail.step("api_call", "Create Notion paper pages") as s:
+        try:
+            notion_urls = create_notion_paper_pages(summaries, today)
+            s["output"] = f"Created {len(notion_urls)} Notion pages"
+        except Exception as e:
+            logger.warning("Notion paper pages failed: %s", e)
+            s["output"] = f"Notion failed: {e}"
+
     # Step 5: Format
     date_display = datetime.now().strftime("%B %d, %Y")
     lines = [f"📚 TOP 5 AI PAPERS — {date_display}\n"]
@@ -346,10 +509,13 @@ def build_digest(top_n: int = 5) -> str:
         lines.append(f"")
         lines.append(f"{summary}\n")
         lines.append(f"PDF: {paper.get('pdf_url', paper['arxiv_url'])}")
+        notion_link = notion_urls.get(paper['arxiv_id'], '')
+        if notion_link:
+            lines.append(f"Summary: {notion_link}")
 
     lines.append(f"\n━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"Scanned {len(papers)} papers from {', '.join(CATEGORIES)}")
-    lines.append(f"\nCommands: \"paper 3\" for full abstract | \"read 1\" to mark as read | \"papers stats\" for reading stats")
+    lines.append(f"\nCommands: \"paper 3\" full abstract | \"blog 1\" generate blog post | \"read 1\" mark as read")
 
     digest = "\n".join(lines)
 
