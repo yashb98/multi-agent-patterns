@@ -924,27 +924,47 @@ def check_budget_alerts() -> list[str]:
 
 # ── Undo Last Transaction ──
 
-def undo_last_transaction() -> str:
-    """Delete the most recent transaction, recalculate Notion totals, return confirmation."""
-    conn = _get_conn()
-    last = conn.execute(
-        "SELECT * FROM transactions ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()
+def undo_last_transaction(pick: int = None) -> str:
+    """Show last 5 transactions for selection, or delete a specific one by number.
 
-    if not last:
-        conn.close()
+    - undo         → shows last 5 with numbers
+    - undo 3       → deletes transaction #3 from the list
+    """
+    conn = _get_conn()
+    recent = conn.execute(
+        "SELECT * FROM transactions ORDER BY created_at DESC LIMIT 5"
+    ).fetchall()
+    conn.close()
+
+    if not recent:
         return "No transactions to undo."
 
-    last = dict(last)
-    conn.execute("DELETE FROM transactions WHERE id=?", (last["id"],))
+    recent = [dict(r) for r in recent]
+
+    # If no pick specified, show the list
+    if pick is None:
+        lines = ["↩️ UNDO — Select a transaction to remove:\n"]
+        for i, txn in enumerate(recent, 1):
+            emoji = "📥" if txn["type"] == "income" else "📤" if txn["type"] == "expense" else "🏦"
+            lines.append(f"  {i}. {emoji} £{txn['amount']:.2f} — {txn['description']} [{txn['category']}] ({txn['date']})")
+        lines.append("\nReply: undo 1, undo 2, etc.")
+        return "\n".join(lines)
+
+    # Pick specified — delete that transaction
+    if pick < 1 or pick > len(recent):
+        return f"Invalid number. Choose 1-{len(recent)}."
+
+    target = recent[pick - 1]
+
+    conn = _get_conn()
+    conn.execute("DELETE FROM transactions WHERE id=?", (target["id"],))
     conn.commit()
     conn.close()
 
     # Recalculate Notion totals
     try:
-        # Re-sync the category total
-        week_start = last["week_start"]
-        category = last["category"]
+        week_start = target["week_start"]
+        category = target["category"]
         row_id = ROW_IDS.get(category)
         if row_id:
             conn2 = _get_conn()
@@ -958,8 +978,9 @@ def undo_last_transaction() -> str:
     except Exception as e:
         logger.warning("Undo Notion sync failed: %s", e)
 
-    return (f"↩️ Undone: £{last['amount']:.2f} — {last['description']} "
-            f"[{last['category']}] ({last['date']})")
+    return (f"✅ Removed: £{target['amount']:.2f} — {target['description']} "
+            f"[{target['category']}] ({target['date']})\n\n"
+            f"Notion budget sheet updated.")
 
 
 init_db()

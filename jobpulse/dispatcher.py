@@ -388,7 +388,16 @@ def _handle_system_status(cmd: ParsedCommand) -> str:
 
 
 def _handle_undo_budget(cmd: ParsedCommand) -> str:
+    import re
     from jobpulse.budget_agent import undo_last_transaction
+
+    # Check if user specified a number: "undo 3" or "undo 2"
+    match = re.search(r"\d+", cmd.raw)
+    if match:
+        pick = int(match.group())
+        return undo_last_transaction(pick=pick)
+
+    # No number — show the list
     return undo_last_transaction()
 
 

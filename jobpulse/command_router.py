@@ -92,6 +92,7 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     # Undo budget (MUST be before other budget patterns)
     (Intent.UNDO_BUDGET, [
         r"^undo\s*$",
+        r"^undo\s+\d+",
         r"^undo (last )?(transaction|spend|expense|budget)",
     ]),
     # Recurring budget
