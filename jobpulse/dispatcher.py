@@ -248,6 +248,18 @@ def _handle_arxiv(cmd: ParsedCommand) -> str:
 
     raw = cmd.raw.lower().strip()
 
+    # "blog 3" → generate 2000-word blog from paper #3
+    m = re.match(r"blog\s+(\d+)", raw)
+    if m:
+        from jobpulse.blog_generator import handle_blog_command
+        return handle_blog_command(int(m.group(1)))
+
+    # "regenerate 3" → regenerate blog for paper #3
+    m = re.match(r"regenerate\s+(\d+)", raw)
+    if m:
+        from jobpulse.blog_generator import handle_blog_command
+        return handle_blog_command(int(m.group(1)))
+
     # "paper 3" → full abstract for paper #3
     m = re.match(r"paper\s+(\d+)", raw)
     if m:
