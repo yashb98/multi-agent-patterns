@@ -8,11 +8,12 @@ from jobpulse.config import OPENAI_API_KEY, TELEGRAM_BOT_TOKEN
 logger = get_logger(__name__)
 
 
-def transcribe_voice(file_id: str) -> str:
+def transcribe_voice(file_id: str, bot_token: str = None) -> str:
     """Download voice message from Telegram and transcribe via Whisper.
 
     Args:
         file_id: Telegram file_id from the voice message
+        bot_token: Token of the bot that received the voice (each bot has its own file API)
     Returns:
         Transcribed text, or empty string on failure
     """
@@ -20,10 +21,12 @@ def transcribe_voice(file_id: str) -> str:
         logger.warning("OPENAI_API_KEY not set, cannot transcribe voice")
         return ""
 
+    token = bot_token or TELEGRAM_BOT_TOKEN
+
     try:
-        # Step 1: Get file path from Telegram
+        # Step 1: Get file path from Telegram (must use the receiving bot's token)
         resp = httpx.get(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile",
+            f"https://api.telegram.org/bot{token}/getFile",
             params={"file_id": file_id},
             timeout=15,
         )
@@ -35,7 +38,7 @@ def transcribe_voice(file_id: str) -> str:
         file_path = file_data["result"]["file_path"]
 
         # Step 2: Download the voice file
-        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+        download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
         audio_resp = httpx.get(download_url, timeout=30)
 
         if audio_resp.status_code != 200:

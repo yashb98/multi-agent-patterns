@@ -84,7 +84,7 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 voice = msg.get("voice") or msg.get("audio")
                 if voice and not text:
                     from jobpulse.voice_handler import transcribe_voice
-                    text = transcribe_voice(voice["file_id"])
+                    text = transcribe_voice(voice["file_id"], bot_token=token)
                     if text:
                         _log(f"[{bot_name}] Voice: \"{text[:80]}\"")
                         send_fn(f"\U0001f3a4 Heard: \"{text}\"")
