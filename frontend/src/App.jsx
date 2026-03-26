@@ -472,7 +472,7 @@ export default function App() {
         <GraphScene data={data} onSelectNode={setSelectedNode} />
         <OrbitControls
           enableDamping dampingFactor={0.05}
-          minDistance={4} maxDistance={50}
+          minDistance={4} maxDistance={200}
           autoRotate autoRotateSpeed={0.15}
           maxPolarAngle={Math.PI * 0.85}
         />
