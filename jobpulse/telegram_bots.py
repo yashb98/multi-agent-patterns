@@ -115,3 +115,100 @@ def send_for_intent(intent: str, text: str) -> bool:
     if intent in RESEARCH_INTENTS:
         return send_research(text)
     return send_main(text)
+
+
+# ── Per-bot help messages ──
+
+HELP_MAIN = """\U0001f916 MAIN BOT — Full Control
+
+\U0001f4dd TASKS:
+  "show tasks" — today's checklist
+  "mark X done" — complete a task
+  "remove: X" — delete a task
+  "!! urgent task" / "! high task" — priority
+  "task by Friday" — due date
+  "weekly plan" — carry forward undone tasks
+  Send a list — creates tasks (dedup + subtasks)
+
+\U0001f4c5 AGENTS:
+  "calendar" — today + tomorrow
+  "check emails" — Gmail scan
+  "commits" — yesterday's GitHub
+  "trending" — hot repos
+  "briefing" — full morning report
+  "weekly report" — 7-day summary
+
+\U0001f5a5 REMOTE:
+  "run: <cmd>" / "$ <cmd>" — shell command
+  "git status" / "git log" / "commit: msg" / "push"
+  "show: file.py" / "logs" / "errors" / "status"
+
+\U0001f4ac CHAT:
+  Just type anything — conversation with AI
+  "clear chat" — reset history
+  "export" — full data backup
+  "help" — this message
+
+\U0001f3a4 Voice messages transcribed automatically"""
+
+HELP_BUDGET = """\U0001f4b0 BUDGET BOT — Track Your Money
+
+\U0001f4b8 LOG TRANSACTIONS:
+  "spent 15 on lunch" — log expense
+  "\u00a38.50 coffee" — log expense
+  "earned 500 freelance" — log income
+  "saved 100" — log savings
+
+\U0001f4ca OVERVIEW:
+  "budget" — weekly summary with alerts
+  "set budget groceries 50" — set weekly limit
+
+\U0001f504 RECURRING:
+  "recurring: 12 netflix monthly" — auto-log on schedule
+  "list recurring" — show all recurring
+  "stop recurring netflix" — remove one
+
+\u21a9\ufe0f UNDO:
+  "undo" — show last 5, pick one to remove
+  "undo 3" — remove transaction #3
+
+All amounts auto-classified into 17 categories.
+Synced to your Notion Weekly Budget Sheet.
+Budget alerts at 80% of planned spend."""
+
+HELP_RESEARCH = """\U0001f4da RESEARCH BOT — AI Papers & Knowledge
+
+\U0001f4f0 PAPERS:
+  "papers" — today's AI research digest (top 5)
+  "papers weekly" — last 7 days compilation
+
+\U0001f9e0 HOW IT WORKS:
+  1. Scans arXiv (cs.AI, cs.LG, cs.CL, cs.MA)
+  2. Ranks by relevance to YOUR projects
+  3. Summarizes with actionable takeaways
+  4. Extracts to knowledge graph
+
+Daily digest runs at 7:57am automatically.
+Weekly Notion summary posted Mondays 8:33am."""
+
+HELP_ALERT = """\U0001f514 ALERT BOT — Notifications Only
+
+This bot sends you alerts automatically:
+
+\U0001f4e7 Recruiter email alerts (SELECTED/INTERVIEW/REJECTED)
+\u23f0 Calendar reminders (2hr before events)
+\u26a0\ufe0f Budget alerts (80% of planned spend)
+\U0001f6a8 Daemon down warnings
+
+No commands needed — this chat is read-only.
+Alerts arrive as they happen throughout the day."""
+
+
+def get_help_for_bot(bot_name: str) -> str:
+    """Get the help message for a specific bot."""
+    return {
+        "main": HELP_MAIN,
+        "budget": HELP_BUDGET,
+        "research": HELP_RESEARCH,
+        "alert": HELP_ALERT,
+    }.get(bot_name, HELP_MAIN)

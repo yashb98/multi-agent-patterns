@@ -95,6 +95,14 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 if not text:
                     continue
 
+                # Handle /start and /help per bot
+                text_lower = text.lower().strip()
+                if text_lower in ("/start", "/help", "help", "help."):
+                    from jobpulse.telegram_bots import get_help_for_bot
+                    send_fn(get_help_for_bot(bot_name))
+                    _log(f"[{bot_name}] Sent help")
+                    continue
+
                 # Check approval flow
                 from jobpulse.approval import process_reply as check_approval
                 approval_response = check_approval(text)
