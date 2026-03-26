@@ -609,16 +609,47 @@ def log_transaction(text: str, trigger: str = "telegram_command") -> str:
         s["decision"] = f"Classified as {category} in {section}"
         s["metadata"] = {"section": section, "category": category}
 
-    # Step 3: Store
+    # Step 3: Extract items + store (NLP)
+    with trail.step("decision", "Extract items and store",
+                     step_input=description) as s:
+        from jobpulse.budget_tracker import extract_items_and_store, _get_time_of_day
+        extracted = extract_items_and_store(description)
+        items = extracted["items"]
+        store = extracted["store"]
+        time_of_day = _get_time_of_day()
+        s["output"] = f"Items: {items}, Store: {store}"
+
+    # Step 4: Store in SQLite (with enhanced fields)
     with trail.step("api_call", "Store in SQLite") as s:
         txn = add_transaction(amount, description, category, section, txn_type)
+        # Update with enhanced fields
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE transactions SET items=?, store=?, time_of_day=? WHERE id=?",
+            (", ".join(items), store, time_of_day, txn["id"])
+        )
+        conn.commit()
+        conn.close()
         s["output"] = f"Transaction #{txn['id']} stored"
 
-    # Step 4: Sync to Notion
+    # Step 5: Sync to Notion budget sheet (update Actual column)
     with trail.step("api_call", "Sync to Notion budget sheet",
                      step_input=f"{category}: £{amount:.2f}") as s:
         sync_expense_to_notion(txn)
         s["output"] = f"Updated {category} row in Notion"
+
+    # Step 6: Add row to category sub-page
+    category_url = ""
+    with trail.step("api_call", "Add to category sub-page",
+                     step_input=f"{category}: {', '.join(items)}") as s:
+        from jobpulse.budget_tracker import add_transaction_row
+        category_url = add_transaction_row(
+            category=category, week_start=txn["week_start"],
+            amount=amount, date_str=txn["date"],
+            description=description, items=items,
+            store=store, section=section,
+        )
+        s["output"] = f"Row added to {category} page"
 
     # Log to simulation events
     event_logger.log_event(
@@ -626,7 +657,8 @@ def log_transaction(text: str, trigger: str = "telegram_command") -> str:
         agent_name="budget_agent",
         action=f"logged_{txn_type}",
         content=f"£{amount:.2f} — {description} [{category}]",
-        metadata={"amount": amount, "description": description, "category": category, "section": section, "type": txn_type},
+        metadata={"amount": amount, "description": description, "category": category,
+                  "section": section, "type": txn_type, "items": items, "store": store},
     )
 
     today = get_today_spending()
@@ -634,12 +666,16 @@ def log_transaction(text: str, trigger: str = "telegram_command") -> str:
     emoji = type_emoji.get(txn_type, "💸")
 
     notion_url = get_notion_budget_url(txn["week_start"])
-    link_line = f"\n\n📎 {notion_url}" if notion_url else ""
+    items_line = f"\n   🛒 Items: {', '.join(items)}" if len(items) > 1 or items[0] != description else ""
+    store_line = f"\n   🏪 Store: {store}" if store else ""
+    category_link = f"\n📎 {category} detail: {category_url}" if category_url else ""
+    budget_link = f"\n📎 Budget: {notion_url}" if notion_url else ""
 
     reply = (f"{emoji} Logged: £{amount:.2f} — {description}\n"
-             f"   Category: {category} ({section})\n"
+             f"   Category: {category} ({section})"
+             f"{items_line}{store_line}\n"
              f"   Today: spent £{today['total_spent']:.2f} | earned £{today['total_earned']:.2f}"
-             f"{link_line}")
+             f"{category_link}{budget_link}")
 
     # Check budget alerts after logging
     alerts = check_budget_alerts()

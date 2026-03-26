@@ -1,0 +1,405 @@
+"""Budget Tracker v2 — Category sub-pages with individual transaction rows in Notion.
+
+Every category (17 total) gets a weekly sub-page under the budget page.
+Each transaction is logged as a row: Amount | Date | Description | Items | Store | Running Total.
+
+SQLite is the source of truth. Notion is the display layer.
+"""
+
+import re
+import json
+import sqlite3
+from datetime import datetime, timedelta
+from pathlib import Path
+from shared.logging_config import get_logger
+from jobpulse.config import DATA_DIR
+from jobpulse.notion_agent import _notion_api
+
+logger = get_logger(__name__)
+
+DB_PATH = DATA_DIR / "budget.db"
+KNOWN_STORES_FILE = DATA_DIR / "known_stores.json"
+
+# The 17 categories that get sub-pages (NOT totals rows)
+TRACKABLE_CATEGORIES = [
+    # Income
+    "Salary", "Freelance", "Other",
+    # Fixed
+    "Rent / Mortgage", "Utilities", "Phone / Internet", "Subscriptions", "Insurance",
+    # Variable
+    "Groceries", "Eating out", "Transport", "Shopping", "Entertainment", "Health", "Misc",
+    # Savings
+    "Savings", "Investments", "Credit card / Loan payment",
+]
+
+# Default known stores
+DEFAULT_STORES = [
+    "tesco", "aldi", "lidl", "sainsbury", "asda", "morrisons", "waitrose",
+    "marks and spencer", "m&s", "co-op", "iceland",
+    "pret", "costa", "starbucks", "greggs", "mcdonald", "kfc", "nando",
+    "subway", "domino", "pizza hut", "wagamama", "wetherspoon",
+    "uber", "bolt", "addison lee", "national rail", "tfl",
+    "amazon", "ebay", "argos", "jd sports", "primark", "tk maxx", "next", "asos", "zara",
+    "boots", "superdrug", "holland and barrett",
+    "netflix", "spotify", "apple", "google", "microsoft", "adobe",
+    "gym", "puregym", "the gym", "virgin active",
+]
+
+
+def _get_conn() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_tracker_db():
+    """Create new tables for v2 tracking."""
+    conn = _get_conn()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS category_pages (
+            week_start TEXT NOT NULL,
+            category TEXT NOT NULL,
+            notion_page_id TEXT NOT NULL,
+            PRIMARY KEY (week_start, category)
+        );
+
+        CREATE TABLE IF NOT EXISTS weekly_archives (
+            week_start TEXT PRIMARY KEY,
+            notion_page_id TEXT NOT NULL,
+            total_income REAL DEFAULT 0,
+            total_spending REAL DEFAULT 0,
+            total_savings REAL DEFAULT 0,
+            net REAL DEFAULT 0,
+            archived_at TEXT NOT NULL
+        );
+    """)
+
+    # Add new columns to transactions if they don't exist
+    cursor = conn.execute("PRAGMA table_info(transactions)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    for col, col_type in [("items", "TEXT DEFAULT ''"), ("store", "TEXT DEFAULT ''"),
+                          ("time_of_day", "TEXT DEFAULT ''"), ("notion_sub_page_id", "TEXT DEFAULT ''")]:
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {col} {col_type}")
+            logger.info("Added column %s to transactions", col)
+
+    conn.commit()
+    conn.close()
+
+
+# ── Item + Store Extraction ──
+
+def _load_known_stores() -> list[str]:
+    """Load known stores from JSON + defaults."""
+    stores = list(DEFAULT_STORES)
+    if KNOWN_STORES_FILE.exists():
+        try:
+            extra = json.loads(KNOWN_STORES_FILE.read_text())
+            stores.extend(extra)
+        except Exception:
+            pass
+    return stores
+
+
+def _save_new_store(store: str):
+    """Add a newly discovered store to the known stores list."""
+    stores = []
+    if KNOWN_STORES_FILE.exists():
+        try:
+            stores = json.loads(KNOWN_STORES_FILE.read_text())
+        except Exception:
+            pass
+
+    store_lower = store.lower().strip()
+    if store_lower not in [s.lower() for s in stores] and store_lower not in [s.lower() for s in DEFAULT_STORES]:
+        stores.append(store_lower)
+        try:
+            KNOWN_STORES_FILE.write_text(json.dumps(stores, indent=2))
+        except Exception:
+            pass
+
+
+def extract_items_and_store(description: str) -> dict:
+    """Extract individual items and store from a transaction description.
+
+    Examples:
+        "yogurt and protein shake at Tesco" → items=["yogurt", "protein shake"], store="Tesco"
+        "coffee and sandwich at Pret" → items=["coffee", "sandwich"], store="Pret"
+        "uber ride" → items=["uber ride"], store="Uber"
+        "monthly subscription" → items=["monthly subscription"], store=""
+    """
+    text = description.strip()
+    store = ""
+    items = []
+
+    # 1. Extract store from "at X" / "from X" / "in X" (capitalize first word)
+    store_match = re.search(r"\b(?:at|from|in)\s+([A-Za-z][\w\s&']+?)(?:\s+(?:on|for|today|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\s*$)", text, re.IGNORECASE)
+    if store_match:
+        store = store_match.group(1).strip().title()
+        # Remove the "at Store" part from text for item extraction
+        text = text[:store_match.start()].strip()
+
+    # 2. Auto-detect known stores — match whole words only to avoid false positives
+    if not store:
+        known = _load_known_stores()
+        desc_lower = description.lower()
+        for s in known:
+            # Use word boundary matching to avoid "tfl" matching in "netflix"
+            if re.search(rf"\b{re.escape(s.lower())}\b", desc_lower):
+                store = s.title()
+                text = re.sub(rf"\b{re.escape(s)}\b", "", text, flags=re.IGNORECASE).strip()
+                break
+
+    # 3. Extract items: split on "and" / ","
+    # Clean up leftover prepositions
+    text = re.sub(r"^\s*(on|for|at|to|some|a|the)\s+", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s+(on|for|at)\s*$", "", text, flags=re.IGNORECASE).strip()
+
+    if text:
+        raw_items = re.split(r"\s+and\s+|,\s*|&\s*", text)
+        items = [item.strip() for item in raw_items if item.strip() and len(item.strip()) > 1]
+
+    if not items:
+        items = [description.strip()]
+
+    # Save new store for future detection
+    if store and len(store) > 2:
+        _save_new_store(store)
+
+    return {"items": items, "store": store}
+
+
+def _get_time_of_day() -> str:
+    """Return time bucket: morning/afternoon/evening/night."""
+    hour = datetime.now().hour
+    if hour < 12:
+        return "morning"
+    elif hour < 17:
+        return "afternoon"
+    elif hour < 21:
+        return "evening"
+    return "night"
+
+
+# ── Category Sub-Pages ──
+
+def _get_budget_page_id():
+    """Get the main budget page ID."""
+    from jobpulse.budget_agent import BUDGET_PAGE_ID
+    return BUDGET_PAGE_ID
+
+
+def get_or_create_category_page(category: str, week_start: str) -> str:
+    """Get or create a Notion sub-page for a category's transactions this week."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT notion_page_id FROM category_pages WHERE week_start=? AND category=?",
+        (week_start, category)
+    ).fetchone()
+    conn.close()
+
+    if row and row["notion_page_id"]:
+        return row["notion_page_id"]
+
+    # Create new sub-page
+    parent_id = _get_budget_page_id()
+    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    title = f"{category} — {week_start} to {week_end}"
+
+    # Choose columns based on category type
+    from jobpulse.budget_agent import INCOME_CATEGORIES, SAVINGS_CATEGORIES, FIXED_EXPENSE_CATEGORIES
+
+    # Determine which section this category belongs to
+    is_variable = category in ["Groceries", "Eating out", "Transport", "Shopping", "Entertainment", "Health", "Misc"]
+    is_income = category in ["Salary", "Freelance", "Other"]
+    is_savings = category in ["Savings", "Investments", "Credit card / Loan payment"]
+
+    if is_variable:
+        headers = ["Amount", "Date", "Items", "Store", "Running Total"]
+        table_width = 5
+    elif is_income:
+        headers = ["Amount", "Date", "Description", "Source", "Running Total"]
+        table_width = 5
+    elif is_savings:
+        headers = ["Amount", "Date", "Description", "What", "Running Total"]
+        table_width = 5
+    else:
+        # Fixed expenses
+        headers = ["Amount", "Date", "Description", "Running Total"]
+        table_width = 4
+
+    header_cells = [[{"type": "text", "text": {"content": h}}] for h in headers]
+
+    data = {
+        "parent": {"page_id": parent_id},
+        "properties": {
+            "title": {"title": [{"text": {"content": title}}]},
+        },
+        "children": [
+            {"object": "block", "type": "heading_2", "heading_2": {
+                "rich_text": [{"text": {"content": f"{category} Transactions"}}]
+            }},
+            {"object": "block", "type": "paragraph", "paragraph": {
+                "rich_text": [{"text": {"content": f"Week: {week_start} to {week_end}"}}]
+            }},
+            {"object": "block", "type": "divider", "divider": {}},
+            {"object": "block", "type": "table", "table": {
+                "table_width": table_width,
+                "has_column_header": True,
+                "has_row_header": False,
+                "children": [
+                    {"object": "block", "type": "table_row", "table_row": {"cells": header_cells}},
+                ]
+            }},
+        ]
+    }
+
+    result = _notion_api("POST", "/pages", data)
+    page_id = result.get("id", "")
+
+    if page_id:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO category_pages (week_start, category, notion_page_id) VALUES (?,?,?)",
+            (week_start, category, page_id)
+        )
+        conn.commit()
+        conn.close()
+        logger.info("Created category page: %s (%s)", category, page_id)
+
+    return page_id
+
+
+def add_transaction_row(category: str, week_start: str, amount: float,
+                        date_str: str, description: str, items: list,
+                        store: str, section: str) -> str:
+    """Append a transaction row to the category's sub-page table. Returns page URL."""
+    page_id = get_or_create_category_page(category, week_start)
+    if not page_id:
+        return ""
+
+    # Find the table block
+    blocks = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
+    table_id = None
+    for block in blocks.get("results", []):
+        if block.get("type") == "table":
+            table_id = block["id"]
+            break
+
+    if not table_id:
+        logger.warning("No table in category page %s", page_id)
+        return ""
+
+    # Remove old TOTAL row if exists
+    table_rows = _notion_api("GET", f"/blocks/{table_id}/children?page_size=100")
+    for row in table_rows.get("results", []):
+        cells = row.get("table_row", {}).get("cells", [])
+        if cells and cells[0]:
+            text = "".join(t.get("plain_text", "") for t in cells[0])
+            if "TOTAL" in text.upper():
+                _notion_api("DELETE", f"/blocks/{row['id']}")
+
+    # Calculate running total
+    conn = _get_conn()
+    running = conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE week_start=? AND category=?",
+        (week_start, category)
+    ).fetchone()[0]
+    conn.close()
+
+    # Get planned budget for percentage
+    from jobpulse.budget_agent import _get_conn as budget_conn
+    bconn = budget_conn()
+    planned_row = bconn.execute(
+        "SELECT planned_amount FROM planned_budgets WHERE week_start=? AND category=?",
+        (week_start, category)
+    ).fetchone()
+    bconn.close()
+    planned = planned_row["planned_amount"] if planned_row else 0
+
+    if planned > 0:
+        pct = round(running / planned * 100)
+        warn = " !!!" if pct >= 80 else ""
+        running_str = f"£{running:.2f} / £{planned:.0f} ({pct}%){warn}"
+    else:
+        running_str = f"£{running:.2f}"
+
+    items_str = ", ".join(items) if items else description
+    is_variable = category in ["Groceries", "Eating out", "Transport", "Shopping", "Entertainment", "Health", "Misc"]
+    is_income = category in ["Salary", "Freelance", "Other"]
+    is_savings = category in ["Savings", "Investments", "Credit card / Loan payment"]
+
+    if is_variable:
+        cells = [
+            [{"type": "text", "text": {"content": f"£{amount:.2f}"}}],
+            [{"type": "text", "text": {"content": date_str}}],
+            [{"type": "text", "text": {"content": items_str}}],
+            [{"type": "text", "text": {"content": store or "-"}}],
+            [{"type": "text", "text": {"content": running_str}}],
+        ]
+    elif is_income:
+        cells = [
+            [{"type": "text", "text": {"content": f"£{amount:.2f}"}}],
+            [{"type": "text", "text": {"content": date_str}}],
+            [{"type": "text", "text": {"content": description}}],
+            [{"type": "text", "text": {"content": store or "-"}}],
+            [{"type": "text", "text": {"content": running_str}}],
+        ]
+    elif is_savings:
+        cells = [
+            [{"type": "text", "text": {"content": f"£{amount:.2f}"}}],
+            [{"type": "text", "text": {"content": date_str}}],
+            [{"type": "text", "text": {"content": description}}],
+            [{"type": "text", "text": {"content": items_str}}],
+            [{"type": "text", "text": {"content": running_str}}],
+        ]
+    else:
+        cells = [
+            [{"type": "text", "text": {"content": f"£{amount:.2f}"}}],
+            [{"type": "text", "text": {"content": date_str}}],
+            [{"type": "text", "text": {"content": description}}],
+            [{"type": "text", "text": {"content": running_str}}],
+        ]
+
+    # Add data row
+    _notion_api("PATCH", f"/blocks/{table_id}/children", {
+        "children": [
+            {"object": "block", "type": "table_row", "table_row": {"cells": cells}},
+        ]
+    })
+
+    # Add TOTAL row
+    count = len(table_rows.get("results", [])) - 1  # minus header, plus new row
+    total_cells_count = len(cells)
+    total_cells = [[{"type": "text", "text": {"content": f"TOTAL ({count + 1} transactions)"}}]]
+    for _ in range(total_cells_count - 2):
+        total_cells.append([{"type": "text", "text": {"content": ""}}])
+    total_cells.append([{"type": "text", "text": {"content": running_str}}])
+
+    _notion_api("PATCH", f"/blocks/{table_id}/children", {
+        "children": [
+            {"object": "block", "type": "table_row", "table_row": {"cells": total_cells}},
+        ]
+    })
+
+    return f"https://www.notion.so/{page_id.replace('-', '')}"
+
+
+def get_category_page_url(category: str, week_start: str) -> str:
+    """Get the Notion URL for a category's sub-page, if it exists."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT notion_page_id FROM category_pages WHERE week_start=? AND category=?",
+        (week_start, category)
+    ).fetchone()
+    conn.close()
+    if row and row["notion_page_id"]:
+        return f"https://www.notion.so/{row['notion_page_id'].replace('-', '')}"
+    return ""
+
+
+# Initialize on import
+init_tracker_db()
