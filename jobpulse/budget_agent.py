@@ -1120,23 +1120,29 @@ def _add_row_to_salary_page(page_id: str, hours: float, rate: float, date_str: s
         ]
     })
 
-    # Add updated TOTAL row
+    # Add updated TOTAL row (use Sunday-based week to match work_hours table)
     conn = _get_conn()
-    week_start = _get_week_start(datetime.strptime(date_str, "%Y-%m-%d"))
+    salary_week = _get_salary_week_start(datetime.strptime(date_str, "%Y-%m-%d"))
     totals = conn.execute(
         "SELECT SUM(hours) as h, SUM(total_earned) as e FROM work_hours WHERE week_start=?",
-        (week_start,)
+        (salary_week,)
     ).fetchone()
     conn.close()
+
+    total_h = totals['h'] or 0
+    total_e = totals['e'] or 0
+    total_tax = round(total_e * TAX_RATE, 2)
+    total_after_tax = round(total_e - total_tax, 2)
+    total_savings = round(total_after_tax * SAVINGS_RATE, 2)
 
     _notion_api("PATCH", f"/blocks/{table_id}/children", {
         "children": [
             {"object": "block", "type": "table_row", "table_row": {
                 "cells": [
-                    [{"type": "text", "text": {"content": f"TOTAL: {totals['h'] or 0:.1f}h"}}],
-                    [{"type": "text", "text": {"content": f"£{rate:.2f}"}}],
-                    [{"type": "text", "text": {"content": f"Week of {week_start}"}}],
-                    [{"type": "text", "text": {"content": f"£{totals['e'] or 0:.2f}"}}],
+                    [{"type": "text", "text": {"content": f"TOTAL: {total_h:.1f}h"}}],
+                    [{"type": "text", "text": {"content": f"£{rate:.2f}/hr"}}],
+                    [{"type": "text", "text": {"content": f"Week of {salary_week}"}}],
+                    [{"type": "text", "text": {"content": f"£{total_e:.2f} gross | £{total_after_tax:.2f} net | Save £{total_savings:.2f}"}}],
                 ]
             }},
         ]
@@ -1534,7 +1540,7 @@ def undo_hours(pick: int = None) -> str:
     conn2.commit()
     conn2.close()
 
-    # Recalculate Notion
+    # Recalculate Notion budget
     try:
         week_start = target["week_start"]
         budget_week = _get_week_start(datetime.strptime(week_start, "%Y-%m-%d"))
@@ -1542,12 +1548,66 @@ def undo_hours(pick: int = None) -> str:
                                 "description": "Salary (recalc)", "date": target["date"]})
         _update_section_totals(budget_week)
     except Exception as e:
-        logger.warning("Undo hours Notion sync: %s", e)
+        logger.warning("Undo hours Notion budget sync: %s", e)
+
+    # Update the Notion timesheet TOTAL row
+    timesheet_url = ""
+    try:
+        page_id = target.get("notion_page_id", "")
+        if page_id:
+            # Rebuild TOTAL row on the timesheet
+            blocks = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
+            table_id = None
+            for block in blocks.get("results", []):
+                if block.get("type") == "table":
+                    table_id = block["id"]
+                    break
+
+            if table_id:
+                # Remove old TOTAL row
+                table_rows = _notion_api("GET", f"/blocks/{table_id}/children?page_size=100")
+                for row in table_rows.get("results", []):
+                    cells = row.get("table_row", {}).get("cells", [])
+                    if cells and cells[0]:
+                        text = "".join(t.get("plain_text", "") for t in cells[0])
+                        if "TOTAL" in text.upper():
+                            _notion_api("DELETE", f"/blocks/{row['id']}")
+
+                # Recalculate and add fresh TOTAL
+                conn3 = _get_conn()
+                totals = conn3.execute(
+                    "SELECT SUM(hours) as h, SUM(total_earned) as e FROM work_hours WHERE week_start=?",
+                    (week_start,)
+                ).fetchone()
+                conn3.close()
+
+                total_h = totals['h'] or 0
+                total_e = totals['e'] or 0
+                if total_h > 0:
+                    total_tax = round(total_e * TAX_RATE, 2)
+                    total_after_tax = round(total_e - total_tax, 2)
+                    total_savings = round(total_after_tax * SAVINGS_RATE, 2)
+                    _notion_api("PATCH", f"/blocks/{table_id}/children", {
+                        "children": [
+                            {"object": "block", "type": "table_row", "table_row": {
+                                "cells": [
+                                    [{"type": "text", "text": {"content": f"TOTAL: {total_h:.1f}h"}}],
+                                    [{"type": "text", "text": {"content": f"£{HOURLY_RATE:.2f}/hr"}}],
+                                    [{"type": "text", "text": {"content": f"Week of {week_start}"}}],
+                                    [{"type": "text", "text": {"content": f"£{total_e:.2f} gross | £{total_after_tax:.2f} net | Save £{total_savings:.2f}"}}],
+                                ]
+                            }},
+                        ]
+                    })
+
+            timesheet_url = f"\n📎 Timesheet: https://www.notion.so/{page_id.replace('-', '')}"
+    except Exception as e:
+        logger.warning("Undo hours timesheet sync: %s", e)
 
     notion_url = get_notion_budget_url()
     return (f"✅ Removed: {target['hours']:.1f}h × £{target['hourly_rate']:.2f} "
             f"= £{target['total_earned']:.2f} ({target['date']})\n\n"
-            f"Budget + timesheet updated.\n📎 {notion_url}")
+            f"Budget + timesheet updated.{timesheet_url}\n📎 Budget: {notion_url}")
 
 
 init_db()
