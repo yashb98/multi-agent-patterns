@@ -42,6 +42,9 @@ class Intent(str, Enum):
     FILE_OPS = "file_ops"
     SYSTEM_STATUS = "system_status"
     CLEAR_CHAT = "clear_chat"
+    UNDO_BUDGET = "undo_budget"
+    RECURRING_BUDGET = "recurring_budget"
+    WEEKLY_PLAN = "weekly_plan"
     UNKNOWN = "unknown"
 
 
@@ -86,6 +89,21 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     (Intent.HELP, [
         r"^/?(help|commands|menu|what can you do)$",
     ]),
+    # Undo budget (MUST be before other budget patterns)
+    (Intent.UNDO_BUDGET, [
+        r"^undo\s*$",
+        r"^undo (last )?(transaction|spend|expense|budget)",
+    ]),
+    # Recurring budget
+    (Intent.RECURRING_BUDGET, [
+        r"^recurring:\s*(.+)",
+        r"^(show |list )recurring",
+        r"^(stop|cancel|remove) recurring",
+    ]),
+    # Weekly plan / carry forward
+    (Intent.WEEKLY_PLAN, [
+        r"^(plan|planning|plan week|weekly plan|carry forward|carryover)",
+    ]),
     # Budget — set planned budget (MUST be before show_budget)
     (Intent.SET_BUDGET, [
         r"set\s+budget",
@@ -127,9 +145,14 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     (Intent.BRIEFING, [
         r"(briefing|morning update|daily update|send briefing|full report|summary of today)",
     ]),
-    # Complete task
+    # Priority tasks (!! or ! prefix)
+    (Intent.CREATE_TASKS, [
+        r"^!!.+",
+        r"^!(?!!)\s*.+",
+    ]),
+    # Complete task (requires colon/prefix — "done: X", "mark: X", "complete: X")
     (Intent.COMPLETE_TASK, [
-        r"(mark|done|complete|finish|completed|checked)[:\s]+(.+)",
+        r"(mark|done|complete|completed|checked)[:\s]+(.+)",
         r"^done[:\s]+(.+)",
         r"^✅\s*(.+)",
     ]),

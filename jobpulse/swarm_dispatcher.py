@@ -131,6 +131,7 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
         Intent.CONVERSATION, Intent.CLEAR_CHAT,
         Intent.REMOTE_SHELL, Intent.GIT_OPS,
         Intent.FILE_OPS, Intent.SYSTEM_STATUS,
+        Intent.UNDO_BUDGET, Intent.RECURRING_BUDGET, Intent.WEEKLY_PLAN,
     }
     if intent in SIMPLE_INTENTS:
         return [{"agent": intent.value, "priority": 1, "description": f"Direct: {intent.value}"}]
@@ -349,6 +350,7 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         _handle_conversation, _handle_clear_chat,
         _handle_remote_shell, _handle_git_ops,
         _handle_file_ops, _handle_system_status,
+        _handle_undo_budget, _handle_recurring_budget, _handle_weekly_plan,
     )
 
     # Direct agent mapping
@@ -378,6 +380,9 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         Intent.GIT_OPS.value: _handle_git_ops,
         Intent.FILE_OPS.value: _handle_file_ops,
         Intent.SYSTEM_STATUS.value: _handle_system_status,
+        Intent.UNDO_BUDGET.value: _handle_undo_budget,
+        Intent.RECURRING_BUDGET.value: _handle_recurring_budget,
+        Intent.WEEKLY_PLAN.value: _handle_weekly_plan,
     }
 
     # Briefing sub-agents (collect phases)

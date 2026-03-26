@@ -28,6 +28,9 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.LOG_SAVINGS: _handle_log_savings,
         Intent.SET_BUDGET: _handle_set_budget,
         Intent.SHOW_BUDGET: _handle_show_budget,
+        Intent.UNDO_BUDGET: _handle_undo_budget,
+        Intent.RECURRING_BUDGET: _handle_recurring_budget,
+        Intent.WEEKLY_PLAN: _handle_weekly_plan,
         Intent.HELP: _handle_help,
         Intent.WEEKLY_REPORT: _handle_weekly_report,
         Intent.EXPORT: _handle_export,
@@ -99,29 +102,78 @@ def _handle_show_tasks(cmd: ParsedCommand) -> str:
 
 
 def _handle_create_tasks(cmd: ParsedCommand) -> str:
-    from jobpulse.notion_agent import create_tasks_batch_smart, suggest_subtasks, create_tasks_batch
+    from jobpulse.notion_agent import create_tasks_batch_smart, suggest_subtasks, create_tasks_batch, create_task, parse_due_date
     from jobpulse.telegram_listener import _parse_tasks
 
     tasks = _parse_tasks(cmd.raw)
     if not tasks:
         return "Couldn't parse any tasks. Send them one per line:\n\nFix bug\nApply to jobs\nTailor resume"
 
-    result = create_tasks_batch_smart(tasks)
-    lines = []
+    # Feature 4: Detect priority prefixes (!! = urgent, ! = high)
+    # Feature 5: Extract due dates via NLP
+    processed_tasks = []
+    for task_text in tasks:
+        priority = "normal"
+        t = task_text.strip()
+        if t.startswith("!!"):
+            priority = "urgent"
+            t = t[2:].strip()
+        elif t.startswith("!"):
+            priority = "high"
+            t = t[1:].strip()
 
-    if result["created"]:
-        lines.append(f"✅ Created {len(result['created'])} tasks:")
-        for t in result["created"]:
+        # Extract due date
+        cleaned, due_date = parse_due_date(t)
+        processed_tasks.append({"title": cleaned, "priority": priority, "due_date": due_date})
+
+    # Create tasks individually with priority and due date
+    created = []
+    duplicates = []
+    big_tasks_list = []
+
+    from jobpulse.notion_agent import check_duplicate
+    for pt in processed_tasks:
+        title = pt["title"]
+        if not title:
+            continue
+
+        existing = check_duplicate(title)
+        if existing:
+            duplicates.append({"new": title, "existing": existing})
+            continue
+
+        words = title.split()
+        has_conjunction = any(w.lower() in ("and", "then", "also", "plus", "&") for w in words)
+        if len(words) > 12 or (len(words) > 6 and has_conjunction):
+            big_tasks_list.append(pt)
+            continue
+
+        success = create_task(title, priority=pt["priority"], due_date=pt["due_date"])
+        if success:
+            display = title
+            if pt["priority"] == "urgent":
+                display = "🔴 " + display
+            elif pt["priority"] == "high":
+                display = "🟡 " + display
+            if pt["due_date"]:
+                display += f" (due: {pt['due_date']})"
+            created.append(display)
+
+    lines = []
+    if created:
+        lines.append(f"✅ Created {len(created)} tasks:")
+        for t in created:
             lines.append(f"  □ {t}")
 
-    if result["duplicates"]:
-        lines.append(f"\n⚠️ Skipped {len(result['duplicates'])} duplicate(s):")
-        for d in result["duplicates"]:
+    if duplicates:
+        lines.append(f"\n⚠️ Skipped {len(duplicates)} duplicate(s):")
+        for d in duplicates:
             lines.append(f"  ↳ \"{d['new']}\" — already exists as \"{d['existing']}\"")
 
-    if result["big_tasks"]:
-        lines.append(f"\n📋 {len(result['big_tasks'])} task(s) seem too big:")
-        for bt in result["big_tasks"]:
+    if big_tasks_list:
+        lines.append(f"\n📋 {len(big_tasks_list)} task(s) seem too big:")
+        for bt_info in big_tasks_list:
+            bt = bt_info["title"]
             subtasks = suggest_subtasks(bt)
             if subtasks:
                 lines.append(f"\n  \"{bt}\"")
@@ -130,8 +182,7 @@ def _handle_create_tasks(cmd: ParsedCommand) -> str:
                     lines.append(f"    □ {st}")
                 lines.append(f"  Reply \"split: {bt[:30]}\" to create these subtasks")
             else:
-                # Couldn't suggest subtasks, create as-is
-                create_tasks_batch([bt])
+                create_task(bt, priority=bt_info["priority"], due_date=bt_info["due_date"])
                 lines.append(f"  □ {bt} (created as-is)")
 
     if not lines:
@@ -338,6 +389,101 @@ def _handle_system_status(cmd: ParsedCommand) -> str:
     return system_status()
 
 
+def _handle_undo_budget(cmd: ParsedCommand) -> str:
+    from jobpulse.budget_agent import undo_last_transaction
+    return undo_last_transaction()
+
+
+def _handle_recurring_budget(cmd: ParsedCommand) -> str:
+    """Parse subcommand: add/list/remove recurring transactions."""
+    import re
+    from jobpulse.budget_agent import (
+        add_recurring, list_recurring, remove_recurring,
+        format_recurring, classify_transaction
+    )
+
+    raw = cmd.raw.strip()
+
+    # List recurring
+    if re.match(r"^(show |list )recurring", raw, re.IGNORECASE):
+        items = list_recurring()
+        return format_recurring(items)
+
+    # Stop/cancel/remove recurring
+    m = re.match(r"^(stop|cancel|remove) recurring[:\s]*(.+)", raw, re.IGNORECASE)
+    if m:
+        desc = m.group(2).strip()
+        return remove_recurring(desc)
+
+    # Add recurring: "recurring: 50 rent monthly"
+    m = re.match(r"^recurring:\s*(.+)", raw, re.IGNORECASE)
+    if m:
+        text = m.group(1).strip()
+        # Parse: amount description frequency [day]
+        amount_match = re.search(r"[£$€]?\s*(\d+(?:\.\d{1,2})?)", text)
+        if not amount_match:
+            return ("Format: recurring: <amount> <description> <daily|weekly|monthly> [day]\n"
+                    "Examples:\n"
+                    "  recurring: 50 rent monthly 1\n"
+                    "  recurring: 10 spotify monthly\n"
+                    "  recurring: 5 coffee daily")
+
+        amount = float(amount_match.group(1))
+        rest = text[:amount_match.start()] + " " + text[amount_match.end():]
+        rest = re.sub(r"[£$€]", "", rest).strip()
+
+        # Extract frequency
+        frequency = "monthly"  # default
+        for freq in ("daily", "weekly", "monthly"):
+            if freq in rest.lower():
+                frequency = freq
+                rest = re.sub(freq, "", rest, flags=re.IGNORECASE).strip()
+                break
+
+        # Extract optional day number
+        day = None
+        day_match = re.search(r"\b(\d{1,2})\b", rest)
+        if day_match and int(day_match.group(1)) <= 31:
+            day = int(day_match.group(1))
+            rest = rest[:day_match.start()] + rest[day_match.end():]
+
+        description = re.sub(r"\s+", " ", rest).strip() or "Unspecified"
+        section, category = classify_transaction(description, amount, "expense")
+
+        result = add_recurring(amount, description, category, section, "expense", frequency, day)
+        freq_display = frequency
+        if frequency == "monthly" and day:
+            freq_display = f"monthly (day {day})"
+        elif frequency == "weekly" and day is not None:
+            days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            freq_display = f"weekly ({days[day]})" if day < 7 else frequency
+
+        return (f"🔄 Added recurring: £{amount:.2f} — {description}\n"
+                f"   Category: {category} ({section})\n"
+                f"   Frequency: {freq_display}")
+
+    return ("🔄 Recurring commands:\n"
+            "  recurring: <amount> <desc> <daily|weekly|monthly> [day]\n"
+            "  list recurring\n"
+            "  stop recurring <name>")
+
+
+def _handle_weekly_plan(cmd: ParsedCommand) -> str:
+    from jobpulse.notion_agent import get_undone_tasks_from_past_days
+    undone = get_undone_tasks_from_past_days(7)
+
+    if not undone:
+        return "✅ No undone tasks from the past 7 days. You're all caught up!"
+
+    lines = [f"📋 UNDONE TASKS (past 7 days) — {len(undone)} found:\n"]
+    for i, t in enumerate(undone, 1):
+        date_str = t.get("date", "")
+        lines.append(f"  {i}. {t['title']} ({date_str})")
+
+    lines.append("\nReply 'carry: 1,3,5' to move to today, or 'carry all'")
+    return "\n".join(lines)
+
+
 def _handle_help(cmd: ParsedCommand) -> str:
     return """\U0001f916 JobPulse Commands:
 
@@ -364,6 +510,17 @@ def _handle_help(cmd: ParsedCommand) -> str:
   "saved 100" \u2014 log savings/investment
   "set budget groceries 50" \u2014 set weekly limit
   "budget" \u2014 weekly summary
+  "undo" \u2014 undo last transaction
+  "recurring: 50 rent monthly 1" \u2014 add recurring expense
+  "list recurring" \u2014 show all recurring
+  "stop recurring rent" \u2014 remove a recurring expense
+
+\U0001f4dd PLANNING:
+  "!! urgent task" \u2014 create urgent priority task
+  "! important task" \u2014 create high priority task
+  "task by Friday" \u2014 task with due date
+  "weekly plan" \u2014 show undone tasks from past week
+  "carry: 1,3,5" \u2014 move selected tasks to today
 
 \U0001f4ca REPORTS:
   "weekly report" \u2014 7-day summary
