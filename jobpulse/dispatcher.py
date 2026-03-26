@@ -294,8 +294,14 @@ def _handle_set_budget(cmd: ParsedCommand) -> str:
 
 
 def _handle_show_budget(cmd: ParsedCommand) -> str:
+    import re
     from jobpulse.budget_agent import get_week_summary, get_today_spending
     from jobpulse.budget_agent import format_week_summary, format_today
+
+    # If user asked for comparison
+    if re.search(r"compar|vs|versus", cmd.raw, re.IGNORECASE):
+        from jobpulse.budget_tracker import get_weekly_comparison
+        return get_weekly_comparison()
 
     today = get_today_spending()
     week = get_week_summary()

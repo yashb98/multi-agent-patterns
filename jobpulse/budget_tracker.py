@@ -401,5 +401,156 @@ def get_category_page_url(category: str, week_start: str) -> str:
     return ""
 
 
+# ── Weekly Archival + New Week ──
+
+def archive_current_week() -> str:
+    """Archive the current week's budget and prepare for next week.
+
+    Called Sunday morning before briefing. Stores summary in weekly_archives,
+    carries over planned budgets to the new week.
+    """
+    from jobpulse.budget_agent import _get_week_start, get_week_summary, BUDGET_PAGE_ID
+
+    now = datetime.now()
+    current_week = _get_week_start(now)
+
+    # Check if already archived
+    conn = _get_conn()
+    existing = conn.execute(
+        "SELECT 1 FROM weekly_archives WHERE week_start=?", (current_week,)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return f"Week of {current_week} already archived."
+
+    # Get summary
+    summary = get_week_summary(current_week)
+
+    # Store archive
+    conn.execute(
+        "INSERT INTO weekly_archives (week_start, notion_page_id, total_income, total_spending, total_savings, net, archived_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (current_week, BUDGET_PAGE_ID, summary["income_total"], summary["spending_total"],
+         summary["savings_total"], summary["net"], now.isoformat())
+    )
+    conn.commit()
+
+    # Carry over planned budgets to next week
+    next_week = (datetime.strptime(current_week, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+    planned = conn.execute(
+        "SELECT category, section, planned_amount FROM planned_budgets WHERE week_start=?",
+        (current_week,)
+    ).fetchall()
+
+    for p in planned:
+        conn.execute(
+            "INSERT OR IGNORE INTO planned_budgets (week_start, category, section, planned_amount) VALUES (?,?,?,?)",
+            (next_week, p["category"], p["section"], p["planned_amount"])
+        )
+
+    conn.commit()
+    conn.close()
+
+    logger.info("Archived week %s: income=£%.2f, spending=£%.2f, net=£%.2f",
+                current_week, summary["income_total"], summary["spending_total"], summary["net"])
+
+    return (f"📦 Week of {current_week} archived.\n"
+            f"  Income: £{summary['income_total']:.2f}\n"
+            f"  Spending: £{summary['spending_total']:.2f}\n"
+            f"  Savings: £{summary['savings_total']:.2f}\n"
+            f"  Net: £{summary['net']:.2f}\n\n"
+            f"Planned budgets carried over to {next_week}.")
+
+
+def get_weekly_comparison() -> str:
+    """Compare this week vs last week spending per category."""
+    from jobpulse.budget_agent import _get_week_start
+
+    now = datetime.now()
+    this_week = _get_week_start(now)
+    last_week = (datetime.strptime(this_week, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    conn = _get_conn()
+
+    this_data = conn.execute(
+        "SELECT category, SUM(amount) as total, COUNT(*) as count "
+        "FROM transactions WHERE week_start=? AND type='expense' "
+        "GROUP BY category ORDER BY total DESC",
+        (this_week,)
+    ).fetchall()
+
+    last_data = conn.execute(
+        "SELECT category, SUM(amount) as total, COUNT(*) as count "
+        "FROM transactions WHERE week_start=? AND type='expense' "
+        "GROUP BY category ORDER BY total DESC",
+        (last_week,)
+    ).fetchall()
+
+    conn.close()
+
+    if not this_data and not last_data:
+        return "📊 No spending data for comparison yet."
+
+    last_map = {r["category"]: {"total": r["total"], "count": r["count"]} for r in last_data}
+
+    lines = [f"📊 WEEKLY COMPARISON (vs last week):\n"]
+    total_this = 0
+    total_last = 0
+
+    for row in this_data:
+        cat = row["category"]
+        this_total = row["total"]
+        total_this += this_total
+        last = last_map.get(cat, {"total": 0, "count": 0})
+        last_total = last["total"]
+        total_last += last_total
+
+        diff = this_total - last_total
+        if last_total > 0:
+            pct = round((diff / last_total) * 100)
+            arrow = "↑" if diff > 0 else "↓"
+            warn = " ⚠️" if pct > 50 else " ✅" if pct < -10 else ""
+            lines.append(f"  {cat:20s} £{this_total:>7.2f}  {arrow}{abs(pct)}% (£{abs(diff):.2f}){warn}")
+        else:
+            lines.append(f"  {cat:20s} £{this_total:>7.2f}  (new this week)")
+
+    # Categories only in last week (not this week)
+    for row in last_data:
+        if row["category"] not in [r["category"] for r in this_data]:
+            total_last += row["total"]
+            lines.append(f"  {row['category']:20s} £{'0.00':>7s}  ↓100% (was £{row['total']:.2f}) ✅")
+
+    lines.append(f"\n  {'TOTAL':20s} £{total_this:>7.2f}  (last week: £{total_last:.2f})")
+
+    return "\n".join(lines)
+
+
+def get_budget_dataset_csv() -> str:
+    """Export all transactions as CSV for ML analysis."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT amount, description, category, section, type, date, week_start, "
+        "items, store, time_of_day, created_at FROM transactions ORDER BY date"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return "No transactions to export."
+
+    header = "amount,description,category,section,type,date,week_start,items,store,time_of_day,day_of_week,created_at"
+    lines = [header]
+    for r in rows:
+        d = dict(r)
+        day_of_week = datetime.strptime(d["date"], "%Y-%m-%d").strftime("%A")
+        line = (f"{d['amount']},\"{d['description']}\",\"{d['category']}\",{d['section']},"
+                f"{d['type']},{d['date']},{d['week_start']},\"{d.get('items', '')}\","
+                f"\"{d.get('store', '')}\",{d.get('time_of_day', '')},{day_of_week},{d['created_at']}")
+        lines.append(line)
+
+    csv_path = DATA_DIR / "transactions_export.csv"
+    csv_path.write_text("\n".join(lines))
+    return str(csv_path)
+
+
 # Initialize on import
 init_tracker_db()

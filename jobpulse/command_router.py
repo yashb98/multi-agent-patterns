@@ -143,6 +143,8 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"^budget\s*$",
         r"(spending|how much.+(spent|spend|earned)|weekly (budget|spend)|show budget|show spending|^summary$)",
         r"(today.?s|this week.?s)\s+(spend|budget|expenses?|money)",
+        r"(budget|spending)\s*(compare|comparison|vs|versus|vs last)",
+        r"^compare\s+(budget|spending)",
     ]),
     # Budget — log income
     (Intent.LOG_INCOME, [

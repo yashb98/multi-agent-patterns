@@ -112,6 +112,20 @@ def main():
         from jobpulse.notion_papers_agent import create_weekly_page
         create_weekly_page()
 
+    elif command == "archive-week":
+        from jobpulse.budget_tracker import archive_current_week
+        result = archive_current_week()
+        logger.info(result)
+
+    elif command == "budget-compare":
+        from jobpulse.budget_tracker import get_weekly_comparison
+        print(get_weekly_comparison())
+
+    elif command == "budget-export":
+        from jobpulse.budget_tracker import get_budget_dataset_csv
+        path = get_budget_dataset_csv()
+        logger.info("Exported to: %s", path)
+
     elif command == "test":
         from jobpulse.telegram_agent import send_message
         success = send_message("🧪 JobPulse test message — all systems operational!")

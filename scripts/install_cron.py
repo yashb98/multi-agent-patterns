@@ -44,6 +44,9 @@ PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Weekly research papers to Notion (Monday 8:33am) — Python agent
 33 8 * * 1 {RUNNER} notion-papers >> {PROJECT_DIR}/logs/notion.log 2>&1
 
+# Archive budget week + carry over planned (Sunday 7am)
+ 0 7 * * 0 {RUNNER} archive-week >> {PROJECT_DIR}/logs/budget.log 2>&1
+
 # Weekly report summary (Sunday 8pm)
  0 20 * * 0 {RUNNER} weekly-report >> {PROJECT_DIR}/logs/weekly.log 2>&1
 
