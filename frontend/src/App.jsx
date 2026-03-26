@@ -272,7 +272,7 @@ function BrainScene({ data, onSelectNode }) {
     types.forEach((t, i) => {
       const phi = Math.acos(-1 + (2 * i) / Math.max(types.length, 1))
       const theta = Math.sqrt(types.length * Math.PI) * phi
-      const regionR = (3 + types.length * 0.45) * Math.sqrt(regionScale)
+      const regionR = (10 + types.length * 1.5) * Math.sqrt(regionScale)
       typePositions[t] = [
         regionR * Math.cos(theta) * Math.sin(phi),
         regionR * Math.cos(phi) * 0.6,
