@@ -1,8 +1,8 @@
 # Multi-Agent Orchestration + JobPulse + Knowledge MindGraph
 
-Production autonomous agent system: 4 orchestration patterns, 10+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval.
+Production autonomous agent system: 4 orchestration patterns, 10+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval, NLP intent classification, AI research blog pipeline.
 
-**~17,000 LOC** | **70+ Python files** | **5 databases** | **148 tests** | **3 dashboards** | **3 platforms**
+**~20,000 LOC** | **75+ Python files** | **5 databases** | **148 tests** | **3 dashboards** | **4 Telegram bots**
 
 ## Three Integrated Systems
 
@@ -38,7 +38,7 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | Gmail | Classify recruiter emails, send alerts, extract knowledge | 1pm, 3pm, 5pm |
 | Calendar | Today + tomorrow events, 2-hour reminders | 9am, 12pm, 3pm |
 | GitHub | Yesterday's commits (Commits API), trending repos | 8am briefing |
-| arXiv | Daily AI paper digest ranked by broad impact, interactive read tracking (papers.db) | 8am briefing + on demand |
+| arXiv | Daily top 5 AI papers ranked by broad impact, paper DB, read tracking, blog post pipeline | 7:57am + on demand |
 | Notion | Tasks: create/complete/remove, dedup, priorities, due dates, subtasks, weekly plan | On demand |
 | Budget | Parse spending/income/savings, 17 categories, recurring, alerts, undo, Notion sync, category sub-pages, item+store NLP, weekly archival, weekly comparison, historical pace alerts, CSV export | On demand |
 | Budget Tracker | Weekly archival (Sunday 7am cron), category sub-page management, weekly comparison engine | Cron + on demand |
@@ -94,6 +94,7 @@ Control your entire system from your phone:
 | "paper 3" | Full abstract for paper #3 |
 | "read 1" | Mark paper #1 as read |
 | "papers stats" | Read/unread counts + category breakdown |
+| "blog 1" | Generate 2000-word blog post from paper #1 (coming soon) |
 | "briefing" | Enhanced Swarm 7-agent collect → RLM synthesis |
 | "weekly report" | 7-day aggregate across all agents |
 | "export" | Full data backup (tar.gz) |
@@ -290,6 +291,16 @@ python -m pytest tests/ -v --cov    # With coverage
 
 All on gpt-4o-mini. Enhanced Swarm on gpt-4o would be ~$9/month.
 
+## Planned Features (Design Docs Ready)
+
+| Feature | Status | Doc |
+|---------|--------|-----|
+| **arXiv Blog Pipeline** | Designed | `docs/feature-arxiv-blogpost.md` |
+| **Auto Job Applier** | Designed | `docs/feature-auto-job-applier.md` |
+| **Gmail Smart Filter** | Designed | `docs/feature-gmail-smart-filter.md` |
+
+The blog pipeline uses 5 agents (Deep Reader → GRPO Writer → Fact Checker → Diagram Generator → Editor) to turn research papers into 2000-word publication-ready posts with workflow diagrams on Notion.
+
 ## Documentation
 
 | File | Content |
@@ -297,7 +308,13 @@ All on gpt-4o-mini. Enhanced Swarm on gpt-4o would be ~$9/month.
 | CLAUDE.md | Project instructions + operational principles |
 | docs/agents.md | All agents (orchestration + JobPulse + platforms) |
 | docs/rules.md | Operational rules, convergence, constraints, input modes |
-| docs/skills.md | GRPO, persona evolution, RLM, A/B testing, voice input |
+| docs/skills.md | GRPO, persona evolution, RLM, NLP, A/B testing, voice input |
 | docs/subagents.md | Dynamic agent factory, templates |
-| docs/hooks.md | Process trails, memory, logging, rate limits, export, A/B testing |
+| docs/hooks.md | Process trails, memory, logging, rate limits, budget tracker, export |
+| docs/feature-arxiv-blogpost.md | 5-agent blog generation pipeline design |
+| docs/feature-auto-job-applier.md | Automated job discovery + cover letters |
+| docs/feature-gmail-smart-filter.md | Pre-filter emails before LLM classification |
+| docs/feature-notion-budget-v2.md | Category sub-pages + dataset tracking |
+| docs/feature-nlp-intent.md | 3-tier NLP intent classification |
+| docs/feature-arxiv-digest.md | Intelligent arXiv research digest |
 | .claude/mistakes.md | Error log (append-only, read first every session) |
