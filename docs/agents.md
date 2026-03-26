@@ -31,6 +31,15 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - Fetches yesterday's commits using Commits API per-repo (not Events API)
 - Fetches trending repos via GitHub Search API
 
+### arXiv Agent (`arxiv_agent.py`)
+- Fetches daily AI papers from arXiv and ranks by **broad AI impact** (not project-specific)
+- Ranking criteria: novelty, significance, practical value, breadth of applicability
+- Category tags per paper: [LLM, Agents, Vision, RL, Efficiency, Safety, Reasoning]
+- Each paper includes key technique + practical takeaway
+- SQLite `papers.db` tracks all papers with read/unread status
+- Interactive commands: "paper 3" (full abstract), "read 1" (mark read), "papers stats" (counts + category breakdown)
+- Digest sent to Research bot
+
 ### Notion Agent (`notion_agent.py`)
 - Manages daily tasks (to_do blocks), creates/completes/removes tasks
 - Fuzzy matching for "mark X done" and "remove X" (word overlap + number normalization)
@@ -71,7 +80,7 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - Falls back to main bot token when dedicated bot env vars are not set
 
 ### Morning Briefing (`morning_briefing.py`)
-- Collects from all 6 agents, assembles Telegram message
+- Collects from all 7 agents (including arXiv), assembles Telegram message
 - Evolves briefing persona after each run
 - RLM synthesis when data exceeds 5K chars
 - Includes weekly budget comparison (this week vs last week per category)

@@ -22,6 +22,7 @@ Learns in **prompt space** — model weights stay frozen:
 
 - Budget classification: 3 candidates, pick best category match
 - Briefing synthesis: 3 candidates, pick most actionable briefing
+- arXiv paper ranking: 3 candidates, pick best impact assessment
 - Experiences stored in `swarm_experience.db` per intent
 
 ## 2. Persona Evolution
@@ -62,6 +63,7 @@ Three agents evolve their prompts over time:
 | gmail_agent | "Classify into 4 categories" | + "Skip Workday auto-rejections. Prioritize person names over noreply@" |
 | budget_agent | "Match to 17 categories" | + "Coffee/lunch = Eating out, not Groceries. Amazon = check context" |
 | briefing_synth | "Lead with urgent items" | + "Interviews always first. Yash prefers short bullet points" |
+| arxiv_agent | "Rank by broad AI impact" | + "Weight practical value higher. Flag efficiency papers for infra work" |
 
 Evolved prompts stored in `persona_prompts` table (swarm_experience.db).
 

@@ -27,7 +27,7 @@ python -m jobpulse.runner multi           # Start all platform listeners
 ## Architecture (3 Systems)
 
 **1. Orchestration Engine** — 4 LangGraph patterns: hierarchical, peer debate, dynamic swarm, enhanced swarm
-**2. JobPulse Automation** — Gmail, Calendar, GitHub, Notion, Budget, Telegram agents running 24/7
+**2. JobPulse Automation** — Gmail, Calendar, GitHub, Notion, Budget, arXiv, Telegram agents running 24/7
 **3. Knowledge MindGraph** — Entity extraction, GraphRAG retrieval, Three.js 3D visualization
 
 **4. NLP Intent Classification** — 3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 31 intents, continuous learning.
@@ -69,7 +69,11 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
 | "check emails" | Gmail → scan + classify + alert |
 | "commits" | GitHub → yesterday's activity |
 | "trending" | GitHub → hot repos |
-| "briefing" | Enhanced Swarm → 6-agent collect → RLM synthesis |
+| "arxiv" | arXiv → today's top AI papers ranked by broad impact |
+| "paper 3" | arXiv → full abstract for paper #3 |
+| "read 1" | arXiv → mark paper #1 as read |
+| "papers stats" | arXiv → read/unread counts and category breakdown |
+| "briefing" | Enhanced Swarm → 7-agent collect → RLM synthesis |
 | "weekly report" | All agents → 7-day summary |
 | "export" | Full data backup (databases, personas, experiences) |
 | voice message | Whisper transcription → intent classification → agent |
@@ -121,7 +125,7 @@ Four separate Telegram bots, each with its own chat/channel:
 |-----|---------|----------|
 | **Main** | Tasks, calendar, briefing, remote control | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
 | **Budget** | Expenses, income, savings, recurring, weekly summary | `TELEGRAM_BUDGET_BOT_TOKEN`, `TELEGRAM_BUDGET_CHAT_ID` |
-| **Research** | Knowledge queries, MindGraph, trending repos | `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` |
+| **Research** | Knowledge queries, MindGraph, trending repos, arXiv digest | `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` |
 | **Alert** | Gmail alerts, interview notifications, urgent reminders | `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` |
 
 Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicated token is not set.
@@ -158,7 +162,7 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 
 ## Stats
 
-~17,000 LOC | 70+ Python files | 4 databases | 148 tests | 3 dashboards | 3 platforms
+~17,000 LOC | 70+ Python files | 5 databases | 148 tests | 3 dashboards | 3 platforms
 
 ## Dashboards
 

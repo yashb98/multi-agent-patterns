@@ -1,8 +1,8 @@
 # Multi-Agent Orchestration + JobPulse + Knowledge MindGraph
 
-Production autonomous agent system: 4 orchestration patterns, 9+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval.
+Production autonomous agent system: 4 orchestration patterns, 10+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval.
 
-**~17,000 LOC** | **70+ Python files** | **4 databases** | **148 tests** | **3 dashboards** | **3 platforms**
+**~17,000 LOC** | **70+ Python files** | **5 databases** | **148 tests** | **3 dashboards** | **3 platforms**
 
 ## Three Integrated Systems
 
@@ -38,6 +38,7 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | Gmail | Classify recruiter emails, send alerts, extract knowledge | 1pm, 3pm, 5pm |
 | Calendar | Today + tomorrow events, 2-hour reminders | 9am, 12pm, 3pm |
 | GitHub | Yesterday's commits (Commits API), trending repos | 8am briefing |
+| arXiv | Daily AI paper digest ranked by broad impact, interactive read tracking (papers.db) | 8am briefing + on demand |
 | Notion | Tasks: create/complete/remove, dedup, priorities, due dates, subtasks, weekly plan | On demand |
 | Budget | Parse spending/income/savings, 17 categories, recurring, alerts, undo, Notion sync, category sub-pages, item+store NLP, weekly archival, weekly comparison, historical pace alerts, CSV export | On demand |
 | Budget Tracker | Weekly archival (Sunday 7am cron), category sub-page management, weekly comparison engine | Cron + on demand |
@@ -89,7 +90,11 @@ Control your entire system from your phone:
 | "check emails" | Gmail scan + classify + alert |
 | "commits" | Yesterday's git activity |
 | "trending" | Hot GitHub repos |
-| "briefing" | Enhanced Swarm 6-agent collect → RLM synthesis |
+| "arxiv" | Today's top AI papers ranked by broad impact |
+| "paper 3" | Full abstract for paper #3 |
+| "read 1" | Mark paper #1 as read |
+| "papers stats" | Read/unread counts + category breakdown |
+| "briefing" | Enhanced Swarm 7-agent collect → RLM synthesis |
 | "weekly report" | 7-day aggregate across all agents |
 | "export" | Full data backup (tar.gz) |
 | **Remote Control** | |
@@ -126,7 +131,7 @@ Four separate bots route messages to dedicated chats:
 |-----|---------|----------|
 | **Main** | Tasks, calendar, briefing, remote control | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
 | **Budget** | Expenses, income, savings, recurring | `TELEGRAM_BUDGET_BOT_TOKEN`, `TELEGRAM_BUDGET_CHAT_ID` |
-| **Research** | Knowledge queries, MindGraph, trending | `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` |
+| **Research** | Knowledge queries, MindGraph, trending, arXiv digest | `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` |
 | **Alert** | Gmail alerts, interview notifications | `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` |
 
 Each bot is optional -- falls back to the main bot token/chat if not configured.
@@ -268,7 +273,7 @@ RLM_MAX_BUDGET=0.10
 
 ## Test Suite
 
-148 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), dispatcher routing, swarm logic, GRPO sampling, experience storage, and knowledge extraction.
+148 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (ranking, read tracking, category tags, stats), dispatcher routing, swarm logic, GRPO sampling, experience storage, and knowledge extraction.
 
 ```bash
 python -m pytest tests/ -v          # Full suite
