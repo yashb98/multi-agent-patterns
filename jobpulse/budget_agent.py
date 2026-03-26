@@ -1496,6 +1496,87 @@ def get_hours_summary(week_start: str = None) -> str:
     return "\n".join(lines) + page_url
 
 
+def _rebuild_notion_timesheet(page_id: str, salary_week_start: str):
+    """Delete all data rows from Notion table and re-add from SQLite.
+
+    SQLite is the source of truth. This ensures Notion matches after undo.
+    Keeps the header row (first row), deletes everything else, then re-adds.
+    """
+    if not page_id:
+        return
+
+    # Find the table
+    blocks = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
+    table_id = None
+    for block in blocks.get("results", []):
+        if block.get("type") == "table":
+            table_id = block["id"]
+            break
+
+    if not table_id:
+        logger.warning("No table found in timesheet page %s", page_id)
+        return
+
+    # Get all table rows
+    table_rows = _notion_api("GET", f"/blocks/{table_id}/children?page_size=100")
+    all_rows = table_rows.get("results", [])
+
+    # Delete all rows EXCEPT the header (first row)
+    for row in all_rows[1:]:
+        _notion_api("DELETE", f"/blocks/{row['id']}")
+
+    # Re-add data rows from SQLite
+    conn = _get_conn()
+    entries = conn.execute(
+        "SELECT hours, hourly_rate, total_earned, date FROM work_hours "
+        "WHERE week_start=? ORDER BY date",
+        (salary_week_start,)
+    ).fetchall()
+
+    totals = conn.execute(
+        "SELECT SUM(hours) as h, SUM(total_earned) as e FROM work_hours WHERE week_start=?",
+        (salary_week_start,)
+    ).fetchone()
+    conn.close()
+
+    # Add each data row
+    new_rows = []
+    for entry in entries:
+        new_rows.append({
+            "object": "block", "type": "table_row", "table_row": {
+                "cells": [
+                    [{"type": "text", "text": {"content": f"{entry['hours']:.1f}"}}],
+                    [{"type": "text", "text": {"content": f"£{entry['hourly_rate']:.2f}"}}],
+                    [{"type": "text", "text": {"content": entry['date']}}],
+                    [{"type": "text", "text": {"content": f"£{entry['total_earned']:.2f}"}}],
+                ]
+            }
+        })
+
+    # Add TOTAL row
+    total_h = totals['h'] or 0
+    total_e = totals['e'] or 0
+    if total_h > 0:
+        total_tax = round(total_e * TAX_RATE, 2)
+        total_after_tax = round(total_e - total_tax, 2)
+        total_savings = round(total_after_tax * SAVINGS_RATE, 2)
+        new_rows.append({
+            "object": "block", "type": "table_row", "table_row": {
+                "cells": [
+                    [{"type": "text", "text": {"content": f"TOTAL: {total_h:.1f}h"}}],
+                    [{"type": "text", "text": {"content": f"£{HOURLY_RATE:.2f}/hr"}}],
+                    [{"type": "text", "text": {"content": f"Week of {salary_week_start}"}}],
+                    [{"type": "text", "text": {"content": f"£{total_e:.2f} gross | £{total_after_tax:.2f} net | Save £{total_savings:.2f}"}}],
+                ]
+            }
+        })
+
+    if new_rows:
+        _notion_api("PATCH", f"/blocks/{table_id}/children", {"children": new_rows})
+
+    logger.info("Rebuilt timesheet for %s: %d entries", salary_week_start, len(entries))
+
+
 def undo_hours(pick: int = None) -> str:
     """Show last 5 hour entries for selection, or delete a specific one by number."""
     conn = _get_conn()
@@ -1554,56 +1635,12 @@ def undo_hours(pick: int = None) -> str:
     except Exception as e:
         logger.warning("Undo hours Notion budget sync: %s", e)
 
-    # Update the Notion timesheet TOTAL row
+    # Rebuild the entire Notion timesheet table from SQLite (source of truth)
     timesheet_url = ""
     try:
         page_id = target.get("notion_page_id", "")
         if page_id:
-            # Rebuild TOTAL row on the timesheet
-            blocks = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
-            table_id = None
-            for block in blocks.get("results", []):
-                if block.get("type") == "table":
-                    table_id = block["id"]
-                    break
-
-            if table_id:
-                # Remove old TOTAL row
-                table_rows = _notion_api("GET", f"/blocks/{table_id}/children?page_size=100")
-                for row in table_rows.get("results", []):
-                    cells = row.get("table_row", {}).get("cells", [])
-                    if cells and cells[0]:
-                        text = "".join(t.get("plain_text", "") for t in cells[0])
-                        if "TOTAL" in text.upper():
-                            _notion_api("DELETE", f"/blocks/{row['id']}")
-
-                # Recalculate and add fresh TOTAL
-                conn3 = _get_conn()
-                totals = conn3.execute(
-                    "SELECT SUM(hours) as h, SUM(total_earned) as e FROM work_hours WHERE week_start=?",
-                    (week_start,)
-                ).fetchone()
-                conn3.close()
-
-                total_h = totals['h'] or 0
-                total_e = totals['e'] or 0
-                if total_h > 0:
-                    total_tax = round(total_e * TAX_RATE, 2)
-                    total_after_tax = round(total_e - total_tax, 2)
-                    total_savings = round(total_after_tax * SAVINGS_RATE, 2)
-                    _notion_api("PATCH", f"/blocks/{table_id}/children", {
-                        "children": [
-                            {"object": "block", "type": "table_row", "table_row": {
-                                "cells": [
-                                    [{"type": "text", "text": {"content": f"TOTAL: {total_h:.1f}h"}}],
-                                    [{"type": "text", "text": {"content": f"£{HOURLY_RATE:.2f}/hr"}}],
-                                    [{"type": "text", "text": {"content": f"Week of {week_start}"}}],
-                                    [{"type": "text", "text": {"content": f"£{total_e:.2f} gross | £{total_after_tax:.2f} net | Save £{total_savings:.2f}"}}],
-                                ]
-                            }},
-                        ]
-                    })
-
+            _rebuild_notion_timesheet(page_id, week_start)
             timesheet_url = f"\n📎 Timesheet: https://www.notion.so/{page_id.replace('-', '')}"
     except Exception as e:
         logger.warning("Undo hours timesheet sync: %s", e)
