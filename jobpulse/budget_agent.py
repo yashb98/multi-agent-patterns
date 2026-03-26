@@ -317,8 +317,29 @@ def sync_expense_to_notion(txn: dict):
     ).fetchone()[0]
     conn.close()
 
-    # Update the Actual column with the running total, date in notes
-    _update_table_row(row_id, f"£{total:.2f}", f"Last: {txn['description']} ({txn['date']})")
+    # Get the category sub-page link
+    from jobpulse.budget_tracker import get_category_page_url
+    sub_url = get_category_page_url(category, txn["week_start"])
+
+    # For Salary, also check for the timesheet page
+    if category == "Salary" and not sub_url:
+        conn2 = _get_conn()
+        from jobpulse.budget_agent import _get_salary_week_start
+        salary_week = _get_salary_week_start(datetime.strptime(txn["date"], "%Y-%m-%d"))
+        ts_row = conn2.execute(
+            "SELECT notion_page_id FROM work_hours WHERE week_start=? AND notion_page_id != '' LIMIT 1",
+            (salary_week,)
+        ).fetchone()
+        conn2.close()
+        if ts_row:
+            sub_url = f"https://www.notion.so/{ts_row['notion_page_id'].replace('-', '')}"
+
+    notes = f"Last: {txn['description']} ({txn['date']})"
+    if sub_url:
+        notes += f" | Detail: {sub_url}"
+
+    # Update the Actual column with the running total + link in notes
+    _update_table_row(row_id, f"£{total:.2f}", notes)
 
     # Also update the section total row
     _update_section_totals(txn["week_start"])
