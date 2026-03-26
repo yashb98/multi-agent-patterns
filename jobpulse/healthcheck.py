@@ -55,7 +55,8 @@ def alert_if_down():
         f.write(log_msg + "\n")
 
     if not health["alive"]:
-        telegram_agent.send_message(
+        from jobpulse.telegram_bots import send_alert
+        send_alert(
             f"⚠️ JOBPULSE DOWN\n\n"
             f"The Telegram daemon hasn't responded in {health.get('age_minutes', '?')} minutes.\n"
             f"Last heartbeat: {health['last_seen']}\n\n"

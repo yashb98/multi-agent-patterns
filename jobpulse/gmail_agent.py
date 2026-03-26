@@ -200,7 +200,9 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
                         alert += "\n\n🚨 Action needed — reply to schedule!"
                     elif category == REJECTED:
                         alert += "\n\nOnward to the next one 💪"
-                    telegram_agent.send_message(alert)
+                    # Send to alert bot (dedicated alerts chat)
+                    from jobpulse.telegram_bots import send_alert
+                    send_alert(alert)
                     s["output"] = f"Alert sent for {category}"
 
                 logger.info("%s: %s — %s", emoji_label, sender_short, subject)

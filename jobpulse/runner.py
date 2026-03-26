@@ -33,11 +33,11 @@ def main():
 
     elif command == "calendar-remind":
         from jobpulse.calendar_agent import get_upcoming_reminders
-        from jobpulse.telegram_agent import send_message
+        from jobpulse.telegram_bots import send_alert
         reminders = get_upcoming_reminders(within_minutes=120)
         for r in reminders:
             loc = f" ({r['location']})" if r.get("location") else ""
-            send_message(f"⏰ REMINDER: \"{r['title']}\"{loc} starts in {r['in']} — {r['start']}")
+            send_alert(f"⏰ REMINDER: \"{r['title']}\"{loc} starts in {r['in']} — {r['start']}")
             logger.info("Sent reminder: %s", r['title'])
         if not reminders:
             logger.info("No upcoming events in next 2 hours")
@@ -72,6 +72,10 @@ def main():
     elif command == "daemon":
         from jobpulse.telegram_listener import poll_continuous
         poll_continuous()
+
+    elif command == "multi-bot":
+        from jobpulse.multi_bot_listener import start_all_bots
+        start_all_bots()
 
     elif command == "health":
         from jobpulse.healthcheck import alert_if_down

@@ -631,6 +631,12 @@ def log_transaction(text: str, trigger: str = "telegram_command") -> str:
     alerts = check_budget_alerts()
     if alerts:
         reply += "\n\n" + "\n".join(alerts)
+        # Also send alerts to the dedicated alert bot
+        try:
+            from jobpulse.telegram_bots import send_alert
+            send_alert("⚠️ BUDGET ALERT\n\n" + "\n".join(alerts))
+        except Exception:
+            pass
 
     trail.finalize(f"Logged £{amount:.2f} {txn_type} → {category}")
     return reply
