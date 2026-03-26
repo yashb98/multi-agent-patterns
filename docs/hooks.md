@@ -131,7 +131,44 @@ One-click export of all system data:
 
 Triggers: Telegram ("export"), CLI (`python -m jobpulse.runner export`), API (`POST /api/health/export`), health dashboard button.
 
-## 10. A/B Testing for Prompts
+## 10. Claude Code Telegram Approval Hook
+
+**File:** `scripts/telegram_approve.py`
+
+Claude Code PreToolUse hook that forwards bash command approvals to Telegram:
+
+```
+Claude Code runs `npm install express`
+  → Hook intercepts via CLAUDE_TOOL_INPUT env var
+  → Checks auto-approve list (ls, cat, git status, grep, echo, python -c, pytest)
+  → Checks always-block list (rm -rf, sudo, shutdown, reboot)
+  → Everything else → sends to Telegram, polls for yes/no reply
+  → 1 hour timeout, blocks by default on expiry
+```
+
+### Configuration
+
+In `.claude/settings.json`:
+```json
+{
+  "PreToolUse": [{
+    "matcher": "Bash",
+    "hooks": [{
+      "type": "command",
+      "command": "python scripts/telegram_approve.py",
+      "timeout": 120
+    }]
+  }]
+}
+```
+
+### Auto-approve (safe)
+`ls`, `cat`, `head`, `tail`, `wc`, `pwd`, `date`, `which`, `echo`, `python -c`, `python -m pytest`, `grep`, `git status`, `git log`, `git diff`, `git branch`
+
+### Auto-block (dangerous)
+`rm -rf`, `sudo`, `shutdown`, `reboot`, `> /dev`
+
+## 11. A/B Testing for Prompts
 
 **File:** `jobpulse/ab_testing.py`
 

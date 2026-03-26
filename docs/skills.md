@@ -38,6 +38,21 @@ VALIDATE   → Score performance
 CONVERGE or LOOP
 ```
 
+### Two Optimization Modes
+
+| Mode | Trigger | What It Does |
+|------|---------|-------------|
+| **Quick** (every run) | Score >= 5.0 | Single-step evolve: extract latest experience, compress into prompt |
+| **Deep** (every 10th gen) | Generation % 10 == 0, 5+ experiences | Multi-iteration meta-optimization with reflective rewriting |
+
+**Deep Meta-Optimization** (`_deep_optimize`):
+1. Build training data from stored experiences
+2. Run prompt against past experiences, score each output
+3. LLM identifies WHY low-scoring outputs failed
+4. LLM rewrites prompt to fix failures while preserving successes
+5. Repeats up to 5 iterations via `shared/prompt_optimizer.py` (method="meta")
+6. Only stores new prompt if score improved over original
+
 ### In JobPulse
 
 Three agents evolve their prompts over time:

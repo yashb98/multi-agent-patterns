@@ -1,8 +1,8 @@
 # Multi-Agent Orchestration + JobPulse + Knowledge MindGraph
 
-Production autonomous agent system: 4 orchestration patterns, 7+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control.
+Production autonomous agent system: 4 orchestration patterns, 9+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval.
 
-**~15,000 LOC** | **55+ Python files** | **4 databases** | **125 tests** | **3 dashboards** | **3 platforms**
+**~17,000 LOC** | **70+ Python files** | **4 databases** | **125 tests** | **3 dashboards** | **3 platforms**
 
 ## Three Integrated Systems
 
@@ -26,8 +26,8 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | Gmail | Classify recruiter emails, send alerts, extract knowledge | 1pm, 3pm, 5pm |
 | Calendar | Today + tomorrow events, 2-hour reminders | 9am, 12pm, 3pm |
 | GitHub | Yesterday's commits (Commits API), trending repos | 8am briefing |
-| Notion | Daily tasks (to_do blocks), fuzzy completion | On demand |
-| Budget | Parse spending, classify to 17 categories, sync Notion | On demand |
+| Notion | Tasks: create/complete/remove, dedup, priorities, due dates, subtasks, weekly plan | On demand |
+| Budget | Parse spending/income/savings, 17 categories, recurring, alerts, undo, Notion sync | On demand |
 | Briefing | Collect all agents → RLM synthesis → Telegram | 8:03am daily |
 | Weekly Report | 7-day aggregate across all agents | On demand |
 | Voice Handler | Telegram voice → Whisper transcription → dispatch | On demand |
@@ -45,12 +45,38 @@ Control your entire system from your phone:
 
 | Command | What It Does |
 |---------|-------------|
+| **Tasks** | |
+| "show tasks" | Today's checklist from Notion |
+| list of items | Creates tasks (dedup check, big-task detection + subtask suggestion) |
+| `!! urgent task` / `! high task` | Priority tasks (red/yellow indicators) |
+| "task by Friday" | Task with NLP due date parsing |
+| "done: X" / "mark X done" | Fuzzy match + complete |
+| "remove: X" | Fuzzy match + delete |
+| "plan" / "weekly plan" | Show undone tasks from past 7 days, carry forward |
+| **Budget** | |
+| "spent 15 on lunch" | Log expense → classify → SQLite → Notion sync |
+| "earned 500 freelance" | Log income |
+| "saved 100" | Log savings |
+| "budget" | Weekly summary with alerts |
+| "set budget groceries 50" | Set planned amount per category |
+| "recurring: 10 on spotify monthly" | Auto-log on schedule (daily/weekly/monthly) |
+| "show recurring" / "stop recurring X" | Manage recurring rules |
+| "undo" | Delete last transaction, recalculate Notion |
+| **Agents** | |
+| "calendar" | Today + tomorrow events |
+| "check emails" | Gmail scan + classify + alert |
+| "commits" | Yesterday's git activity |
+| "trending" | Hot GitHub repos |
+| "briefing" | Enhanced Swarm 6-agent collect → RLM synthesis |
+| "weekly report" | 7-day aggregate across all agents |
+| "export" | Full data backup (tar.gz) |
+| **Remote Control** | |
 | Just type anything | Free-form conversation with project-aware LLM |
-| `run: <command>` | Execute shell command (whitelisted) |
-| `git status` / `git log` | Formatted git operations |
+| `run: <command>` or `$ <command>` | Execute whitelisted shell command |
+| `git status` / `git log` / `git diff` | Formatted git operations |
 | `commit: fix bug` | Stage + commit (asks approval first) |
 | `push` | Push to remote (asks approval) |
-| `show: CLAUDE.md` | Read files (paginated) |
+| `show: CLAUDE.md` | Read files (paginated with more/next) |
 | `logs` / `errors` | View logs or recent agent errors |
 | `status` | Full system dashboard |
 | `clear chat` | Reset conversation history |
@@ -92,7 +118,7 @@ Message → Task Analyzer → Priority Queue → Execute with GRPO
 
 **RLM** (Recursive Language Model): when context exceeds single LLM capacity, root model writes code that processes chunks via sub-LM calls. Used for deep knowledge queries and briefing synthesis.
 
-**Persona Evolution**: agent prompts improve over weeks. Gmail learns to skip automated rejections. Budget learns coffee = Eating out. Briefing learns to lead with interviews. Deep meta-optimization triggers every 10th generation.
+**Persona Evolution**: agent prompts improve over weeks via two modes. Quick evolve (every run): single-step search-synthesize-compress. Deep meta-optimization (every 10th generation): multi-iteration reflective rewriting via `prompt_optimizer.py`. Gmail learns to skip automated rejections. Budget learns coffee = Eating out. Briefing learns to lead with interviews.
 
 **A/B Testing**: prompt variants compared side-by-side with statistical tracking. Winners auto-promoted after 10+ trials.
 
@@ -196,7 +222,7 @@ RLM_MAX_BUDGET=0.10
 
 ## Test Suite
 
-125 tests covering command routing, budget parsing, dispatcher routing, swarm logic, GRPO sampling, experience storage, and knowledge extraction.
+125 tests covering command routing, budget parsing (recurring, alerts, undo), task features (priority, due dates, dedup, subtasks, weekly plan), dispatcher routing, swarm logic, GRPO sampling, experience storage, and knowledge extraction.
 
 ```bash
 python -m pytest tests/ -v          # Full suite

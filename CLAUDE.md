@@ -48,22 +48,52 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
 
 ## Telegram Commands
 
+### Core Agents
 | You type | What happens |
 |----------|-------------|
 | "show tasks" | Notion → today's checklist |
-| list of items | Notion → creates tasks |
+| list of items | Notion → creates tasks (dedup check, big-task detection) |
+| "!! urgent task" | Notion → creates urgent-priority task |
+| "! high priority task" | Notion → creates high-priority task |
+| "task by Friday" | Notion → creates task with NLP due date |
 | "mark X done" | Notion → fuzzy match + complete |
+| "remove X" | Notion → fuzzy match + delete |
+| "plan" / "weekly plan" | Notion → show undone tasks from past 7 days, carry forward |
 | "calendar" | Calendar → today + tomorrow |
 | "check emails" | Gmail → scan + classify + alert |
 | "commits" | GitHub → yesterday's activity |
 | "trending" | GitHub → hot repos |
 | "briefing" | Enhanced Swarm → 6-agent collect → RLM synthesis |
-| "spent 15 on lunch" | Budget → classify → SQLite → Notion sync |
-| "budget" | Budget → weekly summary |
 | "weekly report" | All agents → 7-day summary |
 | "export" | Full data backup (databases, personas, experiences) |
 | voice message | Whisper transcription → intent classification → agent |
 | "help" | Lists all commands |
+
+### Budget
+| You type | What happens |
+|----------|-------------|
+| "spent 15 on lunch" | Budget → classify → SQLite → Notion sync |
+| "earned 500 freelance" | Budget → log income → Notion sync |
+| "saved 100" | Budget → log savings → Notion sync |
+| "budget" | Budget → weekly summary with alerts |
+| "set budget groceries 50" | Budget → set planned amount for category |
+| "recurring: 10 on spotify monthly" | Budget → auto-log on schedule (daily/weekly/monthly) |
+| "show recurring" | Budget → list all active recurring rules |
+| "stop recurring spotify" | Budget → deactivate a recurring rule |
+| "undo" | Budget → delete last transaction, recalculate Notion totals |
+
+### Remote Control
+| You type | What happens |
+|----------|-------------|
+| Just type anything | Free-form conversation with project-aware LLM |
+| `run: <command>` or `$ <command>` | Execute whitelisted shell command |
+| `git status` / `git log` / `git diff` | Formatted git operations |
+| `commit: fix bug` | Stage + commit (asks approval first) |
+| `push` | Push to remote (asks approval) |
+| `show: CLAUDE.md` | Read file content (paginated with more/next) |
+| `logs` / `errors` | View recent logs or agent errors |
+| `status` | Full system dashboard (daemon, agents, APIs) |
+| `clear chat` | Reset conversation history |
 
 ## Env Vars
 
@@ -72,9 +102,15 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
 - `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`
 - `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_USER_ID`
 - `NOTION_API_KEY`, `NOTION_TASKS_DB_ID`, `NOTION_RESEARCH_DB_ID`
+- `NOTION_PARENT_PAGE_ID` — parent page for weekly budget sheets
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
 - `JOBPULSE_SWARM=true` — Enhanced Swarm dispatch (false = flat)
+- `CONVERSATION_MODEL=gpt-4o-mini` — model for free-form chat
 - `RLM_BACKEND=openai`, `RLM_ROOT_MODEL=gpt-4o-mini`, `RLM_MAX_BUDGET=0.10`
+
+## Stats
+
+~17,000 LOC | 70+ Python files | 4 databases | 125 tests | 3 dashboards | 3 platforms
 
 ## Dashboards
 

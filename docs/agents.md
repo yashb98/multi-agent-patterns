@@ -32,14 +32,23 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - Fetches trending repos via GitHub Search API
 
 ### Notion Agent (`notion_agent.py`)
-- Manages daily tasks (to_do blocks), creates/completes tasks
-- Fuzzy matching for "mark X done" (word overlap + number normalization)
+- Manages daily tasks (to_do blocks), creates/completes/removes tasks
+- Fuzzy matching for "mark X done" and "remove X" (word overlap + number normalization)
+- Duplicate detection on task creation (fuzzy score >= 0.7)
+- Big task detection + LLM subtask suggestion (tasks >12 words or with conjunctions)
+- Priority levels: `!!` = urgent (red), `!` = high (yellow)
+- Due dates via NLP: "by Friday", "by March 30", "tomorrow", "today"
+- Weekly planning: fetch undone tasks from past 7 days, carry forward to today
 - All API calls via curl (avoids Python SSL issues)
 
 ### Budget Agent (`budget_agent.py`)
 - Parses natural language ("spent 15 on lunch"), classifies category (keyword + LLM)
 - Stores in SQLite, syncs Actual column to Notion Weekly Budget Sheet
 - 17 categories across Income/Fixed/Variable/Savings sections
+- Set planned budgets per category (`set budget groceries 50`)
+- Recurring expenses: daily/weekly/monthly auto-log rules
+- Budget alerts: warns when spending hits 80% of planned amount
+- Undo last transaction: deletes from SQLite + recalculates Notion totals
 
 ### Telegram Listener (`telegram_listener.py`)
 - Long-polling daemon, instant replies (1-3s)
@@ -91,6 +100,35 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - FastAPI server (port 8080) for receiving inbound webhooks
 - Registers callback URLs, routes payloads through dispatcher
 - Hosts health API and export endpoint
+
+## Remote Control Agents (jobpulse/)
+
+### Conversation Handler (`conversation.py`)
+- Free-form LLM chat with project context injection
+- Maintains per-session conversation history
+- Uses `CONVERSATION_MODEL` (default gpt-4o-mini)
+
+### Remote Shell (`remote_shell.py`)
+- Execute shell commands via Telegram (`run: <cmd>` or `$ <cmd>`)
+- Whitelisted commands only for safety
+- Returns stdout/stderr with truncation for long output
+
+### Git Operations (`git_ops.py`)
+- `git status`, `git log`, `git diff`, `git branch` — formatted for Telegram
+- `commit: <message>` — stages all + commits with approval flow
+- `push` — push to remote with approval flow
+- Uses `jobpulse/approval.py` for yes/no confirmation on destructive ops
+
+### File Operations (`file_ops.py`)
+- `show: <filepath>` — read file content, paginated
+- `logs` / `errors` — tail recent log files or agent errors
+- `more` / `next` — pagination for long outputs
+- `status` — system dashboard (daemon health, agent stats, API rates)
+
+### Approval Flow (`approval.py`)
+- One pending approval at a time, auto-expires after timeout
+- Telegram listener checks for approval replies before classifying messages
+- Used by git commit, push, and Claude Code bash command approval
 
 ## Enhanced Swarm Dispatcher (`swarm_dispatcher.py`)
 

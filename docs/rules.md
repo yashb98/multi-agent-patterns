@@ -101,6 +101,40 @@ Commands create records only. Never wait. Supervisor monitors completion.
 | Token usage | Low | High | Medium | Very High |
 | Output quality | Good | Excellent | Good | Excellent |
 
+## Intent Routing
+
+All intents recognized by `command_router.py`:
+
+| Intent | Example Triggers |
+|--------|-----------------|
+| `CREATE_TASKS` | Multi-line list, `add task`, `!! urgent`, `! high` |
+| `SHOW_TASKS` | "show tasks", "my todo", "what do I have today" |
+| `COMPLETE_TASK` | "done: X", "mark X done", "complete: X" |
+| `REMOVE_TASK` | "remove: X", "delete: X" |
+| `WEEKLY_PLAN` | "plan", "weekly plan", "carry forward" |
+| `CALENDAR` | "calendar", "what's today", "events" |
+| `CREATE_EVENT` | "remind me at 3pm", "set event", "schedule" |
+| `GMAIL` | "check emails", "inbox", "any recruiter emails" |
+| `GITHUB` | "commits", "what did I push" |
+| `TRENDING` | "trending", "hot repos" |
+| `BRIEFING` | "briefing", "morning update" |
+| `ARXIV` | "arxiv", "ai papers", "latest papers" |
+| `LOG_SPEND` | "spent 15 on lunch", "$20 for groceries" |
+| `LOG_INCOME` | "earned 500 freelance", "got paid 2000" |
+| `LOG_SAVINGS` | "saved 100", "invest 50" |
+| `SET_BUDGET` | "set budget groceries 50", "limit transport to 30" |
+| `SHOW_BUDGET` | "budget", "weekly spending", "summary" |
+| `UNDO_BUDGET` | "undo", "undo last transaction" |
+| `RECURRING_BUDGET` | "recurring: 10 on spotify monthly", "show recurring" |
+| `WEEKLY_REPORT` | "weekly report", "this week summary" |
+| `EXPORT` | "export", "backup" |
+| `CONVERSATION` | Any unmatched text → free-form LLM chat |
+| `REMOTE_SHELL` | "run: ls", "$ git status" |
+| `GIT_OPS` | "git status", "commit: msg", "push" |
+| `FILE_OPS` | "show: file.py", "logs", "errors", "more" |
+| `SYSTEM_STATUS` | "status", "daemon check" |
+| `CLEAR_CHAT` | "clear chat", "new conversation" |
+
 ## Input Modes
 
 | Mode | Source | Processing |
