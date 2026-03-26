@@ -2,7 +2,7 @@
 
 Production autonomous agent system: 4 orchestration patterns, 9+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval.
 
-**~17,000 LOC** | **70+ Python files** | **4 databases** | **125 tests** | **3 dashboards** | **3 platforms**
+**~17,000 LOC** | **70+ Python files** | **4 databases** | **148 tests** | **3 dashboards** | **3 platforms**
 
 ## Three Integrated Systems
 
@@ -39,7 +39,8 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | Calendar | Today + tomorrow events, 2-hour reminders | 9am, 12pm, 3pm |
 | GitHub | Yesterday's commits (Commits API), trending repos | 8am briefing |
 | Notion | Tasks: create/complete/remove, dedup, priorities, due dates, subtasks, weekly plan | On demand |
-| Budget | Parse spending/income/savings, 17 categories, recurring, alerts, undo, Notion sync | On demand |
+| Budget | Parse spending/income/savings, 17 categories, recurring, alerts, undo, Notion sync, category sub-pages, item+store NLP, weekly archival, weekly comparison, historical pace alerts, CSV export | On demand |
+| Budget Tracker | Weekly archival (Sunday 7am cron), category sub-page management, weekly comparison engine | Cron + on demand |
 | Salary/Hours | Track work hours at £13.99/hr, tax calc, savings suggestion, Notion timesheet | On demand |
 | Briefing | Collect all agents → RLM synthesis → Telegram | 8:03am daily |
 | Weekly Report | 7-day aggregate across all agents | On demand |
@@ -77,6 +78,8 @@ Control your entire system from your phone:
 | "earned 500 freelance" | Log income |
 | "saved 100" | Log savings |
 | "budget" | Weekly summary with alerts |
+| "budget compare" | This week vs last week per category |
+| "budget-export" | CSV export (12 columns) for ML |
 | "set budget groceries 50" | Set planned amount per category |
 | "recurring: 10 on spotify monthly" | Auto-log on schedule (daily/weekly/monthly) |
 | "show recurring" / "stop recurring X" | Manage recurring rules |
@@ -199,6 +202,9 @@ python -m jobpulse.runner briefing        # Morning digest
 python -m jobpulse.runner gmail           # Check recruiter emails
 python -m jobpulse.runner calendar        # Today + tomorrow events
 python -m jobpulse.runner weekly-report   # 7-day summary
+python -m jobpulse.runner archive-week    # Archive week + carry over planned budgets
+python -m jobpulse.runner budget-compare  # This week vs last week per category
+python -m jobpulse.runner budget-export   # CSV export (12 columns) for ML
 python -m jobpulse.runner export          # Full data backup (tar.gz)
 python -m jobpulse.runner webhook <url>   # Start webhook server
 python -m jobpulse.runner slack           # Start Slack listener
@@ -262,7 +268,7 @@ RLM_MAX_BUDGET=0.10
 
 ## Test Suite
 
-125 tests covering command routing, budget parsing (recurring, alerts, undo), task features (priority, due dates, dedup, subtasks, weekly plan), dispatcher routing, swarm logic, GRPO sampling, experience storage, and knowledge extraction.
+148 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), dispatcher routing, swarm logic, GRPO sampling, experience storage, and knowledge extraction.
 
 ```bash
 python -m pytest tests/ -v          # Full suite

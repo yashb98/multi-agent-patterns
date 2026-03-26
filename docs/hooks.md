@@ -1,6 +1,6 @@
 # Hooks
 
-Process trails, memory injection, tool integration, audit logging.
+Process trails, memory injection, tool integration, audit logging, budget tracking pipeline.
 
 ## 1. Process Trail System (NEW)
 
@@ -186,7 +186,54 @@ Message In
 - Continuous learning hook: Tier 3 results automatically written back as Tier 2 training data
 - Embedding model loaded once at startup, reused across all requests
 
-## 12. A/B Testing for Prompts
+## 12. Budget Tracker Pipeline
+
+**File:** `jobpulse/budget_tracker.py`
+
+Hooks into the budget agent to manage category sub-pages, weekly archival, and comparison:
+
+```
+Transaction logged (budget_agent)
+  → Create/find category sub-page in Notion
+  → Append transaction row (Amount, Date, Items, Store, Running Total)
+  → Update parent row Notes with link to sub-page
+  → If salary → link to timesheet page
+```
+
+### Weekly Archival (Sunday 7am cron via `install_cron.py`)
+
+```
+archive-week
+  → Snapshot current weekly budget sheet
+  → Create new week's sheet
+  → Carry over all planned amounts
+  → Reset actuals to zero
+```
+
+### Weekly Comparison
+
+```
+budget-compare / morning briefing
+  → Load current week totals per category
+  → Load previous week totals per category
+  → Compute deltas + historical pace alerts
+  → "Groceries £35 so far (was £20 by this day last week)"
+```
+
+### Dataset Export
+
+```
+budget-export
+  → Query all transactions from SQLite
+  → Generate CSV with 12 columns (date, amount, category, items, store, etc.)
+  → Suitable for ML training / analysis
+```
+
+### Cron Setup
+
+`install_cron.py` registers Sunday 7am cron: `python -m jobpulse.runner archive-week`
+
+## 13. A/B Testing for Prompts
 
 **File:** `jobpulse/ab_testing.py`
 

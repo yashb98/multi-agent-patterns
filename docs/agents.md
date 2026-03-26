@@ -49,6 +49,20 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - Recurring expenses: daily/weekly/monthly auto-log rules
 - Budget alerts: warns when spending hits 80% of planned amount
 - Undo last transaction: deletes from SQLite + recalculates Notion totals
+- **Item + store NLP extraction**: "yogurt and protein shake at Tesco" extracts items and store (50+ known UK stores)
+- **Category sub-pages**: each of the 17 categories gets a Notion sub-page with individual transaction rows (Amount, Date, Items, Store, Running Total)
+- **Category links**: every budget row's Notes column links to its detail sub-page
+- **Salary timesheet link**: Salary row links to the timesheet page
+- **Weekly comparison**: "budget compare" shows this week vs last week per category with delta
+- **Historical pace alerts**: e.g. "Groceries £35 so far (was £20 by this day last week)"
+- **Dataset export**: "budget-export" generates CSV with 12 columns for ML analysis
+- **Weekly comparison in morning briefing**: briefing includes week-over-week spending delta
+
+### Budget Tracker (`budget_tracker.py`)
+- **Weekly archival**: Sunday 7am cron archives current week's budget sheet and creates a new one carrying over planned amounts
+- Manages category sub-page lifecycle (create, update running totals, link from parent row)
+- Weekly comparison engine: computes per-category deltas between current and previous week
+- Used by `budget_agent.py` for sub-page sync and by `morning_briefing.py` for weekly comparison
 
 ### Telegram Listener (`telegram_listener.py`)
 - Long-polling daemon, instant replies (1-3s)
@@ -60,6 +74,7 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - Collects from all 6 agents, assembles Telegram message
 - Evolves briefing persona after each run
 - RLM synthesis when data exceeds 5K chars
+- Includes weekly budget comparison (this week vs last week per category)
 
 ### Weekly Report Agent (`weekly_report.py`)
 - Aggregates 7-day data from all agents (tasks, emails, commits, budget, calendar)

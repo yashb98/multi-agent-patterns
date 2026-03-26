@@ -12,12 +12,16 @@ python -m jobpulse.runner briefing        # Morning digest
 python -m jobpulse.runner gmail           # Check recruiter emails
 python -m jobpulse.runner calendar        # Today + tomorrow events
 python -m jobpulse.runner weekly-report   # 7-day summary across all agents
+python -m jobpulse.runner archive-week    # Archive current week + carry over planned budgets
+python -m jobpulse.runner budget-compare  # This week vs last week per category
+python -m jobpulse.runner budget-export   # CSV export (12 columns) for ML
 python -m jobpulse.runner export          # Full data backup (tar.gz)
 python -m jobpulse.runner webhook         # Start webhook server (port 8080)
 python -m jobpulse.runner slack           # Start Slack listener
 python -m jobpulse.runner discord         # Start Discord listener
 python -m jobpulse.runner multi           # Start all platform listeners
 ./scripts/install_daemon.sh install       # Auto-start daemon on login
+./scripts/install_cron.py                 # Install crons (incl. Sunday 7am budget archive)
 ```
 
 ## Architecture (3 Systems)
@@ -84,9 +88,12 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
 | You type | What happens |
 |----------|-------------|
 | "spent 15 on lunch" | Budget → classify → SQLite → Notion sync |
+| "yogurt and protein shake at Tesco" | Budget → NLP item + store extraction (50+ UK stores) |
 | "earned 500 freelance" | Budget → log income → Notion sync |
 | "saved 100" | Budget → log savings → Notion sync |
 | "budget" | Budget → weekly summary with alerts |
+| "budget compare" | Budget → this week vs last week per category |
+| "budget-export" | Budget → CSV export (12 columns) for ML |
 | "set budget groceries 50" | Budget → set planned amount for category |
 | "recurring: 10 on spotify monthly" | Budget → auto-log on schedule (daily/weekly/monthly) |
 | "show recurring" | Budget → list all active recurring rules |
@@ -151,7 +158,7 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 
 ## Stats
 
-~17,000 LOC | 70+ Python files | 4 databases | 125 tests | 3 dashboards | 3 platforms
+~17,000 LOC | 70+ Python files | 4 databases | 148 tests | 3 dashboards | 3 platforms
 
 ## Dashboards
 
