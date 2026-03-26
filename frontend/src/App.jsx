@@ -100,17 +100,17 @@ function NeuronNode({ node, position, onHover, onUnhover, onClick }) {
       </mesh>
 
       {/* Name label */}
-      <Billboard position={[0, size + 0.4, 0]}>
-        <Text fontSize={0.2} color="#f1f5f9" anchorX="center" anchorY="bottom" fontWeight="bold"
-              outlineWidth={0.02} outlineColor="#000000">
+      <Billboard position={[0, size + 0.6, 0]}>
+        <Text fontSize={0.3} color="#f1f5f9" anchorX="center" anchorY="bottom" fontWeight="bold"
+              outlineWidth={0.03} outlineColor="#000000">
           {node.name.length > 24 ? node.name.slice(0, 22) + '…' : node.name}
         </Text>
       </Billboard>
 
       {/* Type sub-label */}
-      <Billboard position={[0, size + 0.15, 0]}>
-        <Text fontSize={0.12} color={color} anchorX="center" anchorY="bottom"
-              outlineWidth={0.01} outlineColor="#000000">
+      <Billboard position={[0, size + 0.2, 0]}>
+        <Text fontSize={0.18} color={color} anchorX="center" anchorY="bottom"
+              outlineWidth={0.015} outlineColor="#000000">
           {node.entity_type}
         </Text>
       </Billboard>
@@ -209,9 +209,9 @@ function Starfield({ count = 2000 }) {
   const positions = useMemo(() => {
     const pos = new Float32Array(count * 3)
     for (let i = 0; i < count; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * 120
-      pos[i * 3 + 1] = (Math.random() - 0.5) * 120
-      pos[i * 3 + 2] = (Math.random() - 0.5) * 120
+      pos[i * 3] = (Math.random() - 0.5) * 200
+      pos[i * 3 + 1] = (Math.random() - 0.5) * 200
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 200
     }
     return pos
   }, [count])
@@ -266,29 +266,33 @@ function BrainScene({ data, onSelectNode }) {
     const types = [...new Set(nodes.map(n => n.entity_type))]
     const typePositions = {}
 
-    // Distribute types in 3D space like brain regions
+    // Distribute types in 3D space like brain regions — scale with node count
+    const nodeCount = nodes.length
+    const regionScale = Math.max(1, nodeCount / 30)  // grows with more nodes
     types.forEach((t, i) => {
       const phi = Math.acos(-1 + (2 * i) / Math.max(types.length, 1))
       const theta = Math.sqrt(types.length * Math.PI) * phi
-      const regionR = 6 + types.length * 0.4
+      const regionR = (10 + types.length * 1.5) * Math.sqrt(regionScale)
       typePositions[t] = [
         regionR * Math.cos(theta) * Math.sin(phi),
-        regionR * Math.cos(phi) * 0.6,  // flatten Y for brain-like shape
+        regionR * Math.cos(phi) * 0.6,
         regionR * Math.sin(theta) * Math.sin(phi),
       ]
     })
 
-    // Place nodes within their region with spacing
+    // Place nodes within their region with generous spacing
     const typeCounts = {}
     nodes.forEach((node) => {
       const t = node.entity_type
       typeCounts[t] = (typeCounts[t] || 0) + 1
       const idx = typeCounts[t]
       const center = typePositions[t] || [0, 0, 0]
-      const spread = 3.0
+      const clusterSize = nodes.filter(n => n.entity_type === t).length
+      // Spread scales with cluster size so labels don't overlap
+      const spread = Math.max(4.0, 2.0 + clusterSize * 0.6) * Math.sqrt(regionScale * 0.5)
       // Fibonacci sphere distribution within the cluster
-      const fi = Math.acos(-1 + (2 * idx) / (nodes.filter(n => n.entity_type === t).length + 1))
-      const ft = Math.sqrt(nodes.length * Math.PI) * fi * 0.5
+      const fi = Math.acos(-1 + (2 * idx) / (clusterSize + 1))
+      const ft = Math.sqrt(clusterSize * Math.PI) * fi * 0.8
       positions[node.id] = [
         center[0] + Math.cos(ft) * Math.sin(fi) * spread,
         center[1] + Math.cos(fi) * spread * 0.7,
@@ -435,12 +439,16 @@ function HUD({ data }) {
       <div style={{ marginTop: 6, fontSize: 10, color: '#64748b' }}>
         Drag to orbit · Scroll to zoom · Hover for details · Click for panel
       </div>
-      <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
-        <a href="/" style={{
+      <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <a href="http://localhost:8000/health.html" style={{
           fontSize: 10, padding: '3px 8px', borderRadius: 4,
           border: '1px solid #475569', color: '#e2e8f0', textDecoration: 'none'
-        }}>2D View</a>
-        <a href="/processes.html" style={{
+        }}>Health</a>
+        <a href="http://localhost:8000/analytics.html" style={{
+          fontSize: 10, padding: '3px 8px', borderRadius: 4,
+          border: '1px solid #475569', color: '#e2e8f0', textDecoration: 'none'
+        }}>Analytics</a>
+        <a href="http://localhost:8000/processes.html" style={{
           fontSize: 10, padding: '3px 8px', borderRadius: 4,
           border: '1px solid #475569', color: '#e2e8f0', textDecoration: 'none'
         }}>Processes</a>
@@ -459,14 +467,14 @@ export default function App() {
       <HUD data={data} />
       <DetailPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
       <Canvas
-        camera={{ position: [0, 8, 20], fov: 55 }}
+        camera={{ position: [0, 15, 45], fov: 55 }}
         gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
         style={{ background: '#050a15' }}
       >
         <GraphScene data={data} onSelectNode={setSelectedNode} />
         <OrbitControls
           enableDamping dampingFactor={0.05}
-          minDistance={5} maxDistance={60}
+          minDistance={8} maxDistance={150}
           autoRotate autoRotateSpeed={0.15}
           maxPolarAngle={Math.PI * 0.85}
         />
