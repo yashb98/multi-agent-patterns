@@ -24,7 +24,7 @@ python -m jobpulse.runner multi           # Start all platform listeners
 
 **1. Orchestration Engine** — 4 LangGraph patterns: hierarchical, peer debate, dynamic swarm, enhanced swarm
 **2. JobPulse Automation** — Gmail, Calendar, GitHub, Notion, Budget, Telegram agents running 24/7
-**3. Knowledge MindGraph** — Entity extraction, GraphRAG retrieval, D3.js + Three.js visualization
+**3. Knowledge MindGraph** — Entity extraction, GraphRAG retrieval, Three.js 3D visualization
 
 **Current dispatch mode:** Enhanced Swarm (set `JOBPULSE_SWARM=false` in .env to revert to flat)
 
@@ -95,10 +95,26 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
 | `status` | Full system dashboard (daemon, agents, APIs) |
 | `clear chat` | Reset conversation history |
 
+## Telegram Multi-Bot Setup
+
+Four separate Telegram bots, each with its own chat/channel:
+
+| Bot | Purpose | Env Vars |
+|-----|---------|----------|
+| **Main** | Tasks, calendar, briefing, remote control | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| **Budget** | Expenses, income, savings, recurring, weekly summary | `TELEGRAM_BUDGET_BOT_TOKEN`, `TELEGRAM_BUDGET_CHAT_ID` |
+| **Research** | Knowledge queries, MindGraph, trending repos | `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` |
+| **Alert** | Gmail alerts, interview notifications, urgent reminders | `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` |
+
+Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicated token is not set.
+
 ## Env Vars
 
 - `OPENAI_API_KEY` (required)
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (main bot, also fallback)
+- `TELEGRAM_BUDGET_BOT_TOKEN`, `TELEGRAM_BUDGET_CHAT_ID` (optional)
+- `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` (optional)
+- `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` (optional)
 - `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`
 - `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_USER_ID`
 - `NOTION_API_KEY`, `NOTION_TASKS_DB_ID`, `NOTION_RESEARCH_DB_ID`

@@ -53,6 +53,8 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 ### Telegram Listener (`telegram_listener.py`)
 - Long-polling daemon, instant replies (1-3s)
 - Routes through Enhanced Swarm dispatcher (or flat, via env var)
+- Multi-bot routing: 4 bots (Main, Budget, Research, Alert) each with dedicated chat
+- Falls back to main bot token when dedicated bot env vars are not set
 
 ### Morning Briefing (`morning_briefing.py`)
 - Collects from all 6 agents, assembles Telegram message

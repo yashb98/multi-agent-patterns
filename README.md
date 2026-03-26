@@ -37,7 +37,7 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 - **Extraction**: LLM-based entity/relation extraction (14 types each)
 - **Storage**: SQLite knowledge graph (entities, relations, simulation events)
 - **Retrieval**: GraphRAG — local search, multi-hop traversal, temporal, RLM deep query
-- **Visualization**: D3.js brain neural view + Three.js 3D galaxy view
+- **Visualization**: Three.js 3D neural/galaxy visualization (React frontend)
 
 ## Remote Control via Telegram
 
@@ -95,6 +95,19 @@ Reply yes or no (1 hour timeout)
 - **Auto-approved**: ls, cat, git status, python -c, grep, echo
 - **Auto-blocked**: rm -rf, sudo, shutdown
 - **Everything else**: asks you on Telegram, waits up to 1 hour
+
+### Multi-Bot Telegram Setup
+
+Four separate bots route messages to dedicated chats:
+
+| Bot | Purpose | Env Vars |
+|-----|---------|----------|
+| **Main** | Tasks, calendar, briefing, remote control | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| **Budget** | Expenses, income, savings, recurring | `TELEGRAM_BUDGET_BOT_TOKEN`, `TELEGRAM_BUDGET_CHAT_ID` |
+| **Research** | Knowledge queries, MindGraph, trending | `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` |
+| **Alert** | Gmail alerts, interview notifications | `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` |
+
+Each bot is optional -- falls back to the main bot token/chat if not configured.
 
 ### Multi-Platform Support
 
@@ -180,9 +193,17 @@ python run_all.py "topic"                 # Compare all 4 patterns
 # Required
 OPENAI_API_KEY=sk-...
 
-# Telegram
+# Telegram (main bot + fallback)
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
+
+# Telegram dedicated bots (optional, falls back to main)
+TELEGRAM_BUDGET_BOT_TOKEN=...
+TELEGRAM_BUDGET_CHAT_ID=...
+TELEGRAM_RESEARCH_BOT_TOKEN=...
+TELEGRAM_RESEARCH_CHAT_ID=...
+TELEGRAM_ALERT_BOT_TOKEN=...
+TELEGRAM_ALERT_CHAT_ID=...
 
 # Slack (optional)
 SLACK_BOT_TOKEN=...
@@ -214,11 +235,10 @@ RLM_MAX_BUDGET=0.10
 
 | URL | What |
 |-----|------|
-| http://localhost:8000 | D3.js MindGraph (brain neural + galaxy mode at 300+ nodes) |
 | http://localhost:8000/health.html | Daemon status, agent success rates, API rate limits, errors, data export |
 | http://localhost:8000/analytics.html | GRPO scores, persona drift, cost estimates, daily trends (Chart.js) |
 | http://localhost:8000/processes.html | Agent process trail viewer (step-by-step audit) |
-| http://localhost:3000 | Three.js 3D neural visualization |
+| http://localhost:3000 | Three.js 3D neural/galaxy visualization (primary frontend) |
 
 ## Test Suite
 
