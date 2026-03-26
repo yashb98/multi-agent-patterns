@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/telegram_approve.py",
+            "command": "cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python scripts/telegram_approve.py",
             "timeout": 3700
           }
         ]
