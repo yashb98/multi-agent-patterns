@@ -76,6 +76,16 @@ def get_ab_tests():
     return {"tests": get_all_tests()}
 
 
+@analytics_router.get("/nlp")
+def get_nlp_stats():
+    """Get NLP classifier statistics — model, examples, learned count."""
+    try:
+        from jobpulse.nlp_classifier import get_stats
+        return get_stats()
+    except ImportError:
+        return {"error": "NLP classifier not available"}
+
+
 @analytics_router.get("/trends")
 def get_trends(days: int = 14):
     """Daily dispatch counts, errors, and LLM calls over time."""
