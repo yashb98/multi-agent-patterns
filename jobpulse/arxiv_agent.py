@@ -353,23 +353,6 @@ def build_digest(top_n: int = 5) -> str:
 
     digest = "\n".join(lines)
 
-    # Step 6: Extract to knowledge graph
-    with trail.step("extraction", "Extract papers to knowledge graph") as s:
-        extracted = 0
-        for paper, summary in summaries:
-            try:
-                from jobpulse.auto_extract import extract_from_paper_summary
-                extract_from_paper_summary(
-                    title=paper["title"],
-                    authors=", ".join(paper["authors"][:3]),
-                    summary=summary,
-                    arxiv_id=paper["arxiv_id"],
-                )
-                extracted += 1
-            except Exception:
-                pass
-        s["output"] = f"Extracted {extracted}/{len(summaries)} papers"
-
     event_logger.log_event(
         event_type="research_paper",
         agent_name="arxiv_agent",
@@ -379,6 +362,25 @@ def build_digest(top_n: int = 5) -> str:
     )
 
     trail.finalize(f"Digest: {len(summaries)} papers from {len(papers)} scanned")
+
+    # Extract to knowledge graph in background (don't block the reply)
+    import threading
+    def _extract_bg():
+        for paper, summary in summaries:
+            try:
+                from jobpulse.auto_extract import extract_from_paper_summary
+                extract_from_paper_summary(
+                    title=paper["title"],
+                    authors=", ".join(paper["authors"][:3]),
+                    summary=summary,
+                    arxiv_id=paper["arxiv_id"],
+                )
+            except Exception:
+                pass
+        logger.info("KG extraction complete for %d papers", len(summaries))
+
+    threading.Thread(target=_extract_bg, daemon=True).start()
+
     return digest
 
 

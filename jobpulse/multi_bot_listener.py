@@ -128,6 +128,15 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                     _log(f"[{bot_name}] Forwarded to main: {cmd.intent.value}")
                     continue
 
+                # Send "processing" for slow commands
+                SLOW_INTENTS = {"arxiv": "Fetching & ranking 200 papers... ~60s", "weekly_report": "Building report... ~10s"}
+                slow_msg = SLOW_INTENTS.get(cmd.intent.value)
+                if slow_msg:
+                    send_fn(f"⏳ {slow_msg}")
+                # Extra check for blog command
+                if cmd.intent.value == "arxiv" and "blog" in cmd.raw.lower():
+                    send_fn("⏳ Generating 2000-word blog post... ~90s\n(5 agents: reader → writer → fact checker → diagrams → editor)")
+
                 # Dispatch
                 reply = dispatch(cmd)
                 send_fn(reply)
