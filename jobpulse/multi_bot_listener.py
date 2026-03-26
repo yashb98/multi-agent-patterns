@@ -77,10 +77,10 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 from_id = str(msg.get("from", {}).get("id", ""))
                 text = msg.get("text", "").strip()
 
-                if from_id != TELEGRAM_CHAT_ID or not text:
+                if from_id != TELEGRAM_CHAT_ID:
                     continue
 
-                # Handle voice messages
+                # Handle voice messages (voice msgs have no text field)
                 voice = msg.get("voice") or msg.get("audio")
                 if voice and not text:
                     from jobpulse.voice_handler import transcribe_voice
