@@ -1,6 +1,7 @@
 """GitHub agent — fetches yesterday's commits and trending repos."""
 
 import json
+import os
 import subprocess
 from datetime import datetime, timedelta
 from jobpulse.config import GITHUB_TOKEN, GITHUB_USERNAME
@@ -10,11 +11,22 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+def _find_gh() -> str:
+    """Find gh CLI binary — cron doesn't have /opt/homebrew/bin in PATH."""
+    for path in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]:
+        if os.path.exists(path):
+            return path
+    return "gh"  # fallback to PATH lookup
+
+
+GH_BIN = _find_gh()
+
+
 def _gh_api(endpoint: str) -> list:
     """Call GitHub API via gh CLI (uses stored auth, no token needed)."""
     try:
         result = subprocess.run(
-            ["gh", "api", endpoint],
+            [GH_BIN, "api", endpoint],
             capture_output=True, text=True, timeout=15
         )
         return json.loads(result.stdout) if result.stdout else []
