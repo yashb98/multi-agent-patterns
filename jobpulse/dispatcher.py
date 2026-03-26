@@ -239,10 +239,8 @@ def _handle_briefing(cmd: ParsedCommand) -> str:
 
 
 def _handle_arxiv(cmd: ParsedCommand) -> str:
-    # arXiv still uses claude -p via shell script, so we give a helpful response
-    return ("📚 The arXiv agent runs daily at 7:57am and sends top 5 papers to this chat.\n\n"
-            "To trigger it now, run on your Mac:\n"
-            "./scripts/arxiv-daily.sh")
+    from jobpulse.arxiv_agent import build_digest
+    return build_digest()
 
 
 def _handle_complete_task(cmd: ParsedCommand) -> str:

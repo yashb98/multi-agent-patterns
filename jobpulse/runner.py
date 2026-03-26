@@ -100,6 +100,10 @@ def main():
         from jobpulse.multi_listener import start_all
         start_all()
 
+    elif command == "arxiv":
+        from jobpulse.arxiv_agent import send_daily_digest
+        send_daily_digest()
+
     elif command == "test":
         from jobpulse.telegram_agent import send_message
         success = send_message("🧪 JobPulse test message — all systems operational!")
