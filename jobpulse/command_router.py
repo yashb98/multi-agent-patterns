@@ -42,6 +42,8 @@ class Intent(str, Enum):
     FILE_OPS = "file_ops"
     SYSTEM_STATUS = "system_status"
     CLEAR_CHAT = "clear_chat"
+    LOG_HOURS = "log_hours"
+    SHOW_HOURS = "show_hours"
     UNDO_BUDGET = "undo_budget"
     RECURRING_BUDGET = "recurring_budget"
     WEEKLY_PLAN = "weekly_plan"
@@ -88,6 +90,15 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     # Help
     (Intent.HELP, [
         r"^/?(help|commands|menu|what can you do)$",
+    ]),
+    # Work hours / salary (MUST be before income patterns)
+    (Intent.LOG_HOURS, [
+        r"(worked|work)\s+\d+(\.\d+)?\s*(hours?|hrs?|h)\b",
+        r"^\d+(\.\d+)?\s*(hours?|hrs?|h)\s*(worked|work|today)?",
+        r"^log\s+\d+(\.\d+)?\s*(hours?|hrs?|h)",
+    ]),
+    (Intent.SHOW_HOURS, [
+        r"^(hours|work hours|my hours|show hours|timesheet|salary hours)",
     ]),
     # Undo budget (MUST be before other budget patterns)
     (Intent.UNDO_BUDGET, [

@@ -232,6 +232,20 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_txn_date ON transactions(date);
         CREATE INDEX IF NOT EXISTS idx_txn_type ON transactions(type);
 
+        CREATE TABLE IF NOT EXISTS work_hours (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hours REAL NOT NULL,
+            hourly_rate REAL NOT NULL DEFAULT 13.99,
+            total_earned REAL NOT NULL,
+            date TEXT NOT NULL,
+            week_start TEXT NOT NULL,
+            notion_page_id TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_hours_week ON work_hours(week_start);
+        CREATE INDEX IF NOT EXISTS idx_hours_date ON work_hours(date);
+
         CREATE TABLE IF NOT EXISTS recurring_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             amount REAL NOT NULL,
@@ -990,6 +1004,241 @@ def undo_last_transaction(pick: int = None) -> str:
     return (f"✅ Removed: £{target['amount']:.2f} — {target['description']} "
             f"[{target['category']}] ({target['date']})\n\n"
             f"Notion budget sheet updated.\n📎 {notion_url}")
+
+
+# ── Work Hours / Salary Tracking ──
+
+import os
+HOURLY_RATE = float(os.getenv("HOURLY_RATE", "13.99"))
+
+
+def _get_or_create_salary_page(week_start: str) -> str:
+    """Get or create a Notion sub-page for this week's salary timesheet."""
+    # Check if we already have a page for this week
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT DISTINCT notion_page_id FROM work_hours WHERE week_start=? AND notion_page_id != ''",
+        (week_start,)
+    ).fetchone()
+    conn.close()
+
+    if row and row["notion_page_id"]:
+        return row["notion_page_id"]
+
+    # Create a new Notion page for this week's timesheet
+    parent_id = BUDGET_PAGE_ID
+    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    title = f"Salary Timesheet — {week_start} to {week_end}"
+
+    data = {
+        "parent": {"page_id": parent_id},
+        "properties": {
+            "title": {"title": [{"text": {"content": title}}]},
+        },
+        "children": [
+            {"object": "block", "type": "heading_2", "heading_2": {
+                "rich_text": [{"text": {"content": f"⏱️ Work Hours — Week of {week_start}"}}]
+            }},
+            {"object": "block", "type": "paragraph", "paragraph": {
+                "rich_text": [{"text": {"content": f"Hourly rate: £{HOURLY_RATE:.2f}/hr"}}]
+            }},
+            {"object": "block", "type": "divider", "divider": {}},
+            # Table: Hours Worked | Hour Rate | Date | Total
+            {"object": "block", "type": "table", "table": {
+                "table_width": 4,
+                "has_column_header": True,
+                "has_row_header": False,
+                "children": [
+                    {"object": "block", "type": "table_row", "table_row": {
+                        "cells": [
+                            [{"type": "text", "text": {"content": "Hours Worked"}}],
+                            [{"type": "text", "text": {"content": "Hour Rate"}}],
+                            [{"type": "text", "text": {"content": "Date"}}],
+                            [{"type": "text", "text": {"content": "Total"}}],
+                        ]
+                    }},
+                ]
+            }},
+        ]
+    }
+
+    result = _notion_api("POST", "/pages", data)
+    page_id = result.get("id", "")
+    if page_id:
+        logger.info("Created salary timesheet page: %s", page_id)
+    return page_id
+
+
+def _add_row_to_salary_page(page_id: str, hours: float, rate: float, date_str: str, total: float):
+    """Append a row to the timesheet table."""
+    if not page_id:
+        return
+
+    # Find the table block
+    blocks = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
+    table_id = None
+    for block in blocks.get("results", []):
+        if block.get("type") == "table":
+            table_id = block["id"]
+            break
+
+    if not table_id:
+        logger.warning("No table found in salary page %s", page_id)
+        return
+
+    # First remove old TOTAL row if exists
+    table_rows = _notion_api("GET", f"/blocks/{table_id}/children?page_size=100")
+    for row in table_rows.get("results", []):
+        cells = row.get("table_row", {}).get("cells", [])
+        if cells and cells[0]:
+            text = "".join(t.get("plain_text", "") for t in cells[0])
+            if "TOTAL" in text.upper():
+                _notion_api("DELETE", f"/blocks/{row['id']}")
+
+    # Add the data row
+    _notion_api("PATCH", f"/blocks/{table_id}/children", {
+        "children": [
+            {"object": "block", "type": "table_row", "table_row": {
+                "cells": [
+                    [{"type": "text", "text": {"content": f"{hours:.1f}"}}],
+                    [{"type": "text", "text": {"content": f"£{rate:.2f}"}}],
+                    [{"type": "text", "text": {"content": date_str}}],
+                    [{"type": "text", "text": {"content": f"£{total:.2f}"}}],
+                ]
+            }},
+        ]
+    })
+
+    # Add updated TOTAL row
+    conn = _get_conn()
+    week_start = _get_week_start(datetime.strptime(date_str, "%Y-%m-%d"))
+    totals = conn.execute(
+        "SELECT SUM(hours) as h, SUM(total_earned) as e FROM work_hours WHERE week_start=?",
+        (week_start,)
+    ).fetchone()
+    conn.close()
+
+    _notion_api("PATCH", f"/blocks/{table_id}/children", {
+        "children": [
+            {"object": "block", "type": "table_row", "table_row": {
+                "cells": [
+                    [{"type": "text", "text": {"content": f"TOTAL: {totals['h'] or 0:.1f}h"}}],
+                    [{"type": "text", "text": {"content": f"£{rate:.2f}"}}],
+                    [{"type": "text", "text": {"content": f"Week of {week_start}"}}],
+                    [{"type": "text", "text": {"content": f"£{totals['e'] or 0:.2f}"}}],
+                ]
+            }},
+        ]
+    })
+
+
+def log_hours(text: str) -> str:
+    """Parse 'worked X hours' and log to SQLite + Notion salary timesheet.
+
+    Examples: "worked 7 hours", "worked 3.5h", "8 hours"
+    """
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b", text, re.IGNORECASE)
+    if not match:
+        return ("Couldn't parse hours. Try:\n"
+                "  worked 7 hours\n"
+                "  worked 3.5h\n"
+                "  8 hours")
+
+    hours = float(match.group(1))
+    if hours <= 0 or hours > 24:
+        return "Hours must be between 0 and 24."
+
+    rate = HOURLY_RATE
+    total = round(hours * rate, 2)
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    week_start = _get_week_start(now)
+
+    # Get or create Notion timesheet page for this week
+    page_id = _get_or_create_salary_page(week_start)
+
+    # Store in SQLite
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO work_hours (hours, hourly_rate, total_earned, date, week_start, notion_page_id, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (hours, rate, total, date_str, week_start, page_id, now.isoformat())
+    )
+    conn.commit()
+
+    # Get week totals
+    week_totals = conn.execute(
+        "SELECT SUM(hours) as h, SUM(total_earned) as e FROM work_hours WHERE week_start=?",
+        (week_start,)
+    ).fetchone()
+    conn.close()
+
+    week_hours = week_totals["h"] or 0
+    week_earned = week_totals["e"] or 0
+
+    # Add row to Notion timesheet table
+    _add_row_to_salary_page(page_id, hours, rate, date_str, total)
+
+    # Also log as income in the main budget
+    add_transaction(total, f"Salary ({hours}h)", "Salary", "income", "income")
+    sync_expense_to_notion({"category": "Salary", "week_start": week_start,
+                            "description": f"Salary ({hours}h)", "date": date_str})
+
+    event_logger.log_event(
+        event_type="budget_transaction",
+        agent_name="budget_agent",
+        action="logged_hours",
+        content=f"{hours}h × £{rate:.2f} = £{total:.2f}",
+        metadata={"hours": hours, "rate": rate, "total": total},
+    )
+
+    page_url = f"https://www.notion.so/{page_id.replace('-', '')}" if page_id else ""
+    notion_link = f"\n📎 Timesheet: {page_url}" if page_url else ""
+    budget_link = f"\n📎 Budget: {get_notion_budget_url(week_start)}"
+
+    return (f"⏱️ Logged: {hours}h × £{rate:.2f} = £{total:.2f}\n\n"
+            f"📊 This week: {week_hours:.1f}h total = £{week_earned:.2f}"
+            f"{notion_link}{budget_link}")
+
+
+def get_hours_summary(week_start: str = None) -> str:
+    """Get formatted work hours summary for the week."""
+    week_start = week_start or _get_week_start()
+    conn = _get_conn()
+
+    rows = conn.execute(
+        "SELECT hours, hourly_rate, total_earned, date FROM work_hours "
+        "WHERE week_start=? ORDER BY date", (week_start,)
+    ).fetchall()
+
+    totals = conn.execute(
+        "SELECT SUM(hours) as h, SUM(total_earned) as e FROM work_hours WHERE week_start=?",
+        (week_start,)
+    ).fetchone()
+    conn.close()
+
+    if not rows:
+        return "⏱️ No hours logged this week."
+
+    lines = [f"⏱️ WORK HOURS (week of {week_start}):\n"]
+    for r in rows:
+        lines.append(f"  {r['date']} — {r['hours']:.1f}h × £{r['hourly_rate']:.2f} = £{r['total_earned']:.2f}")
+
+    total_h = totals["h"] or 0
+    total_e = totals["e"] or 0
+    lines.append(f"\n  TOTAL: {total_h:.1f}h = £{total_e:.2f}")
+
+    page_url = ""
+    conn2 = _get_conn()
+    row = conn2.execute(
+        "SELECT notion_page_id FROM work_hours WHERE week_start=? AND notion_page_id != '' LIMIT 1",
+        (week_start,)
+    ).fetchone()
+    conn2.close()
+    if row:
+        page_url = f"\n\n📎 https://www.notion.so/{row['notion_page_id'].replace('-', '')}"
+
+    return "\n".join(lines) + page_url
 
 
 init_db()

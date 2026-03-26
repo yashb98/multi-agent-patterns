@@ -28,6 +28,8 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.LOG_SAVINGS: _handle_log_savings,
         Intent.SET_BUDGET: _handle_set_budget,
         Intent.SHOW_BUDGET: _handle_show_budget,
+        Intent.LOG_HOURS: _handle_log_hours,
+        Intent.SHOW_HOURS: _handle_show_hours,
         Intent.UNDO_BUDGET: _handle_undo_budget,
         Intent.RECURRING_BUDGET: _handle_recurring_budget,
         Intent.WEEKLY_PLAN: _handle_weekly_plan,
@@ -385,6 +387,16 @@ def _handle_file_ops(cmd: ParsedCommand) -> str:
 def _handle_system_status(cmd: ParsedCommand) -> str:
     from jobpulse.file_ops import system_status
     return system_status()
+
+
+def _handle_log_hours(cmd: ParsedCommand) -> str:
+    from jobpulse.budget_agent import log_hours
+    return log_hours(cmd.raw)
+
+
+def _handle_show_hours(cmd: ParsedCommand) -> str:
+    from jobpulse.budget_agent import get_hours_summary
+    return get_hours_summary()
 
 
 def _handle_undo_budget(cmd: ParsedCommand) -> str:
