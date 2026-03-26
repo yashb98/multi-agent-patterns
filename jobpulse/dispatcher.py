@@ -406,6 +406,10 @@ def _handle_confirm_savings(cmd: ParsedCommand) -> str:
     return confirm_savings_transfer()
 
 
+# State: which undo list was last shown (hours vs budget)
+_last_undo_mode = {"mode": "budget"}  # "budget" or "hours"
+
+
 def _handle_undo_hours(cmd: ParsedCommand) -> str:
     import re
     from jobpulse.budget_agent import undo_hours
@@ -416,17 +420,29 @@ def _handle_undo_hours(cmd: ParsedCommand) -> str:
         results = []
         for pick in picks:
             results.append(undo_hours(pick=pick))
+        _last_undo_mode["mode"] = "budget"  # reset after action
         return "\n\n".join(results)
 
+    _last_undo_mode["mode"] = "hours"  # remember we showed hours list
     return undo_hours()
 
 
 def _handle_undo_budget(cmd: ParsedCommand) -> str:
     import re
-    from jobpulse.budget_agent import undo_last_transaction
+    from jobpulse.budget_agent import undo_last_transaction, undo_hours
 
-    # Check for multiple numbers: "undo 4, undo 5" or "undo 1,3" or "undo 2 4"
     numbers = re.findall(r"\d+", cmd.raw)
+
+    # If user just said "undo 1" after seeing the hours list, redirect to hours
+    if numbers and _last_undo_mode["mode"] == "hours":
+        picks = sorted(set(int(n) for n in numbers), reverse=True)
+        results = []
+        for pick in picks:
+            results.append(undo_hours(pick=pick))
+        _last_undo_mode["mode"] = "budget"  # reset
+        return "\n\n".join(results)
+
+    # Normal budget undo
     if numbers:
         # Sort descending — delete highest index first so lower indices don't shift
         picks = sorted(set(int(n) for n in numbers), reverse=True)
@@ -436,7 +452,8 @@ def _handle_undo_budget(cmd: ParsedCommand) -> str:
             results.append(result)
         return "\n\n".join(results)
 
-    # No number — show the list
+    # No number — show the budget list
+    _last_undo_mode["mode"] = "budget"
     return undo_last_transaction()
 
 

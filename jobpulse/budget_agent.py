@@ -1515,6 +1515,10 @@ def undo_hours(pick: int = None) -> str:
         for i, entry in enumerate(recent, 1):
             lines.append(f"  {i}. ⏱️ {entry['hours']:.1f}h × £{entry['hourly_rate']:.2f} = £{entry['total_earned']:.2f} ({entry['date']})")
         lines.append("\nReply: undo hours 1, undo hours 2, or undo hours 1,3")
+        # Show timesheet link
+        page_id = recent[0].get("notion_page_id", "")
+        if page_id:
+            lines.append(f"\n📎 Timesheet: https://www.notion.so/{page_id.replace('-', '')}")
         return "\n".join(lines)
 
     # Delete specific entry
