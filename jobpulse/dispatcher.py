@@ -391,11 +391,16 @@ def _handle_undo_budget(cmd: ParsedCommand) -> str:
     import re
     from jobpulse.budget_agent import undo_last_transaction
 
-    # Check if user specified a number: "undo 3" or "undo 2"
-    match = re.search(r"\d+", cmd.raw)
-    if match:
-        pick = int(match.group())
-        return undo_last_transaction(pick=pick)
+    # Check for multiple numbers: "undo 4, undo 5" or "undo 1,3" or "undo 2 4"
+    numbers = re.findall(r"\d+", cmd.raw)
+    if numbers:
+        # Sort descending — delete highest index first so lower indices don't shift
+        picks = sorted(set(int(n) for n in numbers), reverse=True)
+        results = []
+        for pick in picks:
+            result = undo_last_transaction(pick=pick)
+            results.append(result)
+        return "\n\n".join(results)
 
     # No number — show the list
     return undo_last_transaction()
