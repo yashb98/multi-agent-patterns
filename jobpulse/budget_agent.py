@@ -1010,6 +1010,17 @@ def undo_last_transaction(pick: int = None) -> str:
 
 import os
 HOURLY_RATE = float(os.getenv("HOURLY_RATE", "13.99"))
+TAX_RATE = 0.20   # UK basic rate income tax (no NI)
+SAVINGS_RATE = 0.30  # 30% of after-tax goes to savings
+
+
+def _get_salary_week_start(date: datetime = None) -> str:
+    """Get the Sunday that starts this working week (Sunday–Saturday)."""
+    date = date or datetime.now()
+    # weekday(): Mon=0 ... Sun=6. We want Sunday as start.
+    days_since_sunday = (date.weekday() + 1) % 7
+    sunday = date - timedelta(days=days_since_sunday)
+    return sunday.strftime("%Y-%m-%d")
 
 
 def _get_or_create_salary_page(week_start: str) -> str:
@@ -1135,6 +1146,7 @@ def _add_row_to_salary_page(page_id: str, hours: float, rate: float, date_str: s
 def log_hours(text: str) -> str:
     """Parse 'worked X hours' and log to SQLite + Notion salary timesheet.
 
+    Week starts Sunday. Shows tax (20%) and savings suggestion (30% of after-tax).
     Examples: "worked 7 hours", "worked 3.5h", "8 hours"
     """
     match = re.search(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b", text, re.IGNORECASE)
@@ -1149,10 +1161,14 @@ def log_hours(text: str) -> str:
         return "Hours must be between 0 and 24."
 
     rate = HOURLY_RATE
-    total = round(hours * rate, 2)
+    gross = round(hours * rate, 2)
+    tax = round(gross * TAX_RATE, 2)
+    after_tax = round(gross - tax, 2)
+    savings_suggestion = round(after_tax * SAVINGS_RATE, 2)
+
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
-    week_start = _get_week_start(now)
+    week_start = _get_salary_week_start(now)
 
     # Get or create Notion timesheet page for this week
     page_id = _get_or_create_salary_page(week_start)
@@ -1162,7 +1178,7 @@ def log_hours(text: str) -> str:
     conn.execute(
         "INSERT INTO work_hours (hours, hourly_rate, total_earned, date, week_start, notion_page_id, created_at) "
         "VALUES (?,?,?,?,?,?,?)",
-        (hours, rate, total, date_str, week_start, page_id, now.isoformat())
+        (hours, rate, gross, date_str, week_start, page_id, now.isoformat())
     )
     conn.commit()
 
@@ -1174,36 +1190,112 @@ def log_hours(text: str) -> str:
     conn.close()
 
     week_hours = week_totals["h"] or 0
-    week_earned = week_totals["e"] or 0
+    week_gross = week_totals["e"] or 0
+    week_tax = round(week_gross * TAX_RATE, 2)
+    week_after_tax = round(week_gross - week_tax, 2)
+    week_savings = round(week_after_tax * SAVINGS_RATE, 2)
 
     # Add row to Notion timesheet table
-    _add_row_to_salary_page(page_id, hours, rate, date_str, total)
+    _add_row_to_salary_page(page_id, hours, rate, date_str, gross)
 
     # Also log as income in the main budget
-    add_transaction(total, f"Salary ({hours}h)", "Salary", "income", "income")
-    sync_expense_to_notion({"category": "Salary", "week_start": week_start,
+    add_transaction(gross, f"Salary ({hours}h)", "Salary", "income", "income")
+    sync_expense_to_notion({"category": "Salary", "week_start": _get_week_start(now),
                             "description": f"Salary ({hours}h)", "date": date_str})
 
     event_logger.log_event(
         event_type="budget_transaction",
         agent_name="budget_agent",
         action="logged_hours",
-        content=f"{hours}h × £{rate:.2f} = £{total:.2f}",
-        metadata={"hours": hours, "rate": rate, "total": total},
+        content=f"{hours}h × £{rate:.2f} = £{gross:.2f}",
+        metadata={"hours": hours, "rate": rate, "gross": gross, "tax": tax, "after_tax": after_tax},
     )
 
     page_url = f"https://www.notion.so/{page_id.replace('-', '')}" if page_id else ""
     notion_link = f"\n📎 Timesheet: {page_url}" if page_url else ""
-    budget_link = f"\n📎 Budget: {get_notion_budget_url(week_start)}"
+    budget_link = f"\n📎 Budget: {get_notion_budget_url()}"
 
-    return (f"⏱️ Logged: {hours}h × £{rate:.2f} = £{total:.2f}\n\n"
-            f"📊 This week: {week_hours:.1f}h total = £{week_earned:.2f}"
+    return (f"⏱️ Logged: {hours}h × £{rate:.2f} = £{gross:.2f}\n"
+            f"  Tax (20%): -£{tax:.2f}\n"
+            f"  After tax: £{after_tax:.2f}\n\n"
+            f"📊 This week (Sun–Sat): {week_hours:.1f}h\n"
+            f"  Gross:     £{week_gross:.2f}\n"
+            f"  Tax (20%): -£{week_tax:.2f}\n"
+            f"  After tax: £{week_after_tax:.2f}\n"
+            f"  💰 Save 30%: £{week_savings:.2f}\n\n"
+            f"💡 Transfer £{week_savings:.2f} to savings. Reply \"saved\" to confirm."
             f"{notion_link}{budget_link}")
 
 
+def confirm_savings_transfer(week_start: str = None) -> str:
+    """User confirmed they transferred savings. Log it and update Notion."""
+    now = datetime.now()
+    week_start = week_start or _get_salary_week_start(now)
+
+    conn = _get_conn()
+    week_totals = conn.execute(
+        "SELECT SUM(total_earned) as e FROM work_hours WHERE week_start=?",
+        (week_start,)
+    ).fetchone()
+    conn.close()
+
+    week_gross = week_totals["e"] or 0
+    if week_gross == 0:
+        return "No hours logged this week — nothing to save."
+
+    week_tax = round(week_gross * TAX_RATE, 2)
+    week_after_tax = round(week_gross - week_tax, 2)
+    savings_amount = round(week_after_tax * SAVINGS_RATE, 2)
+
+    # Log as savings transaction
+    add_transaction(savings_amount, f"Weekly savings (30% of £{week_after_tax:.2f})",
+                    "Savings", "savings", "savings")
+    sync_expense_to_notion({"category": "Savings", "week_start": _get_week_start(now),
+                            "description": f"Weekly savings", "date": now.strftime("%Y-%m-%d")})
+
+    # Add "Saved" row to the Notion timesheet
+    conn2 = _get_conn()
+    row = conn2.execute(
+        "SELECT notion_page_id FROM work_hours WHERE week_start=? AND notion_page_id != '' LIMIT 1",
+        (week_start,)
+    ).fetchone()
+    conn2.close()
+
+    if row and row["notion_page_id"]:
+        page_id = row["notion_page_id"]
+        blocks = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
+        table_id = None
+        for block in blocks.get("results", []):
+            if block.get("type") == "table":
+                table_id = block["id"]
+                break
+        if table_id:
+            _notion_api("PATCH", f"/blocks/{table_id}/children", {
+                "children": [
+                    {"object": "block", "type": "table_row", "table_row": {
+                        "cells": [
+                            [{"type": "text", "text": {"content": "SAVED THIS WEEK"}}],
+                            [{"type": "text", "text": {"content": "30% of after-tax"}}],
+                            [{"type": "text", "text": {"content": now.strftime("%Y-%m-%d")}}],
+                            [{"type": "text", "text": {"content": f"£{savings_amount:.2f}"}}],
+                        ]
+                    }}
+                ]
+            })
+
+    notion_url = get_notion_budget_url()
+    return (f"🏦 Confirmed! £{savings_amount:.2f} logged as savings.\n\n"
+            f"  Gross this week: £{week_gross:.2f}\n"
+            f"  Tax (20%): -£{week_tax:.2f}\n"
+            f"  After tax: £{week_after_tax:.2f}\n"
+            f"  Saved (30%): £{savings_amount:.2f}\n"
+            f"  Remaining: £{round(week_after_tax - savings_amount, 2):.2f}\n\n"
+            f"📎 {notion_url}")
+
+
 def get_hours_summary(week_start: str = None) -> str:
-    """Get formatted work hours summary for the week."""
-    week_start = week_start or _get_week_start()
+    """Get formatted work hours summary for the week (Sunday–Saturday)."""
+    week_start = week_start or _get_salary_week_start()
     conn = _get_conn()
 
     rows = conn.execute(
@@ -1218,15 +1310,25 @@ def get_hours_summary(week_start: str = None) -> str:
     conn.close()
 
     if not rows:
-        return "⏱️ No hours logged this week."
+        return "⏱️ No hours logged this week (Sun–Sat)."
 
-    lines = [f"⏱️ WORK HOURS (week of {week_start}):\n"]
+    total_h = totals["h"] or 0
+    total_gross = totals["e"] or 0
+    total_tax = round(total_gross * TAX_RATE, 2)
+    total_after_tax = round(total_gross - total_tax, 2)
+    total_savings = round(total_after_tax * SAVINGS_RATE, 2)
+
+    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    lines = [f"⏱️ WORK HOURS ({week_start} to {week_end}):\n"]
     for r in rows:
         lines.append(f"  {r['date']} — {r['hours']:.1f}h × £{r['hourly_rate']:.2f} = £{r['total_earned']:.2f}")
 
-    total_h = totals["h"] or 0
-    total_e = totals["e"] or 0
-    lines.append(f"\n  TOTAL: {total_h:.1f}h = £{total_e:.2f}")
+    lines.append(f"\n  {'─' * 35}")
+    lines.append(f"  TOTAL:     {total_h:.1f}h = £{total_gross:.2f}")
+    lines.append(f"  Tax (20%): -£{total_tax:.2f}")
+    lines.append(f"  After tax: £{total_after_tax:.2f}")
+    lines.append(f"  💰 Save 30%: £{total_savings:.2f}")
+    lines.append(f"  Remaining: £{round(total_after_tax - total_savings, 2):.2f}")
 
     page_url = ""
     conn2 = _get_conn()

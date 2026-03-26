@@ -26,7 +26,7 @@ class TestDispatchMap:
             Intent.CONVERSATION, Intent.CLEAR_CHAT,
             Intent.REMOTE_SHELL, Intent.GIT_OPS,
             Intent.FILE_OPS, Intent.SYSTEM_STATUS,
-            Intent.LOG_HOURS, Intent.SHOW_HOURS,
+            Intent.LOG_HOURS, Intent.SHOW_HOURS, Intent.CONFIRM_SAVINGS,
             Intent.UNDO_BUDGET, Intent.RECURRING_BUDGET, Intent.WEEKLY_PLAN,
         }
         all_intents = set(Intent) - {Intent.UNKNOWN}

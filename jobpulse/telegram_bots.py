@@ -93,6 +93,7 @@ def send_alert(text: str) -> bool:
 BUDGET_INTENTS = {
     "log_spend", "log_income", "log_savings", "set_budget",
     "show_budget", "undo_budget", "recurring_budget",
+    "log_hours", "show_hours", "confirm_savings",
 }
 
 RESEARCH_INTENTS = {
@@ -159,6 +160,13 @@ HELP_BUDGET = """\U0001f4b0 BUDGET BOT — Track Your Money
   "earned 500 freelance" — log income
   "saved 100" — log savings
 
+\u23f1 SALARY / WORK HOURS:
+  "worked 7 hours" — log hours \u00d7 \u00a313.99/hr
+  "worked 3.5h" — same, shorter format
+  "hours" / "timesheet" — this week's summary
+  "saved" / "transferred" — confirm savings transfer
+  Week runs Sun\u2013Sat. Shows tax (20%) + savings (30%).
+
 \U0001f4ca OVERVIEW:
   "budget" — weekly summary with alerts
   "set budget groceries 50" — set weekly limit
@@ -170,11 +178,11 @@ HELP_BUDGET = """\U0001f4b0 BUDGET BOT — Track Your Money
 
 \u21a9\ufe0f UNDO:
   "undo" — show last 5, pick one to remove
-  "undo 3" — remove transaction #3
+  "undo 3" / "undo 1,3" — remove by number
 
 All amounts auto-classified into 17 categories.
-Synced to your Notion Weekly Budget Sheet.
-Budget alerts at 80% of planned spend."""
+Synced to Notion. Budget alerts at 80% of planned spend.
+Salary creates a Notion timesheet with hours table."""
 
 HELP_RESEARCH = """\U0001f4da RESEARCH BOT — AI Papers & Knowledge
 

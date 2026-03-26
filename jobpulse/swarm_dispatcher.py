@@ -131,7 +131,7 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
         Intent.CONVERSATION, Intent.CLEAR_CHAT,
         Intent.REMOTE_SHELL, Intent.GIT_OPS,
         Intent.FILE_OPS, Intent.SYSTEM_STATUS,
-        Intent.LOG_HOURS, Intent.SHOW_HOURS,
+        Intent.LOG_HOURS, Intent.SHOW_HOURS, Intent.CONFIRM_SAVINGS,
         Intent.UNDO_BUDGET, Intent.RECURRING_BUDGET, Intent.WEEKLY_PLAN,
     }
     if intent in SIMPLE_INTENTS:
@@ -351,7 +351,7 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         _handle_conversation, _handle_clear_chat,
         _handle_remote_shell, _handle_git_ops,
         _handle_file_ops, _handle_system_status,
-        _handle_log_hours, _handle_show_hours,
+        _handle_log_hours, _handle_show_hours, _handle_confirm_savings,
         _handle_undo_budget, _handle_recurring_budget, _handle_weekly_plan,
     )
 
@@ -384,6 +384,7 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         Intent.SYSTEM_STATUS.value: _handle_system_status,
         Intent.LOG_HOURS.value: _handle_log_hours,
         Intent.SHOW_HOURS.value: _handle_show_hours,
+        Intent.CONFIRM_SAVINGS.value: _handle_confirm_savings,
         Intent.UNDO_BUDGET.value: _handle_undo_budget,
         Intent.RECURRING_BUDGET.value: _handle_recurring_budget,
         Intent.WEEKLY_PLAN.value: _handle_weekly_plan,
