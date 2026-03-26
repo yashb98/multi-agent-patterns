@@ -72,7 +72,6 @@ def _send(token: str, text: str, chat_id: str = None) -> bool:
         if not ok:
             all_ok = False
     return all_ok
-        return False
 
 
 def _get_updates(token: str, offset: int = 0, long_poll: bool = False) -> list[dict]:
