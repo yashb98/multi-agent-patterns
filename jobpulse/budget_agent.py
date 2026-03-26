@@ -664,13 +664,8 @@ def log_transaction(text: str, trigger: str = "telegram_command") -> str:
         conn.close()
         s["output"] = f"Transaction #{txn['id']} stored"
 
-    # Step 5: Sync to Notion budget sheet (update Actual column)
-    with trail.step("api_call", "Sync to Notion budget sheet",
-                     step_input=f"{category}: £{amount:.2f}") as s:
-        sync_expense_to_notion(txn)
-        s["output"] = f"Updated {category} row in Notion"
-
-    # Step 6: Add row to category sub-page
+    # Step 5: Create category sub-page + add transaction row FIRST
+    # (must happen before sync_expense_to_notion so the link exists)
     category_url = ""
     with trail.step("api_call", "Add to category sub-page",
                      step_input=f"{category}: {', '.join(items)}") as s:
@@ -682,6 +677,12 @@ def log_transaction(text: str, trigger: str = "telegram_command") -> str:
             store=store, section=section,
         )
         s["output"] = f"Row added to {category} page"
+
+    # Step 6: Sync to Notion budget sheet (update Actual column + category link)
+    with trail.step("api_call", "Sync to Notion budget sheet",
+                     step_input=f"{category}: £{amount:.2f}") as s:
+        sync_expense_to_notion(txn)
+        s["output"] = f"Updated {category} row in Notion"
 
     # Log to simulation events
     event_logger.log_event(
