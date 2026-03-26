@@ -162,7 +162,7 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 
 ## Stats
 
-~17,000 LOC | 70+ Python files | 5 databases | 148 tests | 3 dashboards | 3 platforms
+~20,500 LOC | 80 Python files | 5 databases | 148 tests | 3 dashboards | 4 Telegram bots | 3 platforms
 
 ## Dashboards
 
