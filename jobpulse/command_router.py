@@ -323,22 +323,21 @@ def is_task_list(text: str) -> bool:
 def classify(text: str) -> ParsedCommand:
     """Main entry: classify a Telegram message into an intent.
 
-    Order:
-      1. Rule-based pattern matching
-      2. Multi-line task detection
-      3. LLM fallback
+    3-Tier classification:
+      1. Rule-based regex (instant, free) — exact commands
+      2. Semantic NLP embeddings (5ms, free) — natural language
+      3. LLM fallback (~1s, $0.001) — truly ambiguous
     """
     # Strip bot mentions
     text = re.sub(r"@\w+bot\s*", "", text, flags=re.IGNORECASE).strip()
 
     # Strip trailing punctuation added by voice transcription (Whisper)
-    # e.g. "Help." → "Help", "Show tasks!" → "Show tasks"
     text = re.sub(r"[.!?]+$", "", text).strip()
 
     if not text:
         return ParsedCommand(intent=Intent.UNKNOWN, args="", raw="")
 
-    # Try rules first (free, instant)
+    # Tier 1: Rule-based regex (free, instant)
     result = classify_rule_based(text)
     if result:
         return result
@@ -347,9 +346,31 @@ def classify(text: str) -> ParsedCommand:
     if is_task_list(text):
         return ParsedCommand(intent=Intent.CREATE_TASKS, args=text, raw=text)
 
-    # LLM fallback (costs ~$0.001)
+    # Tier 2: Semantic NLP classifier (free, 5ms, local)
+    try:
+        from jobpulse.nlp_classifier import classify_semantic, GOOD_CONFIDENCE
+        intent_name, confidence = classify_semantic(text)
+        if confidence >= GOOD_CONFIDENCE and intent_name != "unknown":
+            try:
+                intent = Intent(intent_name)
+                logger.debug("NLP Tier 2: '%s' → %s (%.3f)", text[:50], intent_name, confidence)
+                return ParsedCommand(intent=intent, args=text, raw=text)
+            except ValueError:
+                pass  # invalid intent name, fall through
+    except ImportError:
+        pass  # sentence-transformers not installed, skip Tier 2
+
+    # Tier 3: LLM fallback (~1s, $0.001)
     result = classify_llm(text)
+
+    # Learn from LLM for future Tier 2 matches
+    if result.intent not in (Intent.UNKNOWN, Intent.CONVERSATION):
+        try:
+            from jobpulse.nlp_classifier import add_learned_example
+            add_learned_example(result.intent.value, text)
+        except ImportError:
+            pass
+
     if result.intent == Intent.UNKNOWN:
-        # Route to conversation mode instead of "I don't know"
         return ParsedCommand(intent=Intent.CONVERSATION, args=text, raw=text)
     return result
