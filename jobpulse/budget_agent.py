@@ -953,7 +953,9 @@ def undo_last_transaction(pick: int = None) -> str:
         for i, txn in enumerate(recent, 1):
             emoji = "📥" if txn["type"] == "income" else "📤" if txn["type"] == "expense" else "🏦"
             lines.append(f"  {i}. {emoji} £{txn['amount']:.2f} — {txn['description']} [{txn['category']}] ({txn['date']})")
-        lines.append("\nReply: undo 1, undo 2, etc.")
+        lines.append("\nReply: undo 1, undo 2, or undo 1,3 for multiple")
+        notion_url = get_notion_budget_url()
+        lines.append(f"\n📎 {notion_url}")
         return "\n".join(lines)
 
     # Pick specified — delete that transaction
@@ -984,9 +986,10 @@ def undo_last_transaction(pick: int = None) -> str:
     except Exception as e:
         logger.warning("Undo Notion sync failed: %s", e)
 
+    notion_url = get_notion_budget_url(target["week_start"])
     return (f"✅ Removed: £{target['amount']:.2f} — {target['description']} "
             f"[{target['category']}] ({target['date']})\n\n"
-            f"Notion budget sheet updated.")
+            f"Notion budget sheet updated.\n📎 {notion_url}")
 
 
 init_db()
