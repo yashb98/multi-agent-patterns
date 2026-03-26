@@ -243,7 +243,26 @@ def _handle_briefing(cmd: ParsedCommand) -> str:
 
 
 def _handle_arxiv(cmd: ParsedCommand) -> str:
-    from jobpulse.arxiv_agent import build_digest
+    import re
+    from jobpulse.arxiv_agent import build_digest, get_paper_detail, mark_paper_read, get_stats_text
+
+    raw = cmd.raw.lower().strip()
+
+    # "paper 3" → full abstract for paper #3
+    m = re.match(r"paper\s+(\d+)", raw)
+    if m:
+        return get_paper_detail(int(m.group(1)))
+
+    # "read 1" → mark paper #1 as read
+    m = re.match(r"read\s+(\d+)", raw)
+    if m:
+        return mark_paper_read(int(m.group(1)))
+
+    # "papers stats" / "reading stats"
+    if "stat" in raw:
+        return get_stats_text()
+
+    # Default: build/show digest
     return build_digest()
 
 
