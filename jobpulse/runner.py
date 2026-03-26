@@ -104,6 +104,10 @@ def main():
         from jobpulse.arxiv_agent import send_daily_digest
         send_daily_digest()
 
+    elif command == "notion-papers":
+        from jobpulse.notion_papers_agent import create_weekly_page
+        create_weekly_page()
+
     elif command == "test":
         from jobpulse.telegram_agent import send_message
         success = send_message("🧪 JobPulse test message — all systems operational!")
