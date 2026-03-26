@@ -38,8 +38,12 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # Auto-approve list — don't bother asking for these
 AUTO_APPROVE = [
     "ls", "cat ", "head ", "tail ", "wc ", "pwd", "date", "which ",
-    "echo ", "python -c", "python -m pytest", "grep ", "git status",
-    "git log", "git diff", "git branch",
+    "echo ", "python -c", "python -m pytest", "python -m jobpulse",
+    "grep ", "git status", "git log", "git diff", "git branch",
+    "git add", "git commit", "git push",
+    "chmod ", "tail -", "pip list", "pip show", "pip install",
+    "npm ", "node ", "vercel ", "crontab -l",
+    "./scripts/", "python scripts/",
 ]
 
 # Always block — don't even ask
