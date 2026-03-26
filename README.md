@@ -245,20 +245,28 @@ All on gpt-4o-mini. Enhanced Swarm on gpt-4o would be ~$9/month.
 
 The blog pipeline uses 5 agents (Deep Reader → GRPO Writer → Fact Checker → Diagram Generator → Editor) to turn research papers into 2000-word publication-ready posts with workflow diagrams on Notion.
 
-## Documentation
+## Documentation Map
 
-| File | Content |
-|------|---------|
-| CLAUDE.md | Project instructions + operational principles |
-| docs/agents.md | All agents (orchestration + JobPulse + platforms) |
-| docs/rules.md | Operational rules, convergence, constraints, input modes |
-| docs/skills.md | GRPO, persona evolution, RLM, NLP, A/B testing, voice input |
-| docs/subagents.md | Dynamic agent factory, templates |
-| docs/hooks.md | Process trails, memory, logging, rate limits, budget tracker, export |
-| docs/feature-arxiv-blogpost.md | 5-agent blog generation pipeline design |
-| docs/feature-auto-job-applier.md | Automated job discovery + cover letters |
-| docs/feature-gmail-smart-filter.md | Pre-filter emails before LLM classification |
-| docs/feature-notion-budget-v2.md | Category sub-pages + dataset tracking |
-| docs/feature-nlp-intent.md | 3-tier NLP intent classification |
-| docs/feature-arxiv-digest.md | Intelligent arXiv research digest |
-| .claude/mistakes.md | Error log (append-only, read first every session) |
+> **CLAUDE.md** is the source of truth for project stats, commands, and Telegram interface.
+> Stats are auto-updated via `scripts/update_stats.py`.
+
+| Question | Read This |
+|----------|-----------|
+| How do I use the system? (commands, Telegram) | [CLAUDE.md](CLAUDE.md) |
+| What does each agent do? | [docs/agents.md](docs/agents.md) |
+| What are the rules and constraints? | [docs/rules.md](docs/rules.md) |
+| How do GRPO, personas, RLM work? | [docs/skills.md](docs/skills.md) |
+| How does the dynamic agent factory work? | [docs/subagents.md](docs/subagents.md) |
+| Process trails, memory, logging, export? | [docs/hooks.md](docs/hooks.md) |
+| What mistakes have been made? (read first!) | [.claude/mistakes.md](.claude/mistakes.md) |
+
+### Feature Design Docs
+
+| Feature | Status | Doc |
+|---------|--------|-----|
+| arXiv Blog Pipeline | Designed | [docs/feature-arxiv-blogpost.md](docs/feature-arxiv-blogpost.md) |
+| Auto Job Applier | Designed | [docs/feature-auto-job-applier.md](docs/feature-auto-job-applier.md) |
+| Gmail Smart Filter | Designed | [docs/feature-gmail-smart-filter.md](docs/feature-gmail-smart-filter.md) |
+| Notion Budget v2 | Implemented | [docs/feature-notion-budget-v2.md](docs/feature-notion-budget-v2.md) |
+| NLP Intent Classification | Implemented | [docs/feature-nlp-intent.md](docs/feature-nlp-intent.md) |
+| arXiv Digest | Implemented | [docs/feature-arxiv-digest.md](docs/feature-arxiv-digest.md) |

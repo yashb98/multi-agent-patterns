@@ -160,9 +160,8 @@ All modules use `shared/logging_config.py` — structured logging with per-modul
 ## Documentation
 
 - @.claude/mistakes.md — MUST READ FIRST
-
 - @docs/rules.md — Constraints, convergence, pattern selection
-- @docs/agents.md — All agents (orchestration + JobPulse)
+- @docs/agents.md — All agents, NLP classifier, A/B testing, budget tracker
 - @docs/skills.md — GRPO, persona evolution, RLM, prompt optimization
 - @docs/subagents.md — Dynamic agent factory, templates
-- @docs/hooks.md — Process trails, memory injection, audit logging
+- @docs/hooks.md — Process trails, memory, logging, export

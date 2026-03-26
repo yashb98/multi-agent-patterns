@@ -1,6 +1,6 @@
 # Hooks
 
-Process trails, memory injection, tool integration, audit logging, budget tracking pipeline.
+Process trails, memory injection, tool integration, audit logging, export/backup.
 
 ## 1. Process Trail System (NEW)
 
@@ -168,42 +168,10 @@ In `.claude/settings.json`:
 ### Auto-block (dangerous)
 `rm -rf`, `sudo`, `shutdown`, `reboot`, `> /dev`
 
-## 11. NLP 3-Tier Intent Classification Pipeline
+## 11-13. Agent Features (moved)
 
-**Files:** `jobpulse/nlp_classifier.py`, `data/intent_examples.json`
-
-Sits at the front of the dispatch pipeline — every incoming message passes through before reaching any agent:
-
-```
-Message In
-  → Tier 1: Regex match (exact commands)              → instant, free
-  → Tier 2: Semantic embedding similarity (MiniLM)    → ~5ms, free
-  → Tier 3: LLM classification (gpt-4o-mini)          → ~500ms, $0.001
-  → Intent + confidence → dispatcher
-```
-
-- 250+ examples, 31 intents
-- Continuous learning hook: Tier 3 results automatically written back as Tier 2 training data
-- Embedding model loaded once at startup, reused across all requests
-
-## 12. Budget Tracker Agent Integration
-
-> Budget Tracker is an **agent** (see `docs/agents.md` for full documentation).
-> This section documents only the hook/pipeline interfaces it exposes.
-
-**File:** `jobpulse/budget_tracker.py`
-
-Called by `budget_agent.py` for sub-page sync and by `morning_briefing.py` for weekly comparison.
-Cron setup: `install_cron.py` registers Sunday 7am cron for `python -m jobpulse.runner archive-week`.
-
-## 13. A/B Testing for Prompts
-
-**File:** `jobpulse/ab_testing.py`
-
-Runs controlled experiments on prompt variants:
-
-- Define variant A and B prompts for any agent
-- System alternates between variants, scores outputs
-- After N trials, declares a winner based on average score
-- Results stored in SQLite, exported with backup system
-- Used by budget classification and briefing synthesis agents
+> NLP Intent Classification, Budget Tracker, and A/B Testing are **agent features**, not hooks.
+> They are now documented in `docs/agents.md`. See:
+> - NLP Intent Classifier → `docs/agents.md` § "NLP Intent Classifier"
+> - Budget Tracker → `docs/agents.md` § "Budget Tracker"
+> - A/B Testing → `docs/agents.md` § "A/B Testing"
