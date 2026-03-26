@@ -86,10 +86,7 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`. Full de
 |----------|-------------|
 | "spent 15 on lunch" | Budget → classify → SQLite → Notion sync |
 | "yogurt and protein shake at Tesco" | Budget → NLP item + store extraction (50+ UK stores) |
-| "earned 500 freelance" | Budget → log income → Notion sync |
-| "saved 100" | Budget → log savings → Notion sync |
-| "budget" | Budget → weekly summary with alerts |
-| "budget compare" | Budget → this week vs last week per category |
+| "earned 500 freelance" | Budget → log income → Notion sync |category |
 | "budget-export" | Budget → CSV export (12 columns) for ML |
 | "set budget groceries 50" | Budget → set planned amount for category |
 | "recurring: 10 on spotify monthly" | Budget → auto-log on schedule (daily/weekly/monthly) |
@@ -145,7 +142,10 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 
 ## Stats
 
-~20,500 LOC | 80 Python files | 5 databases | 148 tests | 3 dashboards | 4 Telegram bots | 3 platforms
+~20,500 LOC | 81 Python files | 5 databases | 148 tests | 3 dashboards | 4 Telegram bots | 3 platforms
+
+> Auto-updated by `scripts/update_stats.py`. Git pre-commit hook runs it on every commit that touches .py files.
+> Manual: `python scripts/update_stats.py` | Check-only: `python scripts/update_stats.py --check`
 
 ## Dashboards
 
