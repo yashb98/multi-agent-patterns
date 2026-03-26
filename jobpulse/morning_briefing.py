@@ -78,6 +78,37 @@ def build_and_send(trigger: str = "cron_morning"):
             section_budget = "  Budget data unavailable"
             s["output"] = "Budget unavailable"
 
+    # ── Section 7: Process recurring transactions ──
+    section_recurring = ""
+    with trail.step("api_call", "Process recurring transactions") as s:
+        try:
+            logged = budget_agent.process_recurring()
+            if logged:
+                lines = [f"  🔄 {len(logged)} recurring transaction(s) auto-logged:"]
+                for txn in logged:
+                    lines.append(f"    £{txn['amount']:.2f} — {txn['description']} [{txn['category']}]")
+                section_recurring = "\n".join(lines)
+                s["output"] = f"{len(logged)} recurring logged"
+            else:
+                s["output"] = "No recurring due today"
+        except Exception as e:
+            logger.debug("Recurring processing skipped: %s", e)
+            s["output"] = "Skipped"
+
+    # ── Section 8: Budget alerts ──
+    section_alerts = ""
+    with trail.step("decision", "Check budget alerts") as s:
+        try:
+            alerts = budget_agent.check_budget_alerts()
+            if alerts:
+                section_alerts = "\n".join(f"  {a}" for a in alerts)
+                s["output"] = f"{len(alerts)} alerts"
+            else:
+                s["output"] = "No alerts"
+        except Exception as e:
+            logger.debug("Budget alerts skipped: %s", e)
+            s["output"] = "Skipped"
+
     # ── Build Message ──
     message = f"""☀️ Good Morning Yash! Here's your briefing for {today}:
 
@@ -112,6 +143,16 @@ def build_and_send(trigger: str = "cron_morning"):
 ━━━━━━━━━━━━━━━━━━━━
 
 {section_budget}
+{f"""
+━━━━━━━━━━━━━━━━━━━━
+
+🔄 RECURRING:
+{section_recurring}""" if section_recurring else ""}
+{f"""
+━━━━━━━━━━━━━━━━━━━━
+
+⚠️ BUDGET ALERTS:
+{section_alerts}""" if section_alerts else ""}
 
 ━━━━━━━━━━━━━━━━━━━━
 
