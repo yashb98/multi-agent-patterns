@@ -1,0 +1,286 @@
+{
+  "create_tasks": [
+    "add task fix the login bug",
+    "create a todo for applying to jobs",
+    "new task review the pull request",
+    "add these to my list",
+    "I need to do these things today",
+    "can you add a task for me",
+    "put this on my todo list",
+    "!! urgent fix the production bug",
+    "! important review resume",
+    "task: prepare for interview by friday"
+  ],
+  "show_tasks": [
+    "show my tasks",
+    "what do I need to do today",
+    "list my todos",
+    "what's on my plate",
+    "show me today's checklist",
+    "any tasks for today",
+    "what should I work on",
+    "do I have anything pending",
+    "my todo list",
+    "what tasks are left"
+  ],
+  "complete_task": [
+    "mark homework done",
+    "finished the bug fix",
+    "knock off the dentist task",
+    "that's done now",
+    "completed the report",
+    "tick off apply to jobs",
+    "done with the interview prep",
+    "I finished reviewing the code",
+    "mark the groceries task complete",
+    "check off the morning standup"
+  ],
+  "remove_task": [
+    "remove the old task",
+    "delete fix bug from my list",
+    "drop the unnecessary item",
+    "cancel the meeting prep task",
+    "get rid of that todo",
+    "remove task number 3",
+    "I don't need to do that anymore",
+    "take that off my list"
+  ],
+  "calendar": [
+    "what's on my calendar",
+    "any meetings today",
+    "show me my schedule",
+    "what events do I have",
+    "what's happening tomorrow",
+    "am I free this afternoon",
+    "do I have anything scheduled",
+    "my day looks like what",
+    "any appointments today",
+    "when's my next meeting"
+  ],
+  "gmail": [
+    "check my emails",
+    "any recruiter replies",
+    "did anyone email me",
+    "new messages in inbox",
+    "any interview invites",
+    "has anyone responded to my application",
+    "check for recruiter emails",
+    "any job responses",
+    "did I get any mail",
+    "scan my inbox"
+  ],
+  "github": [
+    "what did I push yesterday",
+    "show my commits",
+    "any github activity",
+    "how many commits did I make",
+    "what code did I write yesterday",
+    "my git activity",
+    "show yesterday's pushes",
+    "what repos did I work on"
+  ],
+  "trending": [
+    "what's trending on github",
+    "hot repos this week",
+    "popular repositories",
+    "show me trending projects",
+    "what's popular in tech",
+    "top github repos"
+  ],
+  "briefing": [
+    "give me the morning briefing",
+    "daily update please",
+    "morning report",
+    "full summary of everything",
+    "what happened today",
+    "send me the digest",
+    "daily briefing",
+    "summarize my day"
+  ],
+  "arxiv": [
+    "show me the latest papers",
+    "any new AI research",
+    "top papers this week",
+    "research digest",
+    "what's new in machine learning",
+    "arxiv papers",
+    "latest AI papers",
+    "any interesting research"
+  ],
+  "log_spend": [
+    "spent 15 on lunch",
+    "paid 8 for coffee",
+    "bought groceries for 30",
+    "just dropped 50 on shoes",
+    "uber was 12 quid",
+    "cinema cost me 15",
+    "chuck 20 on eating out",
+    "I spent 45 at the supermarket",
+    "8.50 for a sandwich",
+    "transport cost me 5 today"
+  ],
+  "log_income": [
+    "earned 500 from freelance",
+    "got paid 2000 salary",
+    "received 100 refund",
+    "income of 350 from side hustle",
+    "I made 200 today",
+    "got a 50 cashback"
+  ],
+  "log_savings": [
+    "saved 100 into emergency fund",
+    "moved 200 to savings",
+    "invested 500 in stocks",
+    "put 150 into ISA",
+    "chuck 50 quid into savings",
+    "saving 300 this month"
+  ],
+  "set_budget": [
+    "set budget groceries 50",
+    "limit eating out to 30",
+    "plan 200 for shopping",
+    "budget 100 for entertainment",
+    "set the transport budget to 40"
+  ],
+  "show_budget": [
+    "how much have I spent",
+    "what's my budget looking like",
+    "show me my spending",
+    "weekly budget summary",
+    "how much money left",
+    "what's left on groceries",
+    "am I over budget",
+    "spending summary this week",
+    "how much did I spend today",
+    "where's my money going"
+  ],
+  "log_hours": [
+    "worked 7 hours today",
+    "I put in 6 hours at work",
+    "clocked seven hours monday",
+    "did a 5 hour shift yesterday",
+    "logging 8 hours for tuesday",
+    "I was at work for 4 hours",
+    "6 and a half hours on the clock",
+    "just finished a 3 hour shift",
+    "working 4.5 hours today",
+    "worked six hours and thirty minutes on tuesday"
+  ],
+  "show_hours": [
+    "show my hours",
+    "how many hours this week",
+    "timesheet",
+    "work hours summary",
+    "salary this week",
+    "how much have I earned from work"
+  ],
+  "confirm_savings": [
+    "I've transferred the savings",
+    "savings done",
+    "money moved to savings account",
+    "transferred to savings",
+    "I saved the money",
+    "done saving"
+  ],
+  "undo_hours": [
+    "undo the last shift",
+    "remove my hours entry",
+    "undo salary log",
+    "delete that hours entry",
+    "I made a mistake on my timesheet",
+    "undo work hours"
+  ],
+  "undo_budget": [
+    "undo that transaction",
+    "remove the last expense",
+    "I made a mistake on spending",
+    "delete that budget entry",
+    "undo my last purchase",
+    "take back that expense"
+  ],
+  "recurring_budget": [
+    "add recurring expense 12 for netflix monthly",
+    "show my recurring expenses",
+    "list recurring payments",
+    "stop the gym recurring",
+    "cancel netflix subscription tracking",
+    "set up a monthly rent payment of 800"
+  ],
+  "weekly_plan": [
+    "plan my week",
+    "what tasks did I miss",
+    "carry forward undone tasks",
+    "weekly planning",
+    "any leftover tasks from last week",
+    "show undone tasks"
+  ],
+  "weekly_report": [
+    "weekly summary",
+    "report for this week",
+    "7 day summary",
+    "what happened this week",
+    "weekly roundup",
+    "give me the weekly report"
+  ],
+  "export": [
+    "export my data",
+    "backup everything",
+    "download my data",
+    "save all my data",
+    "create a backup"
+  ],
+  "help": [
+    "what can you do",
+    "show me commands",
+    "how do I use this",
+    "what commands are available",
+    "I need help",
+    "menu"
+  ],
+  "clear_chat": [
+    "clear the conversation",
+    "reset chat history",
+    "new conversation",
+    "start fresh",
+    "clear chat"
+  ],
+  "remote_shell": [
+    "run git status",
+    "execute ls data",
+    "shell command npm test",
+    "run python -m pytest"
+  ],
+  "git_ops": [
+    "git status",
+    "show me the git log",
+    "what changed in the code",
+    "commit this with message fix bug",
+    "push the code",
+    "git diff"
+  ],
+  "file_ops": [
+    "show me the CLAUDE.md file",
+    "read the config file",
+    "show logs",
+    "any recent errors",
+    "tail the log file",
+    "what's in the readme"
+  ],
+  "system_status": [
+    "system status",
+    "is everything running",
+    "health check",
+    "how's the daemon",
+    "what's the system state"
+  ],
+  "conversation": [
+    "hey how are you",
+    "tell me about this project",
+    "what do you think about AI",
+    "hi there",
+    "good morning",
+    "thanks for the help",
+    "interesting, tell me more",
+    "what's the weather like"
+  ]
+}
