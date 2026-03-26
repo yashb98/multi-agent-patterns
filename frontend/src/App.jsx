@@ -31,7 +31,8 @@ function NeuronNode({ node, position, onHover, onUnhover, onClick }) {
   const somaRef = useRef()
   const nucleusRef = useRef()
   const color = COLORS[node.entity_type] || '#6B7280'
-  const size = Math.max(0.25, Math.min(1.0, 0.25 + (node.mention_count || 1) * 0.1))
+  const isCenter = node.name === 'Yash'
+  const size = isCenter ? 2.5 : Math.max(0.25, Math.min(1.0, 0.25 + (node.mention_count || 1) * 0.1))
   const [hovered, setHovered] = useState(false)
 
   useFrame((state) => {
@@ -100,17 +101,18 @@ function NeuronNode({ node, position, onHover, onUnhover, onClick }) {
       </mesh>
 
       {/* Name label */}
-      <Billboard position={[0, size + 0.6, 0]}>
-        <Text fontSize={0.3} color="#f1f5f9" anchorX="center" anchorY="bottom" fontWeight="bold"
-              outlineWidth={0.03} outlineColor="#000000">
+      <Billboard position={[0, size + (isCenter ? 1.2 : 0.6), 0]}>
+        <Text fontSize={isCenter ? 0.7 : 0.3} color={isCenter ? '#ffffff' : '#f1f5f9'}
+              anchorX="center" anchorY="bottom" fontWeight="bold"
+              outlineWidth={isCenter ? 0.05 : 0.03} outlineColor="#000000">
           {node.name.length > 24 ? node.name.slice(0, 22) + '…' : node.name}
         </Text>
       </Billboard>
 
       {/* Type sub-label */}
-      <Billboard position={[0, size + 0.2, 0]}>
-        <Text fontSize={0.18} color={color} anchorX="center" anchorY="bottom"
-              outlineWidth={0.015} outlineColor="#000000">
+      <Billboard position={[0, size + (isCenter ? 0.5 : 0.2), 0]}>
+        <Text fontSize={isCenter ? 0.35 : 0.18} color={color} anchorX="center" anchorY="bottom"
+              outlineWidth={isCenter ? 0.025 : 0.015} outlineColor="#000000">
           {node.entity_type}
         </Text>
       </Billboard>
@@ -280,9 +282,15 @@ function BrainScene({ data, onSelectNode }) {
       ]
     })
 
-    // Place nodes within their region — 30% of previous spread
+    // Place nodes — "Yash" is pinned at the center, everything radiates out
     const typeCounts = {}
     nodes.forEach((node) => {
+      // Pin Yash at the origin
+      if (node.name === 'Yash') {
+        positions[node.id] = [0, 0, 0]
+        return
+      }
+
       const t = node.entity_type
       typeCounts[t] = (typeCounts[t] || 0) + 1
       const idx = typeCounts[t]
