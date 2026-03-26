@@ -138,7 +138,31 @@ Controlled experiments on prompt variants without changing model weights:
 - `get_all_tests()` returns all test data
 - Exported via `jobpulse/export.py` backup
 
-## 6. Voice Input (Whisper Transcription)
+## 6. NLP 3-Tier Semantic Classification
+
+**Files:** `jobpulse/nlp_classifier.py`, `data/intent_examples.json`
+
+### How It Works
+
+Messages pass through three tiers, stopping at the first confident match:
+
+```
+1. REGEX (Tier 1)     → Pattern match against known commands    → Free, instant
+2. EMBEDDINGS (Tier 2) → Cosine similarity via all-MiniLM-L6-v2 → Free, ~5ms, local
+3. LLM (Tier 3)       → gpt-4o-mini classifies intent           → $0.001, ~500ms
+```
+
+### Continuous Learning
+
+When Tier 3 fires, the classified result is automatically added as a new Tier 2 training example. Over time, Tier 3 fires less frequently as Tier 2 accumulates learned examples.
+
+### Coverage
+
+- 250+ training examples across 31 intents
+- Covers: tasks, budget, salary/hours, calendar, email, github, briefing, voice, remote control, and more
+- Embedding model (`sentence-transformers/all-MiniLM-L6-v2`) loaded once at startup, cached in memory
+
+## 7. Voice Input (Whisper Transcription)
 
 **File:** `jobpulse/voice_handler.py`
 

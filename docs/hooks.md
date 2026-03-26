@@ -168,7 +168,25 @@ In `.claude/settings.json`:
 ### Auto-block (dangerous)
 `rm -rf`, `sudo`, `shutdown`, `reboot`, `> /dev`
 
-## 11. A/B Testing for Prompts
+## 11. NLP 3-Tier Intent Classification Pipeline
+
+**Files:** `jobpulse/nlp_classifier.py`, `data/intent_examples.json`
+
+Sits at the front of the dispatch pipeline — every incoming message passes through before reaching any agent:
+
+```
+Message In
+  → Tier 1: Regex match (exact commands)              → instant, free
+  → Tier 2: Semantic embedding similarity (MiniLM)    → ~5ms, free
+  → Tier 3: LLM classification (gpt-4o-mini)          → ~500ms, $0.001
+  → Intent + confidence → dispatcher
+```
+
+- 250+ examples, 31 intents
+- Continuous learning hook: Tier 3 results automatically written back as Tier 2 training data
+- Embedding model loaded once at startup, reused across all requests
+
+## 12. A/B Testing for Prompts
 
 **File:** `jobpulse/ab_testing.py`
 

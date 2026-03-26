@@ -17,6 +17,18 @@ Four LangGraph patterns for multi-agent coordination:
 | **Dynamic Swarm** | Task queue + runtime re-analysis | Unknown complexity |
 | **Enhanced Swarm** | Swarm + GRPO + persona + RLM | Production (used by JobPulse) |
 
+### NLP 3-Tier Intent Classification (jobpulse/nlp_classifier.py)
+
+All incoming messages pass through a 3-tier pipeline before reaching agents:
+
+| Tier | Method | Speed | Cost |
+|------|--------|-------|------|
+| 1 | Regex pattern matching | Instant | Free |
+| 2 | Semantic embeddings (all-MiniLM-L6-v2) | ~5ms | Free (local) |
+| 3 | LLM fallback (gpt-4o-mini) | ~500ms | $0.001 |
+
+250+ training examples across 31 intents. Continuous learning: LLM results feed back into Tier 2 automatically. Training data in `data/intent_examples.json`.
+
 ### 2. JobPulse Daily Automation (jobpulse/)
 
 Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions backup:
@@ -28,6 +40,7 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | GitHub | Yesterday's commits (Commits API), trending repos | 8am briefing |
 | Notion | Tasks: create/complete/remove, dedup, priorities, due dates, subtasks, weekly plan | On demand |
 | Budget | Parse spending/income/savings, 17 categories, recurring, alerts, undo, Notion sync | On demand |
+| Salary/Hours | Track work hours at £13.99/hr, tax calc, savings suggestion, Notion timesheet | On demand |
 | Briefing | Collect all agents → RLM synthesis → Telegram | 8:03am daily |
 | Weekly Report | 7-day aggregate across all agents | On demand |
 | Voice Handler | Telegram voice → Whisper transcription → dispatch | On demand |
@@ -53,6 +66,12 @@ Control your entire system from your phone:
 | "done: X" / "mark X done" | Fuzzy match + complete |
 | "remove: X" | Fuzzy match + delete |
 | "plan" / "weekly plan" | Show undone tasks from past 7 days, carry forward |
+| **Salary/Hours** | |
+| "worked 7 hours" | Calculate pay (£13.99/hr), tax (20%), savings suggestion (30% after-tax) |
+| "worked six hours and thirty minutes" | Word numbers supported |
+| "worked 8h on monday" | Past date support (Sunday-based work week) |
+| "saved" / "transferred" | Confirm savings transfer |
+| "undo hours" | Show last 5 entries, pick to remove + Notion timesheet rebuild |
 | **Budget** | |
 | "spent 15 on lunch" | Log expense → classify → SQLite → Notion sync |
 | "earned 500 freelance" | Log income |
@@ -124,7 +143,8 @@ Each bot is optional -- falls back to the main bot token/chat if not configured.
 JobPulse uses Enhanced Swarm architecture (not flat dispatch):
 
 ```
-Message → Task Analyzer → Priority Queue → Execute with GRPO
+Message → NLP 3-Tier Classifier (regex → embeddings → LLM)
+       → Task Analyzer → Priority Queue → Execute with GRPO
        → RLM Synthesis (if large context) → Store Experience
        → Persona Evolution → Reply
 ```

@@ -26,6 +26,8 @@ python -m jobpulse.runner multi           # Start all platform listeners
 **2. JobPulse Automation** — Gmail, Calendar, GitHub, Notion, Budget, Telegram agents running 24/7
 **3. Knowledge MindGraph** — Entity extraction, GraphRAG retrieval, Three.js 3D visualization
 
+**4. NLP Intent Classification** — 3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 31 intents, continuous learning.
+
 **Current dispatch mode:** Enhanced Swarm (set `JOBPULSE_SWARM=false` in .env to revert to flat)
 
 ## Operational Principles
@@ -68,6 +70,15 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
 | "export" | Full data backup (databases, personas, experiences) |
 | voice message | Whisper transcription → intent classification → agent |
 | "help" | Lists all commands |
+
+### Salary / Hours
+| You type | What happens |
+|----------|-------------|
+| "worked 7 hours" | Salary → calculates pay at £13.99/hr, tax (20%), savings suggestion (30% after-tax) |
+| "worked six hours and thirty minutes" | Salary → word numbers supported |
+| "worked 8h on monday" | Salary → past date support (Sunday-based work week) |
+| "saved" / "transferred" | Salary → confirms savings transfer |
+| "undo hours" | Salary → shows last 5 entries, pick to remove + Notion timesheet rebuild |
 
 ### Budget
 | You type | What happens |
@@ -124,6 +135,20 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 - `CONVERSATION_MODEL=gpt-4o-mini` — model for free-form chat
 - `RLM_BACKEND=openai`, `RLM_ROOT_MODEL=gpt-4o-mini`, `RLM_MAX_BUDGET=0.10`
 
+## NLP 3-Tier Intent Classification
+
+**Files:** `jobpulse/nlp_classifier.py`, `data/intent_examples.json`
+
+| Tier | Method | Speed | Cost |
+|------|--------|-------|------|
+| 1 | Regex pattern matching | Instant | Free |
+| 2 | Semantic embeddings (sentence-transformers/all-MiniLM-L6-v2) | ~5ms | Free (local) |
+| 3 | LLM fallback (gpt-4o-mini) | ~500ms | $0.001 |
+
+- 250+ training examples across 31 intents
+- Continuous learning: LLM results automatically feed back into Tier 2 embeddings
+- Tier 3 only fires for truly ambiguous messages
+
 ## Stats
 
 ~17,000 LOC | 70+ Python files | 4 databases | 125 tests | 3 dashboards | 3 platforms
@@ -141,6 +166,7 @@ All modules use `shared/logging_config.py` — structured logging with per-modul
 ## Documentation
 
 - @.claude/mistakes.md — MUST READ FIRST
+
 - @docs/rules.md — Constraints, convergence, pattern selection
 - @docs/agents.md — All agents (orchestration + JobPulse)
 - @docs/skills.md — GRPO, persona evolution, RLM, prompt optimization

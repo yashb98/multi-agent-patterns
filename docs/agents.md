@@ -132,6 +132,29 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - Telegram listener checks for approval replies before classifying messages
 - Used by git commit, push, and Claude Code bash command approval
 
+## NLP Intent Classifier (`nlp_classifier.py`)
+
+3-tier classification pipeline that routes all incoming messages before they reach agents:
+
+| Tier | Method | Speed | Cost | When Used |
+|------|--------|-------|------|-----------|
+| 1 | Regex patterns | Instant | Free | Exact command matches ("show tasks", "calendar", "budget") |
+| 2 | Semantic embeddings (all-MiniLM-L6-v2) | ~5ms | Free (local) | Fuzzy/natural phrasing ("what's on my schedule?") |
+| 3 | LLM fallback (gpt-4o-mini) | ~500ms | $0.001 | Truly ambiguous messages |
+
+- 250+ training examples across 31 intents in `data/intent_examples.json`
+- Continuous learning: when Tier 3 fires, the result is stored as a new Tier 2 example
+- Embedding model loaded once at startup, cached in memory
+
+## Salary/Hours Agent
+
+- Tracks work hours at £13.99/hr with tax calculation (20%) and savings suggestion (30% of after-tax)
+- Notion timesheet sync with table format (Hours, Rate, Date, Total)
+- Sunday-based work week tracking
+- Supports word numbers ("six hours and thirty minutes") and past dates ("worked 8h on monday")
+- "saved"/"transferred" confirms savings transfer to designated account
+- "undo hours" shows last 5 entries for selective removal, rebuilds Notion timesheet
+
 ## Enhanced Swarm Dispatcher (`swarm_dispatcher.py`)
 
 Replaces flat dispatch with adaptive intelligence:
