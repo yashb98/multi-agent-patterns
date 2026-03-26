@@ -36,14 +36,7 @@ python -m jobpulse.runner multi           # Start all platform listeners
 
 ## Operational Principles
 
-IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`.
-
-1. **Memory before action** — Search memory/patterns before any task. Score > 0.7 = reuse.
-2. **ORCHESTRATOR, not EXECUTOR** — Claude coordinates. Agents do the work.
-3. **Enhanced Swarm for production** — Task analyzer → dynamic routing → GRPO sampling → persona evolution → RLM synthesis.
-4. **Learn after success** — Store patterns scoring >= 7.0 to experience memory. Future runs benefit.
-5. **3-Tier routing** — Cached → lightweight → full agent. Skip tiers only when lower fail.
-6. **Commands return instantly** — Create records only. Never wait.
+IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`. Full details in @docs/rules.md.
 
 ## Self-Correction Protocol
 
@@ -148,17 +141,7 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 
 ## NLP 3-Tier Intent Classification
 
-**Files:** `jobpulse/nlp_classifier.py`, `data/intent_examples.json`
-
-| Tier | Method | Speed | Cost |
-|------|--------|-------|------|
-| 1 | Regex pattern matching | Instant | Free |
-| 2 | Semantic embeddings (sentence-transformers/all-MiniLM-L6-v2) | ~5ms | Free (local) |
-| 3 | LLM fallback (gpt-4o-mini) | ~500ms | $0.001 |
-
-- 250+ training examples across 31 intents
-- Continuous learning: LLM results automatically feed back into Tier 2 embeddings
-- Tier 3 only fires for truly ambiguous messages
+3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 31 intents, continuous learning. See @docs/agents.md for full details.
 
 ## Stats
 

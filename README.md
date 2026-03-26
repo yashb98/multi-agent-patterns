@@ -19,17 +19,9 @@ Four LangGraph patterns for multi-agent coordination:
 | **Dynamic Swarm** | Task queue + runtime re-analysis | Unknown complexity |
 | **Enhanced Swarm** | Swarm + GRPO + persona + RLM | Production (used by JobPulse) |
 
-### NLP 3-Tier Intent Classification (jobpulse/nlp_classifier.py)
+### NLP 3-Tier Intent Classification
 
-All incoming messages pass through a 3-tier pipeline before reaching agents:
-
-| Tier | Method | Speed | Cost |
-|------|--------|-------|------|
-| 1 | Regex pattern matching | Instant | Free |
-| 2 | Semantic embeddings (all-MiniLM-L6-v2) | ~5ms | Free (local) |
-| 3 | LLM fallback (gpt-4o-mini) | ~500ms | $0.001 |
-
-250+ training examples across 31 intents. Continuous learning: LLM results feed back into Tier 2 automatically. Training data in `data/intent_examples.json`.
+3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 31 intents, continuous learning. Full details in [docs/agents.md](docs/agents.md#nlp-intent-classifier-nlp_classifierpy).
 
 ### 2. JobPulse Daily Automation (jobpulse/)
 
@@ -58,59 +50,9 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 
 ## Remote Control via Telegram
 
-Control your entire system from your phone:
+Control your entire system from your phone. Full command reference in [CLAUDE.md](CLAUDE.md#telegram-commands).
 
-| Command | What It Does |
-|---------|-------------|
-| **Tasks** | |
-| "show tasks" | Today's checklist from Notion |
-| list of items | Creates tasks (dedup check, big-task detection + subtask suggestion) |
-| `!! urgent task` / `! high task` | Priority tasks (red/yellow indicators) |
-| "task by Friday" | Task with NLP due date parsing |
-| "done: X" / "mark X done" | Fuzzy match + complete |
-| "remove: X" | Fuzzy match + delete |
-| "plan" / "weekly plan" | Show undone tasks from past 7 days, carry forward |
-| **Salary/Hours** | |
-| "worked 7 hours" | Calculate pay (£13.99/hr), tax (20%), savings suggestion (30% after-tax) |
-| "worked six hours and thirty minutes" | Word numbers supported |
-| "worked 8h on monday" | Past date support (Sunday-based work week) |
-| "saved" / "transferred" | Confirm savings transfer |
-| "undo hours" | Show last 5 entries, pick to remove + Notion timesheet rebuild |
-| **Budget** | |
-| "spent 15 on lunch" | Log expense → classify → SQLite → Notion sync |
-| "earned 500 freelance" | Log income |
-| "saved 100" | Log savings |
-| "budget" | Weekly summary with alerts |
-| "budget compare" | This week vs last week per category |
-| "budget-export" | CSV export (12 columns) for ML |
-| "set budget groceries 50" | Set planned amount per category |
-| "recurring: 10 on spotify monthly" | Auto-log on schedule (daily/weekly/monthly) |
-| "show recurring" / "stop recurring X" | Manage recurring rules |
-| "undo" | Delete last transaction, recalculate Notion |
-| **Agents** | |
-| "calendar" | Today + tomorrow events |
-| "check emails" | Gmail scan + classify + alert |
-| "commits" | Yesterday's git activity |
-| "trending" | Hot GitHub repos |
-| "arxiv" | Today's top AI papers ranked by broad impact |
-| "paper 3" | Full abstract for paper #3 |
-| "read 1" | Mark paper #1 as read |
-| "papers stats" | Read/unread counts + category breakdown |
-| "blog 1" | Generate 2000-word blog post from paper #1 (coming soon) |
-| "briefing" | Enhanced Swarm 7-agent collect → RLM synthesis |
-| "weekly report" | 7-day aggregate across all agents |
-| "export" | Full data backup (tar.gz) |
-| **Remote Control** | |
-| Just type anything | Free-form conversation with project-aware LLM |
-| `run: <command>` or `$ <command>` | Execute whitelisted shell command |
-| `git status` / `git log` / `git diff` | Formatted git operations |
-| `commit: fix bug` | Stage + commit (asks approval first) |
-| `push` | Push to remote (asks approval) |
-| `show: CLAUDE.md` | Read files (paginated with more/next) |
-| `logs` / `errors` | View logs or recent agent errors |
-| `status` | Full system dashboard |
-| `clear chat` | Reset conversation history |
-| Voice message | Auto-transcribed via Whisper → dispatched |
+Highlights: tasks (create/complete/remove with dedup + priorities + due dates), budget (spend/earn/save with NLP parsing, 17 categories, recurring, alerts, undo), salary tracking (£13.99/hr with tax calc), calendar, Gmail, GitHub, arXiv papers, briefing, remote shell, git ops, file viewer, voice messages via Whisper.
 
 ### Claude Code Remote Approval
 

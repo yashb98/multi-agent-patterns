@@ -21,7 +21,9 @@ BEFORE any task:
 
 Claude coordinates. Agents do the work. If you're writing/researching/reviewing directly, stop and dispatch.
 
-### 3. Hierarchical Topology for Production
+### 3. Enhanced Swarm for Production
+
+Task analyzer → dynamic routing → GRPO sampling → persona evolution → RLM synthesis.
 
 ```
 Supervisor (1)
