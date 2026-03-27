@@ -86,6 +86,14 @@ def poll_and_process():
 
         _log(f"Got: \"{text[:80]}\"")
 
+        # Check for email classification review reply
+        from jobpulse.email_review import process_review_reply
+        review_response = process_review_reply(text)
+        if review_response:
+            telegram_agent.send_message(review_response)
+            _log(f"Email review: {review_response[:80]}")
+            continue
+
         # Check for pending approval reply
         from jobpulse.approval import process_reply as check_approval
         approval_response = check_approval(text)
@@ -168,6 +176,14 @@ def poll_continuous():
                     continue
 
                 _log(f"Got: \"{text[:80]}\"")
+
+                # Check for email classification review reply
+                from jobpulse.email_review import process_review_reply
+                review_response = process_review_reply(text)
+                if review_response:
+                    telegram_agent.send_message(review_response)
+                    _log(f"Email review: {review_response[:80]}")
+                    continue
 
                 # Check for pending approval reply
                 from jobpulse.approval import process_reply as check_approval

@@ -226,3 +226,44 @@ class TestAutoGraduation:
         with patch("jobpulse.db.get_preclassifier_state",
                    return_value={"graduated": 1, "total_processed": 500, "total_audited": 100}):
             assert check_graduation() is True
+
+
+class TestEmailReview:
+    """Telegram review reply handling."""
+
+    def test_approve_emoji_resolves_review(self):
+        from jobpulse.email_review import request_review, process_review_reply
+        with patch("jobpulse.email_review._record_user_feedback"):
+            request_review("msg_123", "hr@company.com", "Your application", "REJECTED", 0.92, "rejection_rule")
+            result = process_review_reply("\u2705")
+            assert result is not None
+            assert "Confirmed" in result
+
+    def test_reject_emoji_corrects_review(self):
+        from jobpulse.email_review import request_review, process_review_reply
+        with patch("jobpulse.email_review._record_user_feedback"):
+            request_review("msg_456", "hr@company.com", "Interview invite", "REJECTED", 0.90, "rejection_rule")
+            result = process_review_reply("\u274c")
+            assert result is not None
+            assert "Incorrect" in result or "incorrect" in result
+
+    def test_reclassify_emoji(self):
+        from jobpulse.email_review import request_review, process_review_reply
+        with patch("jobpulse.email_review._record_user_feedback"), \
+             patch("jobpulse.email_review._update_email_category"):
+            request_review("msg_789", "hr@company.com", "Update", "OTHER", 0.85, "some_rule")
+            result = process_review_reply("\U0001f504 SELECTED")
+            assert result is not None
+            assert "Reclassified" in result
+
+    def test_no_pending_returns_none(self):
+        import jobpulse.email_review as er
+        er._pending_review = None
+        result = er.process_review_reply("\u2705")
+        assert result is None
+
+    def test_non_emoji_text_returns_none(self):
+        from jobpulse.email_review import request_review, process_review_reply
+        request_review("msg_000", "x@y.com", "Test", "OTHER", 0.9, "rule")
+        result = process_review_reply("show tasks")
+        assert result is None

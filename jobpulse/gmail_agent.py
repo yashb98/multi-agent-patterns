@@ -9,6 +9,7 @@ from jobpulse import db
 from jobpulse import telegram_agent
 from jobpulse import event_logger
 from jobpulse import auto_extract
+from jobpulse.email_preclassifier import preclassify, PreClassification
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -168,13 +169,59 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
                 body = _extract_body(msg.get("payload", {}))[:500]
                 s["output"] = f"From: {sender}\nSubject: {subject}"
 
-            # Step: Classify with LLM
-            with trail.step("llm_call", f"Classify email #{i+1}",
-                             step_input=f"Subject: {subject}\nBody: {body[:200]}") as s:
-                category = _classify_email(subject, body)
-                s["output"] = f"Classification: {category}"
-                s["decision"] = f"Classified as {category}"
-                s["metadata"] = {"category": category, "sender": sender}
+            # Step: Pre-classify with rules
+            with trail.step("decision", f"Pre-classify email #{i+1}",
+                             step_input=f"Sender: {sender}\nSubject: {subject}") as s:
+                pre = preclassify(sender, subject, body)
+                s["output"] = f"Pre-class: {pre.category or 'PASS-THROUGH'} (conf={pre.confidence:.2f})"
+                s["decision"] = pre.evidence.get("reasoning") or "No rule matched — sending to LLM"
+                s["metadata"] = {
+                    "rule_name": pre.evidence.get("rule_name"),
+                    "confidence": pre.confidence,
+                    "likely_recruiter": pre.likely_recruiter,
+                    "skip_llm": pre.skip_llm,
+                }
+
+            # Use pre-classifier result or fall back to LLM
+            if pre.skip_llm and pre.category:
+                category = pre.category
+                logger.info("Pre-classified %s as %s (skip LLM, conf=%.2f)",
+                           subject[:50], category, pre.confidence)
+                # Audit check: sometimes verify rule decisions with LLM
+                from jobpulse.email_preclassifier import should_audit, record_audit
+                if should_audit(pre):
+                    with trail.step("llm_call", f"Audit email #{i+1}",
+                                     step_input=f"Auditing rule: {pre.evidence.get('rule_name')}") as s:
+                        llm_category = _classify_email(subject, body)
+                        is_correct = record_audit(msg_id, pre, llm_category)
+                        s["output"] = f"Audit: rule={category}, LLM={llm_category}, correct={is_correct}"
+                        s["decision"] = "Audit passed" if is_correct else f"MISMATCH: using LLM result {llm_category}"
+                        if not is_correct:
+                            category = llm_category  # Trust LLM over rule on mismatch
+            else:
+                # Step: Classify with LLM (no rule match or low confidence)
+                with trail.step("llm_call", f"Classify email #{i+1}",
+                                 step_input=f"Subject: {subject}\nBody: {body[:200]}") as s:
+                    category = _classify_email(subject, body)
+                    s["output"] = f"LLM classification: {category}"
+                    s["decision"] = f"LLM classified as {category}"
+                    if pre.likely_recruiter:
+                        s["metadata"] = {"category": category, "sender": sender, "recruiter_hint": True}
+                    else:
+                        s["metadata"] = {"category": category, "sender": sender}
+
+            # Learning phase: extract patterns from pre-classified emails
+            from jobpulse.email_preclassifier import is_learning_phase, extract_patterns_from_email, increment_processed
+            if is_learning_phase() and pre.skip_llm:
+                with trail.step("llm_call", f"Learning: analyze email #{i+1} patterns",
+                                 step_input=f"Category: {category}") as s:
+                    try:
+                        patterns = extract_patterns_from_email(sender, subject, body, category)
+                        s["output"] = f"Patterns: {json.dumps(patterns.get('key_signals', []))}"
+                        s["metadata"] = patterns
+                    except Exception as e:
+                        s["output"] = f"Pattern extraction skipped: {e}"
+            increment_processed()
 
             # Step: Store
             with trail.step("api_call", f"Store email #{i+1} in SQLite") as s:
@@ -225,6 +272,26 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
                     except Exception:
                         s["output"] = "Extraction skipped (best-effort)"
 
+                # Request user review for pre-classified recruiter emails
+                if pre.skip_llm and pre.flagged_for_review:
+                    from jobpulse.email_review import request_review
+                    review_msg = request_review(
+                        msg_id, sender_short, subject, category,
+                        pre.confidence, pre.evidence.get("rule_name", "unknown")
+                    )
+                    send_alert(review_msg)
+
+            # For pre-classified OTHER emails that are flagged, still request review
+            if category == OTHER and pre.skip_llm and pre.flagged_for_review:
+                sender_short = sender.split("<")[0].strip() if "<" in sender else sender
+                from jobpulse.email_review import request_review
+                from jobpulse.telegram_bots import send_alert
+                review_msg = request_review(
+                    msg_id, sender_short, subject, category,
+                    pre.confidence, pre.evidence.get("rule_name", "unknown")
+                )
+                send_alert(review_msg)
+
     except Exception as e:
         trail.log_step("error", "Fetch error", None, str(e), None,
                        {"error": str(e)}, "error")
@@ -236,8 +303,16 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
     if not new_recruiter_emails:
         logger.info("No new recruiter emails")
 
+    # Check for pre-classifier graduation
+    from jobpulse.email_preclassifier import check_graduation
+    graduated = check_graduation()
+    trail_suffix = ""
+    if graduated:
+        state = db.get_preclassifier_state()
+        trail_suffix = f" Pre-classifier graduated ({state['total_correct']}/{state['total_audited']} audits correct)."
+
     trail.finalize(f"Processed {len(messages)} emails. "
-                   f"Recruiter: {len(new_recruiter_emails)}. Alerts sent: {len(new_recruiter_emails)}")
+                   f"Recruiter: {len(new_recruiter_emails)}. Alerts sent: {len(new_recruiter_emails)}.{trail_suffix}")
     return new_recruiter_emails
 
 
