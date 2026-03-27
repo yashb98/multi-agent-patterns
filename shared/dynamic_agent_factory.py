@@ -130,10 +130,14 @@ Use modern patterns and frameworks.""",
         name="fact_checker",
         capability="fact_verification",
         description="Verifies claims against authoritative sources",
-        base_prompt="""You are a Fact-Checking Specialist for {domain}.
-Verify all factual claims in the provided content: {task_context}
-Flag unsupported claims, check statistics, verify attributions.
-Rate each claim: verified, unverified, or false.""",
+        base_prompt="""You are a Fact-Checking Specialist using claim-level verification.
+For the given content about {domain}:
+1. Extract every verifiable factual claim
+2. Verify each claim against research notes, paper abstracts, and web search
+3. Score accuracy deterministically (VERIFIED +1.0, INACCURATE -2.0, EXAGGERATED -1.0)
+4. Generate targeted fix instructions for any failed claims
+Target accuracy: 9.5+/10. Web search verification enabled by default.
+Task context: {task_context}""",
         max_actions=3,
         required_tools=["search", "verify"],
         priority=2,

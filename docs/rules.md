@@ -40,7 +40,7 @@ Min 3, max 8 agents. Other patterns are for experimentation only.
 
 ### 4. Learn After Success
 
-When `review_score >= 7.0`: extract pattern (agents, routing, strengths) → store in `patterns` namespace.
+When `review_score >= 8.0`: extract pattern (agents, routing, strengths) → store in `patterns` namespace.
 
 ### 5. 3-Tier Routing
 
@@ -60,10 +60,10 @@ Commands create records only. Never wait. Supervisor monitors completion.
 
 | Pattern | Pass Condition | Max Iterations | Fallback |
 |---------|---------------|----------------|----------|
-| Hierarchical | `review_score >= 7.0` | 3 | Accept best draft |
-| Peer Debate | Score improvement < threshold | patience counter | Accept current draft |
-| Dynamic Swarm | Task queue empty | 3 re-analysis rounds | Accept current state |
-| Enhanced Swarm | Adaptive threshold | Experience-aware | Rollback to best |
+| Hierarchical | `review_score >= 8.0 AND accuracy >= 9.5` | 3 | Accept best draft |
+| Peer Debate | Score improvement < threshold AND accuracy >= 9.5 | patience counter | Accept current draft |
+| Dynamic Swarm | Task queue empty AND accuracy >= 9.5 | 3 re-analysis rounds | Accept current state |
+| Enhanced Swarm | Adaptive threshold AND accuracy >= 9.5 | Experience-aware | Rollback to best |
 
 ## Constraints
 
@@ -72,7 +72,7 @@ Commands create records only. Never wait. Supervisor monitors completion.
 - Never mutate `topic` after initialization — it's the immutable input
 - `shared/` modules must not import from `patterns/` — dependency flows one way
 - Agents must be stateless functions — no instance variables, no side effects
-- Review scores are floats 0-10. Passing threshold is 7.0. Max iterations is 3
+- Review scores are floats 0-10. Passing threshold is 8.0. Max iterations is 3
 - Output files go to `outputs/` as markdown
 
 ## Pattern Selection

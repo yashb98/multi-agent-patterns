@@ -16,6 +16,16 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 - Evaluates quality, returns structured JSON scores
 - Reads: `draft`, `topic` · Writes: `review_feedback`, `review_score`, `review_passed`
 
+### Fact Checker (`fact_check_node`)
+- Extracts all verifiable claims from the draft (benchmark, date, attribution, comparison, technical)
+- Verifies each claim against: research notes → paper abstract → web search (DuckDuckGo) → cached facts
+- Deterministic scoring: VERIFIED +1.0, INACCURATE -2.0, EXAGGERATED -1.0, UNVERIFIED -0.5/-1.5
+- Hard accuracy gate: 9.5/10 floor, 9.7 target
+- Generates targeted revision notes with specific fix instructions per failed claim
+- SQLite cache (`data/verified_facts.db`) stores previously verified facts for instant reuse
+- Unified module (`shared/fact_checker.py`) used by both orchestration patterns and blog generator
+- Reads: `draft`, `topic`, `research_notes` · Writes: `extracted_claims`, `claim_verifications`, `accuracy_score`, `accuracy_passed`, `fact_revision_notes`
+
 ## JobPulse Agents (jobpulse/)
 
 ### Gmail Agent (`gmail_agent.py`)
@@ -233,6 +243,11 @@ AgentState(TypedDict):
     agent_history: Annotated[list, add]     # Append-only
     pending_tasks: list[dict]               # Swarm only
     final_output: str
+    extracted_claims: list[dict]             # Fact checker claims
+    claim_verifications: list[dict]          # Fact checker results
+    accuracy_score: float                    # 0-10, target 9.7
+    accuracy_passed: bool                    # True if >= 9.5
+    fact_revision_notes: Optional[str]       # Fix instructions
 ```
 
 ## Pattern Topologies

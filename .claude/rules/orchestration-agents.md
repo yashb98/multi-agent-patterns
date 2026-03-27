@@ -28,7 +28,7 @@ while iteration < max_iterations:
 
 ## Score-Based Convergence
 
-- Primary stop: `review_score >= 7.0` (model-driven)
+- Primary stop: `review_score >= 8.0 AND accuracy_score >= 9.5` (model-driven)
 - Secondary stop: no score improvement across rounds (patience counter)
 - Safety valve: `iteration < 3` (prevents infinite loops, NOT the decision driver)
 
