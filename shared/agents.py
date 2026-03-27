@@ -321,6 +321,11 @@ def writer_node(state: AgentState) -> dict:
     feedback = state.get("review_feedback", "")
     current_draft = state.get("draft", "")
     iteration = state.get("iteration", 0)
+
+    # Include fact-check revision notes if accuracy failed
+    fact_notes = state.get("fact_revision_notes")
+    if fact_notes:
+        feedback = f"{feedback}\n\n{fact_notes}" if feedback else fact_notes
     
     if feedback and current_draft:
         # REVISION mode — improve existing draft based on feedback

@@ -227,54 +227,40 @@ def _score_blog(draft: str, paper: dict) -> float:
 def fact_check(draft: str, paper: dict) -> dict:
     """Cross-reference blog claims against the paper's abstract.
 
-    Returns: {"flags": [...], "flag_count": N, "passed": bool}
+    Uses the unified fact-checker from shared/fact_checker.py.
+    Returns: {"flags": [...], "flag_count": N, "passed": bool, "accuracy_score": float}
     """
-    system = """You are a rigorous AI research fact-checker. Your job is to find
-inaccuracies, hallucinations, or misrepresentations in a blog post about a research paper.
+    from shared.fact_checker import extract_claims, verify_claims, compute_accuracy_score
 
-Compare the blog post against the paper's abstract. Flag ANY claim that:
-1. Is NOT supported by the abstract
-2. Exaggerates or understates results
-3. Misses important caveats or limitations
-4. Contains hallucinated numbers, benchmarks, or comparisons
-5. Misattributes ideas or methods
+    topic = paper.get("title", "AI research")
+    abstract = paper.get("abstract", "")
 
-Be strict. Better to flag a borderline claim than miss a real error."""
+    # Extract claims from the draft
+    claims = extract_claims(draft, topic)
 
-    user = f"""PAPER ABSTRACT (source of truth):
-{paper['abstract']}
+    # Verify against paper abstract (primary source) + web search
+    verifications = verify_claims(claims, [], paper_abstract=abstract, web_search=True)
 
-BLOG POST TO CHECK:
-{draft[:3000]}
+    # Compute accuracy score
+    accuracy = compute_accuracy_score(verifications)
 
-Return ONLY a JSON object:
-{{
-    "flags": [
-        {{"claim": "the blog says X", "issue": "the abstract says Y", "severity": "high|medium|low"}}
-    ],
-    "overall_accuracy": "0-10 score",
-    "recommendation": "approve|revise|reject"
-}}"""
+    # Convert to legacy format for backward compatibility
+    flags = []
+    for v in verifications:
+        if v.get("verdict", "").upper() != "VERIFIED":
+            flags.append({
+                "claim": v.get("claim", ""),
+                "issue": v.get("evidence", ""),
+                "severity": v.get("severity", "medium"),
+            })
 
-    try:
-        raw = _llm_call(system, user, max_tokens=800, temperature=0.1)
-
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            raw = raw.rsplit("```", 1)[0]
-
-        result = json.loads(raw)
-        flags = result.get("flags", [])
-        return {
-            "flags": flags,
-            "flag_count": len(flags),
-            "accuracy_score": float(result.get("overall_accuracy", 5)),
-            "recommendation": result.get("recommendation", "revise"),
-            "passed": len([f for f in flags if f.get("severity") == "high"]) == 0,
-        }
-    except Exception as e:
-        logger.warning("Fact check failed: %s", e)
-        return {"flags": [], "flag_count": 0, "accuracy_score": 5, "recommendation": "approve", "passed": True}
+    return {
+        "flags": flags,
+        "flag_count": len(flags),
+        "accuracy_score": accuracy,
+        "recommendation": "approve" if accuracy >= 9.5 else "revise" if accuracy >= 5.0 else "reject",
+        "passed": len([f for f in flags if f.get("severity") == "high"]) == 0,
+    }
 
 
 def revise_with_flags(draft: str, flags: list, paper: dict) -> str:
