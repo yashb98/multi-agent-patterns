@@ -10,14 +10,16 @@ Production autonomous agent system: 4 orchestration patterns, 10+ daily automati
 
 ### 1. Orchestration Engine (patterns/)
 
-Four LangGraph patterns for multi-agent coordination:
+Four LangGraph patterns for multi-agent coordination, all with mandatory fact-checking:
 
 | Pattern | How It Works | Best For |
 |---------|-------------|----------|
-| **Hierarchical** | Supervisor routes to workers | Known workflows, speed |
-| **Peer Debate** | Agents cross-critique each other | Quality-critical tasks |
+| **Hierarchical** | Supervisor routes to workers + fact-checker | Known workflows, speed |
+| **Peer Debate** | Agents cross-critique + fact-check each round | Quality-critical tasks |
 | **Dynamic Swarm** | Task queue + runtime re-analysis | Unknown complexity |
-| **Enhanced Swarm** | Swarm + GRPO + persona + RLM | Production (used by JobPulse) |
+| **Enhanced Swarm** | Swarm + GRPO + persona + RLM + fact-check | Production (used by JobPulse) |
+
+**Dual convergence gate:** quality score >= 8.0/10 AND factual accuracy >= 9.5/10. Claim-level verification via research notes + web search + cached facts.
 
 ### NLP 3-Tier Intent Classification
 
@@ -29,7 +31,7 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 
 | Agent | What It Does | Schedule |
 |-------|-------------|----------|
-| Gmail | Classify recruiter emails, send alerts, extract knowledge | 1pm, 3pm, 5pm |
+| Gmail | Classify recruiter emails (rule-based pre-classifier + LLM), send alerts, extract knowledge | 1pm, 3pm, 5pm |
 | Calendar | Today + tomorrow events, 2-hour reminders | 9am, 12pm, 3pm |
 | GitHub | Yesterday's commits (Commits API), trending repos | 8am briefing |
 | arXiv | Daily top 5 AI papers ranked by broad impact, paper DB, read tracking, blog post pipeline | 7:57am + on demand |
@@ -91,18 +93,23 @@ Each bot is optional -- falls back to the main bot token/chat if not configured.
 | Discord | Channel polling | `python -m jobpulse.runner discord` |
 | All platforms | Threaded multi-listener | `python -m jobpulse.runner multi` |
 
-## Enhanced Swarm + RLM
+## Enhanced Swarm + RLM + Fact-Check
 
 JobPulse uses Enhanced Swarm architecture (not flat dispatch):
 
 ```
 Message → NLP 3-Tier Classifier (regex → embeddings → LLM)
        → Task Analyzer → Priority Queue → Execute with GRPO
+       → Fact Checker (claim extraction → web search → scoring)
        → RLM Synthesis (if large context) → Store Experience
        → Persona Evolution → Reply
 ```
 
 **RLM** (Recursive Language Model): when context exceeds single LLM capacity, root model writes code that processes chunks via sub-LM calls. Used for deep knowledge queries and briefing synthesis.
+
+**Fact-Check Accuracy (9.5+/10)**: every blog article goes through claim-level verification. Claims are extracted from the draft, verified against research notes + paper abstracts + live DuckDuckGo web search + cached facts. Deterministic scoring (VERIFIED +1.0, INACCURATE -2.0, EXAGGERATED -1.0). Failed claims get targeted revision notes with specific fix instructions. Verified facts cached in SQLite for instant reuse.
+
+**Gmail Pre-Classifier**: rule-based triage eliminates 70-85% of unnecessary LLM calls. 4-tier system: Learning → Static Rules → LLM Fallback → User Feedback. Adaptive audit decay (50% → 10%). Telegram review flow (✅/❌/🔄). Auto-graduates when accuracy exceeds 95%.
 
 **Persona Evolution**: agent prompts improve over weeks via two modes. Quick evolve (every run): single-step search-synthesize-compress. Deep meta-optimization (every 10th generation): multi-iteration reflective rewriting via `prompt_optimizer.py`. Gmail learns to skip automated rejections. Budget learns coffee = Eating out. Briefing learns to lead with interviews.
 
@@ -218,7 +225,7 @@ RLM_MAX_BUDGET=0.10
 
 ## Test Suite
 
-148 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (ranking, read tracking, category tags, stats), dispatcher routing, swarm logic, GRPO sampling, experience storage, and knowledge extraction.
+204 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (ranking, read tracking, category tags, stats), dispatcher routing, swarm logic, GRPO sampling, experience storage, knowledge extraction, email pre-classifier (rules, confidence, evidence, audit, graduation, review flow), and fact-checker (claim extraction, scoring, web search, cache).
 
 ```bash
 python -m pytest tests/ -v          # Full suite
@@ -243,7 +250,15 @@ All on gpt-4o-mini. Enhanced Swarm on gpt-4o would be ~$9/month.
 | **Auto Job Applier** | Designed | `docs/feature-auto-job-applier.md` |
 | **Gmail Smart Filter** | Designed | `docs/feature-gmail-smart-filter.md` |
 
-The blog pipeline uses 5 agents (Deep Reader → GRPO Writer → Fact Checker → Diagram Generator → Editor) to turn research papers into 2000-word publication-ready posts with workflow diagrams on Notion.
+The blog pipeline uses 5 agents (Deep Reader → GRPO Writer → Fact Checker → Diagram Generator → Editor) to turn research papers into 2000-word publication-ready posts with workflow diagrams on Notion. Fact-checking now uses the unified `shared/fact_checker.py` with web search verification.
+
+## Recent Features
+
+### Gmail Pre-Classifier (2026-03-27)
+Rule-based email triage that eliminates 70-85% of unnecessary LLM calls. Static rules match sender patterns, domain patterns, subject keywords, and dual subject+body patterns. Evidence-based attribution on every decision. Adaptive audit decay (50% → 10%). Telegram review flow with ✅/❌/🔄 for user feedback. Auto-graduates when rule accuracy exceeds 95%.
+
+### Fact-Check Accuracy 9.5+/10 (2026-03-27)
+Mandatory fact-checking across all 4 orchestration patterns. Extracts verifiable claims from drafts, verifies against research notes + paper abstracts + DuckDuckGo web search. Deterministic scoring with hard accuracy gate (9.5/10). Targeted revision notes give the writer specific claim-level fix instructions. Verified facts cached in SQLite for reuse.
 
 ## Documentation Map
 
@@ -270,3 +285,5 @@ The blog pipeline uses 5 agents (Deep Reader → GRPO Writer → Fact Checker �
 | Notion Budget v2 | Implemented | [docs/feature-notion-budget-v2.md](docs/feature-notion-budget-v2.md) |
 | NLP Intent Classification | Implemented | [docs/feature-nlp-intent.md](docs/feature-nlp-intent.md) |
 | arXiv Digest | Implemented | [docs/feature-arxiv-digest.md](docs/feature-arxiv-digest.md) |
+| Gmail Pre-Classifier | Implemented | [docs/feature-gmail-preclassifier.md](docs/feature-gmail-preclassifier.md) |
+| Fact-Check Accuracy 9.5+ | Implemented | [docs/feature-fact-check-accuracy.md](docs/feature-fact-check-accuracy.md) |
