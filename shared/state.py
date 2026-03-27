@@ -73,3 +73,15 @@ class AgentState(TypedDict):
 
     # Final output after all processing is complete.
     final_output: str
+
+    # ─── FACT-CHECK FIELDS ─────────────────────────────────────
+    # Claims extracted from the current draft
+    extracted_claims: list[dict]
+    # Verification result per claim
+    claim_verifications: list[dict]
+    # Deterministic accuracy score (0-10)
+    accuracy_score: float
+    # True if accuracy_score >= 9.5
+    accuracy_passed: bool
+    # Specific fix instructions for the writer
+    fact_revision_notes: Optional[str]

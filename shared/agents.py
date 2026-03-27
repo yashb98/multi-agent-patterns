@@ -473,5 +473,10 @@ def create_initial_state(topic: str) -> AgentState:
         "current_agent": "",
         "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] System initialised with topic: {topic}"],
         "pending_tasks": [],
-        "final_output": ""
+        "final_output": "",
+        "extracted_claims": [],
+        "claim_verifications": [],
+        "accuracy_score": 0.0,
+        "accuracy_passed": False,
+        "fact_revision_notes": None,
     }
