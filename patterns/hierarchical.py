@@ -49,6 +49,7 @@ from shared.agents import (
     researcher_node,
     writer_node,
     reviewer_node,
+    fact_check_node,
     create_initial_state,
     get_llm,
 )
@@ -112,31 +113,30 @@ def supervisor_node_rule_based(state: AgentState) -> dict:
     
     # ── Decision logic ──
     if not research:
-        # No research yet — start here
         next_agent = "researcher"
         reason = "No research gathered yet"
-        
     elif not draft:
-        # Have research but no draft — time to write
         next_agent = "writer"
         reason = "Research complete, need first draft"
-        
     elif not review_feedback:
-        # Have draft but no review — send to reviewer
         next_agent = "reviewer"
         reason = "Draft needs review"
-        
     elif not review_passed and iteration < 3:
-        # Review failed but we haven't hit max iterations
-        # Send back to writer for revision
+        # Quality gate: overall score < 8.0
         next_agent = "writer"
         reason = f"Review failed (score: {state.get('review_score', 0)}), revision needed"
-        
+    elif review_passed and not state.get("accuracy_passed", False) and state.get("accuracy_score", 0) == 0:
+        # Quality passed but no fact-check yet — run fact checker
+        next_agent = "fact_checker"
+        reason = "Quality passed, running fact-check"
+    elif not state.get("accuracy_passed", False) and iteration < 3:
+        # Fact-check failed — revise with specific fix instructions
+        next_agent = "writer"
+        reason = f"Accuracy failed ({state.get('accuracy_score', 0):.1f}/10), fact revision needed"
     else:
-        # Either passed review OR hit max iterations
         next_agent = "FINISH"
-        if review_passed:
-            reason = f"Review passed with score {state.get('review_score', 0)}"
+        if review_passed and state.get("accuracy_passed", False):
+            reason = f"Both gates passed: quality={state.get('review_score', 0)}, accuracy={state.get('accuracy_score', 0):.1f}"
         else:
             reason = f"Max iterations ({iteration}) reached, accepting current draft"
     
@@ -298,6 +298,7 @@ def build_hierarchical_graph(use_llm_supervisor: bool = False):
     graph.add_node("researcher", researcher_node)
     graph.add_node("writer", writer_node)
     graph.add_node("reviewer", reviewer_node)
+    graph.add_node("fact_checker", fact_check_node)
     graph.add_node("finish", finish_node)
     
     # 3. Set the entry point
@@ -318,6 +319,7 @@ def build_hierarchical_graph(use_llm_supervisor: bool = False):
             "researcher": "researcher",
             "writer": "writer",
             "reviewer": "reviewer",
+            "fact_checker": "fact_checker",
             "finish": "finish",
         }
     )
@@ -329,6 +331,7 @@ def build_hierarchical_graph(use_llm_supervisor: bool = False):
     graph.add_edge("researcher", "supervisor")
     graph.add_edge("writer", "supervisor")
     graph.add_edge("reviewer", "supervisor")
+    graph.add_edge("fact_checker", "supervisor")
     
     # 6. Finish node goes to END (terminal)
     graph.add_edge("finish", END)

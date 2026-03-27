@@ -140,11 +140,11 @@ AGENT HISTORY (last 5 actions):
 {chr(10).join(state.get('agent_history', [])[-5:])}"""
     
     # Check for obvious terminal condition first (saves an LLM call)
-    if state.get("review_passed", False):
-        print("   ✅ Review already passed — no tasks needed")
+    if state.get("review_passed", False) and state.get("accuracy_passed", True):
+        print("   ✅ Review and accuracy passed — no tasks needed")
         return {
             "pending_tasks": [],
-            "agent_history": ["Task Analyzer: No tasks needed, review passed"]
+            "agent_history": ["Task Analyzer: No tasks needed, review and accuracy passed"]
         }
     
     if iteration >= 3:
@@ -324,9 +324,9 @@ def should_continue_swarm(state: AgentState) -> str:
     review_passed = state.get("review_passed", False)
     iteration = state.get("iteration", 0)
     
-    if review_passed:
+    if review_passed and state.get("accuracy_passed", True):
         return "finish"
-    
+
     if iteration >= 3:
         return "finish"
     

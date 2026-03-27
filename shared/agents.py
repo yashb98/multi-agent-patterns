@@ -453,6 +453,57 @@ specified in your instructions."""
     }
 
 
+# ─── AGENT NODE: FACT CHECKER ──────────────────────────────────────
+
+def fact_check_node(state: AgentState) -> dict:
+    """
+    The Fact Checker agent extracts claims and verifies them against sources.
+
+    READS: draft, topic, research_notes
+    WRITES: extracted_claims, claim_verifications, accuracy_score, accuracy_passed, fact_revision_notes, agent_history
+
+    Uses the unified fact-checker from shared/fact_checker.py.
+    Runs AFTER reviewer but BEFORE convergence check.
+    """
+    from shared.fact_checker import (
+        extract_claims, verify_claims, compute_accuracy_score, generate_revision_notes
+    )
+
+    logger.info("=" * 50)
+    logger.info("FACT CHECKER AGENT - Verifying claims")
+    logger.info("=" * 50)
+
+    draft = state.get("draft", "")
+    topic = state["topic"]
+    research = state.get("research_notes", [])
+
+    # Step 1: Extract claims
+    claims = extract_claims(draft, topic)
+    logger.info("Extracted %d claims from draft", len(claims))
+
+    # Step 2: Verify claims against research notes + web search
+    verifications = verify_claims(claims, research, web_search=True)
+    logger.info("Verified %d claims", len(verifications))
+
+    # Step 3: Compute accuracy score
+    score = compute_accuracy_score(verifications)
+    passed = score >= 9.5
+    logger.info("Accuracy score: %.1f/10 | Passed (>=9.5): %s", score, passed)
+
+    # Step 4: Generate revision notes if needed
+    revision_notes = generate_revision_notes(verifications) if not passed else None
+
+    return {
+        "extracted_claims": claims,
+        "claim_verifications": verifications,
+        "accuracy_score": score,
+        "accuracy_passed": passed,
+        "fact_revision_notes": revision_notes,
+        "current_agent": "fact_checker",
+        "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Fact Checker: accuracy={score:.1f}, passed={passed}"]
+    }
+
+
 # ─── UTILITY: STATE INITIALISER ─────────────────────────────────
 
 def create_initial_state(topic: str) -> AgentState:

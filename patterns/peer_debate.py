@@ -47,6 +47,7 @@ from shared.agents import (
     researcher_node,
     writer_node,
     reviewer_node,
+    fact_check_node,
     create_initial_state,
     get_llm,
 )
@@ -260,22 +261,32 @@ def convergence_check(state: AgentState) -> dict:
     print(f"   Passed threshold: {passed}")
     print(f"   Debate round: {iteration}")
     
-    # Determine if we should continue debating
+    accuracy_passed = state.get("accuracy_passed", False)
+    accuracy_score = state.get("accuracy_score", 0)
+
+    # Dual gate: quality AND accuracy must pass
+    quality_ok = passed and score >= 8.0
+    accuracy_ok = accuracy_passed
+
     should_continue = (
-        not passed              # Haven't passed quality threshold
-        and iteration < 3       # Haven't hit max rounds
-        and score < 9.0         # Not already excellent
+        (not quality_ok or not accuracy_ok)
+        and iteration < 3
+        and score < 9.0
     )
-    
+
     if should_continue:
-        decision = "continue"
-        reason = f"Score {score}/10 below threshold, round {iteration}/3"
-    elif passed:
+        if quality_ok and not accuracy_ok:
+            decision = "continue"
+            reason = f"Quality passed ({score}/10) but accuracy failed ({accuracy_score:.1f}/10)"
+        else:
+            decision = "continue"
+            reason = f"Score {score}/10 below threshold, round {iteration}/3"
+    elif quality_ok and accuracy_ok:
         decision = "finish"
-        reason = f"Quality threshold met with score {score}/10"
+        reason = f"Both gates passed: quality={score}/10, accuracy={accuracy_score:.1f}/10"
     else:
         decision = "finish"
-        reason = f"Max rounds reached. Final score: {score}/10"
+        reason = f"Max rounds reached. Final score: {score}/10, accuracy: {accuracy_score:.1f}/10"
     
     print(f"   → Decision: {decision}")
     print(f"   → Reason: {reason}")
@@ -370,6 +381,9 @@ def build_debate_graph():
     graph.add_node("debate_researcher", debate_researcher_node)
     graph.add_node("debate_writer", debate_writer_node)
     
+    # Fact checker node
+    graph.add_node("fact_checker", fact_check_node)
+
     # Control nodes
     graph.add_node("convergence", convergence_check)
     graph.add_node("synthesis", synthesis_node)
@@ -380,8 +394,9 @@ def build_debate_graph():
     graph.add_edge("researcher", "writer")
     graph.add_edge("writer", "reviewer")
     
-    # After first review, go to convergence check
-    graph.add_edge("reviewer", "convergence")
+    # After review, run fact-check before convergence
+    graph.add_edge("reviewer", "fact_checker")
+    graph.add_edge("fact_checker", "convergence")
     
     # ── Convergence decision ──
     # This is the ONLY conditional edge in the debate pattern.

@@ -326,15 +326,18 @@ def enhanced_convergence(state: AgentState) -> dict:
     else:
         threshold = base_threshold
     
+    accuracy_passed = state.get("accuracy_passed", False)
+    accuracy_score = state.get("accuracy_score", 0)
+
     should_continue = (
-        not passed
+        (not passed or not accuracy_passed)
         and score < threshold
         and iteration < 3
     )
-    
+
     decision = "continue" if should_continue else "finish"
-    
-    print(f"\n  Convergence: score={score:.1f}, "
+
+    print(f"\n  Convergence: quality={score:.1f}, accuracy={accuracy_score:.1f}, "
           f"threshold={threshold:.1f}, iter={iteration} → {decision}")
     
     return {
