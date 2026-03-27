@@ -1,0 +1,119 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-03-27",
+  "sender_other_patterns": [
+    {"pattern": "noreply@", "confidence": 0.95, "name": "noreply_sender"},
+    {"pattern": "no-reply@", "confidence": 0.95, "name": "noreply_sender_alt"},
+    {"pattern": "notifications@", "confidence": 0.90, "name": "notifications_sender"},
+    {"pattern": "notify@", "confidence": 0.90, "name": "notify_sender"},
+    {"pattern": "marketing@", "confidence": 0.95, "name": "marketing_sender"},
+    {"pattern": "promo@", "confidence": 0.95, "name": "promo_sender"},
+    {"pattern": "offers@", "confidence": 0.95, "name": "offers_sender"},
+    {"pattern": "newsletter@", "confidence": 0.95, "name": "newsletter_sender"},
+    {"pattern": "digest@", "confidence": 0.90, "name": "digest_sender"},
+    {"pattern": "updates@", "confidence": 0.85, "name": "updates_sender"},
+    {"pattern": "support@", "confidence": 0.85, "name": "support_sender"},
+    {"pattern": "billing@", "confidence": 0.90, "name": "billing_sender"},
+    {"pattern": "receipts@", "confidence": 0.95, "name": "receipts_sender"},
+    {"pattern": "mailer-daemon@", "confidence": 0.99, "name": "mailer_daemon"},
+    {"pattern": "postmaster@", "confidence": 0.99, "name": "postmaster"}
+  ],
+  "domain_other_patterns": [
+    {"pattern": "substack.com", "confidence": 0.95, "name": "substack_domain"},
+    {"pattern": "medium.com", "confidence": 0.90, "name": "medium_domain"},
+    {"pattern": "mailchimp.com", "confidence": 0.95, "name": "mailchimp_domain"},
+    {"pattern": "sendgrid.net", "confidence": 0.90, "name": "sendgrid_domain"},
+    {"pattern": "facebookmail.com", "confidence": 0.95, "name": "facebook_domain"},
+    {"pattern": "twitter.com", "confidence": 0.90, "name": "twitter_domain"},
+    {"pattern": "instagram.com", "confidence": 0.90, "name": "instagram_domain"},
+    {"pattern": "accounts.google.com", "confidence": 0.90, "name": "google_accounts"},
+    {"pattern": "amazonses.com", "confidence": 0.85, "name": "amazon_ses"}
+  ],
+  "subject_other_patterns": [
+    {"pattern": "order confirmation", "confidence": 0.95, "name": "order_confirmation"},
+    {"pattern": "receipt", "confidence": 0.90, "name": "receipt_subject"},
+    {"pattern": "invoice", "confidence": 0.90, "name": "invoice_subject"},
+    {"pattern": "shipping", "confidence": 0.85, "name": "shipping_subject"},
+    {"pattern": "verify your email", "confidence": 0.95, "name": "verify_email"},
+    {"pattern": "confirm your account", "confidence": 0.95, "name": "confirm_account"},
+    {"pattern": "your weekly", "confidence": 0.90, "name": "weekly_digest"},
+    {"pattern": "your monthly", "confidence": 0.90, "name": "monthly_digest"},
+    {"pattern": "your daily", "confidence": 0.90, "name": "daily_digest"},
+    {"pattern": "unsubscribe", "confidence": 0.85, "name": "unsubscribe_subject"}
+  ],
+  "ats_domains": [
+    {"pattern": "greenhouse.io", "confidence": 0.90, "name": "greenhouse_ats"},
+    {"pattern": "lever.co", "confidence": 0.90, "name": "lever_ats"},
+    {"pattern": "workday.com", "confidence": 0.90, "name": "workday_ats"},
+    {"pattern": "myworkday.com", "confidence": 0.90, "name": "myworkday_ats"},
+    {"pattern": "smartrecruiters.com", "confidence": 0.90, "name": "smartrecruiters_ats"},
+    {"pattern": "icims.com", "confidence": 0.90, "name": "icims_ats"},
+    {"pattern": "taleo.net", "confidence": 0.90, "name": "taleo_ats"},
+    {"pattern": "jobvite.com", "confidence": 0.90, "name": "jobvite_ats"},
+    {"pattern": "ashbyhq.com", "confidence": 0.90, "name": "ashby_ats"},
+    {"pattern": "bamboohr.com", "confidence": 0.90, "name": "bamboo_ats"}
+  ],
+  "recruiter_sender_patterns": [
+    {"pattern": "recruit", "confidence": 0.80, "name": "recruiter_keyword"},
+    {"pattern": "talent", "confidence": 0.80, "name": "talent_keyword"},
+    {"pattern": "hiring", "confidence": 0.80, "name": "hiring_keyword"},
+    {"pattern": "hr@", "confidence": 0.75, "name": "hr_sender"},
+    {"pattern": "careers@", "confidence": 0.80, "name": "careers_sender"},
+    {"pattern": "jobs@", "confidence": 0.80, "name": "jobs_sender"},
+    {"pattern": "people@", "confidence": 0.70, "name": "people_sender"}
+  ],
+  "recruiter_subject_patterns": [
+    {"pattern": "application", "confidence": 0.75, "name": "application_subject"},
+    {"pattern": "role", "confidence": 0.65, "name": "role_subject"},
+    {"pattern": "position", "confidence": 0.70, "name": "position_subject"},
+    {"pattern": "interview", "confidence": 0.85, "name": "interview_subject"},
+    {"pattern": "opportunity", "confidence": 0.65, "name": "opportunity_subject"},
+    {"pattern": "candidate", "confidence": 0.80, "name": "candidate_subject"}
+  ],
+  "rejected_dual_patterns": [
+    {
+      "subject_pattern": "unfortunately",
+      "body_pattern": "other candidates",
+      "confidence": 0.92,
+      "name": "rejection_unfortunately_others"
+    },
+    {
+      "subject_pattern": "regret to inform",
+      "body_pattern": "not (selected|moving forward)",
+      "confidence": 0.93,
+      "name": "rejection_regret"
+    },
+    {
+      "subject_pattern": "update on your application",
+      "body_pattern": "decided not to proceed",
+      "confidence": 0.91,
+      "name": "rejection_not_proceed"
+    },
+    {
+      "subject_pattern": "application status",
+      "body_pattern": "not moving forward",
+      "confidence": 0.92,
+      "name": "rejection_not_moving"
+    }
+  ],
+  "selected_dual_patterns": [
+    {
+      "subject_pattern": "congratulations",
+      "body_pattern": "next (round|stage|step)",
+      "confidence": 0.90,
+      "name": "selected_congrats_next"
+    },
+    {
+      "subject_pattern": "pleased to inform",
+      "body_pattern": "(selected|progressed|shortlisted)",
+      "confidence": 0.91,
+      "name": "selected_pleased"
+    },
+    {
+      "subject_pattern": "moving forward",
+      "body_pattern": "(your application|your candidacy)",
+      "confidence": 0.89,
+      "name": "selected_moving_forward"
+    }
+  ]
+}
