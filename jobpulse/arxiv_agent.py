@@ -547,6 +547,27 @@ def build_digest(top_n: int = 5) -> str:
 
     threading.Thread(target=_extract_bg, daemon=True).start()
 
+    # Schedule a 20-minute reminder to blog papers
+    def _blog_reminder():
+        import time
+        time.sleep(20 * 60)  # 20 minutes
+        try:
+            from jobpulse.telegram_bots import send_research
+            paper_titles = [f"{i}. \"{p['title'][:60]}\"" for i, (p, _) in enumerate(summaries, 1)]
+            reminder = (
+                "\U0001f4dd PAPER BLOG REMINDER (20 min)\n\n"
+                "Today's papers:\n" + "\n".join(paper_titles) + "\n\n"
+                "Want to generate a blog post?\n"
+                "Reply: \"blog 1\" through \"blog 5\"\n"
+                "Or \"skip\" to pass today."
+            )
+            send_research(reminder)
+            logger.info("Blog reminder sent (20 min after digest)")
+        except Exception as e:
+            logger.debug("Blog reminder failed: %s", e)
+
+    threading.Thread(target=_blog_reminder, daemon=True).start()
+
     return digest
 
 
