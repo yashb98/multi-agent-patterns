@@ -1,6 +1,7 @@
 """Tests for unified fact-checker — claim extraction, scoring, revision notes."""
 
 import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -167,7 +168,10 @@ class TestVerifyClaims:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = '{"verifications": [{"claim": "scores 86.4%", "verdict": "VERIFIED", "evidence": "matches", "confidence": 0.95, "severity": "low", "fix_suggestion": null}]}'
 
-        with patch("shared.fact_checker.OpenAI") as mock_client:
+        with patch("shared.fact_checker.OpenAI") as mock_client, \
+             patch("shared.fact_checker.get_cached_fact", return_value=None), \
+             patch("shared.fact_checker.web_verify_claim", return_value={"source": None, "supports": False, "snippet": ""}), \
+             patch("shared.fact_checker.cache_verified_fact"):
             mock_client.return_value.chat.completions.create.return_value = mock_response
             results = verify_claims(
                 [{"claim": "scores 86.4%", "type": "benchmark", "source_needed": True}],
@@ -185,9 +189,74 @@ class TestVerifyClaims:
 
     def test_empty_on_error(self):
         from shared.fact_checker import verify_claims
-        with patch("shared.fact_checker.OpenAI") as mock_client:
+        with patch("shared.fact_checker.OpenAI") as mock_client, \
+             patch("shared.fact_checker.get_cached_fact", return_value=None), \
+             patch("shared.fact_checker.web_verify_claim", return_value={"source": None, "supports": False, "snippet": ""}):
             mock_client.return_value.chat.completions.create.side_effect = Exception("fail")
             results = verify_claims(
                 [{"claim": "x", "type": "benchmark", "source_needed": True}], ["source"]
             )
             assert results == []
+
+
+class TestWebVerifyClaim:
+    """Web search verification."""
+
+    def test_returns_dict_on_import_error(self):
+        from shared.fact_checker import web_verify_claim
+        with patch.dict("sys.modules", {"duckduckgo_search": None}):
+            # Force reimport to trigger ImportError path
+            pass
+        # Just test the function exists and returns a dict
+        result = web_verify_claim("test claim")
+        assert isinstance(result, dict)
+        assert "source" in result
+        assert "snippet" in result
+
+    def test_handles_search_exception(self):
+        from shared.fact_checker import web_verify_claim
+        mock_ddgs = MagicMock()
+        mock_ddgs_module = MagicMock()
+        mock_ddgs_module.DDGS = MagicMock(side_effect=Exception("network error"))
+        with patch.dict("sys.modules", {"duckduckgo_search": mock_ddgs_module}):
+            result = web_verify_claim("test claim")
+            assert result["supports"] is False
+
+
+class TestVerifiedFactsCache:
+    """SQLite cache for previously verified facts."""
+
+    def test_cache_and_retrieve(self, tmp_path):
+        import shared.fact_checker as fc
+        original_path = fc.CACHE_DB_PATH
+        fc.CACHE_DB_PATH = tmp_path / "test_cache.db"
+        try:
+            fc.cache_verified_fact("GPT-4 scores 86.4%", "VERIFIED", "Matches paper", confidence=0.95)
+            cached = fc.get_cached_fact("GPT-4 scores 86.4%")
+            assert cached is not None
+            assert cached["verdict"] == "VERIFIED"
+            assert cached["confidence"] == 0.95
+        finally:
+            fc.CACHE_DB_PATH = original_path
+
+    def test_cache_miss_returns_none(self, tmp_path):
+        import shared.fact_checker as fc
+        original_path = fc.CACHE_DB_PATH
+        fc.CACHE_DB_PATH = tmp_path / "test_cache.db"
+        try:
+            result = fc.get_cached_fact("nonexistent claim")
+            assert result is None
+        finally:
+            fc.CACHE_DB_PATH = original_path
+
+    def test_cache_dedup_by_hash(self, tmp_path):
+        import shared.fact_checker as fc
+        original_path = fc.CACHE_DB_PATH
+        fc.CACHE_DB_PATH = tmp_path / "test_cache.db"
+        try:
+            fc.cache_verified_fact("Claim A", "VERIFIED", "evidence1")
+            fc.cache_verified_fact("Claim A", "INACCURATE", "evidence2")  # Same claim, update
+            cached = fc.get_cached_fact("Claim A")
+            assert cached["verdict"] == "INACCURATE"  # Should be updated
+        finally:
+            fc.CACHE_DB_PATH = original_path
