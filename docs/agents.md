@@ -20,8 +20,29 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 
 ### Gmail Agent (`gmail_agent.py`)
 - Scans inbox via Gmail API, classifies emails with LLM (SELECTED/INTERVIEW/REJECTED/OTHER)
+- **Pre-classifier** (`email_preclassifier.py`): rule-based triage eliminates 70-85% of unnecessary LLM calls
 - Sends Telegram alerts for recruiter emails, auto-extracts knowledge (company, role)
 - Uses evolved persona — learns to skip automated rejections over time
+
+### Email Pre-Classifier (`email_preclassifier.py`)
+- Rule-based pre-classification before LLM — eliminates 70-85% of unnecessary LLM calls
+- 4-tier system: Learning → Static Rules → LLM Fallback → User Feedback
+- Static rules: sender patterns, domain patterns, subject keywords, dual subject+body match
+- Categories: auto-OTHER (newsletters, receipts), auto-REJECTED (template rejections), auto-SELECTED (congratulations patterns)
+- Evidence-based attribution: every decision logged with rule name, matched patterns, reasoning
+- Adaptive audit decay: 50% → 30% → 20% → 10% as classifier processes more emails
+- Learned rules: dynamically generated from LLM audits + user feedback (`data/gmail_learned_rules.json`)
+- Telegram review flow: ✅ (correct), ❌ (wrong), 🔄 CATEGORY (reclassify) — user corrections have 2x weight
+- Auto-graduation: exits learning phase when accuracy > 95% on last 50 audits (min 100 emails, 20 audits)
+- Rules priority: dual-match → ATS domain → recruiter hints → sender OTHER → domain OTHER → subject OTHER → learned
+
+### Email Review (`email_review.py`)
+- Telegram review flow for pre-classifier decisions (mirrors `approval.py` pattern)
+- One pending review at a time, auto-expires after 1 hour
+- ✅ confirms classification, boosts rule confidence
+- ❌ marks rule as incorrect, reduces confidence (disabled after 3 corrections)
+- 🔄 CATEGORY reclassifies email and updates SQLite record
+- User feedback has 2x weight compared to LLM audit corrections
 
 ### Calendar Agent (`calendar_agent.py`)
 - Fetches today + tomorrow events via Google Calendar API
