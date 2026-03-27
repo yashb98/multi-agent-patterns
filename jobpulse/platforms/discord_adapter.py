@@ -134,14 +134,52 @@ class DiscordAdapter(PlatformAdapter):
                 continue
 
             text = msg.get("content", "").strip()
+
+            # Handle voice/audio attachments
+            attachments = msg.get("attachments", [])
+            if not text and attachments:
+                audio_att = next(
+                    (a for a in attachments
+                     if a.get("content_type", "").startswith("audio/") or
+                     a.get("filename", "").endswith((".ogg", ".mp3", ".wav", ".m4a"))),
+                    None
+                )
+                if audio_att:
+                    try:
+                        from jobpulse.voice_handler import transcribe_voice_url
+                        text = transcribe_voice_url(audio_att["url"])
+                        if text:
+                            logger.info("Discord voice transcribed: %s", text[:80])
+                            self.send_message(f"\U0001f3a4 Heard: \"{text}\"")
+                        else:
+                            self.send_message("\U0001f3a4 Couldn't understand the voice message. Try again or type your message.")
+                            continue
+                    except ImportError:
+                        # transcribe_voice_url not available, try downloading
+                        logger.debug("Voice URL transcription not available")
+                    except Exception as e:
+                        logger.error("Discord voice transcription failed: %s", e)
+
             if not text:
                 continue
 
-            # Skip greetings
-            if text.lower() in ("hi", "hello", "hey"):
+            logger.info("Discord msg: %s", text[:80])
+
+            # Check for email classification review reply (✅/❌/🔄)
+            from jobpulse.email_review import process_review_reply
+            review_response = process_review_reply(text)
+            if review_response:
+                self.send_message(review_response)
+                logger.info("Discord email review: %s", review_response[:80])
                 continue
 
-            logger.info("Discord msg: %s", text[:80])
+            # Check for pending approval reply (yes/no)
+            from jobpulse.approval import process_reply as check_approval
+            approval_response = check_approval(text)
+            if approval_response:
+                self.send_message(approval_response)
+                logger.info("Discord approval: %s", approval_response[:80])
+                continue
 
             cmd = classify(text)
             reply = dispatch(cmd)

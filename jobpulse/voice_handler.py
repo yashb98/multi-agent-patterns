@@ -1,4 +1,7 @@
-"""Voice handler — transcribes Telegram voice messages via OpenAI Whisper."""
+"""Voice handler — transcribes voice messages via OpenAI Whisper.
+
+Supports Telegram (file_id) and generic URLs (Discord, Slack, etc.).
+"""
 import os
 import tempfile
 import httpx
@@ -67,4 +70,49 @@ def transcribe_voice(file_id: str, bot_token: str = None) -> str:
 
     except Exception as e:
         logger.error("Voice transcription failed: %s", e)
+        return ""
+
+
+def transcribe_voice_url(url: str) -> str:
+    """Download audio from a URL and transcribe via Whisper.
+
+    Works with Discord attachment URLs, Slack file URLs, or any direct audio link.
+    """
+    if not OPENAI_API_KEY:
+        logger.warning("OPENAI_API_KEY not set, cannot transcribe voice")
+        return ""
+
+    try:
+        audio_resp = httpx.get(url, timeout=30, follow_redirects=True)
+        if audio_resp.status_code != 200:
+            logger.warning("Failed to download audio from URL: %d", audio_resp.status_code)
+            return ""
+
+        # Determine suffix from URL or default to .ogg
+        suffix = ".ogg"
+        for ext in (".mp3", ".wav", ".m4a", ".ogg", ".webm", ".mp4"):
+            if ext in url.lower():
+                suffix = ext
+                break
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(audio_resp.content)
+            tmp_path = tmp.name
+
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            with open(tmp_path, "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                )
+            text = transcript.text.strip()
+            logger.info("Voice (URL) transcribed: '%s' (%d chars)", text[:50], len(text))
+            return text
+        finally:
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        logger.error("Voice URL transcription failed: %s", e)
         return ""
