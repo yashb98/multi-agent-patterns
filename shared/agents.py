@@ -20,11 +20,18 @@ WHY THIS SEPARATION MATTERS:
 - Same agent logic, three different architectures
 - Easy to test agents in isolation
 - Easy to swap an agent (e.g., upgrade Writer) without touching wiring
+
+AGENTIC LOOP PATTERN (Claude Certified Architect Domain 1):
+The run_agentic_loop() function implements proper stop_reason handling:
+- Continues when stop_reason is "tool_use" (execute tools, feed results back)
+- Terminates when stop_reason is "end_turn" (model is done)
+- Tool results are appended to conversation history for next iteration
 """
 
 import json
 import os
 from datetime import datetime
+from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
@@ -36,31 +43,203 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+# ─── STRUCTURED ERROR RESPONSE ───────────────────────────────────
+
+class AgentError:
+    """Structured error object for agent failures (Domain 2, Task 2.2)."""
+
+    def __init__(self, error_category: str, message: str,
+                 is_retryable: bool = False, partial_results: Any = None,
+                 agent_name: str = "", attempted_action: str = ""):
+        self.error_category = error_category   # transient | validation | permission | business
+        self.message = message
+        self.is_retryable = is_retryable
+        self.partial_results = partial_results
+        self.agent_name = agent_name
+        self.attempted_action = attempted_action
+
+    def to_dict(self) -> dict:
+        return {
+            "status": "error",
+            "errorCategory": self.error_category,
+            "message": self.message,
+            "isRetryable": self.is_retryable,
+            "partialResults": self.partial_results,
+            "agentName": self.agent_name,
+            "attemptedAction": self.attempted_action,
+        }
+
+    def __str__(self) -> str:
+        retry = " (retryable)" if self.is_retryable else ""
+        return f"[{self.error_category}]{retry} {self.agent_name}: {self.message}"
+
+
 # ─── LLM INITIALISATION ─────────────────────────────────────────
-# We create two LLM instances:
-# - A "smart" one for complex reasoning (review, research)
-# - A "fast" one for generation (writing)
-# In production, you'd use different models (e.g., Opus vs Sonnet)
 
 def get_llm(temperature: float = 0.7, model: str = "gpt-4o-mini"):
     """
     Factory function for LLM instances.
-    
+
     WHY a factory? Because different agents may need different configs:
     - Researcher: low temperature (0.3) for factual accuracy
     - Writer: medium temperature (0.7) for creative prose
     - Reviewer: low temperature (0.2) for consistent scoring
-    
-    In production, you'd also configure:
-    - Retry logic with exponential backoff
-    - Fallback models (if primary is down)
-    - Cost tracking per agent
     """
     return ChatOpenAI(
         model=model,
         temperature=temperature,
-        # In production: add max_retries, request_timeout, etc.
     )
+
+
+# ─── AGENTIC LOOP (Domain 1, Task 1.1) ──────────────────────────
+# Proper stop_reason handling: continue on tool_use, stop on end_turn.
+# Tool results are appended to conversation context between iterations.
+
+# Registry of tools available to agents during agentic loops
+AGENT_TOOLS = {}
+
+
+def register_agent_tool(name: str, description: str, func: callable):
+    """Register a tool that agents can invoke during agentic loops."""
+    AGENT_TOOLS[name] = {
+        "name": name,
+        "description": description,
+        "func": func,
+    }
+
+
+def run_agentic_loop(
+    system_prompt: str,
+    user_message: str,
+    tools: list[dict] | None = None,
+    temperature: float = 0.7,
+    max_iterations: int = 10,
+    model: str = "gpt-4o-mini",
+) -> dict:
+    """
+    Run an agentic loop with proper stop_reason handling.
+
+    Returns dict with:
+        - content: str (final text output)
+        - tool_calls_made: list[dict] (audit trail of tool invocations)
+        - iterations: int (how many loop passes)
+        - stop_reason: str (why the loop ended: "end_turn" | "max_iterations")
+
+    PATTERN (from Claude Certified Architect exam, Domain 1 Task 1.1):
+    1. Send request to LLM
+    2. Inspect stop_reason: "tool_use" → execute tools, append results, loop
+    3. stop_reason "end_turn" → return final content
+    4. Max iterations is a SAFETY VALVE, not the primary stopping mechanism
+    """
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+
+    # Build OpenAI-format tool definitions
+    openai_tools = None
+    tool_map = {}
+    if tools:
+        openai_tools = []
+        for t in tools:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t.get("parameters", {"type": "object", "properties": {}}),
+                },
+            })
+            tool_map[t["name"]] = t["func"]
+
+    tool_calls_made = []
+    iteration = 0
+
+    while iteration < max_iterations:
+        iteration += 1
+
+        kwargs = {"model": model, "messages": messages, "temperature": temperature}
+        if openai_tools:
+            kwargs["tools"] = openai_tools
+
+        response = client.chat.completions.create(**kwargs)
+        choice = response.choices[0]
+
+        # ── Check stop_reason (finish_reason in OpenAI) ──
+        if choice.finish_reason == "tool_calls":
+            # Model wants to call tools — execute them and loop
+            assistant_msg = choice.message
+            messages.append(assistant_msg.model_dump())
+
+            for tool_call in assistant_msg.tool_calls:
+                fn_name = tool_call.function.name
+                fn_args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+
+                logger.info("Agentic loop: tool_call %s(%s)", fn_name, list(fn_args.keys()))
+
+                # Execute the tool
+                if fn_name in tool_map:
+                    try:
+                        result = tool_map[fn_name](**fn_args)
+                        result_str = json.dumps(result) if not isinstance(result, str) else result
+                    except Exception as e:
+                        result_str = json.dumps(AgentError(
+                            error_category="transient",
+                            message=str(e),
+                            is_retryable=True,
+                            agent_name=fn_name,
+                            attempted_action=f"{fn_name}({fn_args})",
+                        ).to_dict())
+                else:
+                    result_str = json.dumps(AgentError(
+                        error_category="validation",
+                        message=f"Unknown tool: {fn_name}",
+                        is_retryable=False,
+                    ).to_dict())
+
+                tool_calls_made.append({
+                    "tool": fn_name,
+                    "args": fn_args,
+                    "result": result_str[:500],
+                    "iteration": iteration,
+                })
+
+                # Append tool result to conversation for next iteration
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result_str,
+                })
+
+        elif choice.finish_reason in ("stop", "end_turn"):
+            # Model is done — return the final content
+            return {
+                "content": choice.message.content or "",
+                "tool_calls_made": tool_calls_made,
+                "iterations": iteration,
+                "stop_reason": "end_turn",
+            }
+        else:
+            # Unexpected finish_reason (length, content_filter, etc.)
+            logger.warning("Agentic loop: unexpected finish_reason=%s", choice.finish_reason)
+            return {
+                "content": choice.message.content or "",
+                "tool_calls_made": tool_calls_made,
+                "iterations": iteration,
+                "stop_reason": choice.finish_reason or "unknown",
+            }
+
+    # Safety valve: max iterations reached
+    logger.warning("Agentic loop: max_iterations (%d) reached", max_iterations)
+    return {
+        "content": messages[-1].get("content", "") if isinstance(messages[-1], dict) else "",
+        "tool_calls_made": tool_calls_made,
+        "iterations": iteration,
+        "stop_reason": "max_iterations",
+    }
 
 
 # ─── AGENT NODE: RESEARCHER ─────────────────────────────────────
@@ -225,37 +404,45 @@ Evaluate against all criteria and respond with ONLY the JSON structure
 specified in your instructions."""
     
     # Low temperature for consistent, reliable scoring
-    llm = get_llm(temperature=0.2)
+    # Use response_format to GUARANTEE valid JSON (Domain 4, Task 4.3)
+    # This eliminates JSON syntax errors — no more markdown stripping fallbacks
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.2,
+        model_kwargs={"response_format": {"type": "json_object"}},
+    )
     response = llm.invoke([
         SystemMessage(content=REVIEWER_PROMPT),
         HumanMessage(content=user_msg)
     ])
-    
-    # Parse the structured response
+
+    # Parse the structured response — guaranteed valid JSON by response_format
     raw = response.content.strip()
-    
-    # Handle potential markdown wrapping
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        raw = raw.rsplit("```", 1)[0]
-    
+
     try:
         review = json.loads(raw)
         score = float(review.get("overall_score", 0))
         passed = review.get("passed", False)
         feedback_text = json.dumps(review, indent=2)
-        
+
         logger.info("Score: %s/10 | Passed: %s", score, passed)
         if not passed:
             improvements = review.get("improvements_needed", [])
             for imp in improvements[:3]:
                 logger.info("   -> %s", imp)
     except (json.JSONDecodeError, ValueError) as e:
-        # Fallback if JSON parsing fails
-        logger.warning("Could not parse review JSON: %s", e)
+        # Structured error instead of silent fallback
+        logger.warning("Could not parse review JSON: %s — raw: %s", e, raw[:200])
         score = 5.0
         passed = False
-        feedback_text = raw
+        feedback_text = json.dumps({
+            "overall_score": 5.0,
+            "passed": False,
+            "parse_error": str(e),
+            "raw_response": raw[:500],
+            "improvements_needed": ["Review JSON could not be parsed — re-review needed"],
+            "summary": "Automated review failed to produce valid JSON. Manual review recommended."
+        }, indent=2)
     
     return {
         "review_feedback": feedback_text,

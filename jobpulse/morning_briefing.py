@@ -65,6 +65,7 @@ def build_and_send(trigger: str = "cron_morning"):
         s["output"] = f"{len(trending)} trending repos"
 
     # ── Section 6: Budget ──
+    # Structured error context instead of silent degradation (Domain 5, Task 5.3)
     with trail.step("api_call", "Collect budget summary") as s:
         try:
             week_summary = budget_agent.get_week_summary()
@@ -74,9 +75,12 @@ def build_and_send(trigger: str = "cron_morning"):
                 section_budget = "  No transactions logged this week"
             s["output"] = f"Income: £{week_summary['income_total']:.2f}, Spent: £{week_summary['spending_total']:.2f}"
         except Exception as e:
-            logger.warning("Budget data unavailable: %s", e)
-            section_budget = "  Budget data unavailable"
-            s["output"] = "Budget unavailable"
+            from jobpulse.dispatcher import _classify_error
+            error_cat, retryable = _classify_error(e)
+            logger.warning("Budget data unavailable [%s]: %s (retryable=%s)", error_cat, e, retryable)
+            section_budget = f"  Budget data unavailable ({error_cat}: {e})"
+            s["output"] = f"Budget error [{error_cat}]: {e}"
+            s["metadata"] = {"errorCategory": error_cat, "isRetryable": retryable, "error": str(e)}
 
     # ── Section 7: Process recurring transactions ──
     section_recurring = ""
@@ -92,8 +96,9 @@ def build_and_send(trigger: str = "cron_morning"):
             else:
                 s["output"] = "No recurring due today"
         except Exception as e:
-            logger.debug("Recurring processing skipped: %s", e)
-            s["output"] = "Skipped"
+            logger.warning("Recurring processing failed: %s (%s)", e, type(e).__name__)
+            s["output"] = f"Recurring error: {e}"
+            s["metadata"] = {"error": str(e), "errorType": type(e).__name__}
 
     # ── Section 8: Budget alerts ──
     section_alerts = ""
@@ -106,8 +111,9 @@ def build_and_send(trigger: str = "cron_morning"):
             else:
                 s["output"] = "No alerts"
         except Exception as e:
-            logger.debug("Budget alerts skipped: %s", e)
-            s["output"] = "Skipped"
+            logger.warning("Budget alerts failed: %s (%s)", e, type(e).__name__)
+            s["output"] = f"Alerts error: {e}"
+            s["metadata"] = {"error": str(e), "errorType": type(e).__name__}
 
     # ── Section 9: Weekly spending comparison ──
     section_comparison = ""
@@ -121,8 +127,9 @@ def build_and_send(trigger: str = "cron_morning"):
             else:
                 s["output"] = "Not enough data yet"
         except Exception as e:
-            logger.debug("Weekly comparison skipped: %s", e)
-            s["output"] = "Skipped"
+            logger.warning("Weekly comparison failed: %s (%s)", e, type(e).__name__)
+            s["output"] = f"Comparison error: {e}"
+            s["metadata"] = {"error": str(e), "errorType": type(e).__name__}
 
     # ── Build Message ──
     message = f"""☀️ Good Morning Yash! Here's your briefing for {today}:

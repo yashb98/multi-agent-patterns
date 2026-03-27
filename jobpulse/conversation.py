@@ -20,7 +20,7 @@ def _build_system_prompt() -> str:
     if claude_md.exists():
         project_context = claude_md.read_text()[:2000]
 
-    # Recent agent activity
+    # Recent agent activity — log failures instead of swallowing them
     recent_activity = ""
     try:
         from jobpulse.event_logger import get_events_for_day
@@ -30,17 +30,19 @@ def _build_system_prompt() -> str:
             for e in events[-5:]:
                 lines.append(f"- [{e.get('event_type')}] {e.get('agent_name')}: {e.get('content', '')[:100]}")
             recent_activity = "\nRecent agent activity today:\n" + "\n".join(lines)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Could not load recent activity for conversation context: %s", e)
+        recent_activity = "\nRecent activity: unavailable (event logger error)"
 
-    # Current status
+    # Current status — propagate error context instead of silent suppression
     status_info = ""
     try:
         from jobpulse.healthcheck import check_daemon_health
         health = check_daemon_health()
         status_info = f"\nDaemon: {'alive' if health['alive'] else 'DOWN'} (last heartbeat: {health.get('age_minutes', '?')}min ago)"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Could not check daemon health for conversation context: %s", e)
+        status_info = "\nDaemon status: unknown (healthcheck unavailable)"
 
     return f"""You are Yash's personal AI assistant running on his Mac via the JobPulse system.
 You have access to his project context and recent agent activity.

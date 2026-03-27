@@ -384,7 +384,7 @@ The arXiv agent evolves its scoring and summarization style:
 | 1 | Score by keyword match | Same |
 | 2 | Same | "Yash reads papers about agents more than pure theory" |
 | 4 | Same | "Prioritize papers with code/implementation. Skip survey papers." |
-| 8 | Same | "Authors from Anthropic, DeepMind, Stanford consistently score high. Boost them." |
+| 8 | Same | "Authors from Anthropic, DeepMind, MIT,  Stanford consistently score high. Boost them." |
 
 ## Cost Estimate
 
