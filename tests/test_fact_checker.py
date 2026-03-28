@@ -15,17 +15,17 @@ class TestComputeAccuracyScore:
     def test_all_verified_scores_10(self):
         from shared.fact_checker import compute_accuracy_score
         verifications = [
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
         ]
         assert compute_accuracy_score(verifications) == 10.0
 
     def test_one_inaccurate_drops_score(self):
         from shared.fact_checker import compute_accuracy_score
         verifications = [
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
             {"verdict": "INACCURATE", "severity": "high"},
         ]
         score = compute_accuracy_score(verifications)
@@ -36,38 +36,39 @@ class TestComputeAccuracyScore:
     def test_one_exaggerated_mild_drop(self):
         from shared.fact_checker import compute_accuracy_score
         verifications = [
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
             {"verdict": "EXAGGERATED", "severity": "medium"},
         ]
         score = compute_accuracy_score(verifications)
-        # 1+1+1+(-1) = 2, score = 10 * 2/4 = 5.0
-        assert score == 5.0
+        # 1+1+1+(-1.5) = 1.5, score = 10 * 1.5/4 = 3.75
+        assert score == 3.75
 
     def test_empty_verifications_perfect_score(self):
         from shared.fact_checker import compute_accuracy_score
         assert compute_accuracy_score([]) == 10.0
 
-    def test_unverified_low_severity_mild_penalty(self):
+    def test_unverified_penalty(self):
         from shared.fact_checker import compute_accuracy_score
         verifications = [
-            {"verdict": "VERIFIED", "severity": "low"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
             {"verdict": "UNVERIFIED", "severity": "low"},
         ]
         score = compute_accuracy_score(verifications)
-        # 1.0 + (-0.5) = 0.5, score = 10 * 0.5/2 = 2.5
-        assert score == 2.5
+        # 1.0 + (-1.0) = 0.0, score = 10 * 0.0/2 = 0.0
+        assert score == 0.0
 
-    def test_unverified_high_severity_heavy_penalty(self):
+    def test_unverified_with_external_verified(self):
         from shared.fact_checker import compute_accuracy_score
         verifications = [
-            {"verdict": "VERIFIED", "severity": "low"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "web"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
             {"verdict": "UNVERIFIED", "severity": "high"},
         ]
         score = compute_accuracy_score(verifications)
-        # 1.0 + (-1.5) = -0.5, score = max(0, 10 * -0.5/2) = 0.0
-        assert score == 0.0
+        # 1.0 + 1.0 + (-1.0) = 1.0, score = 10 * 1.0/3 ≈ 3.33
+        assert round(score, 2) == 3.33
 
     def test_score_floor_at_zero(self):
         from shared.fact_checker import compute_accuracy_score
@@ -80,20 +81,20 @@ class TestComputeAccuracyScore:
     def test_mostly_verified_high_score(self):
         from shared.fact_checker import compute_accuracy_score
         verifications = [
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
-            {"verdict": "VERIFIED", "severity": "low"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
+            {"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"},
             {"verdict": "UNVERIFIED", "severity": "low"},
         ]
         score = compute_accuracy_score(verifications)
-        # 9*1.0 + (-0.5) = 8.5, score = 10 * 8.5/10 = 8.5
-        assert score == 8.5
+        # 9*1.0 + (-1.0) = 8.0, score = 10 * 8.0/10 = 8.0
+        assert score == 8.0
 
 
 class TestGenerateRevisionNotes:
@@ -323,3 +324,109 @@ class TestVerifiedFactsCache:
             assert cached["verdict"] == "INACCURATE"  # Should be updated
         finally:
             fc.CACHE_DB_PATH = original_path
+
+
+class TestHonestScoring:
+    """Tests for honest scoring: abstract-only vs external source weighting."""
+
+    def test_abstract_only_verified_scores_half(self):
+        from shared.fact_checker import compute_accuracy_score
+        verifications = [{"verdict": "VERIFIED", "source": "abstract"}]
+        assert compute_accuracy_score(verifications) == 5.0
+
+    def test_external_verified_scores_full(self):
+        from shared.fact_checker import compute_accuracy_score
+        verifications = [{"verdict": "VERIFIED", "source": "semantic_scholar"}]
+        assert compute_accuracy_score(verifications) == 10.0
+
+    def test_mixed_sources_weighted(self):
+        from shared.fact_checker import compute_accuracy_score
+        verifications = [
+            {"verdict": "VERIFIED", "source": "abstract"},
+            {"verdict": "VERIFIED", "source": "semantic_scholar"},
+        ]
+        # 0.5 + 1.0 = 1.5, score = 10 * 1.5/2 = 7.5
+        assert compute_accuracy_score(verifications) == 7.5
+
+    def test_repo_adjustment_applied(self):
+        from shared.fact_checker import compute_accuracy_score
+        verifications = [{"verdict": "VERIFIED", "source": "semantic_scholar"}]
+        assert compute_accuracy_score(verifications, repo_adjustment=-0.5) == 9.5
+
+    def test_backward_compatible_no_source(self):
+        from shared.fact_checker import compute_accuracy_score
+        verifications = [{"verdict": "VERIFIED"}]
+        # No source field → defaults to "abstract" → 0.5 points → score 5.0
+        assert compute_accuracy_score(verifications) == 5.0
+
+
+class TestMultiSourceRouter:
+    def test_benchmark_claim_uses_web(self):
+        from shared.fact_checker import route_claim_to_verifier
+        assert route_claim_to_verifier({"claim": "achieves 92% on MMLU", "type": "benchmark"}) == "web"
+
+    def test_attribution_claim_uses_s2(self):
+        from shared.fact_checker import route_claim_to_verifier
+        assert route_claim_to_verifier({"claim": "proposed by Vaswani et al.", "type": "attribution"}) == "semantic_scholar"
+
+    def test_date_claim_uses_s2(self):
+        from shared.fact_checker import route_claim_to_verifier
+        assert route_claim_to_verifier({"claim": "published in 2023", "type": "date"}) == "semantic_scholar"
+
+    def test_technical_claim_uses_abstract_then_web(self):
+        from shared.fact_checker import route_claim_to_verifier
+        assert route_claim_to_verifier({"claim": "uses 12 attention heads", "type": "technical"}) == "abstract_then_web"
+
+    def test_comparison_claim_uses_web(self):
+        from shared.fact_checker import route_claim_to_verifier
+        assert route_claim_to_verifier({"claim": "3x faster than BERT", "type": "comparison"}) == "web"
+
+    def test_unknown_type_defaults_to_abstract_then_web(self):
+        from shared.fact_checker import route_claim_to_verifier
+        assert route_claim_to_verifier({"claim": "some claim", "type": "unknown"}) == "abstract_then_web"
+        assert route_claim_to_verifier({"claim": "some claim"}) == "abstract_then_web"
+
+
+class TestExplanationGenerator:
+    def test_all_verified_externally(self):
+        from shared.fact_checker import generate_fact_check_explanation
+
+        verifications = [
+            {"claim": "achieves 92% on MMLU", "verdict": "VERIFIED", "source": "semantic_scholar", "evidence": "Confirmed"},
+            {"claim": "released in 2023", "verdict": "VERIFIED", "source": "semantic_scholar", "evidence": "Confirmed"},
+        ]
+        repo = {"status": "REPO_HEALTHY", "summary": "repo healthy (1500 stars, tests present)"}
+
+        explanation = generate_fact_check_explanation(8.5, verifications, repo)
+
+        assert "2/2" in explanation
+        assert "externally" in explanation
+        assert "healthy" in explanation.lower()
+
+    def test_exaggerated_claim_shown(self):
+        from shared.fact_checker import generate_fact_check_explanation
+
+        verifications = [
+            {"claim": "3x faster than BERT", "verdict": "EXAGGERATED", "source": "web",
+             "evidence": "Benchmark shows 2.1x"},
+            {"claim": "novel architecture", "verdict": "VERIFIED", "source": "abstract", "evidence": "ok"},
+        ]
+        repo = {"status": "REPO_NA", "summary": "No repository linked"}
+
+        explanation = generate_fact_check_explanation(3.0, verifications, repo)
+
+        assert "1/2" in explanation
+        assert "exaggerated" in explanation.lower()
+        assert "3x faster" in explanation or "BERT" in explanation
+
+    def test_missing_repo_mentioned(self):
+        from shared.fact_checker import generate_fact_check_explanation
+
+        verifications = [
+            {"claim": "open source", "verdict": "VERIFIED", "source": "abstract", "evidence": "ok"},
+        ]
+        repo = {"status": "REPO_MISSING", "summary": "Repository owner/repo not found"}
+
+        explanation = generate_fact_check_explanation(4.5, verifications, repo)
+
+        assert "not found" in explanation.lower() or "missing" in explanation.lower()

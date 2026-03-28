@@ -23,6 +23,24 @@ CACHE_DB_PATH = Path(__file__).parent.parent / "data" / "verified_facts.db"
 VERIFIABLE_TYPES = {"benchmark", "date", "attribution", "comparison", "technical"}
 SKIP_TYPES = {"opinion", "definition"}
 
+# Claim type → verification source routing
+CLAIM_ROUTING = {
+    "benchmark": "web",
+    "comparison": "web",
+    "attribution": "semantic_scholar",
+    "date": "semantic_scholar",
+    "technical": "abstract_then_web",
+}
+
+
+def route_claim_to_verifier(claim: dict) -> str:
+    """Decide which verification source to use for a claim type.
+
+    Returns: 'semantic_scholar', 'web', or 'abstract_then_web'
+    """
+    claim_type = claim.get("type", "technical")
+    return CLAIM_ROUTING.get(claim_type, "abstract_then_web")
+
 
 @dataclass
 class Claim:
@@ -274,42 +292,46 @@ Return JSON: {{"verifications": [{{"claim": "...", "verdict": "...", "evidence":
         return cached_results
 
 
-def compute_accuracy_score(verifications: list[dict]) -> float:
-    """Compute deterministic accuracy score from verification results.
+def compute_accuracy_score(verifications: list[dict], repo_adjustment: float = 0.0) -> float:
+    """Compute honest accuracy score from verification results.
 
-    Scoring:
-    - VERIFIED: +1.0
-    - UNVERIFIED (low severity): -0.5
-    - UNVERIFIED (medium/high severity): -1.5
-    - INACCURATE: -2.0
-    - EXAGGERATED: -1.0
+    Key difference from v1: abstract-only verification scores 0.5, not 1.0.
+    External source verification scores full 1.0.
 
-    Score = 10.0 * (total_points / max_possible_points)
+    Scoring per claim:
+    - VERIFIED (external source): +1.0
+    - VERIFIED (abstract only):   +0.5
+    - UNVERIFIED:                 -1.0
+    - EXAGGERATED:                -1.5
+    - INACCURATE:                 -2.0
+    - SKIPPED:                    not counted
+
+    repo_adjustment: added directly to 0-10 scale (-0.5 for missing, -0.3 for unhealthy)
     """
-    if not verifications:
-        return 10.0  # No claims to verify = perfect score
+    scorable = [v for v in verifications if v.get("verdict", "").upper() != "SKIPPED"]
 
-    max_points = len(verifications) * 1.0
+    if not scorable:
+        return max(0.0, min(10.0, 10.0 + repo_adjustment))
+
+    max_points = len(scorable) * 1.0
     total_points = 0.0
 
-    for v in verifications:
+    for v in scorable:
         verdict = v.get("verdict", "UNVERIFIED").upper()
-        severity = v.get("severity", "medium").lower()
+        source = v.get("source", "abstract")
+        is_external = source in ("semantic_scholar", "web", "papers_with_code")
 
         if verdict == "VERIFIED":
-            total_points += 1.0
+            total_points += 1.0 if is_external else 0.5
         elif verdict == "EXAGGERATED":
-            total_points -= 1.0
+            total_points -= 1.5
         elif verdict == "INACCURATE":
             total_points -= 2.0
         elif verdict == "UNVERIFIED":
-            if severity == "low":
-                total_points -= 0.5
-            else:
-                total_points -= 1.5
+            total_points -= 1.0
 
-    # Normalize to 0-10 scale
     score = 10.0 * (total_points / max_points) if max_points > 0 else 10.0
+    score += repo_adjustment
     return max(0.0, min(10.0, score))
 
 
@@ -338,3 +360,51 @@ def generate_revision_notes(verifications: list[dict]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def generate_fact_check_explanation(score: float, verifications: list[dict],
+                                     repo_health: dict | None = None) -> str:
+    """Generate human-readable explanation for a fact-check score.
+
+    Format: "{score}/10 — {verified_count}/{total} claims verified{external_note},
+    {issues}, {repo_summary}"
+    """
+    scorable = [v for v in verifications if v.get("verdict", "").upper() != "SKIPPED"]
+    total = len(scorable)
+    verified = sum(1 for v in scorable if v.get("verdict", "").upper() == "VERIFIED")
+
+    has_external = any(
+        v.get("source", "abstract") in ("semantic_scholar", "web", "papers_with_code")
+        for v in scorable if v.get("verdict", "").upper() == "VERIFIED"
+    )
+    external_note = " externally" if has_external else " (abstract only)" if verified > 0 else ""
+
+    parts = [f"{score:.1f}/10"]
+
+    if total > 0:
+        parts.append(f"{verified}/{total} claims verified{external_note}")
+
+    # List issues (non-VERIFIED claims)
+    issues = []
+    for v in scorable:
+        verdict = v.get("verdict", "").upper()
+        if verdict in ("EXAGGERATED", "INACCURATE", "UNVERIFIED"):
+            claim_short = v.get("claim", "")[:60]
+            evidence_short = v.get("evidence", "")[:80]
+            if verdict == "EXAGGERATED":
+                issues.append(f"exaggerated: \"{claim_short}\" ({evidence_short})")
+            elif verdict == "INACCURATE":
+                issues.append(f"inaccurate: \"{claim_short}\" ({evidence_short})")
+            elif verdict == "UNVERIFIED":
+                issues.append(f"unverified: \"{claim_short}\"")
+
+    if issues:
+        parts.append(", ".join(issues[:2]))  # Max 2 issues shown
+
+    # Repo summary
+    if repo_health:
+        repo_status = repo_health.get("status", "REPO_NA")
+        if repo_status != "REPO_NA":
+            parts.append(repo_health.get("summary", ""))
+
+    return " — ".join(p for p in parts if p)
