@@ -2,7 +2,7 @@
  * Galaxy component — renders a single galaxy (entity type cluster) as a
  * glowing sphere core with orbiting planet nodes in 3D.
  *
- * Used in universe mode when nodes > 300.
+ * Used in universe mode when nodes > 1000.
  */
 import React, { useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'

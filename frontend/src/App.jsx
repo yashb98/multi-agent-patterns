@@ -268,13 +268,15 @@ function BrainScene({ data, onSelectNode }) {
     const types = [...new Set(nodes.map(n => n.entity_type))]
     const typePositions = {}
 
-    // Distribute types in 3D space like brain regions — 30% of previous spacing
+    // Distribute types in 3D space like brain regions — scale spacing with complexity
     const nodeCount = nodes.length
     const regionScale = Math.max(1, nodeCount / 30)
+    // Ensure clusters stay apart: larger base + per-type growth + node-count scaling
+    const minSeparation = 15
     types.forEach((t, i) => {
       const phi = Math.acos(-1 + (2 * i) / Math.max(types.length, 1))
       const theta = Math.sqrt(types.length * Math.PI) * phi
-      const regionR = (10 + types.length * 1.5) * Math.sqrt(regionScale)
+      const regionR = Math.max(minSeparation, (12 + types.length * 3) * Math.sqrt(regionScale))
       typePositions[t] = [
         regionR * Math.cos(theta) * Math.sin(phi),
         regionR * Math.cos(phi) * 0.6,
@@ -363,10 +365,15 @@ function UniverseScene({ data }) {
       map[n.entity_type].nodes.push(n)
     }
     const arr = Object.values(map).filter(g => g.nodes.length > 0)
+    // Space galaxies far apart so they never overlap, scaling with count and node density
+    const maxNodes = Math.max(...arr.map(g => g.nodes.length), 1)
     arr.forEach((g, i) => {
       const angle = (2 * Math.PI * i) / arr.length
-      const r = 6 + arr.length * 0.8
-      g.position = [Math.cos(angle) * r, (Math.random() - 0.5) * 3, Math.sin(angle) * r]
+      const baseR = 15 + arr.length * 3
+      // Larger galaxies (more nodes) push the ring out further
+      const sizeBonus = (g.nodes.length / maxNodes) * 5
+      const r = baseR + sizeBonus
+      g.position = [Math.cos(angle) * r, (Math.random() - 0.5) * 4, Math.sin(angle) * r]
     })
     return arr
   }, [data])
@@ -385,7 +392,7 @@ function UniverseScene({ data }) {
 }
 
 // ── Graph Scene — auto-selects brain vs universe ──
-const GALAXY_THRESHOLD = 300
+const GALAXY_THRESHOLD = 1000
 function GraphScene({ data, onSelectNode }) {
   const isGalaxy = (data.nodes?.length || 0) >= GALAXY_THRESHOLD
   return isGalaxy
@@ -439,8 +446,8 @@ function HUD({ data }) {
     }}>
       <div style={{ fontWeight: 600, color: '#8B5CF6', marginBottom: 4 }}>MindGraph 3D — Neural View</div>
       <div>{nodeCount} neurons · {edgeCount} synapses</div>
-      <div style={{ fontSize: 10, color: nodeCount >= 300 ? '#8B5CF6' : '#64748b', marginTop: 2 }}>
-        {nodeCount >= 300 ? 'UNIVERSE MODE' : `Brain mode (${nodeCount}/300 for galaxy)`}
+      <div style={{ fontSize: 10, color: nodeCount >= 1000 ? '#8B5CF6' : '#64748b', marginTop: 2 }}>
+        {nodeCount >= 1000 ? 'UNIVERSE MODE' : `Brain mode (${nodeCount}/1000 for galaxy)`}
       </div>
       <div style={{ marginTop: 6, fontSize: 10, color: '#64748b' }}>
         Drag to orbit · Scroll to zoom · Hover for details · Click for panel
@@ -480,7 +487,7 @@ export default function App() {
         <GraphScene data={data} onSelectNode={setSelectedNode} />
         <OrbitControls
           enableDamping dampingFactor={0.05}
-          minDistance={4} maxDistance={200}
+          minDistance={4} maxDistance={1000}
           autoRotate autoRotateSpeed={0.15}
           maxPolarAngle={Math.PI * 0.85}
         />
