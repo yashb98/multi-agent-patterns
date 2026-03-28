@@ -1,0 +1,40 @@
+{
+  "total": 40,
+  "correct": 36,
+  "wrong": 4,
+  "failures": [
+    {
+      "description": "paypal refund",
+      "expected": "income|Other",
+      "actual": "income|Salary",
+      "issue_type": "substring_false_positive"
+    },
+    {
+      "description": "apple watch",
+      "expected": "variable|Shopping",
+      "actual": "fixed|Subscriptions",
+      "issue_type": "substring_false_positive"
+    },
+    {
+      "description": "barber haircut",
+      "expected": "variable|Health",
+      "actual": "variable|Entertainment",
+      "issue_type": "substring_false_positive"
+    },
+    {
+      "description": "protein shake at holland and barrett",
+      "expected": "variable|Health",
+      "actual": "variable|Entertainment",
+      "issue_type": "substring_false_positive"
+    }
+  ],
+  "by_issue_type": {
+    "substring_false_positive": 4,
+    "priority_ordering": 0,
+    "missing_context": 0,
+    "other": 0
+  },
+  "accuracy": 90.0,
+  "score": 9.0,
+  "timestamp": "2026-03-28T13:57:16.080060"
+}

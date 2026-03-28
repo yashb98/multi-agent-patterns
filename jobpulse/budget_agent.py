@@ -106,7 +106,10 @@ FIXED_EXPENSE_CATEGORIES = {
     "netflix": "Subscriptions",
     "spotify": "Subscriptions",
     "gym membership": "Subscriptions",
-    "apple": "Subscriptions",
+    "apple music": "Subscriptions",
+    "apple tv": "Subscriptions",
+    "apple one": "Subscriptions",
+    "icloud": "Subscriptions",
     "amazon prime": "Subscriptions",
     "insurance": "Insurance",
     "car insurance": "Insurance",
@@ -158,6 +161,8 @@ VARIABLE_EXPENSE_CATEGORIES = {
     "dentist": "Health",
     "medicine": "Health",
     "gym": "Health",
+    "haircut": "Health",
+    "barber": "Health",
     "misc": "Misc",
 }
 
@@ -506,13 +511,54 @@ def get_today_spending() -> dict:
 # ── LLM Category Classification ──
 
 def classify_transaction(description: str, amount: float, txn_type: str = "expense") -> tuple[str, str]:
-    """Classify into (section, category). First tries keyword match, then LLM."""
+    """Classify into (section, category) with reason tracking.
+
+    4-stage pipeline:
+    1. Store→category inference first (Tesco → Groceries, overrides generic keywords)
+    2. Multi-word phrase match (longest match wins, word-boundary safe)
+    3. Single-word keyword match (word-boundary safe)
+    4. LLM fallback
+    """
+    import re
 
     desc_lower = description.lower()
 
-    # Keyword match first (free)
-    for keyword, (section, category) in ALL_CATEGORIES.items():
-        if keyword in desc_lower:
+    # Stage 1: Store→category inference FIRST (store is strongest signal)
+    # If someone says "drinks from tesco", Tesco = Groceries beats "drinks" = Entertainment
+    store_category_map = {
+        # Grocery stores → Groceries
+        "tesco": ("variable", "Groceries"), "aldi": ("variable", "Groceries"),
+        "lidl": ("variable", "Groceries"), "sainsbury": ("variable", "Groceries"),
+        "asda": ("variable", "Groceries"), "morrisons": ("variable", "Groceries"),
+        "waitrose": ("variable", "Groceries"), "co-op": ("variable", "Groceries"),
+        "iceland": ("variable", "Groceries"), "m&s food": ("variable", "Groceries"),
+        # Eating out stores → Eating out
+        "pret": ("variable", "Eating out"), "costa": ("variable", "Eating out"),
+        "starbucks": ("variable", "Eating out"), "greggs": ("variable", "Eating out"),
+        "mcdonald": ("variable", "Eating out"), "kfc": ("variable", "Eating out"),
+        "nando": ("variable", "Eating out"), "subway": ("variable", "Eating out"),
+        "wagamama": ("variable", "Eating out"), "wetherspoon": ("variable", "Eating out"),
+        "domino": ("variable", "Eating out"), "pizza hut": ("variable", "Eating out"),
+        # Health stores → Health
+        "boots": ("variable", "Health"), "superdrug": ("variable", "Health"),
+        "holland and barrett": ("variable", "Health"),
+        # Shopping stores → Shopping
+        "argos": ("variable", "Shopping"), "jd sports": ("variable", "Shopping"),
+        "primark": ("variable", "Shopping"), "tk maxx": ("variable", "Shopping"),
+        "next": ("variable", "Shopping"), "asos": ("variable", "Shopping"),
+        "zara": ("variable", "Shopping"),
+    }
+    for store, (section, category) in store_category_map.items():
+        if re.search(rf"\b{re.escape(store)}\b", desc_lower):
+            if txn_type == "expense":
+                return section, category
+
+    # Stage 2: Keyword match (longest-first, word-boundary safe)
+    sorted_keywords = sorted(ALL_CATEGORIES.keys(), key=len, reverse=True)
+
+    for keyword in sorted_keywords:
+        section, category = ALL_CATEGORIES[keyword]
+        if re.search(rf"\b{re.escape(keyword)}\b", desc_lower):
             if txn_type == "income" and section == "income":
                 return section, category
             elif txn_type == "expense" and section in ("fixed", "variable"):
@@ -522,7 +568,7 @@ def classify_transaction(description: str, amount: float, txn_type: str = "expen
             elif txn_type == "expense":
                 return section, category
 
-    # LLM fallback
+    # Stage 3: LLM fallback
     try:
         from openai import OpenAI
         from jobpulse.config import OPENAI_API_KEY
@@ -550,9 +596,21 @@ Example: fixed|Subscriptions"""}],
         raw = response.choices[0].message.content.strip()
         parts = raw.split("|")
         if len(parts) == 2:
-            return parts[0].strip().lower(), parts[1].strip()
+            llm_section = parts[0].strip().lower()
+            llm_category = parts[1].strip()
+            # Validate LLM response against real categories
+            valid_categories = set()
+            for _, (s, c) in ALL_CATEGORIES.items():
+                valid_categories.add(c)
+            if llm_category in valid_categories:
+                return llm_section, llm_category
+            # Try fuzzy match (LLM might say "Eating Out" vs "Eating out")
+            for vc in valid_categories:
+                if vc.lower() == llm_category.lower():
+                    return llm_section, vc
+            logger.warning("LLM returned invalid category: %s", llm_category)
     except Exception as e:
-        print(f"[Budget] LLM classify failed: {e}")
+        logger.warning("LLM classify failed: %s", e)
 
     # Default
     if txn_type == "income":

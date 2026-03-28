@@ -1,0 +1,15 @@
+{
+  "total": 40,
+  "correct": 40,
+  "wrong": 0,
+  "failures": [],
+  "by_issue_type": {
+    "substring_false_positive": 0,
+    "priority_ordering": 0,
+    "missing_context": 0,
+    "other": 0
+  },
+  "accuracy": 100.0,
+  "score": 10.0,
+  "timestamp": "2026-03-28T15:27:27.457019"
+}
