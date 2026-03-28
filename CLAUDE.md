@@ -153,7 +153,7 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 
 ## Stats
 
-~51,500 LOC | 204 Python files | 5 databases | 267 tests | 3 dashboards | 4 Telegram bots | 3 platforms
+~51,500 LOC | 205 Python files | 5 databases | 267 tests | 3 dashboards | 4 Telegram bots | 3 platforms
 
 > Auto-updated by `scripts/update_stats.py`. Git pre-commit hook runs it on every commit that touches .py files.
 > Manual: `python scripts/update_stats.py` | Check-only: `python scripts/update_stats.py --check`
