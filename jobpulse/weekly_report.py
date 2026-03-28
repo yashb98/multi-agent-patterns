@@ -97,6 +97,37 @@ def build_weekly_report() -> str:
         logger.debug("Weekly report tasks: %s", e)
         sections["tasks"] = "  Data unavailable"
 
+    # 5. Job application stats
+    try:
+        from jobpulse.job_db import JobDB
+        job_db = JobDB()
+        conn = job_db._conn()
+        week_applied = conn.execute(
+            "SELECT COUNT(*) as c FROM applications WHERE applied_at >= ? AND status = 'Applied'",
+            (start_str,),
+        ).fetchone()["c"]
+        week_interviews = conn.execute(
+            "SELECT COUNT(*) as c FROM applications WHERE status = 'Interview' AND updated_at >= ?",
+            (start_str,),
+        ).fetchone()["c"]
+        week_found = conn.execute(
+            "SELECT COUNT(*) as c FROM job_listings WHERE found_at >= ?",
+            (start_str,),
+        ).fetchone()["c"]
+        avg_ats_row = conn.execute(
+            "SELECT AVG(ats_score) as avg FROM applications WHERE applied_at >= ? AND ats_score > 0",
+            (start_str,),
+        ).fetchone()
+        avg_ats = round(avg_ats_row["avg"], 1) if avg_ats_row["avg"] else 0
+        conn.close()
+        sections["jobs"] = (
+            f"  Found: {week_found} | Applied: {week_applied}\n"
+            f"  Interviews: {week_interviews} | Avg ATS: {avg_ats}%"
+        )
+    except Exception as e:
+        logger.debug("Weekly report jobs: %s", e)
+        sections["jobs"] = "  Data unavailable"
+
     # Build message
     report = (
         f"\U0001f4ca WEEKLY REPORT ({start.strftime('%b %d')} \u2014 {end.strftime('%b %d, %Y')})\n"
@@ -120,6 +151,11 @@ def build_weekly_report() -> str:
         f"\n"
         f"\U0001f4dd TASKS:\n"
         f"{sections['tasks']}\n"
+        f"\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"\n"
+        f"\U0001f4bc JOB APPLICATIONS:\n"
+        f"{sections['jobs']}\n"
         f"\n"
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
         f"\n"

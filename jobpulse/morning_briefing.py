@@ -131,6 +131,24 @@ def build_and_send(trigger: str = "cron_morning"):
             s["output"] = f"Comparison error: {e}"
             s["metadata"] = {"error": str(e), "errorType": type(e).__name__}
 
+    # ── Section 10: Job Autopilot Stats ──
+    section_jobs = ""
+    try:
+        from jobpulse.job_db import JobDB
+        from datetime import date
+        job_db = JobDB()
+        job_stats = job_db.get_today_stats()
+        follow_ups = job_db.get_follow_ups_due(date.today())
+        if job_stats["applied"] > 0 or job_stats["found"] > 0:
+            section_jobs = (
+                f"💼 JOB AUTOPILOT:\n"
+                f"  Applied: {job_stats['applied']} (avg ATS: {job_stats['avg_ats']}%)\n"
+                f"  Found: {job_stats['found']} | Skipped: {job_stats['skipped']}\n"
+                f"  Follow-ups due today: {len(follow_ups)}"
+            )
+    except Exception as e:
+        logger.error("Job stats for briefing failed: %s", e)
+
     # ── Build Message ──
     message = f"""☀️ Good Morning Yash! Here's your briefing for {today}:
 
@@ -179,6 +197,10 @@ def build_and_send(trigger: str = "cron_morning"):
 ━━━━━━━━━━━━━━━━━━━━
 
 {section_comparison}""" if section_comparison else ""}
+{f"""
+━━━━━━━━━━━━━━━━━━━━
+
+{section_jobs}""" if section_jobs else ""}
 
 ━━━━━━━━━━━━━━━━━━━━
 
