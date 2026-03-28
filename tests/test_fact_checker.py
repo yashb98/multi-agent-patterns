@@ -1,5 +1,6 @@
 """Tests for unified fact-checker — claim extraction, scoring, revision notes."""
 
+import json
 import os
 import sys
 import pytest
@@ -197,6 +198,68 @@ class TestVerifyClaims:
                 [{"claim": "x", "type": "benchmark", "source_needed": True}], ["source"]
             )
             assert results == []
+
+    def test_confidence_clamped_to_valid_range(self):
+        """Confidence values outside [0.0, 1.0] are clamped after LLM response."""
+        from shared.fact_checker import verify_claims
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({"verifications": [
+            {"claim": "claim A", "verdict": "VERIFIED", "evidence": "ok", "confidence": 1.5, "severity": "low", "fix_suggestion": None},
+            {"claim": "claim B", "verdict": "UNVERIFIED", "evidence": "none", "confidence": -0.3, "severity": "high", "fix_suggestion": "fix it"},
+        ]})
+
+        with patch("shared.fact_checker.OpenAI") as mock_client, \
+             patch("shared.fact_checker.get_cached_fact", return_value=None), \
+             patch("shared.fact_checker.web_verify_claim", return_value={"source": None, "supports": False, "snippet": ""}), \
+             patch("shared.fact_checker.cache_verified_fact"):
+            mock_client.return_value.chat.completions.create.return_value = mock_response
+            results = verify_claims(
+                [
+                    {"claim": "claim A", "type": "benchmark", "source_needed": True},
+                    {"claim": "claim B", "type": "technical", "source_needed": True},
+                ],
+                ["some source"]
+            )
+            assert len(results) == 2
+            assert results[0]["confidence"] == 1.0, "Confidence above 1.0 should be clamped to 1.0"
+            assert results[1]["confidence"] == 0.0, "Confidence below 0.0 should be clamped to 0.0"
+
+    def test_verdict_case_insensitive(self):
+        """Verdicts from LLM are normalized to uppercase."""
+        from shared.fact_checker import verify_claims
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = json.dumps({"verifications": [
+            {"claim": "claim X", "verdict": "verified", "evidence": "ok", "confidence": 0.9, "severity": "low", "fix_suggestion": None},
+            {"claim": "claim Y", "verdict": "Inaccurate", "evidence": "wrong", "confidence": 0.8, "severity": "high", "fix_suggestion": "fix"},
+        ]})
+
+        with patch("shared.fact_checker.OpenAI") as mock_client, \
+             patch("shared.fact_checker.get_cached_fact", return_value=None), \
+             patch("shared.fact_checker.web_verify_claim", return_value={"source": None, "supports": False, "snippet": ""}), \
+             patch("shared.fact_checker.cache_verified_fact"):
+            mock_client.return_value.chat.completions.create.return_value = mock_response
+            results = verify_claims(
+                [
+                    {"claim": "claim X", "type": "benchmark", "source_needed": True},
+                    {"claim": "claim Y", "type": "comparison", "source_needed": True},
+                ],
+                ["some source"]
+            )
+            assert results[0]["verdict"] == "VERIFIED", "Lowercase 'verified' should become 'VERIFIED'"
+            assert results[1]["verdict"] == "INACCURATE", "Mixed case 'Inaccurate' should become 'INACCURATE'"
+
+    def test_skip_types_not_sent_for_verification(self):
+        """Claims with type in SKIP_TYPES are excluded even if source_needed=True."""
+        from shared.fact_checker import verify_claims
+        claims = [
+            {"claim": "This is elegant", "type": "opinion", "source_needed": True},
+            {"claim": "RAG stands for Retrieval Augmented Generation", "type": "definition", "source_needed": True},
+        ]
+        # Should not call LLM at all — both types are in SKIP_TYPES
+        results = verify_claims(claims, ["some source"])
+        assert results == []
 
 
 class TestWebVerifyClaim:

@@ -59,6 +59,17 @@ def _init_db():
         CREATE INDEX IF NOT EXISTS idx_papers_date ON papers(digest_date);
         CREATE INDEX IF NOT EXISTS idx_papers_score ON papers(impact_score DESC);
     """)
+    # Migration: add fact-check columns if missing
+    for col, col_type, default in [
+        ("fact_check_score", "REAL", "0"),
+        ("fact_check_claims", "INTEGER", "0"),
+        ("fact_check_verified", "INTEGER", "0"),
+        ("fact_check_issues", "TEXT", "''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {col_type} DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -126,11 +137,26 @@ def fetch_papers(max_results: int = 200) -> list[dict]:
 
 # ── Ranking (Broad AI Impact) ──
 
-def llm_rank_broad(papers: list[dict], top_n: int = 5) -> list[dict]:
-    """Rank papers by BROAD AI impact — not project-specific.
+def _extract_json_array(raw: str) -> list:
+    """Extract JSON array from LLM response, handling markdown wrappers and text prefixes."""
+    # Strip markdown code blocks
+    cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip()
+    cleaned = re.sub(r"```\s*$", "", cleaned).strip()
+    # Find the first [ ... ] block
+    match = re.search(r"\[.*\]", cleaned, re.DOTALL)
+    if match:
+        return json.loads(match.group(0))
+    return []
 
-    Focuses on: novelty, significance, practical applicability,
-    and how much the AI community would care about it.
+
+def llm_rank_broad(papers: list[dict], top_n: int = 5) -> list[dict]:
+    """Rank papers by BROAD AI impact using multi-criteria scoring.
+
+    Each paper scored on 4 dimensions (0-10):
+    - Novelty (30%): genuinely new idea, architecture, or technique
+    - Significance (25%): could change how people build AI systems
+    - Practical (30%): useful for practitioners today
+    - Breadth (15%): relevant across multiple AI subfields
     """
     if not OPENAI_API_KEY:
         return papers[:top_n]
@@ -154,11 +180,11 @@ AI/ML engineers and researchers who want to stay on top of the field.
 
 From these {len(candidates)} recent arXiv papers, pick the TOP {top_n} most impactful.
 
-Rank by:
-1. NOVELTY — introduces a genuinely new idea, architecture, or technique
+Score each paper on 4 dimensions (0-10 each):
+1. NOVELTY — genuinely new idea, architecture, or technique (not incremental)
 2. SIGNIFICANCE — could change how people build AI systems
-3. PRACTICAL VALUE — useful for practitioners, not just theoretical
-4. BREADTH — relevant to many subfields of AI, not just one niche
+3. PRACTICAL — useful for practitioners today, not just theoretical
+4. BREADTH — relevant across multiple AI subfields
 
 Avoid: survey papers, minor incremental improvements, dataset-only papers.
 Prefer: breakthrough techniques, new architectures, surprising results, open-source releases.
@@ -166,29 +192,36 @@ Prefer: breakthrough techniques, new architectures, surprising results, open-sou
 Papers:
 {chr(10).join(paper_texts)}
 
-Return ONLY a JSON array:
-[{{"rank": 1, "paper_num": X, "score": 0-10, "reason": "One sentence on why this matters to AI", "key_technique": "The main technique or contribution in 5 words", "category_tag": "e.g. LLM, Agents, Vision, RL, Efficiency, Safety, Reasoning"}}]"""
+Return ONLY a JSON array. Compute overall as: (novelty*0.3 + significance*0.25 + practical*0.3 + breadth*0.15)
+[{{"rank": 1, "paper_num": X, "scores": {{"novelty": N, "significance": N, "practical": N, "breadth": N}}, "overall": weighted_avg, "reason": "One sentence on why this matters to AI", "key_technique": "The main technique or contribution in 5 words", "category_tag": "e.g. LLM, Agents, Vision, RL, Efficiency, Safety, Reasoning"}}]"""
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=800,
+            max_tokens=1200,
             temperature=0,
         )
         raw = response.choices[0].message.content.strip()
-
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            raw = raw.rsplit("```", 1)[0]
-
-        rankings = json.loads(raw)
+        rankings = _extract_json_array(raw)
 
         ranked = []
         for r in rankings[:top_n]:
             idx = r.get("paper_num", 1) - 1
             if 0 <= idx < len(candidates):
-                candidates[idx]["impact_score"] = r.get("score", 5)
+                # Support both old flat score and new multi-criteria format
+                if "overall" in r:
+                    candidates[idx]["impact_score"] = r["overall"]
+                elif "scores" in r:
+                    s = r["scores"]
+                    candidates[idx]["impact_score"] = (
+                        s.get("novelty", 5) * 0.3 + s.get("significance", 5) * 0.25
+                        + s.get("practical", 5) * 0.3 + s.get("breadth", 5) * 0.15
+                    )
+                else:
+                    candidates[idx]["impact_score"] = r.get("score", 5)
+
+                candidates[idx]["scores"] = r.get("scores", {})
                 candidates[idx]["impact_reason"] = r.get("reason", "")
                 candidates[idx]["key_technique"] = r.get("key_technique", "")
                 candidates[idx]["category_tag"] = r.get("category_tag", "")
@@ -199,6 +232,67 @@ Return ONLY a JSON array:
     except Exception as e:
         logger.warning("LLM ranking failed: %s", e)
         return candidates[:top_n]
+
+
+def summarize_and_verify_paper(paper: dict) -> dict:
+    """Summarize a paper and fact-check verifiable claims in the summary.
+
+    Returns dict with 'summary' (str) and 'fact_check' (dict with
+    total_claims, verified_count, accuracy_score, issues).
+    """
+    from shared.fact_checker import extract_claims, verify_claims, compute_accuracy_score
+
+    summary = summarize_paper(paper)
+
+    # Extract and verify claims from the summary against the abstract
+    source_text = f"Title: {paper['title']}\nAbstract: {paper['abstract']}"
+    try:
+        claims = extract_claims(summary, paper["title"])
+    except Exception as e:
+        logger.warning("Claim extraction failed for %s: %s", paper["arxiv_id"], e)
+        claims = []
+
+    if not claims:
+        return {
+            "summary": summary,
+            "fact_check": {
+                "total_claims": 0,
+                "verified_count": 0,
+                "accuracy_score": 10.0,
+                "issues": [],
+            },
+        }
+
+    try:
+        verifications = verify_claims(claims, sources=[], paper_abstract=paper["abstract"])
+        score = compute_accuracy_score(verifications)
+    except Exception as e:
+        logger.warning("Verification failed for %s: %s", paper["arxiv_id"], e)
+        return {
+            "summary": summary,
+            "fact_check": {
+                "total_claims": len(claims),
+                "verified_count": 0,
+                "accuracy_score": 0.0,
+                "issues": [],
+            },
+        }
+
+    issues = [
+        {"claim": v["claim"], "verdict": v["verdict"], "fix": v.get("fix_suggestion")}
+        for v in verifications
+        if v.get("verdict") in ("INACCURATE", "EXAGGERATED")
+    ]
+
+    return {
+        "summary": summary,
+        "fact_check": {
+            "total_claims": len(verifications),
+            "verified_count": sum(1 for v in verifications if v["verdict"] == "VERIFIED"),
+            "accuracy_score": score,
+            "issues": issues,
+        },
+    }
 
 
 def summarize_paper(paper: dict) -> str:
@@ -233,14 +327,16 @@ Abstract: {paper['abstract'][:1000]}"""}],
 # ── Paper Storage ──
 
 def store_papers(papers: list[dict], digest_date: str):
-    """Store ranked papers in SQLite."""
+    """Store ranked papers in SQLite (including fact-check results)."""
     conn = _get_conn()
     for p in papers:
+        fc = p.get("fact_check", {})
         conn.execute(
             "INSERT OR REPLACE INTO papers (arxiv_id, title, authors, abstract, categories, "
             "pdf_url, arxiv_url, published_at, impact_score, impact_reason, summary, "
-            "key_technique, practical_takeaway, status, digest_date, discovered_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "key_technique, practical_takeaway, status, digest_date, discovered_at, "
+            "fact_check_score, fact_check_claims, fact_check_verified, fact_check_issues) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 p["arxiv_id"], p["title"], json.dumps(p["authors"]),
                 p["abstract"], json.dumps(p["categories"]),
@@ -249,6 +345,8 @@ def store_papers(papers: list[dict], digest_date: str):
                 p.get("summary", ""), p.get("key_technique", ""),
                 p.get("practical_takeaway", ""),
                 "sent", digest_date, datetime.now().isoformat(),
+                fc.get("accuracy_score", 0), fc.get("total_claims", 0),
+                fc.get("verified_count", 0), json.dumps(fc.get("issues", [])),
             )
         )
     conn.commit()
@@ -462,15 +560,18 @@ def build_digest(top_n: int = 5) -> str:
         ranked = llm_rank_broad(papers, top_n=top_n)
         s["output"] = f"Selected {len(ranked)} papers"
 
-    # Step 3: Summarize each
+    # Step 3: Summarize + fact-check each
     summaries = []
     for i, paper in enumerate(ranked):
-        with trail.step("llm_call", f"Summarize paper {i+1}",
+        with trail.step("llm_call", f"Summarize + verify paper {i+1}",
                          step_input=paper["title"][:100]) as s:
-            summary = summarize_paper(paper)
-            paper["summary"] = summary
-            summaries.append((paper, summary))
-            s["output"] = summary[:100]
+            result = summarize_and_verify_paper(paper)
+            paper["summary"] = result["summary"]
+            paper["fact_check"] = result["fact_check"]
+            summaries.append((paper, result["summary"]))
+            fc = result["fact_check"]
+            s["output"] = (f"{result['summary'][:80]}... "
+                          f"[FC: {fc['verified_count']}/{fc['total_claims']}]")
 
     # Step 4: Store in database
     with trail.step("api_call", "Store papers in database") as s:
@@ -508,6 +609,22 @@ def build_digest(top_n: int = 5) -> str:
             lines.append(f"Key: {technique}")
         lines.append(f"")
         lines.append(f"{summary}\n")
+
+        # Fact-check badge
+        fc = paper.get("fact_check", {})
+        if fc and fc.get("total_claims", 0) > 0:
+            verified = fc["verified_count"]
+            total = fc["total_claims"]
+            if verified == total:
+                lines.append(f"Fact-check: {verified}/{total} claims verified")
+            else:
+                issue_strs = [
+                    f"{iss['verdict'].lower()}: \"{iss['claim']}\""
+                    for iss in fc.get("issues", [])[:2]
+                ]
+                issues_text = ", ".join(issue_strs) if issue_strs else "review needed"
+                lines.append(f"Fact-check: {verified}/{total} verified — {issues_text}")
+
         lines.append(f"PDF: {paper.get('pdf_url', paper['arxiv_url'])}")
         notion_link = notion_urls.get(paper['arxiv_id'], '')
         if notion_link:

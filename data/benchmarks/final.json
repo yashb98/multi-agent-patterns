@@ -1,0 +1,67 @@
+{
+  "json_parsing": {
+    "passed": 10,
+    "failed": 0,
+    "total": 10,
+    "failures": [],
+    "score": 10.0
+  },
+  "fact_scoring": {
+    "passed": 8,
+    "failed": 0,
+    "total": 8,
+    "failures": [],
+    "score": 10.0
+  },
+  "confidence_bounds": {
+    "passed": 3,
+    "failed": 0,
+    "total": 3,
+    "checks": {
+      "has_confidence_clamping": "PASS",
+      "has_verdict_upper": "PASS",
+      "filters_skip_types": "PASS"
+    },
+    "score": 10.0
+  },
+  "test_coverage": {
+    "arxiv_test_exists": true,
+    "fact_test_exists": true,
+    "arxiv_test_count": 15,
+    "fact_test_count": 25,
+    "total_tests": 40,
+    "score": 10.0
+  },
+  "multicriteria": {
+    "passed": 6,
+    "failed": 0,
+    "total": 6,
+    "checks": {
+      "has_novelty_in_prompt": "PASS",
+      "has_significance_in_prompt": "PASS",
+      "has_practical_in_prompt": "PASS",
+      "has_breadth_in_prompt": "PASS",
+      "has_per_criteria_scores": "PASS",
+      "has_weighted_overall": "PASS"
+    },
+    "score": 10.0
+  },
+  "fact_integration": {
+    "passed": 4,
+    "failed": 0,
+    "total": 4,
+    "checks": {
+      "has_summarize_and_verify": "PASS",
+      "has_fact_check_import": "PASS",
+      "has_fact_check_in_digest": "PASS",
+      "has_fact_check_db_columns": "PASS"
+    },
+    "score": 10.0
+  },
+  "_overall": {
+    "score": 10.0,
+    "max": 10.0,
+    "timestamp": "2026-03-28T12:41:13.309120",
+    "num_benchmarks": 6
+  }
+}

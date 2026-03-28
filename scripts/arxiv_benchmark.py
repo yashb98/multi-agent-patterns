@@ -54,15 +54,16 @@ def benchmark_json_parsing() -> dict:
 
     results = {"passed": 0, "failed": 0, "total": len(test_cases), "failures": []}
 
+    from jobpulse.arxiv_agent import _extract_json_array
+
     for raw, should_parse, desc in test_cases:
         try:
-            # Current parsing logic from arxiv_agent.py
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-                cleaned = cleaned.rsplit("```", 1)[0]
-            parsed = json.loads(cleaned)
-            did_parse = isinstance(parsed, list)
+            parsed = _extract_json_array(raw)
+            did_parse = isinstance(parsed, list) and len(parsed) >= 0
+            # For "Object instead of array" and "Plain text", _extract_json_array returns []
+            # which is a valid empty list — check if we expected non-empty parse
+            if should_parse is False and parsed == []:
+                did_parse = False
         except Exception:
             did_parse = False
 

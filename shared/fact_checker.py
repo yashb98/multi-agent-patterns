@@ -172,7 +172,7 @@ def verify_claims(claims: list[dict], sources: list[str],
     from jobpulse.config import OPENAI_API_KEY
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    verifiable = [c for c in claims if c.get("source_needed", True)]
+    verifiable = [c for c in claims if c.get("source_needed", True) and c.get("type", "") not in SKIP_TYPES]
     if not verifiable:
         return []
 
@@ -245,6 +245,11 @@ Return JSON: {{"verifications": [{{"claim": "...", "verdict": "...", "evidence":
         )
         result = json.loads(response.choices[0].message.content)
         verifications = result.get("verifications", [])
+
+        # Normalize verdicts and clamp confidence values
+        for v in verifications:
+            v["verdict"] = v.get("verdict", "UNVERIFIED").upper()
+            v["confidence"] = max(0.0, min(1.0, float(v.get("confidence", 0.5))))
 
         # Cache new results
         for v in verifications:
