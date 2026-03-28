@@ -35,11 +35,11 @@ PROFILE: dict[str, str] = {
 def classify_action(ats_score: float, easy_apply: bool) -> str:
     """Classify what action to take based on ATS score and application complexity.
 
-    Tiers:
-        auto_submit              — score >= 90 AND easy apply available
-        auto_submit_with_preview — score >= 90 AND NOT easy apply
-        send_for_review          — 82 <= score < 90
-        skip                     — score < 82
+    Hybrid approval tiers (updated 2026-03-28):
+        auto_submit              — score >= 95 AND easy apply available
+        auto_submit_with_preview — score >= 95 AND NOT easy apply
+        send_for_review          — 85 <= score < 95
+        skip                     — score < 85
 
     Args:
         ats_score: Match score 0-100 from the ATS scorer.
@@ -48,9 +48,9 @@ def classify_action(ats_score: float, easy_apply: bool) -> str:
     Returns:
         Action string: 'auto_submit' | 'auto_submit_with_preview' | 'send_for_review' | 'skip'
     """
-    if ats_score >= 90:
+    if ats_score >= 95:
         return "auto_submit" if easy_apply else "auto_submit_with_preview"
-    if ats_score >= 82:
+    if ats_score >= 85:
         return "send_for_review"
     return "skip"
 
@@ -72,8 +72,8 @@ def apply_job(
 ) -> dict:
     """Submit a job application via the appropriate ATS adapter.
 
-    Merges WORK_AUTH answers into custom_answers so every submission includes
-    right-to-work and visa information automatically.
+    Checks rate limits before submission, records application after success,
+    and enforces session breaks every 10 applications.
 
     Args:
         url: Direct application URL.
@@ -83,11 +83,39 @@ def apply_job(
         custom_answers: Caller-supplied field answers (overrides WORK_AUTH if key clashes).
 
     Returns:
-        dict with keys: success (bool), screenshot (Path|None), error (str|None)
+        dict with keys: success (bool), screenshot (Path|None), error (str|None),
+        rate_limited (bool), break_taken (bool)
     """
+    import asyncio
+    from jobpulse.rate_limiter import RateLimiter
+    from jobpulse.screening_answers import get_answer
+
+    platform_key = (ats_platform or "generic").lower()
+    limiter = RateLimiter()
+
+    # Check rate limit before attempting
+    if not limiter.can_apply(platform_key):
+        remaining = limiter.get_remaining()
+        logger.warning("Rate limit hit for %s. Remaining: %s", platform_key, remaining)
+        return {"success": False, "error": f"Daily limit reached for {platform_key}", "rate_limited": True}
+
+    # Session break check
+    if limiter.should_take_break():
+        import time
+        logger.info("Session break: pausing 5 minutes (every 10 applications)")
+        time.sleep(5 * 60)
+
     merged_answers: dict = dict(WORK_AUTH)
     if custom_answers:
         merged_answers.update(custom_answers)
+
+    # Auto-answer any screening questions in custom_answers that are questions
+    for key, value in list(merged_answers.items()):
+        if isinstance(value, str) and value.endswith("?"):
+            # This is a question, not an answer — auto-fill it
+            answer = get_answer(value, {"title": "", "company": ""})
+            if answer:
+                merged_answers[key] = answer
 
     adapter = select_adapter(ats_platform)
     logger.info("Applying via %s adapter to %s", adapter.name, url)
@@ -101,8 +129,11 @@ def apply_job(
     )
 
     if result.get("success"):
-        logger.info("Application submitted successfully via %s", adapter.name)
+        limiter.record_application(platform_key)
+        logger.info("Application submitted via %s (%d/%d today)",
+                    adapter.name, limiter.get_total_today(), 40)
     else:
         logger.warning("Application failed via %s: %s", adapter.name, result.get("error"))
 
+    result["rate_limited"] = False
     return result
