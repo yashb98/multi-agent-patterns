@@ -228,7 +228,8 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     ]),
     # arXiv
     (Intent.ARXIV, [
-        r"(arxiv|research papers?|ai papers?|latest papers?|top papers?|weekly papers?|^papers?$)",
+        r"(arxiv|research papers?|ai papers?|latest papers?|top papers?|weekly papers?)",
+        r"^(and\s+)?papers?\s*$",
         r"^paper\s+\d+",
         r"^blog\s+\d+",
         r"^regenerate\s+\d+",

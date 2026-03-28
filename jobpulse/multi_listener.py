@@ -34,10 +34,14 @@ def start_all():
     """Start all configured platform listeners in separate threads."""
     threads = []
 
-    # Telegram
+    # Telegram — use multi-bot listener (polls Main + Budget + Research bots)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        from jobpulse.telegram_listener import poll_continuous
-        t = threading.Thread(target=poll_continuous, name="telegram", daemon=True)
+        from jobpulse.multi_bot_listener import start_all_bots
+
+        def telegram_multi_bot():
+            start_all_bots()
+
+        t = threading.Thread(target=telegram_multi_bot, name="telegram", daemon=True)
         threads.append(("Telegram", t))
 
     # Slack

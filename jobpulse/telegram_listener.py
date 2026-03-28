@@ -109,8 +109,9 @@ def poll_and_process():
         # Dispatch to agent and get reply
         reply = dispatch(cmd)
 
-        # Send reply
-        telegram_agent.send_message(reply)
+        # Route reply to the correct bot based on intent
+        from jobpulse.telegram_bots import send_for_intent
+        send_for_intent(cmd.intent.value, reply)
         _log(f"Replied: {reply[:80]}...")
 
     # Save checkpoint
@@ -198,7 +199,9 @@ def poll_continuous():
                 _log(f"Intent: {cmd.intent.value}")
 
                 reply = dispatch(cmd)
-                telegram_agent.send_message(reply)
+                # Route reply to the correct bot based on intent
+                from jobpulse.telegram_bots import send_for_intent
+                send_for_intent(cmd.intent.value, reply)
                 _log(f"Replied: {reply[:80]}...")
 
             # Save checkpoint
