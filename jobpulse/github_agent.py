@@ -119,28 +119,68 @@ def format_commits(data: dict) -> str:
 
 
 def get_trending_repos() -> list[dict]:
-    """Fetch top 5 trending GitHub repos using the GitHub search API.
+    """Fetch top 5 trending GitHub repos by scraping the GitHub trending page.
 
-    Uses starred-recently heuristic: repos created in last 7 days sorted by stars.
-    More reliable than scraping the trending page HTML.
+    The GitHub Search API cannot replicate trending (it doesn't track stars
+    gained per day). Scraping the actual trending page is the only reliable
+    way to get the same results users see on github.com/trending.
     """
-    from datetime import datetime, timedelta
-    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-
-    # Search for repos created in last 7 days, sorted by stars
-    results = _gh_api(
-        f"/search/repositories?q=created:>{week_ago}+stars:>100&sort=stars&order=desc&per_page=5"
-    )
+    import httpx
 
     repos = []
-    for item in (results.get("items", []) if isinstance(results, dict) else []):
-        repos.append({
-            "repo": item.get("full_name", ""),
-            "description": (item.get("description") or "")[:80],
-            "language": item.get("language") or "",
-            "stars": item.get("stargazers_count", 0),
-            "url": item.get("html_url", ""),
-        })
+    try:
+        resp = httpx.get(
+            "https://github.com/trending",
+            headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0"},
+            timeout=15, follow_redirects=True,
+        )
+        resp.raise_for_status()
+        html = resp.text
+
+        # Parse trending repo rows — each is an <article> with class "Box-row"
+        import re
+        # Extract repo links: /owner/repo pattern inside h2 > a tags
+        repo_links = re.findall(
+            r'<h2[^>]*>\s*<a[^>]*href="(/[^"]+)"', html
+        )
+        # Extract descriptions (next <p> after the h2)
+        descriptions = re.findall(
+            r'<p class="col-9[^"]*"[^>]*>\s*(.+?)\s*</p>', html
+        )
+        # Extract stars today: "N stars today"
+        stars_today = re.findall(
+            r'(\d[\d,]*)\s+stars\s+today', html
+        )
+        # Extract language
+        languages = re.findall(
+            r'<span itemprop="programmingLanguage">([^<]+)</span>', html
+        )
+
+        for i, link in enumerate(repo_links[:5]):
+            full_name = link.strip("/")
+            repos.append({
+                "repo": full_name,
+                "description": (descriptions[i].strip() if i < len(descriptions) else "")[:80],
+                "language": languages[i].strip() if i < len(languages) else "",
+                "stars": int(stars_today[i].replace(",", "")) if i < len(stars_today) else 0,
+                "url": f"https://github.com{link}",
+            })
+
+    except Exception as e:
+        logger.error("Trending scrape failed, falling back to search API: %s", e)
+        # Fallback: search API with pushed:today + high stars
+        today = datetime.now().strftime("%Y-%m-%d")
+        results = _gh_api(
+            f"/search/repositories?q=pushed:>{today}+stars:>500&sort=stars&order=desc&per_page=5"
+        )
+        for item in (results.get("items", []) if isinstance(results, dict) else []):
+            repos.append({
+                "repo": item.get("full_name", ""),
+                "description": (item.get("description") or "")[:80],
+                "language": item.get("language") or "",
+                "stars": item.get("stargazers_count", 0),
+                "url": item.get("html_url", ""),
+            })
 
     return repos[:5]
 
