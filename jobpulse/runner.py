@@ -163,6 +163,31 @@ def main():
         path = get_budget_dataset_csv()
         logger.info("Exported to: %s", path)
 
+    elif command == "job-scan":
+        from jobpulse.job_autopilot import run_scan_window
+        run_scan_window()
+
+    elif command == "job-scan-quick":
+        from jobpulse.job_autopilot import run_scan_window
+        run_scan_window(["linkedin", "indeed", "reed"])
+
+    elif command == "job-scan-slow":
+        from jobpulse.job_autopilot import run_scan_window
+        run_scan_window(["glassdoor", "totaljobs"])
+
+    elif command == "job-follow-ups":
+        from jobpulse.job_autopilot import check_follow_ups
+        check_follow_ups()
+
+    elif command == "job-stats":
+        from jobpulse.job_db import JobDB
+        db = JobDB()
+        stats = db.get_today_stats()
+        print(f"Applied: {stats['applied']}")
+        print(f"Found: {stats['found']}")
+        print(f"Skipped: {stats['skipped']}")
+        print(f"Avg ATS: {stats['avg_ats']}%")
+
     elif command == "test":
         from jobpulse.telegram_agent import send_message
         success = send_message("🧪 JobPulse test message — all systems operational!")

@@ -39,6 +39,23 @@ PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
  2 15 * * * {RUNNER} gmail >> {PROJECT_DIR}/logs/gmail.log 2>&1
  2 17 * * * {RUNNER} gmail >> {PROJECT_DIR}/logs/gmail.log 2>&1
 
+# ── JOB AUTOPILOT ──
+
+# Full scan (all 5 platforms)
+ 0 7 * * * {RUNNER} job-scan >> {PROJECT_DIR}/logs/jobs.log 2>&1
+ 0 13 * * * {RUNNER} job-scan >> {PROJECT_DIR}/logs/jobs.log 2>&1
+ 0 19 * * * {RUNNER} job-scan >> {PROJECT_DIR}/logs/jobs.log 2>&1
+
+# Quick scan (LinkedIn + Indeed + Reed)
+ 0 10 * * * {RUNNER} job-scan-quick >> {PROJECT_DIR}/logs/jobs.log 2>&1
+30 16 * * * {RUNNER} job-scan-quick >> {PROJECT_DIR}/logs/jobs.log 2>&1
+
+# Overnight scan (Glassdoor + TotalJobs)
+ 0 2 * * * {RUNNER} job-scan-slow >> {PROJECT_DIR}/logs/jobs.log 2>&1
+
+# Follow-up reminders (9am daily)
+ 0 9 * * * {RUNNER} job-follow-ups >> {PROJECT_DIR}/logs/jobs.log 2>&1
+
 # ── WEEKLY ──
 
 # Weekly research papers to Notion (Monday 8:33am) — Python agent
