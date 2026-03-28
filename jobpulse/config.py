@@ -28,6 +28,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_BUDGET_BOT_TOKEN = os.getenv("TELEGRAM_BUDGET_BOT_TOKEN", "")    # Budget-only bot
 TELEGRAM_RESEARCH_BOT_TOKEN = os.getenv("TELEGRAM_RESEARCH_BOT_TOKEN", "")  # Research/papers bot
 TELEGRAM_ALERT_BOT_TOKEN = os.getenv("TELEGRAM_ALERT_BOT_TOKEN", "")      # Read-only alerts bot
+TELEGRAM_JOBS_BOT_TOKEN = os.getenv("TELEGRAM_JOBS_BOT_TOKEN", "")        # Job applications bot
+TELEGRAM_JOBS_CHAT_ID = os.getenv("TELEGRAM_JOBS_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", ""))
 
 # Slack
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
@@ -53,6 +55,17 @@ SHELL_MAX_OUTPUT = int(os.getenv("SHELL_MAX_OUTPUT", "4000"))
 
 # File operations
 MAX_FILE_LINES = int(os.getenv("MAX_FILE_LINES", "100"))
+
+# Notion Applications DB
+NOTION_APPLICATIONS_DB_ID = os.getenv("NOTION_APPLICATIONS_DB_ID", "")
+
+# Reed API
+REED_API_KEY = os.getenv("REED_API_KEY", "")
+
+# Job Autopilot
+JOB_AUTOPILOT_ENABLED = os.getenv("JOB_AUTOPILOT_ENABLED", "true").lower() in ("true", "1", "yes")
+JOB_AUTOPILOT_AUTO_SUBMIT = os.getenv("JOB_AUTOPILOT_AUTO_SUBMIT", "true").lower() in ("true", "1", "yes")
+JOB_AUTOPILOT_MAX_DAILY = int(os.getenv("JOB_AUTOPILOT_MAX_DAILY", "60"))
 
 DATA_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)

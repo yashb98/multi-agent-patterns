@@ -2,6 +2,9 @@
 .env
 *.env.local
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,6 +19,8 @@ outputs/
 
 # Agent data and logs
 data/
+!data/job_search_config.json
+!data/skill_synonyms.json
 logs/
 
 # IDE
