@@ -415,18 +415,34 @@ def add_transaction(amount: float, description: str, category: str,
                     section: str, txn_type: str) -> dict:
     now = datetime.now()
     week_start = _get_week_start(now)
+    today = now.strftime("%Y-%m-%d")
 
     conn = _get_conn()
+
+    # Dedup guard: reject if identical transaction was logged in the last 30 seconds
+    # This prevents double-logging from concurrent bot handlers
+    recent = conn.execute(
+        "SELECT id FROM transactions WHERE amount=? AND description=? AND category=? "
+        "AND date=? AND created_at > datetime('now', '-30 seconds')",
+        (amount, description, category, today)
+    ).fetchone()
+    if recent:
+        logger.info("Dedup: skipping duplicate transaction (%.2f %s %s)", amount, description, category)
+        conn.close()
+        return {"id": recent[0], "amount": amount, "description": description,
+                "category": category, "section": section, "type": txn_type,
+                "date": today, "week_start": week_start, "dedup": True}
+
     cursor = conn.execute(
         "INSERT INTO transactions (amount, description, category, section, type, date, week_start, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (amount, description, category, section, txn_type, now.strftime("%Y-%m-%d"), week_start, now.isoformat())
+        (amount, description, category, section, txn_type, today, week_start, now.isoformat())
     )
     conn.commit()
     conn.close()
 
     return {"id": cursor.lastrowid, "amount": amount, "description": description,
             "category": category, "section": section, "type": txn_type,
-            "date": now.strftime("%Y-%m-%d"), "week_start": week_start}
+            "date": today, "week_start": week_start}
 
 
 def set_planned_budget(category: str, section: str, amount: float, week_start: str = None):

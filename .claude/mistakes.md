@@ -16,6 +16,12 @@ Format for each entry:
 
 <!-- Entries below this line. Most recent first. -->
 
+### [2026-03-28] Budget transactions logged twice — dual-bot race condition
+- **What went wrong**: User sent "spent 3 on cookies misc" and it was logged twice in SQLite and synced to Notion twice. Cookies appeared as two separate transactions.
+- **Root cause**: Multi-bot listener starts Main Bot with `allowed_intents=None` (handles ALL intents) AND Budget Bot with `allowed_intents=BUDGET_INTENTS`. Both bots poll Telegram independently, both receive the same message within 0-100ms, both classify it as LOG_SPEND, both call `log_transaction()` → two INSERT statements. No dedup guard existed.
+- **Fix applied**: (1) Main Bot now excludes intents claimed by dedicated bots — if Budget Bot is running, Main Bot skips budget intents. (2) Added 30-second dedup guard in `add_transaction()` — rejects duplicate (same amount + description + category + date) within 30 seconds. (3) Dedup returns the existing transaction ID instead of inserting.
+- **Rule to prevent recurrence**: When multiple bots/handlers can receive the same message, ensure only ONE processes it. The Main Bot must exclude intents that dedicated bots handle. Always add dedup guards on write operations that can be triggered from concurrent handlers. Check `multi_bot_listener.py` start_all_bots() when adding new dedicated bots.
+
 ### [2026-03-25] Test suite wiped production knowledge graph on every pytest run
 - **What went wrong**: Knowledge graph (mindgraph) showed 0 entities despite auto_extract logging successful extractions. All entities extracted from recruiter emails were gone.
 - **Root cause**: `tests/test_mindgraph.py` called `storage.clear_all()` 4 times, operating on the **production** `data/mindgraph.db` instead of a temporary test database. Every `pytest` run deleted all knowledge entities, relations, and processed file records.

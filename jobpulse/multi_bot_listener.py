@@ -202,11 +202,26 @@ def start_all_bots():
 
     threads = []
 
-    # Main bot — handles everything
+    # Main bot — handles everything EXCEPT intents claimed by dedicated bots
+    # This prevents double-processing (e.g., budget message handled by both Main + Budget bot)
+    main_excluded_intents = set()
+    if TELEGRAM_BUDGET_BOT_TOKEN:
+        main_excluded_intents.update(BUDGET_INTENTS)
+    if TELEGRAM_RESEARCH_BOT_TOKEN:
+        main_excluded_intents.update(RESEARCH_INTENTS)
+    if TELEGRAM_JOBS_BOT_TOKEN:
+        main_excluded_intents.update(JOBS_INTENTS)
+
+    main_allowed = None  # None = all intents
+    if main_excluded_intents:
+        # Build set of all intents minus the excluded ones
+        all_intents = {i.value for i in Intent}
+        main_allowed = all_intents - main_excluded_intents
+
     if TELEGRAM_BOT_TOKEN:
         t = threading.Thread(
             target=_poll_bot,
-            args=("main", TELEGRAM_BOT_TOKEN, None, send_main),
+            args=("main", TELEGRAM_BOT_TOKEN, main_allowed, send_main),
             name="main-bot", daemon=True,
         )
         threads.append(("Main", t))
