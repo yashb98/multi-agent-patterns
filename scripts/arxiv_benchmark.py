@@ -88,12 +88,16 @@ def benchmark_fact_checker_scoring() -> dict:
     test_cases = [
         # (verifications, expected_score, description)
         (
-            [{"verdict": "VERIFIED", "severity": "low"}],
-            10.0, "Single verified claim"
+            [{"verdict": "VERIFIED", "severity": "low", "source": "semantic_scholar"}],
+            10.0, "Single externally verified claim"
         ),
         (
-            [{"verdict": "VERIFIED"}, {"verdict": "VERIFIED"}, {"verdict": "VERIFIED"}],
-            10.0, "All verified"
+            [{"verdict": "VERIFIED", "source": "semantic_scholar"}, {"verdict": "VERIFIED", "source": "web"}, {"verdict": "VERIFIED", "source": "semantic_scholar"}],
+            10.0, "All externally verified"
+        ),
+        (
+            [{"verdict": "VERIFIED", "severity": "low"}],
+            5.0, "Abstract-only verified = 5.0 (honest scoring)"
         ),
         (
             [{"verdict": "INACCURATE", "severity": "high"}],
@@ -105,18 +109,14 @@ def benchmark_fact_checker_scoring() -> dict:
         ),
         (
             [{"verdict": "UNVERIFIED", "severity": "low"}],
-            0.0, "Single unverified low severity"
-        ),
-        (
-            [{"verdict": "UNVERIFIED", "severity": "high"}],
-            0.0, "Single unverified high severity"
+            0.0, "Single unverified"
         ),
         (
             [], 10.0, "Empty verifications"
         ),
         (
-            [{"verdict": "VERIFIED"}, {"verdict": "VERIFIED"}, {"verdict": "EXAGGERATED", "severity": "medium"}],
-            3.33, "Mostly verified with one exaggerated (approx)"
+            [{"verdict": "VERIFIED", "source": "semantic_scholar"}, {"verdict": "VERIFIED", "source": "web"}, {"verdict": "EXAGGERATED", "severity": "medium"}],
+            1.67, "Two external verified + one exaggerated"
         ),
     ]
 
@@ -262,6 +262,79 @@ def benchmark_fact_check_integration() -> dict:
     }
 
 
+def benchmark_external_verifiers() -> dict:
+    """Check that external verifier modules exist and have correct interfaces."""
+    checks = {}
+
+    try:
+        from shared.external_verifiers import semantic_scholar_lookup
+        checks["has_s2_lookup"] = callable(semantic_scholar_lookup)
+    except ImportError:
+        checks["has_s2_lookup"] = False
+
+    try:
+        from shared.external_verifiers import check_repo_health
+        checks["has_repo_health"] = callable(check_repo_health)
+    except ImportError:
+        checks["has_repo_health"] = False
+
+    try:
+        from shared.external_verifiers import quality_web_verify, score_source_quality
+        checks["has_quality_web"] = callable(quality_web_verify) and callable(score_source_quality)
+    except ImportError:
+        checks["has_quality_web"] = False
+
+    try:
+        from shared.fact_checker import route_claim_to_verifier
+        checks["has_claim_router"] = callable(route_claim_to_verifier)
+    except ImportError:
+        checks["has_claim_router"] = False
+
+    try:
+        from shared.fact_checker import generate_fact_check_explanation
+        checks["has_explanation_gen"] = callable(generate_fact_check_explanation)
+    except ImportError:
+        checks["has_explanation_gen"] = False
+
+    passed = sum(1 for v in checks.values() if v)
+    total = len(checks)
+
+    return {
+        "passed": passed,
+        "failed": total - passed,
+        "total": total,
+        "checks": {k: "PASS" if v else "FAIL" for k, v in checks.items()},
+        "score": passed / total * 10 if total else 10.0,
+    }
+
+
+def benchmark_honest_scoring() -> dict:
+    """Verify that abstract-only verification no longer scores 10/10."""
+    from shared.fact_checker import compute_accuracy_score
+
+    test_cases = [
+        ([{"verdict": "VERIFIED", "source": "abstract"}], 0.0, 5.0,
+         "Abstract-only VERIFIED should score 5.0"),
+        ([{"verdict": "VERIFIED", "source": "semantic_scholar"}], 0.0, 10.0,
+         "External VERIFIED should score 10.0"),
+        ([{"verdict": "VERIFIED", "source": "abstract"}], -0.5, 4.5,
+         "Abstract VERIFIED + missing repo = 4.5"),
+    ]
+
+    results = {"passed": 0, "failed": 0, "total": len(test_cases), "failures": []}
+
+    for verifications, repo_adj, expected, desc in test_cases:
+        actual = compute_accuracy_score(verifications, repo_adjustment=repo_adj)
+        if abs(actual - expected) <= 0.5:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+            results["failures"].append({"description": desc, "expected": expected, "actual": round(actual, 2)})
+
+    results["score"] = results["passed"] / results["total"] * 10 if results["total"] else 10.0
+    return results
+
+
 def run_all_benchmarks() -> dict:
     """Run all benchmarks and return combined results."""
     print("=" * 60)
@@ -276,6 +349,8 @@ def run_all_benchmarks() -> dict:
         "test_coverage": ("Test Coverage", benchmark_test_coverage),
         "multicriteria": ("Multi-Criteria Scoring", benchmark_multicriteria_scoring),
         "fact_integration": ("Fact-Check Integration", benchmark_fact_check_integration),
+        "external_verifiers": ("External Verifiers", benchmark_external_verifiers),
+        "honest_scoring": ("Honest Scoring Model", benchmark_honest_scoring),
     }
 
     results = {}

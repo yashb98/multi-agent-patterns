@@ -176,18 +176,26 @@ Return JSON: {{"claims": [{{"claim": "exact text", "type": "benchmark|date|...",
 
 
 def verify_claims(claims: list[dict], sources: list[str],
-                  paper_abstract: str = None, web_search: bool = True) -> list[dict]:
-    """Verify each claim against available sources + web search + cache.
+                  paper_abstract: str = None, web_search: bool = True,
+                  arxiv_id: str = None) -> list[dict]:
+    """Verify each claim using multi-source routing.
+
+    Routes claims to appropriate verifiers based on claim type:
+    - attribution/date → Semantic Scholar
+    - benchmark/comparison → Quality web search + LLM judge
+    - technical → Abstract check + web fallback
 
     Args:
         claims: list of claim dicts from extract_claims()
         sources: research notes from Researcher agent
-        paper_abstract: optional paper abstract for arXiv blog generation
-        web_search: enable live web search verification (default True)
-
-    Returns list of verification dicts
+        paper_abstract: optional paper abstract
+        web_search: enable live web search verification
+        arxiv_id: paper's arXiv ID for Semantic Scholar lookup
     """
     from jobpulse.config import OPENAI_API_KEY
+    from shared.external_verifiers import (
+        semantic_scholar_lookup, verify_claim_with_s2, quality_web_verify,
+    )
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     verifiable = [c for c in claims if c.get("source_needed", True) and c.get("type", "") not in SKIP_TYPES]
@@ -204,8 +212,9 @@ def verify_claims(claims: list[dict], sources: list[str],
                 "claim": c["claim"],
                 "verdict": cached["verdict"],
                 "evidence": f"[CACHED] {cached['evidence']}",
-                "confidence": cached["confidence"],
+                "confidence": max(0.0, min(1.0, cached["confidence"])),
                 "severity": "low" if cached["verdict"] == "VERIFIED" else "medium",
+                "source": cached.get("source_url", "abstract") or "abstract",
                 "fix_suggestion": None if cached["verdict"] == "VERIFIED" else "Review against latest sources",
             })
             logger.info("Cache hit for: %s → %s", c["claim"][:50], cached["verdict"])
@@ -215,28 +224,57 @@ def verify_claims(claims: list[dict], sources: list[str],
     if not uncached_claims:
         return cached_results
 
-    # Combine all sources
+    # Fetch Semantic Scholar data once per paper (reused across S2-routed claims)
+    s2_data = None
+    if arxiv_id and any(route_claim_to_verifier(c) == "semantic_scholar" for c in uncached_claims):
+        s2_data = semantic_scholar_lookup(arxiv_id)
+
+    # Route each claim: S2-routable claims go directly, rest go to LLM
+    s2_results = []
+    llm_claims = []
+
+    for c in uncached_claims:
+        route = route_claim_to_verifier(c)
+        if route == "semantic_scholar" and s2_data:
+            result = verify_claim_with_s2(c, s2_data)
+            s2_results.append(result)
+        else:
+            llm_claims.append(c)
+
+    # Build source context for LLM verification
     source_text = "\n\n".join(sources[:5]) if sources else ""
     if paper_abstract:
         source_text = f"PAPER ABSTRACT:\n{paper_abstract}\n\n{source_text}"
 
-    # Add web search results for uncached claims
-    if web_search:
+    # Enrich with quality web search for web-routed claims
+    if web_search and llm_claims:
         web_context = []
-        for c in uncached_claims[:5]:  # Cap at 5 web searches
-            web_result = web_verify_claim(c["claim"])
-            if web_result.get("snippet"):
-                web_context.append(f"Web search for \"{c['claim'][:80]}\":\n{web_result['snippet']}")
+        for c in llm_claims[:5]:
+            route = route_claim_to_verifier(c)
+            if route in ("web", "abstract_then_web"):
+                web_result = quality_web_verify(c["claim"])
+                if web_result.get("snippets"):
+                    web_context.append(
+                        f"Web search for \"{c['claim'][:80]}\" "
+                        f"(source quality: {web_result['best_source_quality']:.1f}):\n"
+                        f"{web_result['snippets']}"
+                    )
         if web_context:
             source_text += "\n\nWEB SEARCH RESULTS:\n" + "\n\n".join(web_context)
 
-    source_text = source_text[:6000]  # Cap context
+    source_text = source_text[:6000]
 
-    # Batch verify all uncached claims
-    claims_text = "\n".join(f"{i+1}. {c['claim']} [type: {c.get('type', 'unknown')}]"
-                           for i, c in enumerate(uncached_claims))
+    # LLM verification for remaining claims
+    llm_results = []
+    if llm_claims:
+        claims_text = "\n".join(f"{i+1}. {c['claim']} [type: {c.get('type', 'unknown')}]"
+                               for i, c in enumerate(llm_claims))
 
-    prompt = f"""Verify each claim against the provided sources. Be STRICT.
+        prompt = f"""Verify each claim against the provided sources. Be STRICT and HONEST.
+
+If a claim can only be verified against the paper's own abstract (not an independent source),
+mark the source as "abstract". If verified by web search results from credible sources,
+mark the source as "web".
 
 SOURCES (ground truth):
 {source_text}
@@ -245,51 +283,59 @@ CLAIMS TO VERIFY:
 {claims_text}
 
 For each claim, return:
-- verdict: "VERIFIED" (supported by sources), "UNVERIFIED" (no evidence found), "INACCURATE" (contradicted by sources), "EXAGGERATED" (overstated)
+- verdict: "VERIFIED" | "UNVERIFIED" | "INACCURATE" | "EXAGGERATED"
 - evidence: what the source actually says (quote if possible)
-- confidence: 0.0-1.0 how sure you are
-- severity: "high" (factual error), "medium" (missing nuance), "low" (minor imprecision)
+- confidence: 0.0-1.0
+- severity: "high" | "medium" | "low"
+- source: "abstract" | "web" (which source confirmed/denied this)
 - fix_suggestion: null if verified, otherwise how to fix
 
-Return JSON: {{"verifications": [{{"claim": "...", "verdict": "...", "evidence": "...", "confidence": 0.9, "severity": "high|medium|low", "fix_suggestion": null|"..."}}]}}"""
+Return JSON: {{"verifications": [...]}}"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        result = json.loads(response.choices[0].message.content)
-        verifications = result.get("verifications", [])
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1500,
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            result = json.loads(response.choices[0].message.content)
+            llm_results = result.get("verifications", [])
 
-        # Normalize verdicts and clamp confidence values
-        for v in verifications:
-            v["verdict"] = v.get("verdict", "UNVERIFIED").upper()
-            v["confidence"] = max(0.0, min(1.0, float(v.get("confidence", 0.5))))
+            # Post-process: normalize verdicts, clamp confidence
+            for v in llm_results:
+                v["verdict"] = v.get("verdict", "UNVERIFIED").upper()
+                v["confidence"] = max(0.0, min(1.0, float(v.get("confidence", 0.5))))
+                v["source"] = v.get("source", "abstract")
 
-        # Cache new results
-        for v in verifications:
-            try:
-                cache_verified_fact(
-                    claim=v.get("claim", ""),
-                    verdict=v.get("verdict", "UNVERIFIED"),
-                    evidence=v.get("evidence", ""),
-                    confidence=v.get("confidence", 0.5),
-                )
-            except Exception:
-                pass  # Cache failures are non-critical
+        except Exception as e:
+            logger.error("LLM verification failed: %s", e)
 
-        verdicts = [v.get("verdict", "UNKNOWN") for v in verifications]
-        logger.info("Verification: %d VERIFIED, %d UNVERIFIED, %d INACCURATE, %d EXAGGERATED",
-                    verdicts.count("VERIFIED"), verdicts.count("UNVERIFIED"),
-                    verdicts.count("INACCURATE"), verdicts.count("EXAGGERATED"))
+    # Combine all results
+    all_results = cached_results + s2_results + llm_results
 
-        return cached_results + verifications
-    except Exception as e:
-        logger.error("Claim verification failed: %s", e)
-        return cached_results
+    # Cache new results with source attribution
+    for v in s2_results + llm_results:
+        try:
+            cache_verified_fact(
+                claim=v.get("claim", ""),
+                verdict=v.get("verdict", "UNVERIFIED"),
+                evidence=v.get("evidence", ""),
+                source_url=v.get("source", "abstract"),
+                confidence=v.get("confidence", 0.5),
+            )
+        except Exception:
+            pass
+
+    verdicts = [v.get("verdict", "UNKNOWN") for v in all_results]
+    sources_used = set(v.get("source", "unknown") for v in all_results)
+    logger.info("Verification: %d VERIFIED, %d UNVERIFIED, %d INACCURATE, %d EXAGGERATED | Sources: %s",
+                verdicts.count("VERIFIED"), verdicts.count("UNVERIFIED"),
+                verdicts.count("INACCURATE"), verdicts.count("EXAGGERATED"),
+                ", ".join(sources_used))
+
+    return all_results
 
 
 def compute_accuracy_score(verifications: list[dict], repo_adjustment: float = 0.0) -> float:

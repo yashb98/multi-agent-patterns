@@ -234,49 +234,76 @@ Return ONLY a JSON array. Compute overall as: (novelty*0.3 + significance*0.25 +
         return candidates[:top_n]
 
 
-def summarize_and_verify_paper(paper: dict) -> dict:
-    """Summarize a paper and fact-check verifiable claims in the summary.
+def _find_repo_url(paper: dict) -> str | None:
+    """Try to find a GitHub repo URL from paper metadata."""
+    abstract = paper.get("abstract", "")
+    match = re.search(r"https?://github\.com/[^\s)]+", abstract)
+    if match:
+        return match.group(0).rstrip(".")
+    return None
 
-    Returns dict with 'summary' (str) and 'fact_check' (dict with
-    total_claims, verified_count, accuracy_score, issues).
+
+def summarize_and_verify_paper(paper: dict) -> dict:
+    """Summarize a paper and fact-check claims using multi-source verification.
+
+    Uses Semantic Scholar for attribution/date claims, quality web search for
+    benchmark/comparison claims, and abstract-check for technical claims.
+    Checks repo health if GitHub URL found.
     """
-    from shared.fact_checker import extract_claims, verify_claims, compute_accuracy_score
+    from shared.fact_checker import (
+        extract_claims, verify_claims, compute_accuracy_score,
+        generate_fact_check_explanation,
+    )
+    from shared.external_verifiers import check_repo_health
 
     summary = summarize_paper(paper)
 
-    # Extract and verify claims from the summary against the abstract
-    source_text = f"Title: {paper['title']}\nAbstract: {paper['abstract']}"
+    # Extract claims from summary
     try:
         claims = extract_claims(summary, paper["title"])
     except Exception as e:
         logger.warning("Claim extraction failed for %s: %s", paper["arxiv_id"], e)
         claims = []
 
+    # Check repo health
+    repo_url = _find_repo_url(paper)
+    try:
+        repo_health = check_repo_health(repo_url)
+    except Exception as e:
+        logger.warning("Repo health check failed: %s", e)
+        repo_health = {"status": "REPO_NA", "score_adjustment": 0.0, "summary": "Check failed"}
+
     if not claims:
+        score = max(0.0, min(10.0, 10.0 + repo_health.get("score_adjustment", 0.0)))
+        explanation = generate_fact_check_explanation(score, [], repo_health)
         return {
             "summary": summary,
             "fact_check": {
+                "score": score,
+                "explanation": explanation,
                 "total_claims": 0,
                 "verified_count": 0,
-                "accuracy_score": 10.0,
                 "issues": [],
+                "repo_health": repo_health,
             },
         }
 
+    # Multi-source verification
     try:
-        verifications = verify_claims(claims, sources=[], paper_abstract=paper["abstract"])
-        score = compute_accuracy_score(verifications)
+        verifications = verify_claims(
+            claims, sources=[], paper_abstract=paper["abstract"],
+            arxiv_id=paper["arxiv_id"],
+        )
+        score = compute_accuracy_score(
+            verifications,
+            repo_adjustment=repo_health.get("score_adjustment", 0.0),
+        )
     except Exception as e:
         logger.warning("Verification failed for %s: %s", paper["arxiv_id"], e)
-        return {
-            "summary": summary,
-            "fact_check": {
-                "total_claims": len(claims),
-                "verified_count": 0,
-                "accuracy_score": 0.0,
-                "issues": [],
-            },
-        }
+        verifications = []
+        score = 0.0
+
+    explanation = generate_fact_check_explanation(score, verifications, repo_health)
 
     issues = [
         {"claim": v["claim"], "verdict": v["verdict"], "fix": v.get("fix_suggestion")}
@@ -287,10 +314,12 @@ def summarize_and_verify_paper(paper: dict) -> dict:
     return {
         "summary": summary,
         "fact_check": {
+            "score": score,
+            "explanation": explanation,
             "total_claims": len(verifications),
             "verified_count": sum(1 for v in verifications if v["verdict"] == "VERIFIED"),
-            "accuracy_score": score,
             "issues": issues,
+            "repo_health": repo_health,
         },
     }
 
@@ -610,20 +639,14 @@ def build_digest(top_n: int = 5) -> str:
         lines.append(f"")
         lines.append(f"{summary}\n")
 
-        # Fact-check badge
+        # Fact-check with honest explanation
         fc = paper.get("fact_check", {})
-        if fc and fc.get("total_claims", 0) > 0:
-            verified = fc["verified_count"]
+        if fc and fc.get("explanation"):
+            lines.append(f"Fact-check: {fc['explanation']}")
+        elif fc and fc.get("total_claims", 0) > 0:
+            verified = fc.get("verified_count", 0)
             total = fc["total_claims"]
-            if verified == total:
-                lines.append(f"Fact-check: {verified}/{total} claims verified")
-            else:
-                issue_strs = [
-                    f"{iss['verdict'].lower()}: \"{iss['claim']}\""
-                    for iss in fc.get("issues", [])[:2]
-                ]
-                issues_text = ", ".join(issue_strs) if issue_strs else "review needed"
-                lines.append(f"Fact-check: {verified}/{total} verified — {issues_text}")
+            lines.append(f"Fact-check: {fc.get('score', 0):.1f}/10 — {verified}/{total} claims checked")
 
         lines.append(f"PDF: {paper.get('pdf_url', paper['arxiv_url'])}")
         notion_link = notion_urls.get(paper['arxiv_id'], '')
@@ -684,6 +707,28 @@ def build_digest(top_n: int = 5) -> str:
             logger.debug("Blog reminder failed: %s", e)
 
     threading.Thread(target=_blog_reminder, daemon=True).start()
+
+    # Store verification experiences for Ralph Loop learning
+    try:
+        from jobpulse.swarm_dispatcher import store_experience
+        for paper, summary in summaries:
+            fc = paper.get("fact_check", {})
+            if fc.get("total_claims", 0) > 0:
+                store_experience(
+                    intent=f"arxiv_verification_{paper['arxiv_id']}",
+                    experience={
+                        "paper_title": paper["title"][:100],
+                        "arxiv_id": paper["arxiv_id"],
+                        "score": fc.get("score", 0),
+                        "total_claims": fc.get("total_claims", 0),
+                        "verified_count": fc.get("verified_count", 0),
+                        "issues": fc.get("issues", []),
+                        "repo_status": fc.get("repo_health", {}).get("status", "REPO_NA"),
+                    },
+                    score=fc.get("score", 0) / 10.0,
+                )
+    except Exception as e:
+        logger.debug("Experience storage failed: %s", e)
 
     return digest
 
