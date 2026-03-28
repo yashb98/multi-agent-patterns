@@ -34,7 +34,7 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | Gmail | Classify recruiter emails (rule-based pre-classifier + LLM), send alerts, extract knowledge | 1pm, 3pm, 5pm |
 | Calendar | Today + tomorrow events, 2-hour reminders | 9am, 12pm, 3pm |
 | GitHub | Yesterday's commits (Commits API), trending repos | 8am briefing |
-| arXiv | Daily top 5 AI papers ranked by broad impact, paper DB, read tracking, blog post pipeline | 7:57am + on demand |
+| arXiv | Daily top 5 AI papers, multi-criteria ranking, multi-source fact-checking, repo health, Notion pages | 7:57am + on demand |
 | Notion | Tasks: create/complete/remove, dedup, priorities, due dates, subtasks, weekly plan | On demand |
 | Budget | Parse spending/income/savings, 17 categories, recurring, alerts, undo, Notion sync, category sub-pages, item+store NLP, weekly archival, weekly comparison, historical pace alerts, CSV export | On demand |
 | Budget Tracker | Weekly archival (Sunday 7am cron), category sub-page management, weekly comparison engine | Cron + on demand |
@@ -107,7 +107,7 @@ Message → NLP 3-Tier Classifier (regex → embeddings → LLM)
 
 **RLM** (Recursive Language Model): when context exceeds single LLM capacity, root model writes code that processes chunks via sub-LM calls. Used for deep knowledge queries and briefing synthesis.
 
-**Fact-Check Accuracy (9.5+/10)**: every blog article goes through claim-level verification. Claims are extracted from the draft, verified against research notes + paper abstracts + live DuckDuckGo web search + cached facts. Deterministic scoring (VERIFIED +1.0, INACCURATE -2.0, EXAGGERATED -1.0). Failed claims get targeted revision notes with specific fix instructions. Verified facts cached in SQLite for instant reuse.
+**Multi-Source Fact Verification**: 3-level pipeline replaces circular LLM-checks-LLM with honest scoring. Level 1: summary vs abstract (scores 0.5 — self-referential). Level 2: external verification via Semantic Scholar (attribution, dates, citations) + quality web search with source credibility scoring (academic > docs > blogs). Level 3: GitHub repo health check (stars, tests, README, staleness). Abstract-only verification scores 5.0/10, not 10.0 — honest by design. Each paper gets a human-readable explanation: "6.2/10 — 3/4 verified externally, exaggerated: '3x faster' (benchmark shows 2.1x), repo exists but no tests". Ralph Loop stores verification experiences for persona evolution.
 
 **Gmail Pre-Classifier**: rule-based triage eliminates 70-85% of unnecessary LLM calls. 4-tier system: Learning → Static Rules → LLM Fallback → User Feedback. Adaptive audit decay (50% → 10%). Telegram review flow (✅/❌/🔄). Auto-graduates when accuracy exceeds 95%.
 
@@ -225,7 +225,7 @@ RLM_MAX_BUDGET=0.10
 
 ## Test Suite
 
-204 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (ranking, read tracking, category tags, stats), dispatcher routing, swarm logic, GRPO sampling, experience storage, knowledge extraction, email pre-classifier (rules, confidence, evidence, audit, graduation, review flow), and fact-checker (claim extraction, scoring, web search, cache).
+327 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (fetching, multi-criteria ranking, JSON parsing, storage, fact-check integration), external verifiers (Semantic Scholar, GitHub repo health, quality web search with source credibility), fact-checker (honest scoring, explanation generation, claim routing, multi-source verification, cache), dispatcher routing, swarm logic, GRPO sampling, experience storage, knowledge extraction, email pre-classifier (rules, confidence, evidence, audit, graduation, review flow).
 
 ```bash
 python -m pytest tests/ -v          # Full suite
@@ -260,6 +260,9 @@ Rule-based email triage that eliminates 70-85% of unnecessary LLM calls. Static 
 ### Fact-Check Accuracy 9.5+/10 (2026-03-27)
 Mandatory fact-checking across all 4 orchestration patterns. Extracts verifiable claims from drafts, verifies against research notes + paper abstracts + DuckDuckGo web search. Deterministic scoring with hard accuracy gate (9.5/10). Targeted revision notes give the writer specific claim-level fix instructions. Verified facts cached in SQLite for reuse.
 
+### Hybrid Fact Verification + Multi-Criteria Ranking (2026-03-28)
+Major upgrade to arXiv ranking and fact-checking. **Multi-criteria scoring**: papers ranked on 4 weighted dimensions (novelty 30%, significance 25%, practical 30%, breadth 15%) instead of a single flat score. **3-level fact verification**: Semantic Scholar for attribution/date claims, quality web search with source credibility scoring for benchmark/comparison claims, GitHub repo health check (stars, tests, staleness). **Honest scoring**: abstract-only verification scores 0.5 (not 1.0) — a paper verified only against itself gets 5.0/10. **Human-readable explanations**: "6.2/10 — 3/4 verified externally, exaggerated: '3x faster' (shows 2.1x), repo exists but no tests". **82 tests** across 3 test files. Benchmark improved from 5.0/10 to 10.0/10.
+
 ## Documentation Map
 
 > **CLAUDE.md** is the source of truth for project stats, commands, and Telegram interface.
@@ -287,3 +290,5 @@ Mandatory fact-checking across all 4 orchestration patterns. Extracts verifiable
 | arXiv Digest | Implemented | [docs/feature-arxiv-digest.md](docs/feature-arxiv-digest.md) |
 | Gmail Pre-Classifier | Implemented | [docs/feature-gmail-preclassifier.md](docs/feature-gmail-preclassifier.md) |
 | Fact-Check Accuracy 9.5+ | Implemented | [docs/feature-fact-check-accuracy.md](docs/feature-fact-check-accuracy.md) |
+| Hybrid Fact Verification | Implemented | [docs/superpowers/specs/2026-03-28-hybrid-fact-verification-design.md](docs/superpowers/specs/2026-03-28-hybrid-fact-verification-design.md) |
+| Multi-Criteria arXiv Ranking | Implemented | [docs/superpowers/specs/2026-03-28-arxiv-ranking-fact-checking-design.md](docs/superpowers/specs/2026-03-28-arxiv-ranking-fact-checking-design.md) |
