@@ -15,8 +15,9 @@ from shared.logging_config import get_logger
 from jobpulse.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR,
     TELEGRAM_BUDGET_BOT_TOKEN, TELEGRAM_RESEARCH_BOT_TOKEN,
+    TELEGRAM_JOBS_BOT_TOKEN,
 )
-from jobpulse.telegram_bots import _get_updates, send_for_intent, BUDGET_INTENTS, RESEARCH_INTENTS
+from jobpulse.telegram_bots import _get_updates, send_for_intent, BUDGET_INTENTS, RESEARCH_INTENTS, JOBS_INTENTS
 from jobpulse.command_router import classify, Intent
 from jobpulse.healthcheck import write_heartbeat
 
@@ -155,6 +156,14 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                     "undo_hours": "Removing hours entry... ~5s",
                     "show_hours": "Loading timesheet... ~3s",
                     "recurring_budget": "Processing recurring rule... ~3s",
+                    "show_jobs": "Loading pending jobs... ~3s",
+                    "approve_jobs": "Submitting applications... ~30s",
+                    "reject_job": "Skipping job... ~2s",
+                    "job_stats": "Calculating stats... ~3s",
+                    "search_config": "Updating search config... ~2s",
+                    "pause_jobs": "Pausing autopilot... ~1s",
+                    "resume_jobs": "Resuming autopilot... ~1s",
+                    "job_detail": "Loading job details... ~3s",
                     "export": "Backing up all data... ~10s",
                     "conversation": "Thinking... ~3s",
                     "remote_shell": "Running command... ~5s",
@@ -189,7 +198,7 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
 
 def start_all_bots():
     """Start all configured bot listeners in parallel threads."""
-    from jobpulse.telegram_bots import send_main, send_budget, send_research
+    from jobpulse.telegram_bots import send_main, send_budget, send_research, send_jobs
 
     threads = []
 
@@ -219,6 +228,15 @@ def start_all_bots():
             name="research-bot", daemon=True,
         )
         threads.append(("Research", t))
+
+    # Jobs bot — job autopilot intents only
+    if TELEGRAM_JOBS_BOT_TOKEN:
+        t = threading.Thread(
+            target=_poll_bot,
+            args=("jobs", TELEGRAM_JOBS_BOT_TOKEN, JOBS_INTENTS, send_jobs),
+            name="jobs-bot", daemon=True,
+        )
+        threads.append(("Jobs", t))
 
     # Alert bot is send-only — no polling needed
 

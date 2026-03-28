@@ -13,6 +13,7 @@ from shared.logging_config import get_logger
 from jobpulse.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     TELEGRAM_BUDGET_BOT_TOKEN, TELEGRAM_RESEARCH_BOT_TOKEN, TELEGRAM_ALERT_BOT_TOKEN,
+    TELEGRAM_JOBS_BOT_TOKEN,
 )
 
 logger = get_logger(__name__)
@@ -121,6 +122,12 @@ def send_alert(text: str) -> bool:
     return _send(token, text)
 
 
+def send_jobs(text: str) -> bool:
+    """Send via jobs bot. Falls back to main if not configured."""
+    token = TELEGRAM_JOBS_BOT_TOKEN or TELEGRAM_BOT_TOKEN
+    return _send(token, text)
+
+
 # ── Intent → Bot mapping ──
 
 # Which intents route to which bot for REPLIES
@@ -132,6 +139,11 @@ BUDGET_INTENTS = {
 
 RESEARCH_INTENTS = {
     "arxiv",
+}
+
+JOBS_INTENTS = {
+    "show_jobs", "approve_jobs", "reject_job", "job_stats",
+    "search_config", "pause_jobs", "resume_jobs", "job_detail",
 }
 
 # Alert bot is send-only — these are for proactive notifications, not replies
@@ -149,6 +161,8 @@ def send_for_intent(intent: str, text: str) -> bool:
         return send_budget(text)
     if intent in RESEARCH_INTENTS:
         return send_research(text)
+    if intent in JOBS_INTENTS:
+        return send_jobs(text)
     return send_main(text)
 
 
@@ -233,6 +247,29 @@ HELP_RESEARCH = """\U0001f4da RESEARCH BOT — AI Papers & Knowledge
 Daily digest runs at 7:57am automatically.
 Weekly Notion summary posted Mondays 8:33am."""
 
+HELP_JOBS = """💼 JOBS BOT — Job Autopilot
+
+📋 REVIEW:
+  "jobs" — show pending review jobs
+  "job 3" — full details for job #3
+  "apply 1,3,5" — approve specific jobs
+  "apply all" — approve all pending
+  "reject 2" — skip a job
+
+📊 STATS:
+  "job stats" — today's numbers
+
+🔍 SEARCH:
+  "search: add title NLP Engineer"
+  "search: exclude company X"
+
+⏯️ CONTROL:
+  "pause jobs" — stop autopilot
+  "resume jobs" — restart autopilot
+
+Runs: 7am, 10am, 1pm, 4:30pm, 7pm, 2am
+Auto-applies 90%+ ATS. Sends 82-89% for review."""
+
 HELP_ALERT = """\U0001f514 ALERT BOT — Notifications Only
 
 This bot sends you alerts automatically:
@@ -253,4 +290,5 @@ def get_help_for_bot(bot_name: str) -> str:
         "budget": HELP_BUDGET,
         "research": HELP_RESEARCH,
         "alert": HELP_ALERT,
+        "jobs": HELP_JOBS,
     }.get(bot_name, HELP_MAIN)

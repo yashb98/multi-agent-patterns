@@ -50,6 +50,14 @@ class Intent(str, Enum):
     RECURRING_BUDGET = "recurring_budget"
     WEEKLY_PLAN = "weekly_plan"
     STOP = "stop"
+    SHOW_JOBS = "show_jobs"
+    APPROVE_JOBS = "approve_jobs"
+    REJECT_JOB = "reject_job"
+    JOB_STATS = "job_stats"
+    SEARCH_CONFIG = "search_config"
+    PAUSE_JOBS = "pause_jobs"
+    RESUME_JOBS = "resume_jobs"
+    JOB_DETAIL = "job_detail"
     UNKNOWN = "unknown"
 
 
@@ -176,6 +184,36 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     (Intent.EXPORT, [
         r"(export|backup|download data|save data|dump)",
     ]),
+    # Job Autopilot
+    (Intent.APPROVE_JOBS, [
+        r"^apply\s+([\d,\s\-]+|all)\s*$",
+        r"^approve\s+([\d,\s\-]+|all)\s*$",
+    ]),
+    (Intent.REJECT_JOB, [
+        r"^(reject|skip|pass on|pass)\s+(\d+)\s*$",
+    ]),
+    (Intent.JOB_DETAIL, [
+        r"^job\s+(\d+)\s*$",
+        r"^details?\s+(\d+)\s*$",
+    ]),
+    (Intent.JOB_STATS, [
+        r"(job|application|apply|applied)\s*(stats?|statistics|numbers|metrics|count)",
+        r"how many (applied|applications|jobs)",
+    ]),
+    (Intent.SEARCH_CONFIG, [
+        r"^search:\s*(.+)",
+        r"^job search:\s*(.+)",
+    ]),
+    (Intent.PAUSE_JOBS, [
+        r"^(pause|stop)\s*(jobs?|applying|autopilot|auto.?pilot)\s*$",
+    ]),
+    (Intent.RESUME_JOBS, [
+        r"^(resume|start|unpause)\s*(jobs?|applying|autopilot|auto.?pilot)\s*$",
+    ]),
+    (Intent.SHOW_JOBS, [
+        r"^(jobs?|show jobs?|new jobs?|available jobs?|what.?s available)\s*$",
+        r"(pending|review)\s*jobs?\s*$",
+    ]),
     # Briefing
     (Intent.BRIEFING, [
         r"(briefing|morning update|daily update|send briefing|full report|summary of today)",
@@ -296,6 +334,14 @@ FILE_OPS — user wants to view a file, see logs, see errors, or paginate
 SYSTEM_STATUS — user wants system/daemon health status
 CLEAR_CHAT — user wants to clear chat history or start a new conversation
 STOP — user wants to undo/reverse/cancel their last command (said "stop", "cancel", "undo that", "oops", "nope", "take that back")
+SHOW_JOBS — user wants to see available/pending job applications
+APPROVE_JOBS — user wants to approve specific jobs for application (e.g., "apply 1,3,5" or "apply all")
+REJECT_JOB — user wants to skip/reject a specific job (e.g., "reject 3")
+JOB_STATS — user wants job application statistics
+SEARCH_CONFIG — user wants to modify job search settings (e.g., "search: add title X")
+PAUSE_JOBS — user wants to pause the job autopilot
+RESUME_JOBS — user wants to resume the job autopilot
+JOB_DETAIL — user wants details on a specific job number
 UNKNOWN — doesn't match any of the above
 
 Message: "{text}"

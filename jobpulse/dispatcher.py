@@ -112,6 +112,14 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.GIT_OPS: _handle_git_ops,
         Intent.FILE_OPS: _handle_file_ops,
         Intent.SYSTEM_STATUS: _handle_system_status,
+        Intent.SHOW_JOBS: _handle_show_jobs,
+        Intent.APPROVE_JOBS: _handle_approve_jobs,
+        Intent.REJECT_JOB: _handle_reject_job,
+        Intent.JOB_STATS: _handle_job_stats,
+        Intent.SEARCH_CONFIG: _handle_search_config,
+        Intent.PAUSE_JOBS: _handle_pause_jobs,
+        Intent.RESUME_JOBS: _handle_resume_jobs,
+        Intent.JOB_DETAIL: _handle_job_detail,
     }
 
     handler = handlers.get(cmd.intent)
@@ -747,6 +755,62 @@ def _handle_help(cmd: ParsedCommand) -> str:
 \U0001f4ac CHAT:
   Just type anything \u2014 free-form conversation
   "clear chat" \u2014 reset conversation history"""
+
+
+def _handle_show_jobs(cmd: ParsedCommand) -> str:
+    from jobpulse.job_db import JobDB
+    db = JobDB()
+    pending = db.get_applications_by_status("Pending Approval")
+    ready = db.get_applications_by_status("Ready")
+    jobs = pending + ready
+    if not jobs:
+        return "No jobs pending review. Try 'job stats' for today's numbers."
+    lines = [f"📋 {len(jobs)} jobs ready for review:\n"]
+    for i, j in enumerate(jobs[:15], 1):
+        lines.append(f"{i}. {j['title']} — {j['company']} ({j['platform']})")
+        lines.append(f"   ATS: {j.get('ats_score', 0)}% | {j.get('location', 'UK')}")
+    lines.append(f"\nReply: \"apply 1,3,5\" or \"apply all\" or \"reject 2\"")
+    return "\n".join(lines)
+
+
+def _handle_approve_jobs(cmd: ParsedCommand) -> str:
+    from jobpulse.job_autopilot import approve_jobs
+    return approve_jobs(cmd.args)
+
+
+def _handle_reject_job(cmd: ParsedCommand) -> str:
+    from jobpulse.job_autopilot import reject_job
+    return reject_job(cmd.args)
+
+
+def _handle_job_stats(cmd: ParsedCommand) -> str:
+    from jobpulse.job_db import JobDB
+    db = JobDB()
+    stats = db.get_today_stats()
+    return (f"📊 Job Stats Today\nFound: {stats['found']}\nApplied: {stats['applied']}\n"
+            f"Skipped: {stats['skipped']}\nAvg ATS: {stats['avg_ats']}%")
+
+
+def _handle_search_config(cmd: ParsedCommand) -> str:
+    from jobpulse.job_autopilot import update_search_config
+    return update_search_config(cmd.args)
+
+
+def _handle_pause_jobs(cmd: ParsedCommand) -> str:
+    from jobpulse.job_autopilot import set_autopilot_paused
+    set_autopilot_paused(True)
+    return "⏸️ Job Autopilot paused. No new applications until you 'resume jobs'."
+
+
+def _handle_resume_jobs(cmd: ParsedCommand) -> str:
+    from jobpulse.job_autopilot import set_autopilot_paused
+    set_autopilot_paused(False)
+    return "▶️ Job Autopilot resumed. Next scan will run on schedule."
+
+
+def _handle_job_detail(cmd: ParsedCommand) -> str:
+    from jobpulse.job_autopilot import get_job_detail
+    return get_job_detail(cmd.args)
 
 
 def _handle_unknown(cmd: ParsedCommand) -> str:
