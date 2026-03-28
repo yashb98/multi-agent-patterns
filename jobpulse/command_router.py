@@ -49,6 +49,7 @@ class Intent(str, Enum):
     UNDO_BUDGET = "undo_budget"
     RECURRING_BUDGET = "recurring_budget"
     WEEKLY_PLAN = "weekly_plan"
+    STOP = "stop"
     UNKNOWN = "unknown"
 
 
@@ -88,6 +89,11 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     # Clear chat / conversation history
     (Intent.CLEAR_CHAT, [
         r"^(clear (chat|history|conversation)|new (chat|conversation)|reset chat)",
+    ]),
+    # Stop / undo last action (high priority — before other patterns)
+    (Intent.STOP, [
+        r"^/?(stop|cancel|undo last|undo that|reverse|take that back|nope|oops)$",
+        r"^stop\s+(that|last|it)$",
     ]),
     # Help
     (Intent.HELP, [
@@ -289,6 +295,7 @@ GIT_OPS — user wants git status, log, diff, branch, commit, or push
 FILE_OPS — user wants to view a file, see logs, see errors, or paginate
 SYSTEM_STATUS — user wants system/daemon health status
 CLEAR_CHAT — user wants to clear chat history or start a new conversation
+STOP — user wants to undo/reverse/cancel their last command (said "stop", "cancel", "undo that", "oops", "nope", "take that back")
 UNKNOWN — doesn't match any of the above
 
 Message: "{text}"

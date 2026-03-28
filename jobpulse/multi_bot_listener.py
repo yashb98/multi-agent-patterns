@@ -98,7 +98,7 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 if not text:
                     continue
 
-                # Handle /start and /help per bot
+                # Handle /start, /help, and /stop per bot
                 text_lower = text.lower().strip()
                 if text_lower in ("/start", "/help", "help", "help."):
                     from jobpulse.telegram_bots import get_help_for_bot
@@ -120,8 +120,8 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 cmd = classify(text)
                 _log(f"[{bot_name}] Intent: {cmd.intent.value}")
 
-                # If this bot has allowed_intents, check if the intent matches
-                if allowed_intents and cmd.intent.value not in allowed_intents:
+                # "stop" works from any bot — undo last action
+                if allowed_intents and cmd.intent.value not in allowed_intents and cmd.intent.value != "stop":
                     # Wrong bot — tell user where to go
                     from jobpulse.telegram_bots import send_main
                     send_fn(f"This command goes to the main bot. Forwarding...")
@@ -131,11 +131,38 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                     _log(f"[{bot_name}] Forwarded to main: {cmd.intent.value}")
                     continue
 
-                # Send "processing" for slow commands
-                SLOW_INTENTS = {"arxiv": "Fetching & ranking 200 papers... ~60s", "weekly_report": "Building report... ~10s"}
-                slow_msg = SLOW_INTENTS.get(cmd.intent.value)
-                if slow_msg:
-                    send_fn(f"⏳ {slow_msg}")
+                # Send processing indicator with time estimate
+                INTENT_ESTIMATES = {
+                    "arxiv": "Fetching & ranking 200 papers... ~60s",
+                    "weekly_report": "Building 7-day report... ~10s",
+                    "briefing": "Collecting from all agents... ~15s",
+                    "gmail": "Scanning inbox + classifying... ~10s",
+                    "calendar": "Fetching events... ~3s",
+                    "github": "Fetching commits... ~5s",
+                    "trending": "Fetching trending repos... ~3s",
+                    "show_tasks": "Loading tasks from Notion... ~3s",
+                    "create_tasks": "Creating tasks in Notion... ~5s",
+                    "complete_task": "Marking done in Notion... ~3s",
+                    "remove_task": "Removing from Notion... ~3s",
+                    "weekly_plan": "Loading past week's tasks... ~5s",
+                    "log_spend": "Classifying + logging... ~5s",
+                    "log_income": "Logging income... ~3s",
+                    "log_savings": "Logging savings... ~3s",
+                    "log_hours": "Calculating pay + syncing... ~5s",
+                    "show_budget": "Loading budget summary... ~3s",
+                    "set_budget": "Updating budget... ~3s",
+                    "undo_budget": "Removing transaction... ~5s",
+                    "undo_hours": "Removing hours entry... ~5s",
+                    "show_hours": "Loading timesheet... ~3s",
+                    "recurring_budget": "Processing recurring rule... ~3s",
+                    "export": "Backing up all data... ~10s",
+                    "conversation": "Thinking... ~3s",
+                    "remote_shell": "Running command... ~5s",
+                    "git_ops": "Running git... ~3s",
+                }
+                estimate = INTENT_ESTIMATES.get(cmd.intent.value)
+                if estimate:
+                    send_fn(f"⏳ {estimate}")
                 # Extra check for blog command
                 if cmd.intent.value == "arxiv" and "blog" in cmd.raw.lower():
                     send_fn("⏳ Generating 2000-word blog post... ~90s\n(5 agents: reader → writer → fact checker → diagrams → editor)")

@@ -8,6 +8,10 @@ LangGraph + OpenAI + Enhanced Swarm + RLM. Production autonomous agent system.
 pip install -r requirements.txt
 python run_all.py "topic"                 # Compare all 4 patterns
 python -m jobpulse.runner daemon          # Start Telegram daemon (Enhanced Swarm)
+python -m jobpulse.runner multi-bot       # Start all 3 Telegram bots (Main + Budget + Research)
+python -m jobpulse.runner multi           # Start all platforms (Telegram multi-bot + Discord + Slack)
+python -m jobpulse.runner stop            # Stop all running daemon processes
+python -m jobpulse.runner restart         # Stop + restart (default: multi mode)
 python -m jobpulse.runner briefing        # Morning digest
 python -m jobpulse.runner gmail           # Check recruiter emails
 python -m jobpulse.runner calendar        # Today + tomorrow events
@@ -19,7 +23,6 @@ python -m jobpulse.runner export          # Full data backup (tar.gz)
 python -m jobpulse.runner webhook         # Start webhook server (port 8080)
 python -m jobpulse.runner slack           # Start Slack listener
 python -m jobpulse.runner discord         # Start Discord listener
-python -m jobpulse.runner multi           # Start all platform listeners
 ./scripts/install_daemon.sh install       # Auto-start daemon on login
 ./scripts/install_cron.py                 # Install crons (incl. Sunday 7am budget archive)
 ```
@@ -71,6 +74,14 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`. Full de
 | "export" | Full data backup (databases, personas, experiences) |
 | voice message | Whisper transcription → intent classification → agent |
 | "help" | Lists all commands |
+
+### Stop / Undo Last Action
+| You type | What happens |
+|----------|-------------|
+| "stop" / "cancel" / "oops" / "nope" | Undo the last command's side effects (SQLite + Notion) |
+| "undo that" / "take that back" | Same as stop — reverses last action |
+
+Works from **any bot** (Main, Budget, or Research). Undoes: expenses, income, savings, hours, task creation, task completion. Each command sends a processing indicator with time estimate before executing.
 
 ### Salary / Hours
 | You type | What happens |
@@ -142,7 +153,7 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 
 ## Stats
 
-~45,500 LOC | 172 Python files | 5 databases | 204 tests | 3 dashboards | 4 Telegram bots | 3 platforms
+~45,500 LOC | 173 Python files | 5 databases | 204 tests | 3 dashboards | 4 Telegram bots | 3 platforms
 
 > Auto-updated by `scripts/update_stats.py`. Git pre-commit hook runs it on every commit that touches .py files.
 > Manual: `python scripts/update_stats.py` | Check-only: `python scripts/update_stats.py --check`

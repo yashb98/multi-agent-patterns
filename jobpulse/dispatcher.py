@@ -74,6 +74,11 @@ def _classify_error(e: Exception) -> tuple[str, bool]:
 def dispatch(cmd: ParsedCommand) -> str:
     """Execute the right agent for a classified command. Returns reply text."""
 
+    # Stop / undo last action — handled before normal dispatch
+    if cmd.intent == Intent.STOP:
+        from jobpulse.last_action import undo_last_action
+        return undo_last_action()
+
     handlers = {
         Intent.SHOW_TASKS: _handle_show_tasks,
         Intent.CREATE_TASKS: _handle_create_tasks,
@@ -127,6 +132,10 @@ def dispatch(cmd: ParsedCommand) -> str:
                          step_input=cmd.raw[:200]) as s:
             result = handler(cmd)
             s["output"] = result[:500] if result else ""
+
+        # Record action for undo ("stop" command)
+        from jobpulse.last_action import save_last_action
+        save_last_action(cmd.intent.value, cmd.raw, result or "")
 
         # Log every dispatched command to simulation events
         event_logger.log_event(

@@ -257,6 +257,28 @@ def complete_task(task_name: str) -> str:
     return f"✅ Marked \"{best_task['title']}\" as Done!"
 
 
+def uncomplete_task(task_name: str) -> str:
+    """Find a completed task by fuzzy match and uncheck it (reverse of complete_task)."""
+    tasks = get_today_tasks()
+    checked = [t for t in tasks if t["status"] == "Done"]
+
+    if not checked:
+        return "No completed tasks to undo."
+
+    candidates = [(t, _fuzzy_score(task_name, t["title"])) for t in checked]
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    best_task, best_score = candidates[0]
+
+    if best_score < 0.3:
+        # If no good match, just undo the most recently checked one (last in list)
+        best_task = checked[-1]
+
+    _notion_api("PATCH", f"/blocks/{best_task['block_id']}", {
+        "to_do": {"checked": False}
+    })
+    return f"☐ Unchecked \"{best_task['title']}\" — back to open."
+
+
 def remove_task(task_name: str) -> str:
     """Find a task by fuzzy match and delete the block from Notion."""
     if not NOTION_TASKS_DB_ID:

@@ -265,6 +265,11 @@ def dispatch(cmd: ParsedCommand) -> str:
     4. Synthesize with RLM if context is large
     5. Store experience for learning
     """
+    # Stop / undo last action — handled before swarm dispatch
+    if cmd.intent == Intent.STOP:
+        from jobpulse.last_action import undo_last_action
+        return undo_last_action()
+
     trail = ProcessTrail("enhanced_swarm", "telegram_message")
 
     # Step 1: Analyze
@@ -336,6 +341,10 @@ def dispatch(cmd: ParsedCommand) -> str:
     score = _score_result(final_result)
     if score > 0:
         store_experience(cmd.intent.value, f"Tasks: {[t['agent'] for t in tasks]}", score)
+
+    # Record action for undo ("stop" command)
+    from jobpulse.last_action import save_last_action
+    save_last_action(cmd.intent.value, cmd.raw, final_result or "")
 
     # Log to simulation events
     event_logger.log_event(

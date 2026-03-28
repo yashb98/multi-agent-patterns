@@ -1,5 +1,6 @@
 """CLI runner — invoke any agent from command line or cron."""
 
+import os
 import sys
 from shared.logging_config import get_logger
 
@@ -9,12 +10,48 @@ logger = get_logger(__name__)
 def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
-        logger.info("Commands: briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, webhook, slack, discord, multi, health, test")
+        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, test")
         sys.exit(1)
 
     command = sys.argv[1]
 
-    if command == "briefing":
+    if command == "stop":
+        import subprocess
+        result = subprocess.run(
+            ["pgrep", "-f", "jobpulse.runner (daemon|multi|multi-bot|slack|discord)"],
+            capture_output=True, text=True,
+        )
+        pids = result.stdout.strip().split("\n")
+        pids = [p for p in pids if p and p != str(os.getpid())]
+        if pids:
+            for pid in pids:
+                os.kill(int(pid), 15)  # SIGTERM
+                logger.info("Stopped process %s", pid)
+            logger.info("Stopped %d daemon process(es)", len(pids))
+        else:
+            logger.info("No running daemon found")
+
+    elif command == "restart":
+        import subprocess
+        # Stop existing
+        result = subprocess.run(
+            ["pgrep", "-f", "jobpulse.runner (daemon|multi|multi-bot|slack|discord)"],
+            capture_output=True, text=True,
+        )
+        pids = result.stdout.strip().split("\n")
+        pids = [p for p in pids if p and p != str(os.getpid())]
+        for pid in pids:
+            os.kill(int(pid), 15)
+        if pids:
+            import time
+            logger.info("Stopped %d old process(es), restarting...", len(pids))
+            time.sleep(2)
+        # Start multi (default)
+        mode = sys.argv[2] if len(sys.argv) > 2 else "multi"
+        subprocess.Popen([sys.executable, "-m", "jobpulse.runner", mode])
+        logger.info("Restarted in '%s' mode", mode)
+
+    elif command == "briefing":
         from jobpulse.morning_briefing import build_and_send
         build_and_send()
 
