@@ -4,9 +4,11 @@ import json
 import os
 import subprocess
 from datetime import datetime, timedelta
-from jobpulse.config import GITHUB_TOKEN, GITHUB_USERNAME
-from jobpulse import event_logger
+
 from shared.logging_config import get_logger
+
+from jobpulse import event_logger
+from jobpulse.config import GITHUB_USERNAME
 
 logger = get_logger(__name__)
 
@@ -140,8 +142,9 @@ def get_trending_repos(count: int = 10) -> list[dict]:
     don't cause misalignment across repos. Uses ?since=daily to ensure fresh
     daily results.
     """
-    import httpx
     import re
+
+    import httpx
 
     repos: list[dict] = []
     try:

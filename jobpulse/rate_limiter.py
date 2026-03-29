@@ -4,6 +4,7 @@ import sqlite3
 from datetime import date
 
 from shared.logging_config import get_logger
+
 from jobpulse.config import DATA_DIR
 
 logger = get_logger(__name__)

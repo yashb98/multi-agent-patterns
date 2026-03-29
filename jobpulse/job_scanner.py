@@ -14,15 +14,14 @@ import hashlib
 import json
 import random
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
+from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR, REED_API_KEY
 from jobpulse.models.application_models import SearchConfig
 from jobpulse.utils.safe_io import managed_persistent_browser
-from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
@@ -213,7 +212,7 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
                 title,
                 exc,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("scan_reed: unexpected error for title '%s': %s", title, exc)
 
         _anti_detection_sleep()
@@ -256,7 +255,7 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
     """
     # Lazy import — Playwright may not be installed
     try:
-        from playwright.sync_api import sync_playwright  # type: ignore[import]
+        from playwright.sync_api import sync_playwright as _  # noqa: F401
     except ImportError:
         logger.warning(
             "scan_linkedin: playwright not installed. "
@@ -288,7 +287,7 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
             ignore_default_args=["--enable-automation"],
             user_agent=_random_ua(),
             viewport={"width": 1280, "height": 800},
-        ) as (browser, page):
+        ) as (_browser, page):
             for title in config.titles:
                 if len(results) >= MAX_REQUESTS_PER_PLATFORM:
                     break
@@ -357,14 +356,14 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                                     "job_id": _make_job_id(href),
                                 }
                             )
-                        except Exception as card_err:  # noqa: BLE001
+                        except Exception as card_err:
                             logger.debug("scan_linkedin: error parsing card: %s", card_err)
                             continue
 
-                except Exception as page_err:  # noqa: BLE001
+                except Exception as page_err:
                     logger.error("scan_linkedin: error fetching '%s': %s", search_url, page_err)
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error("scan_linkedin: Playwright session error: %s", exc)
 
     logger.info("scan_linkedin: returning %d total results", len(results))
@@ -460,12 +459,12 @@ def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:
         logger.warning("scan_platforms: unknown platforms %s — ignoring", unknown)
         platforms = [p for p in platforms if p in PLATFORM_SCANNERS]
 
-    STUB_PLATFORMS = {"indeed", "totaljobs", "glassdoor"}
+    stub_platforms = {"indeed", "totaljobs", "glassdoor"}
 
     all_jobs: list[dict[str, Any]] = []
 
     for platform in platforms:
-        if platform in STUB_PLATFORMS:
+        if platform in stub_platforms:
             logger.warning(
                 "scan_platforms: '%s' is not yet implemented — skipping. "
                 "Only reed and linkedin are functional.",
@@ -478,7 +477,7 @@ def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:
             jobs = scanner(config)
             logger.info("scan_platforms: %s returned %d jobs", platform, len(jobs))
             all_jobs.extend(jobs)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
                 "scan_platforms: %s scanner raised unexpectedly: %s",
                 platform,

@@ -5,8 +5,9 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 from shared.logging_config import get_logger
 

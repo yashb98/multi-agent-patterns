@@ -24,7 +24,7 @@ def _build_profile() -> dict:
     Uses a lazy import to avoid circular dependency (applicator imports ats_adapters).
     """
     try:
-        from jobpulse.applicator import PROFILE as _AP  # noqa: PLC0415
+        from jobpulse.applicator import PROFILE as _AP
         name = f"{_AP.get('first_name', 'Yash')} {_AP.get('last_name', 'B')}".strip()
         visa = _AP.get("visa_status", "Student Visa; converting to Graduate Visa from 9 May 2026")
     except Exception:  # pragma: no cover — guard against import issues
@@ -58,7 +58,7 @@ def _load_template() -> str:
     try:
         return _TEMPLATE_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
-        from shared.logging_config import get_logger  # noqa: PLC0415
+        from shared.logging_config import get_logger
         get_logger(__name__).error(
             "cover_letter_agent: template not found at %s. "
             "Ensure jobpulse/templates/ directory contains the template.",

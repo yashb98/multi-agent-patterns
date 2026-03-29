@@ -25,23 +25,24 @@ External entry points (called by dispatcher.py):
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
-from jobpulse.job_scanner import scan_platforms, load_search_config, save_search_config
-from jobpulse.jd_analyzer import analyze_jd
-from jobpulse.job_deduplicator import deduplicate
-from jobpulse.job_db import JobDB
-from jobpulse.github_matcher import pick_top_projects, fetch_and_cache_repos
-from jobpulse.cv_tailor import generate_tailored_cv, determine_match_tier
-from jobpulse.cover_letter_agent import generate_cover_letter
-from jobpulse.job_notion_sync import create_application_page, update_application_page
-from jobpulse.applicator import classify_action, apply_job
-from jobpulse.telegram_bots import send_jobs
-from jobpulse.process_logger import ProcessTrail
 from shared.logging_config import get_logger
+
+from jobpulse.applicator import apply_job, classify_action
+from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
+from jobpulse.cover_letter_agent import generate_cover_letter
+from jobpulse.cv_tailor import determine_match_tier, generate_tailored_cv
+from jobpulse.github_matcher import fetch_and_cache_repos, pick_top_projects
+from jobpulse.jd_analyzer import analyze_jd
+from jobpulse.job_db import JobDB
+from jobpulse.job_deduplicator import deduplicate
+from jobpulse.job_notion_sync import create_application_page, update_application_page
+from jobpulse.job_scanner import load_search_config, save_search_config, scan_platforms
+from jobpulse.process_logger import ProcessTrail
+from jobpulse.telegram_bots import send_jobs
 
 logger = get_logger(__name__)
 
@@ -68,7 +69,7 @@ def set_autopilot_paused(paused: bool) -> None:
     if paused:
         PAUSE_FILE.parent.mkdir(parents=True, exist_ok=True)
         PAUSE_FILE.write_text(
-            f"Paused at {datetime.now(timezone.utc).isoformat()}", encoding="utf-8"
+            f"Paused at {datetime.now(UTC).isoformat()}", encoding="utf-8"
         )
         logger.info("job_autopilot: autopilot PAUSED")
     else:
@@ -348,7 +349,7 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
                             custom_answers=None,
                         )
                         if result.get("success"):
-                            applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+                            applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
                             follow_up = (date.today() + timedelta(days=7)).isoformat()
                             db.save_application(
                                 job_id=listing.job_id,
@@ -573,7 +574,7 @@ def approve_jobs(args: str) -> str:
                 custom_answers=None,
             )
 
-            applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
             follow_up = (date.today() + timedelta(days=7)).isoformat()
 
             db.save_application(

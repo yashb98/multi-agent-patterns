@@ -33,7 +33,7 @@ class LeverAdapter(BaseATSAdapter):
         try:
             from jobpulse.utils.safe_io import managed_browser
 
-            with managed_browser(headless=True) as (browser, page):
+            with managed_browser(headless=True) as (_browser, page):
                 page.goto(url, timeout=30000)
 
                 # Lever standard field selectors
