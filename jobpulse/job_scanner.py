@@ -21,6 +21,7 @@ import httpx
 
 from jobpulse.config import DATA_DIR, REED_API_KEY
 from jobpulse.models.application_models import SearchConfig
+from jobpulse.utils.safe_io import managed_persistent_browser
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -237,27 +238,31 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
         )
         return []
 
-    if not _LINKEDIN_SESSION_DIR.exists():
+    # Use the shared chrome_profile (same as browser_manager.py)
+    chrome_profile = DATA_DIR / "chrome_profile"
+    if not chrome_profile.exists():
         logger.warning(
-            "scan_linkedin: no saved session found at %s. "
-            "Run: playwright codegen --save-storage=%s https://www.linkedin.com",
-            _LINKEDIN_SESSION_DIR,
-            _LINKEDIN_SESSION_DIR,
+            "scan_linkedin: no Chrome profile at %s. "
+            "Run the login flow first to save LinkedIn cookies.",
+            chrome_profile,
         )
         return []
 
     results: list[dict[str, Any]] = []
 
     try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch_persistent_context(
-                str(_LINKEDIN_SESSION_DIR),
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            page = browser.new_page()
-            page.set_extra_http_headers({"User-Agent": _random_ua()})
-
+        with managed_persistent_browser(
+            user_data_dir=str(chrome_profile),
+            headless=False,
+            executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+            ],
+            ignore_default_args=["--enable-automation"],
+            user_agent=_random_ua(),
+            viewport={"width": 1280, "height": 800},
+        ) as (browser, page):
             for title in config.titles:
                 if len(results) >= MAX_REQUESTS_PER_PLATFORM:
                     break
@@ -272,7 +277,14 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
 
                 try:
                     logger.info("scan_linkedin: fetching '%s'", search_url)
-                    page.goto(search_url, timeout=30_000, wait_until="networkidle")
+                    page.goto(search_url, timeout=45_000, wait_until="domcontentloaded")
+                    # Wait for job cards to render (LinkedIn loads async)
+                    try:
+                        page.wait_for_selector(".job-card-container, .jobs-search-results-list", timeout=15_000)
+                    except Exception:
+                        logger.warning("scan_linkedin: job cards not found, trying scroll")
+                    # Scroll to trigger lazy loading
+                    page.mouse.wheel(0, 500)
                     _anti_detection_sleep()
 
                     cards = page.query_selector_all(".job-card-container")
@@ -280,15 +292,24 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
 
                     for card in cards:
                         try:
-                            job_title_el = card.query_selector(".job-card-list__title")
-                            company_el = card.query_selector(".job-card-container__company-name")
-                            location_el = card.query_selector(".job-card-container__metadata-item")
-                            link_el = card.query_selector("a.job-card-list__title")
-
-                            job_title = job_title_el.inner_text().strip() if job_title_el else ""
-                            company = company_el.inner_text().strip() if company_el else ""
-                            location = location_el.inner_text().strip() if location_el else ""
+                            # LinkedIn frequently changes class names.
+                            # Strategy: extract text lines and link from each card.
+                            link_el = card.query_selector('a[href*="/jobs/view"]')
                             href = link_el.get_attribute("href") if link_el else ""
+
+                            # The card's text is structured: title, company, location
+                            # Split inner_text by newlines and filter empties
+                            lines = [l.strip() for l in card.inner_text().split("\n") if l.strip()]
+
+                            # First non-empty line is usually the title
+                            # Company and location follow
+                            job_title = lines[0] if len(lines) > 0 else ""
+                            # Skip duplicate title line (LinkedIn often repeats it)
+                            start = 1
+                            if len(lines) > 1 and lines[1] == job_title:
+                                start = 2
+                            company = lines[start] if len(lines) > start else ""
+                            location = lines[start + 1] if len(lines) > start + 1 else ""
 
                             # Normalise to absolute URL
                             if href and not href.startswith("http"):
@@ -316,8 +337,6 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
 
                 except Exception as page_err:  # noqa: BLE001
                     logger.error("scan_linkedin: error fetching '%s': %s", search_url, page_err)
-
-            browser.close()
 
     except Exception as exc:  # noqa: BLE001
         logger.error("scan_linkedin: Playwright session error: %s", exc)
