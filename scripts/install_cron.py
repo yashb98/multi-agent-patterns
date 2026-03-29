@@ -71,6 +71,12 @@ PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 # Health watchdog (every 10 min) — alerts if daemon is down
 */10 * * * * {RUNNER} health >> {PROJECT_DIR}/logs/health.log 2>&1
+
+# ── AUTO-RESTART ──
+
+# Restart daemon every 3 hours to prevent degradation
+# (memory leaks, stale SSL, hung connections, CPU accumulation)
+0 */3 * * * {PROJECT_DIR}/scripts/restart_daemon.sh >> {PROJECT_DIR}/logs/restart.log 2>&1
 """
 
 
