@@ -49,7 +49,7 @@
 - Create: `jobpulse/form_engine/gotchas.py`
 - Create: `tests/jobpulse/form_engine/test_gotchas.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for form_engine gotchas DB."""
@@ -112,12 +112,12 @@ def test_get_skip_domains(gotchas_db):
     assert "amazon.jobs" in skips
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_gotchas.py -v`
 Expected: FAIL (ImportError)
 
-- [ ] **Step 3: Implement gotchas DB**
+- [x] **Step 3: Implement gotchas DB**
 
 Create `jobpulse/form_engine/gotchas.py`:
 
@@ -247,12 +247,12 @@ class GotchasDB:
             return [r[0] for r in rows]
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_gotchas.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/gotchas.py tests/jobpulse/form_engine/test_gotchas.py
@@ -270,7 +270,7 @@ git push
 - Create: `tests/jobpulse/form_engine/__init__.py`
 - Create: `tests/jobpulse/form_engine/test_models.py`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```python
 """Tests for form_engine models."""
@@ -334,12 +334,12 @@ def test_field_info_basic():
     assert f.required is True
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_models.py -v`
 Expected: FAIL (ImportError)
 
-- [ ] **Step 3: Create package and implement models**
+- [x] **Step 3: Create package and implement models**
 
 Create `jobpulse/form_engine/__init__.py`:
 
@@ -406,12 +406,12 @@ class FieldInfo:
 
 Create `tests/jobpulse/form_engine/__init__.py` (empty).
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_models.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/ tests/jobpulse/form_engine/
@@ -427,7 +427,7 @@ git push
 - Create: `jobpulse/form_engine/detector.py`
 - Create: `tests/jobpulse/form_engine/test_detector.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for form_engine detector."""
@@ -566,12 +566,12 @@ async def test_detect_email_as_text():
     assert result == InputType.TEXT
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_detector.py -v`
 Expected: FAIL (ImportError)
 
-- [ ] **Step 3: Implement detector**
+- [x] **Step 3: Implement detector**
 
 Create `jobpulse/form_engine/detector.py`:
 
@@ -654,12 +654,12 @@ async def detect_input_type(element) -> InputType:
     return InputType.UNKNOWN
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_detector.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/detector.py tests/jobpulse/form_engine/test_detector.py
@@ -675,7 +675,7 @@ git push
 - Create: `jobpulse/form_engine/select_filler.py`
 - Create: `tests/jobpulse/form_engine/test_select_filler.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for select_filler."""
@@ -743,12 +743,12 @@ async def test_fuzzy_match_no_match():
     assert match is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_select_filler.py -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement select filler**
+- [x] **Step 3: Implement select filler**
 
 Create `jobpulse/form_engine/select_filler.py`:
 
@@ -948,12 +948,12 @@ async def fill_custom_select(
         )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_select_filler.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/select_filler.py tests/jobpulse/form_engine/test_select_filler.py
@@ -969,7 +969,7 @@ git push
 - Create: `jobpulse/form_engine/radio_filler.py`
 - Create: `tests/jobpulse/form_engine/test_radio_filler.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for radio_filler."""
@@ -1041,12 +1041,12 @@ async def test_fill_radio_no_elements():
     assert result.success is False
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_radio_filler.py -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement radio filler**
+- [x] **Step 3: Implement radio filler**
 
 Create `jobpulse/form_engine/radio_filler.py`:
 
@@ -1163,12 +1163,12 @@ async def fill_radio_group(
         )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_radio_filler.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/radio_filler.py tests/jobpulse/form_engine/test_radio_filler.py
@@ -1184,7 +1184,7 @@ git push
 - Create: `jobpulse/form_engine/checkbox_filler.py`
 - Create: `tests/jobpulse/form_engine/test_checkbox_filler.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for checkbox_filler."""
@@ -1262,12 +1262,12 @@ async def test_fill_checkbox_unchecks_when_should_be_false():
     el.uncheck.assert_called_once()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_checkbox_filler.py -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement checkbox filler**
+- [x] **Step 3: Implement checkbox filler**
 
 Create `jobpulse/form_engine/checkbox_filler.py`:
 
@@ -1379,12 +1379,12 @@ async def auto_check_consent_boxes(page) -> list[FillResult]:
     return results
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_checkbox_filler.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/checkbox_filler.py tests/jobpulse/form_engine/test_checkbox_filler.py
@@ -1400,7 +1400,7 @@ git push
 - Create: `jobpulse/form_engine/text_filler.py`
 - Create: `tests/jobpulse/form_engine/test_text_filler.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for text_filler."""
@@ -1490,12 +1490,12 @@ async def test_fill_textarea_basic():
     assert result.success is True
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_text_filler.py -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement text filler**
+- [x] **Step 3: Implement text filler**
 
 Create `jobpulse/form_engine/text_filler.py`:
 
@@ -1633,12 +1633,12 @@ async def fill_autocomplete(
         )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_text_filler.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/text_filler.py tests/jobpulse/form_engine/test_text_filler.py
@@ -1654,7 +1654,7 @@ git push
 - Create: `jobpulse/form_engine/date_filler.py`
 - Create: `tests/jobpulse/form_engine/test_date_filler.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for date_filler."""
@@ -1716,12 +1716,12 @@ def test_format_date_iso():
     assert _format_date("2026-05-01", "YYYY-MM-DD") == "2026-05-01"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_date_filler.py -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement date filler**
+- [x] **Step 3: Implement date filler**
 
 Create `jobpulse/form_engine/date_filler.py`:
 
@@ -1837,12 +1837,12 @@ async def fill_date(
         )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_date_filler.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/date_filler.py tests/jobpulse/form_engine/test_date_filler.py
@@ -1858,7 +1858,7 @@ git push
 - Create: `jobpulse/form_engine/file_filler.py`
 - Create: `tests/jobpulse/form_engine/test_file_filler.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for file_filler."""
@@ -1935,12 +1935,12 @@ async def test_fill_file_upload_checks_accept(tmp_path):
     assert "type" in result.error.lower()
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_file_filler.py -v`
 Expected: FAIL
 
-- [ ] **Step 3: Implement file filler**
+- [x] **Step 3: Implement file filler**
 
 Create `jobpulse/form_engine/file_filler.py`:
 
@@ -2073,12 +2073,12 @@ async def find_file_inputs(page) -> dict[str, str]:
     return categorised
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_file_filler.py -v`
 Expected: ALL PASS
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/file_filler.py tests/jobpulse/form_engine/test_file_filler.py
@@ -2094,7 +2094,7 @@ git push
 - Create: `jobpulse/form_engine/multi_select_filler.py`
 - Create: `tests/jobpulse/form_engine/test_multi_select_filler.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for multi_select_filler."""
@@ -2155,11 +2155,11 @@ async def test_fill_native_multi_select():
     assert result.success is True
 ```
 
-- [ ] **Step 2: Run tests, verify they fail**
+- [x] **Step 2: Run tests, verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_multi_select_filler.py -v`
 
-- [ ] **Step 3: Implement multi-select filler**
+- [x] **Step 3: Implement multi-select filler**
 
 Create `jobpulse/form_engine/multi_select_filler.py`:
 
@@ -2270,11 +2270,11 @@ async def fill_native_multi_select(
         )
 ```
 
-- [ ] **Step 4: Run tests, verify they pass**
+- [x] **Step 4: Run tests, verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_multi_select_filler.py -v`
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/multi_select_filler.py tests/jobpulse/form_engine/test_multi_select_filler.py
@@ -2290,7 +2290,7 @@ git push
 - Create: `jobpulse/form_engine/validation.py`
 - Create: `tests/jobpulse/form_engine/test_validation.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for form validation detection."""
@@ -2355,11 +2355,11 @@ async def test_find_required_unfilled():
     assert len(unfilled) >= 1
 ```
 
-- [ ] **Step 2: Run tests, verify they fail**
+- [x] **Step 2: Run tests, verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_validation.py -v`
 
-- [ ] **Step 3: Implement validation**
+- [x] **Step 3: Implement validation**
 
 Create `jobpulse/form_engine/validation.py`:
 
@@ -2464,11 +2464,11 @@ async def has_errors(page) -> bool:
     return len(errors) > 0
 ```
 
-- [ ] **Step 4: Run tests, verify they pass**
+- [x] **Step 4: Run tests, verify they pass**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_validation.py -v`
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/validation.py tests/jobpulse/form_engine/test_validation.py
@@ -2485,7 +2485,7 @@ git push
 - Create: `tests/jobpulse/form_engine/test_page_filler.py`
 - Modify: `jobpulse/form_engine/__init__.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 """Tests for page_filler orchestrator."""
@@ -2553,11 +2553,11 @@ async def test_fill_field_by_type_unknown():
     assert "unsupported" in result.error.lower()
 ```
 
-- [ ] **Step 2: Run tests, verify they fail**
+- [x] **Step 2: Run tests, verify they fail**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_page_filler.py -v`
 
-- [ ] **Step 3: Implement page filler**
+- [x] **Step 3: Implement page filler**
 
 Create `jobpulse/form_engine/page_filler.py`:
 
@@ -2652,7 +2652,7 @@ async def fill_field_by_type(
     )
 ```
 
-- [ ] **Step 4: Update `__init__.py` with public exports**
+- [x] **Step 4: Update `__init__.py` with public exports**
 
 Update `jobpulse/form_engine/__init__.py`:
 
@@ -2674,17 +2674,17 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 5: Run all form engine tests**
+- [x] **Step 5: Run all form engine tests**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/ -v`
 Expected: ALL PASS
 
-- [ ] **Step 6: Verify package import**
+- [x] **Step 6: Verify package import**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -c "from jobpulse.form_engine import InputType, FillResult, detect_input_type, fill_field_by_type; print('Form engine OK')"`
 Expected: "Form engine OK"
 
-- [ ] **Step 7: Commit and push**
+- [x] **Step 7: Commit and push**
 
 ```bash
 git add jobpulse/form_engine/ tests/jobpulse/form_engine/
@@ -2696,17 +2696,17 @@ git push
 
 ### Task 12: Final verification — full test suite + lint
 
-- [ ] **Step 1: Run full test suite**
+- [x] **Step 1: Run full test suite**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/ -v --no-header 2>&1 | tail -20`
 Expected: ALL PASS (including form engine tests)
 
-- [ ] **Step 2: Lint check**
+- [x] **Step 2: Lint check**
 
 Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m ruff check jobpulse/form_engine/ tests/jobpulse/form_engine/ 2>&1`
 Expected: No errors
 
-- [ ] **Step 3: Fix any lint issues and commit**
+- [x] **Step 3: Fix any lint issues and commit**
 
 ```bash
 python -m ruff check --fix jobpulse/form_engine/ tests/jobpulse/form_engine/
