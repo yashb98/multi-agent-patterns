@@ -16,6 +16,8 @@
 |------|---------------|
 | `jobpulse/form_engine/__init__.py` | Package exports |
 | `jobpulse/form_engine/models.py` | `InputType` enum, `FillResult` dataclass, `FieldInfo` dataclass |
+| `jobpulse/form_engine/gotchas.py` | Runtime gotchas DB — learn and remember form quirks per domain |
+| `tests/jobpulse/form_engine/test_gotchas.py` | Gotchas DB tests |
 | `jobpulse/form_engine/detector.py` | Detect input type from a DOM element |
 | `jobpulse/form_engine/text_filler.py` | Fill text inputs, textareas, rich text editors, search/autocomplete |
 | `jobpulse/form_engine/select_filler.py` | Fill native `<select>` and custom React dropdowns |
@@ -38,6 +40,225 @@
 | `tests/jobpulse/form_engine/test_multi_select_filler.py` | Multi-select filler tests |
 | `tests/jobpulse/form_engine/test_validation.py` | Validation tests |
 | `tests/jobpulse/form_engine/test_page_filler.py` | Page filler integration tests |
+
+---
+
+### Task 0: Gotchas DB — runtime learning for form quirks
+
+**Files:**
+- Create: `jobpulse/form_engine/gotchas.py`
+- Create: `tests/jobpulse/form_engine/test_gotchas.py`
+
+- [ ] **Step 1: Write failing tests**
+
+```python
+"""Tests for form_engine gotchas DB."""
+
+import sys
+import sqlite3
+from pathlib import Path
+
+_ROOT = Path(__file__).parent.parent.parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import pytest
+
+
+@pytest.fixture
+def gotchas_db(tmp_path):
+    from jobpulse.form_engine.gotchas import GotchasDB
+    return GotchasDB(db_path=str(tmp_path / "gotchas.db"))
+
+
+def test_store_and_retrieve_gotcha(gotchas_db):
+    gotchas_db.store("workday.com", "#country", "native_select_failed", "use_custom_select")
+    result = gotchas_db.lookup("workday.com", "#country")
+    assert result is not None
+    assert result["solution"] == "use_custom_select"
+    assert result["times_used"] == 0
+
+
+def test_lookup_miss_returns_none(gotchas_db):
+    result = gotchas_db.lookup("unknown.com", "#field")
+    assert result is None
+
+
+def test_record_usage_increments(gotchas_db):
+    gotchas_db.store("lever.co", "#phone", "format_rejected", "prepend_plus44")
+    gotchas_db.record_usage("lever.co", "#phone")
+    gotchas_db.record_usage("lever.co", "#phone")
+    result = gotchas_db.lookup("lever.co", "#phone")
+    assert result["times_used"] == 2
+
+
+def test_lookup_by_domain_pattern(gotchas_db):
+    gotchas_db.store("workday.com", "select", "native_select_failed", "use_custom_select")
+    results = gotchas_db.lookup_domain("workday.com")
+    assert len(results) == 1
+    assert results[0]["selector_pattern"] == "select"
+
+
+def test_store_overwrites_existing(gotchas_db):
+    gotchas_db.store("lever.co", "#phone", "old_problem", "old_solution")
+    gotchas_db.store("lever.co", "#phone", "new_problem", "new_solution")
+    result = gotchas_db.lookup("lever.co", "#phone")
+    assert result["solution"] == "new_solution"
+
+
+def test_get_skip_domains(gotchas_db):
+    gotchas_db.store("amazon.jobs", "*", "captcha_always", "skip_manual_review")
+    skips = gotchas_db.get_skip_domains()
+    assert "amazon.jobs" in skips
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_gotchas.py -v`
+Expected: FAIL (ImportError)
+
+- [ ] **Step 3: Implement gotchas DB**
+
+Create `jobpulse/form_engine/gotchas.py`:
+
+```python
+"""Runtime gotchas DB — learn and remember form-filling quirks per domain.
+
+When the form engine encounters a problem and figures out the fix, it stores
+that knowledge here so the daemon never hits the same wall twice.
+
+Schema:
+    domain          — e.g. "workday.com", "lever.co"
+    selector_pattern — CSS selector or pattern, e.g. "#country", "select", "*"
+    problem         — what went wrong, e.g. "native_select_failed", "captcha_always"
+    solution        — what worked, e.g. "use_custom_select", "skip_manual_review"
+    times_used      — how many times this gotcha was applied
+    created_at      — when first discovered
+    last_used_at    — when last applied
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timezone
+
+from shared.logging_config import get_logger
+from jobpulse.config import DATA_DIR
+
+logger = get_logger(__name__)
+
+_DEFAULT_DB_PATH = str(DATA_DIR / "form_gotchas.db")
+
+
+class GotchasDB:
+    """SQLite-backed store for form-filling gotchas."""
+
+    def __init__(self, db_path: str | None = None) -> None:
+        self.db_path = db_path or _DEFAULT_DB_PATH
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS gotchas (
+                    domain TEXT NOT NULL,
+                    selector_pattern TEXT NOT NULL,
+                    problem TEXT NOT NULL,
+                    solution TEXT NOT NULL,
+                    times_used INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    PRIMARY KEY (domain, selector_pattern)
+                )"""
+            )
+            conn.commit()
+
+    def store(
+        self,
+        domain: str,
+        selector_pattern: str,
+        problem: str,
+        solution: str,
+    ) -> None:
+        """Store or update a gotcha.
+
+        If the same domain + selector_pattern exists, overwrites it
+        (the form may have changed, new solution may be better).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """INSERT INTO gotchas (domain, selector_pattern, problem, solution, times_used, created_at)
+                   VALUES (?, ?, ?, ?, 0, ?)
+                   ON CONFLICT(domain, selector_pattern) DO UPDATE SET
+                       problem = excluded.problem,
+                       solution = excluded.solution,
+                       created_at = excluded.created_at,
+                       times_used = 0""",
+                (domain, selector_pattern, problem, solution, now),
+            )
+            conn.commit()
+        logger.info("gotchas: stored %s/%s → %s", domain, selector_pattern, solution)
+
+    def lookup(self, domain: str, selector_pattern: str) -> dict | None:
+        """Look up a gotcha by exact domain + selector match.
+
+        Returns dict with keys: solution, problem, times_used, created_at.
+        Returns None if no match.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM gotchas WHERE domain = ? AND selector_pattern = ?",
+                (domain, selector_pattern),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def lookup_domain(self, domain: str) -> list[dict]:
+        """Get all gotchas for a domain."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM gotchas WHERE domain = ? ORDER BY times_used DESC",
+                (domain,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def record_usage(self, domain: str, selector_pattern: str) -> None:
+        """Increment times_used and update last_used_at for a gotcha."""
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """UPDATE gotchas SET times_used = times_used + 1, last_used_at = ?
+                   WHERE domain = ? AND selector_pattern = ?""",
+                (now, domain, selector_pattern),
+            )
+            conn.commit()
+
+    def get_skip_domains(self) -> list[str]:
+        """Get domains that should always be routed to manual review.
+
+        These are gotchas with selector_pattern='*' and solution='skip_manual_review'.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT domain FROM gotchas WHERE selector_pattern = '*' AND solution = 'skip_manual_review'"
+            ).fetchall()
+            return [r[0] for r in rows]
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd /Users/yashbishnoi/Downloads/multi_agent_patterns && python -m pytest tests/jobpulse/form_engine/test_gotchas.py -v`
+Expected: ALL PASS
+
+- [ ] **Step 5: Commit and push**
+
+```bash
+git add jobpulse/form_engine/gotchas.py tests/jobpulse/form_engine/test_gotchas.py
+git commit -m "feat(form-engine): add gotchas DB for runtime form-filling learning"
+git push
+```
 
 ---
 
