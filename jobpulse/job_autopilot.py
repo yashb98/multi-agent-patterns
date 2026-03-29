@@ -142,6 +142,7 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
         Human-readable summary string.
     """
     trail = ProcessTrail("job_autopilot", "scan_window")
+    notion_failures: list[str] = []
 
     # --- Step 1: gate checks ---
     if not JOB_AUTOPILOT_ENABLED:
@@ -247,6 +248,7 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
                 logger.warning(
                     "job_autopilot: Notion create failed for %s: %s", listing.job_id[:8], exc
                 )
+                notion_failures.append(f"{listing.title}: {exc}")
             if notion_page_id:
                 db.save_application(
                     job_id=listing.job_id,
@@ -323,6 +325,7 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
                         listing.job_id[:8],
                         exc,
                     )
+                    notion_failures.append(f"{listing.title}: {exc}")
 
             # --- Route by tier ---
             action = classify_action(ats_score, listing.easy_apply)
@@ -371,6 +374,7 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
                                     logger.warning(
                                         "job_autopilot: Notion applied update failed: %s", exc
                                     )
+                                    notion_failures.append(f"{listing.title}: {exc}")
                             auto_applied += 1
                             logger.info(
                                 "job_autopilot: AUTO-APPLIED %s @ %s (ATS %.1f%%)",
@@ -403,8 +407,8 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
                 if notion_page_id:
                     try:
                         update_application_page(notion_page_id, status="Skipped")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        notion_failures.append(f"{listing.title}: {exc}")
                 skipped += 1
                 logger.debug(
                     "job_autopilot: SKIPPED %s @ %s (ATS %.1f%%)",
@@ -452,6 +456,9 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
         f"Scan complete: {auto_applied} auto-applied, "
         f"{len(review_batch)} for review, {skipped} skipped"
     )
+
+    if notion_failures:
+        logger.warning("job_autopilot: %d Notion sync failures this run", len(notion_failures))
 
     return summary_msg
 

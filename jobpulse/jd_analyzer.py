@@ -286,10 +286,15 @@ def extract_skills_llm(jd_text: str) -> dict:  # type: ignore[return]
             "preferred_skills": list[str],
             "industry": str,
             "sub_context": str,
+            "error": None | str,  # None on success, error description or "empty_jd" otherwise
         }
 
     Falls back to empty lists + empty strings on any error.
     """
+    if not jd_text or not jd_text.strip():
+        logger.warning("extract_skills_llm: received empty JD text, skipping LLM call")
+        return {"required_skills": [], "preferred_skills": [], "industry": "", "sub_context": "", "error": "empty_jd"}
+
     try:
         import openai  # local import to keep module importable without openai installed
 
@@ -321,6 +326,7 @@ def extract_skills_llm(jd_text: str) -> dict:  # type: ignore[return]
             "preferred_skills": data.get("preferred_skills", []),
             "industry": data.get("industry", ""),
             "sub_context": data.get("sub_context", ""),
+            "error": None,
         }
 
     except Exception as exc:
@@ -330,6 +336,7 @@ def extract_skills_llm(jd_text: str) -> dict:  # type: ignore[return]
             "preferred_skills": [],
             "industry": "",
             "sub_context": "",
+            "error": str(exc),
         }
 
 
