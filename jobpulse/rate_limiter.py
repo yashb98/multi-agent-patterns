@@ -85,22 +85,27 @@ class RateLimiter:
         return True
 
     def record_application(self, platform: str) -> None:
-        """Increment today's count for the given platform."""
+        """Increment today's count for the given platform (atomic)."""
+        from jobpulse.utils.safe_io import atomic_sqlite
+
         platform = platform.lower()
         today = self._today()
-        with sqlite3.connect(self.db_path) as conn:
+        with atomic_sqlite(self.db_path) as conn:
             conn.execute(
                 """INSERT INTO daily_counts (date, platform, count) VALUES (?, ?, 1)
                    ON CONFLICT(date, platform) DO UPDATE SET count = count + 1""",
                 (today, platform),
             )
-            total = self.get_total_today()
+            row = conn.execute(
+                "SELECT COALESCE(SUM(count), 0) FROM daily_counts WHERE date = ?",
+                (today,),
+            ).fetchone()
+            total = row[0] if row else 0
             conn.execute(
                 """INSERT INTO session_tracker (date, total_today, last_break_at) VALUES (?, ?, 0)
                    ON CONFLICT(date) DO UPDATE SET total_today = ?""",
                 (today, total, total),
             )
-            conn.commit()
         logger.info("Recorded application on %s (total today: %d)", platform, total)
 
     def get_remaining(self) -> dict[str, int]:
