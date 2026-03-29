@@ -22,17 +22,26 @@ def _find_gh() -> str:
 GH_BIN = _find_gh()
 
 
-def _gh_api(endpoint: str) -> list:
-    """Call GitHub API via gh CLI (uses stored auth, no token needed)."""
+def _gh_api(endpoint: str) -> tuple[list, str | None]:
+    """Call gh api and return (parsed_data, error_string | None)."""
     try:
         result = subprocess.run(
-            [GH_BIN, "api", endpoint],
-            capture_output=True, text=True, timeout=15
+            [_find_gh(), "api", endpoint, "--paginate"],
+            capture_output=True, text=True, timeout=30,
         )
-        return json.loads(result.stdout) if result.stdout else []
-    except Exception as e:
-        logger.error("API error: %s", e)
-        return []
+        if result.returncode != 0:
+            err = result.stderr.strip() or f"gh api exited with code {result.returncode}"
+            logger.error("gh api error for %s: %s", endpoint, err)
+            return [], err
+        if not result.stdout.strip():
+            return [], None  # Success, but no data
+        data = json.loads(result.stdout)
+        if not isinstance(data, list):
+            data = [data]
+        return data, None
+    except Exception as exc:
+        logger.error("gh api error: %s", exc)
+        return [], str(exc)
 
 
 def get_yesterday_commits(trigger: str = "scheduled_check") -> dict:
@@ -50,7 +59,10 @@ def get_yesterday_commits(trigger: str = "scheduled_check") -> dict:
     # Step 1: Get recently pushed repos
     with trail.step("api_call", "Fetch recently pushed repos",
                      step_input=f"User: {GITHUB_USERNAME}") as s:
-        all_repos = _gh_api(f"/users/{GITHUB_USERNAME}/repos?sort=pushed&per_page=15")
+        all_repos, api_err = _gh_api(f"/users/{GITHUB_USERNAME}/repos?sort=pushed&per_page=15")
+        if api_err:
+            logger.warning("GitHub API failed: %s", api_err)
+            trail.log_step("error", f"GitHub API failed: {api_err}")
         repo_names = [r.get("name", "") for r in all_repos]
         s["output"] = f"Found {len(all_repos)} repos"
         s["metadata"] = {"repos": repo_names[:5]}
@@ -73,10 +85,13 @@ def get_yesterday_commits(trigger: str = "scheduled_check") -> dict:
         # Step 2: Fetch actual commits for this repo from yesterday
         with trail.step("api_call", f"Fetch commits for {repo_name}",
                          step_input=f"Since: {yesterday}") as s:
-            repo_commits = _gh_api(
+            repo_commits, api_err = _gh_api(
                 f"/repos/{GITHUB_USERNAME}/{repo_name}/commits"
                 f"?since={yesterday}T00:00:00Z&until={today}T00:00:00Z&per_page=50"
             )
+            if api_err:
+                logger.warning("GitHub API failed: %s", api_err)
+                trail.log_step("error", f"GitHub API failed: {api_err}")
             s["output"] = f"{len(repo_commits)} commits in {repo_name}"
             s["metadata"] = {"repo": repo_name, "count": len(repo_commits)}
 
@@ -118,62 +133,83 @@ def format_commits(data: dict) -> str:
     return "\n".join(lines)
 
 
-def get_trending_repos() -> list[dict]:
-    """Fetch top 5 trending GitHub repos by scraping the GitHub trending page.
+def get_trending_repos(count: int = 10) -> list[dict]:
+    """Fetch today's trending GitHub repos by scraping github.com/trending.
 
-    The GitHub Search API cannot replicate trending (it doesn't track stars
-    gained per day). Scraping the actual trending page is the only reliable
-    way to get the same results users see on github.com/trending.
+    Parses each <article> individually so missing fields (language, description)
+    don't cause misalignment across repos. Uses ?since=daily to ensure fresh
+    daily results.
     """
     import httpx
+    import re
 
-    repos = []
+    repos: list[dict] = []
     try:
         resp = httpx.get(
-            "https://github.com/trending",
-            headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0"},
-            timeout=15, follow_redirects=True,
+            "https://github.com/trending?since=daily",
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+            },
+            timeout=15,
+            follow_redirects=True,
         )
         resp.raise_for_status()
         html = resp.text
 
-        # Parse trending repo rows — each is an <article> with class "Box-row"
-        import re
-        # Extract repo links: /owner/repo pattern inside h2 > a tags
-        repo_links = re.findall(
-            r'<h2[^>]*>\s*<a[^>]*href="(/[^"]+)"', html
-        )
-        # Extract descriptions (next <p> after the h2)
-        descriptions = re.findall(
-            r'<p class="col-9[^"]*"[^>]*>\s*(.+?)\s*</p>', html
-        )
-        # Extract stars today: "N stars today"
-        stars_today = re.findall(
-            r'(\d[\d,]*)\s+stars\s+today', html
-        )
-        # Extract language
-        languages = re.findall(
-            r'<span itemprop="programmingLanguage">([^<]+)</span>', html
-        )
-
-        for i, link in enumerate(repo_links[:5]):
+        # Split by <article to parse each repo card independently.
+        # This avoids misalignment when a repo lacks a description or language.
+        articles = re.split(r"<article\b", html)[1:]  # skip pre-first-article
+        for article_html in articles[:count]:
+            # Repo link: h2 > a href="/owner/repo"
+            link_m = re.search(r'<h2[^>]*>\s*<a[^>]*href="(/[^"]+)"', article_html)
+            if not link_m:
+                continue
+            link = link_m.group(1)
             full_name = link.strip("/")
+
+            # Description
+            desc_m = re.search(r'<p class="col-9[^"]*"[^>]*>\s*(.+?)\s*</p>', article_html)
+            description = desc_m.group(1).strip()[:80] if desc_m else ""
+
+            # Language
+            lang_m = re.search(
+                r'<span itemprop="programmingLanguage">([^<]+)</span>', article_html
+            )
+            language = lang_m.group(1).strip() if lang_m else ""
+
+            # Stars today
+            stars_m = re.search(r'(\d[\d,]*)\s+stars\s+today', article_html)
+            stars = int(stars_m.group(1).replace(",", "")) if stars_m else 0
+
             repos.append({
                 "repo": full_name,
-                "description": (descriptions[i].strip() if i < len(descriptions) else "")[:80],
-                "language": languages[i].strip() if i < len(languages) else "",
-                "stars": int(stars_today[i].replace(",", "")) if i < len(stars_today) else 0,
+                "description": description,
+                "language": language,
+                "stars": stars,
                 "url": f"https://github.com{link}",
             })
 
     except Exception as e:
         logger.error("Trending scrape failed, falling back to search API: %s", e)
-        # Fallback: search API with pushed:today + high stars
-        today = datetime.now().strftime("%Y-%m-%d")
-        results = _gh_api(
-            f"/search/repositories?q=pushed:>{today}+stars:>500&sort=stars&order=desc&per_page=5"
+        # Fallback: repos created in the last 7 days sorted by stars — gives
+        # genuinely new/hot repos rather than the same all-time popular ones.
+        week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        results, api_err = _gh_api(
+            f"/search/repositories?q=created:>{week_ago}+stars:>100"
+            f"&sort=stars&order=desc&per_page={count}"
         )
-        for item in (results.get("items", []) if isinstance(results, dict) else []):
+        if api_err:
+            logger.warning("GitHub API failed: %s", api_err)
+        # _gh_api wraps non-list responses in a list; search results come as
+        # a single dict with an "items" key, so unwrap it if present.
+        results_data = results[0] if results and isinstance(results[0], dict) and "items" in results[0] else {}
+        for item in results_data.get("items", []):
             repos.append({
                 "repo": item.get("full_name", ""),
                 "description": (item.get("description") or "")[:80],
@@ -182,7 +218,7 @@ def get_trending_repos() -> list[dict]:
                 "url": item.get("html_url", ""),
             })
 
-    return repos[:5]
+    return repos[:count]
 
 
 def format_trending(repos: list[dict]) -> str:
@@ -190,7 +226,7 @@ def format_trending(repos: list[dict]) -> str:
     if not repos:
         return "  Could not fetch trending repos"
     lines = []
-    for i, r in enumerate(repos[:5], 1):
+    for i, r in enumerate(repos, 1):
         lang = f" [{r.get('language', '')}]" if r.get("language") else ""
         stars = f" ⭐ {r.get('stars', 0):,}" if r.get("stars") else ""
         lines.append(f"  {i}. {r['repo']}{lang}{stars}")
