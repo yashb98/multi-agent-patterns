@@ -7,9 +7,10 @@ that knowledge here so the daemon never hits the same wall twice.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from shared.logging_config import get_logger
+
 from jobpulse.config import DATA_DIR
 
 logger = get_logger(__name__)
@@ -42,7 +43,7 @@ class GotchasDB:
 
     def store(self, domain: str, selector_pattern: str, problem: str, solution: str) -> None:
         """Store or update a gotcha. Overwrites if same domain+selector exists."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """INSERT INTO gotchas (domain, selector_pattern, problem, solution, times_used, created_at)
@@ -79,7 +80,7 @@ class GotchasDB:
 
     def record_usage(self, domain: str, selector_pattern: str) -> None:
         """Increment times_used and update last_used_at."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """UPDATE gotchas SET times_used = times_used + 1, last_used_at = ?

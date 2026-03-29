@@ -8,6 +8,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import os
+
 os.environ.setdefault("JOBPULSE_TEST_MODE", "1")
 
 import pytest

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from shared.logging_config import get_logger
+
 from jobpulse.form_engine.models import FillResult
 from jobpulse.form_engine.select_filler import _fuzzy_match_option
 
