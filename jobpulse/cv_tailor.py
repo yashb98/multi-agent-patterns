@@ -11,6 +11,10 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 if TYPE_CHECKING:
     from jobpulse.models.application_models import ATSScore, JobListing
 
@@ -174,6 +178,8 @@ def generate_tailored_cv(
 
     from jobpulse.ats_scorer import score_ats
     from jobpulse.config import DATA_DIR, OPENAI_API_KEY
+    from jobpulse.models.application_models import ATSScore
+    from jobpulse.utils.safe_io import safe_openai_call
 
     client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
@@ -206,23 +212,30 @@ def generate_tailored_cv(
             messages = [{"role": "user", "content": prompt}]
         else:
             # Refinement: append feedback about missing keywords
-            assert best_score is not None
-            missing = ", ".join(best_score.missing_keywords[:10])
-            feedback = (
-                f"The previous CV scored {best_score.total:.1f}% ATS (target 95%+). "
-                f"Missing keywords: {missing}. "
-                "Please revise the CV to naturally incorporate these keywords. "
-                "Output the complete updated .tex file only."
-            )
-            messages.append({"role": "assistant", "content": best_tex})
-            messages.append({"role": "user", "content": feedback})
+            if best_score is None:
+                # All prior attempts returned None — nothing to refine against, restart fresh
+                messages = [{"role": "user", "content": prompt}]
+            else:
+                missing = ", ".join(best_score.missing_keywords[:10])
+                feedback = (
+                    f"The previous CV scored {best_score.total:.1f}% ATS (target 95%+). "
+                    f"Missing keywords: {missing}. "
+                    "Please revise the CV to naturally incorporate these keywords. "
+                    "Output the complete updated .tex file only."
+                )
+                messages.append({"role": "assistant", "content": best_tex})
+                messages.append({"role": "user", "content": feedback})
 
-        response = client.chat.completions.create(
+        tex_content = safe_openai_call(
+            client,
             model="gpt-4o-mini",
             temperature=0.3,
             messages=messages,
+            caller=f"cv_tailor:attempt_{attempt}",
         )
-        tex_content: str = response.choices[0].message.content or ""
+        if tex_content is None:
+            logger.warning("cv_tailor: LLM returned None for job %s attempt %d", job.job_id, attempt)
+            continue
 
         # Strip markdown fences if present
         tex_content = re.sub(r"^```(?:latex|tex)?\s*\n?", "", tex_content, flags=re.IGNORECASE)
@@ -245,5 +258,8 @@ def generate_tailored_cv(
     # Compile to PDF
     pdf_path = compile_tex(tex_path, app_dir)
 
-    assert best_score is not None
+    if best_score is None:
+        logger.error("cv_tailor: all refinement attempts returned None for job %s", job.job_id)
+        return None, ATSScore(total=0, keyword_score=0, section_score=0, format_score=0,
+                              missing_keywords=[], matched_keywords=[], passed=False)
     return pdf_path, best_score

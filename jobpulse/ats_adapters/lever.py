@@ -24,18 +24,16 @@ class LeverAdapter(BaseATSAdapter):
         custom_answers: dict,
     ) -> dict:
         try:
-            from playwright.sync_api import sync_playwright
+            from jobpulse.utils.safe_io import managed_browser
         except ImportError:
             logger.warning("Playwright not installed — Lever adapter unavailable")
             return {"success": False, "screenshot": None, "error": "Playwright not installed"}
 
         logger.info("Lever form: %s", url)
         try:
-            from playwright.sync_api import sync_playwright
+            from jobpulse.utils.safe_io import managed_browser
 
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
+            with managed_browser(headless=True) as (browser, page):
                 page.goto(url, timeout=30000)
 
                 # Lever standard field selectors
@@ -68,7 +66,6 @@ class LeverAdapter(BaseATSAdapter):
 
                 screenshot_path = cv_path.parent / "lever_screenshot.png"
                 page.screenshot(path=str(screenshot_path))
-                browser.close()
 
             return {"success": True, "screenshot": screenshot_path, "error": None}
         except Exception as exc:
