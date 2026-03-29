@@ -69,7 +69,11 @@ MAX_REQUESTS_PER_PLATFORM = 50
 
 def _make_job_id(url: str) -> str:
     """SHA-256 of the normalised URL — used as the deduplication key."""
-    return hashlib.sha256(url.strip().lower().encode()).hexdigest()
+    if not url:
+        import uuid
+        logger.warning("_make_job_id: received empty URL, generating random ID")
+        return f"unknown-{uuid.uuid4().hex[:8]}"
+    return hashlib.sha256(url.strip().lower().encode()).hexdigest()[:16]
 
 
 def _random_ua() -> str:
@@ -94,7 +98,10 @@ def load_search_config() -> SearchConfig:
     """
     if _CONFIG_PATH.exists():
         raw = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-        return SearchConfig.model_validate(raw)
+        config = SearchConfig.model_validate(raw)
+        if not config.titles:
+            logger.warning("load_search_config: no job titles configured — scan will find nothing")
+        return config
 
     # Default configuration
     default = SearchConfig(
@@ -453,9 +460,18 @@ def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:
         logger.warning("scan_platforms: unknown platforms %s — ignoring", unknown)
         platforms = [p for p in platforms if p in PLATFORM_SCANNERS]
 
+    STUB_PLATFORMS = {"indeed", "totaljobs", "glassdoor"}
+
     all_jobs: list[dict[str, Any]] = []
 
     for platform in platforms:
+        if platform in STUB_PLATFORMS:
+            logger.warning(
+                "scan_platforms: '%s' is not yet implemented — skipping. "
+                "Only reed and linkedin are functional.",
+                platform,
+            )
+            continue
         scanner = PLATFORM_SCANNERS[platform]
         logger.info("scan_platforms: starting %s scanner", platform)
         try:
