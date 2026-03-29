@@ -4,9 +4,18 @@ SAFETY: Sets JOBPULSE_TEST_MODE=1 so storage modules can guard against
 accidentally writing to production databases during test runs.
 """
 
+import sys
+import os
+from pathlib import Path
+
+# Add multi_agent_patterns root to sys.path so jobpulse/shared are importable
+# regardless of which directory pytest is invoked from.
+_PROJECT_ROOT = Path(__file__).parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import pytest
 import sqlite3
-import os
 from unittest.mock import patch, MagicMock
 
 # Global safety flag — set before ANY imports touch storage modules
