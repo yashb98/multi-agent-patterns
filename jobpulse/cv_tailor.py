@@ -40,7 +40,11 @@ def build_cv_prompt(jd_data: dict, matched_projects: list[str]) -> str:
     Loads template from jobpulse/templates/Resume Prompt.md
     Appends an EXTRACTED block (Layer 3) and project priority instruction.
     """
-    template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    try:
+        template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.error("cv_tailor: Resume Prompt template not found at %s", _TEMPLATE_PATH)
+        return ""
 
     skills_str = ", ".join(jd_data.get("skills_list", []))
     soft_skills_str = ", ".join(jd_data.get("soft_skills", []))

@@ -148,14 +148,33 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
         try:
             logger.info("scan_reed: searching '%s' in '%s'", title, config.location)
             with httpx.Client(timeout=20) as client:
-                resp = client.get(
-                    base_url,
-                    params=params,
-                    auth=(REED_API_KEY, ""),
-                    headers={"User-Agent": _random_ua()},
-                )
-                resp.raise_for_status()
-                data = resp.json()
+                data = None
+                for retry in range(3):
+                    resp = client.get(
+                        base_url,
+                        params=params,
+                        auth=(REED_API_KEY, ""),
+                        headers={"User-Agent": _random_ua()},
+                    )
+
+                    if resp.status_code == 429:
+                        wait = 2 ** (retry + 1)  # 2s, 4s, 8s
+                        logger.warning(
+                            "scan_reed: rate limited (429), retrying in %ds (attempt %d/3)",
+                            wait, retry + 1,
+                        )
+                        time.sleep(wait)
+                        continue
+
+                    resp.raise_for_status()
+                    data = resp.json()
+                    break
+                else:
+                    logger.error("scan_reed: rate limited after 3 retries for '%s'", title)
+                    continue  # skip to next title
+
+                if data is None:
+                    continue
 
             for job in data.get("results", []):
                 url = job.get("jobUrl", "")
