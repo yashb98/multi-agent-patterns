@@ -99,6 +99,14 @@ def _save_pending(jobs: list[dict[str, Any]]) -> None:
     PENDING_REVIEW_FILE.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
 
 
+def _append_pending(new_jobs: list[dict[str, Any]]) -> None:
+    """Atomically append jobs to the pending review file (race-safe)."""
+    from jobpulse.utils.safe_io import locked_json_file
+
+    with locked_json_file(PENDING_REVIEW_FILE, default=[]) as data:
+        data.extend(new_jobs)
+
+
 # ---------------------------------------------------------------------------
 # Daily cap check
 # ---------------------------------------------------------------------------
@@ -414,10 +422,9 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
             )
             errors += 1
 
-    # Persist pending review batch (append to existing)
-    existing_pending = _load_pending()
-    all_pending = existing_pending + review_batch
-    _save_pending(all_pending)
+    # Persist pending review batch (append to existing, race-safe)
+    if review_batch:
+        _append_pending(review_batch)
 
     # --- Step 7: send Telegram messages ---
     hour = datetime.now().hour
