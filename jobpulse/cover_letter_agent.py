@@ -18,18 +18,34 @@ if TYPE_CHECKING:
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "Cover letter template.md"
 
-_PROFILE = {
-    "name": "Yash B",
-    "education": [
-        "MSc Computer Science, University of Dundee (Jan 2025 - Jan 2026)",
-        "MBA Finance, JECRC University (2019-2021)",
-    ],
-    "experience": [
-        "Team Leader, Co-op (Apr 2025 - Present)",
-        "Market Research Analyst, Nidhi Herbal (Jul 2021 - Sep 2024)",
-    ],
-    "visa": "Student Visa; converting to Graduate Visa from 9 May 2026",
-}
+def _build_profile() -> dict:
+    """Build profile dict by merging applicator.PROFILE with cover-letter-specific fields.
+
+    Uses a lazy import to avoid circular dependency (applicator imports ats_adapters).
+    """
+    try:
+        from jobpulse.applicator import PROFILE as _AP  # noqa: PLC0415
+        name = f"{_AP.get('first_name', 'Yash')} {_AP.get('last_name', 'B')}".strip()
+        visa = _AP.get("visa_status", "Student Visa; converting to Graduate Visa from 9 May 2026")
+    except Exception:  # pragma: no cover — guard against import issues
+        name = "Yash B"
+        visa = "Student Visa; converting to Graduate Visa from 9 May 2026"
+
+    return {
+        "name": name,
+        "education": [
+            "MSc Computer Science, University of Dundee (Jan 2025 - Jan 2026)",
+            "MBA Finance, JECRC University (2019-2021)",
+        ],
+        "experience": [
+            "Team Leader, Co-op (Apr 2025 - Present)",
+            "Market Research Analyst, Nidhi Herbal (Jul 2021 - Sep 2024)",
+        ],
+        "visa": visa,
+    }
+
+
+_PROFILE = _build_profile()
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +54,17 @@ _PROFILE = {
 
 
 def _load_template() -> str:
-    """Load cover letter template from jobpulse/templates/Cover letter template.md."""
-    return _TEMPLATE_PATH.read_text(encoding="utf-8")
+    """Load cover letter template."""
+    try:
+        return _TEMPLATE_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        from shared.logging_config import get_logger  # noqa: PLC0415
+        get_logger(__name__).error(
+            "cover_letter_agent: template not found at %s. "
+            "Ensure jobpulse/templates/ directory contains the template.",
+            _TEMPLATE_PATH,
+        )
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +90,12 @@ def build_cover_letter_prompt(
     """
     template = _load_template()
 
-    jd_snippet = jd_text[:2000]
+    if len(jd_text) <= 2000:
+        jd_snippet = jd_text
+    else:
+        cut = jd_text[:2000]
+        last_period = max(cut.rfind(". "), cut.rfind(".\n"), cut.rfind(".\t"))
+        jd_snippet = cut[:last_period + 1] if last_period > 1500 else cut
     skills_str = ", ".join(matched_skills)
     projects_str = ", ".join(matched_projects)
     education_str = "\n".join(f"  - {e}" for e in _PROFILE["education"])
@@ -124,6 +154,7 @@ def generate_cover_letter(
     from shared.logging_config import get_logger
 
     from jobpulse.config import DATA_DIR, OPENAI_API_KEY
+    from jobpulse.utils.safe_io import safe_openai_call
 
     logger = get_logger(__name__)
 
@@ -141,32 +172,26 @@ def generate_cover_letter(
         matched_projects=matched_projects,
     )
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.5,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        cover_letter_text: str = response.choices[0].message.content or ""
-
-        if not cover_letter_text.strip():
-            logger.warning("cover_letter_agent: LLM returned empty content for job %s", job.job_id)
-            return None
-
-        output_path.write_text(cover_letter_text, encoding="utf-8")
-        logger.info(
-            "cover_letter_agent: saved cover letter for %s @ %s → %s",
-            job.title,
-            job.company,
-            output_path,
-        )
-        return output_path
-
-    except Exception as exc:
-        logger.error(
-            "cover_letter_agent: failed for job %s — %s: %s",
-            job.job_id,
-            type(exc).__name__,
-            exc,
-        )
+    cover_letter_text = safe_openai_call(
+        client,
+        model="gpt-4o-mini",
+        temperature=0.5,
+        messages=[{"role": "user", "content": prompt}],
+        caller="cover_letter_agent",
+    )
+    if cover_letter_text is None:
+        logger.warning("cover_letter_agent: LLM returned None for job %s", job.job_id)
         return None
+
+    if not cover_letter_text.strip():
+        logger.warning("cover_letter_agent: LLM returned empty content for job %s", job.job_id)
+        return None
+
+    output_path.write_text(cover_letter_text, encoding="utf-8")
+    logger.info(
+        "cover_letter_agent: saved cover letter for %s @ %s → %s",
+        job.title,
+        job.company,
+        output_path,
+    )
+    return output_path
