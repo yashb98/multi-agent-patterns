@@ -11,6 +11,9 @@ import re
 
 from jobpulse.config import DATA_DIR
 from jobpulse.models.application_models import ATSScore
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Section detection patterns
@@ -127,7 +130,12 @@ def _load_synonyms() -> dict[str, list[str]]:
     try:
         with synonyms_path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "ats_scorer: synonym file missing or invalid at %s — "
+            "keyword matching will not use synonyms. Error: %s",
+            synonyms_path, exc,
+        )
         return {}
 
 
@@ -173,18 +181,11 @@ def _keyword_in_text(keyword: str, cv_text: str, synonyms: dict[str, list[str]])
 
 
 def _word_present(keyword: str, text: str) -> bool:
-    """Return True if keyword appears in text as a standalone token (word boundary aware).
-
-    Uses word-boundary regex for single-word keywords; substring match for multi-word phrases.
-    """
+    """Check if keyword appears as a whole word in text."""
     if not keyword:
         return False
-    if " " in keyword:
-        # Multi-word: simple substring
-        return keyword in text
-    # Single-word: require word boundary to avoid partial matches (e.g. "r" in "docker")
     pattern = r"\b" + re.escape(keyword) + r"\b"
-    return bool(re.search(pattern, text))
+    return bool(re.search(pattern, text, re.IGNORECASE))
 
 
 def _detect_sections(cv_text: str) -> set[str]:
