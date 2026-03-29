@@ -51,7 +51,9 @@ async def scan_for_errors(page) -> list[ValidationError]:
             }"""
         )
         selector = f"#{el_id}" if el_id else "[aria-invalid='true']"
-        errors.append(ValidationError(field_selector=selector, error_message=error_msg or "Invalid field"))
+        errors.append(ValidationError(
+            field_selector=selector, error_message=error_msg or "Invalid field",
+        ))
 
     # Strategy 2: role="alert" elements (often used for form errors)
     alerts = await page.query_selector_all("[role='alert']")
@@ -85,7 +87,12 @@ async def find_required_unfilled(page) -> list[str]:
         if not value.strip():
             el_id = await el.get_attribute("id") or ""
             el_name = await el.get_attribute("name") or ""
-            selector = f"#{el_id}" if el_id else f"[name='{el_name}']" if el_name else "input[required]"
+            if el_id:
+                selector = f"#{el_id}"
+            elif el_name:
+                selector = f"[name='{el_name}']"
+            else:
+                selector = "input[required]"
             unfilled.append(selector)
 
     logger.debug("validation: %d required fields unfilled", len(unfilled))

@@ -115,7 +115,12 @@ async def find_file_inputs(page) -> dict[str, str]:
                 label_text = (await label_el.text_content() or "").lower()
 
         combined = f"{inp_id} {inp_name} {label_text}".lower()
-        selector = f"#{inp_id}" if inp_id else f"input[name='{inp_name}']" if inp_name else "input[type='file']"
+        if inp_id:
+            selector = f"#{inp_id}"
+        elif inp_name:
+            selector = f"input[name='{inp_name}']"
+        else:
+            selector = "input[type='file']"
 
         if any(kw in combined for kw in ("resume", "cv", "curriculum")):
             categorised["resume"] = selector
