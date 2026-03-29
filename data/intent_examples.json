@@ -282,5 +282,87 @@
     "thanks for the help",
     "interesting, tell me more",
     "what's the weather like"
+  ],
+  "stop": [
+    "stop",
+    "cancel",
+    "oops",
+    "nope",
+    "undo that",
+    "take that back",
+    "nevermind",
+    "cancel that"
+  ],
+  "show_jobs": [
+    "show jobs",
+    "pending jobs",
+    "job queue",
+    "what jobs are pending",
+    "list applications",
+    "show applications",
+    "job status"
+  ],
+  "approve_jobs": [
+    "approve jobs",
+    "approve all",
+    "approve 1 2 3",
+    "accept jobs",
+    "yes apply to those",
+    "go ahead and apply",
+    "approve those applications"
+  ],
+  "reject_job": [
+    "reject job",
+    "reject 1",
+    "skip that job",
+    "decline job",
+    "no thanks on that one",
+    "pass on that application",
+    "reject application"
+  ],
+  "job_stats": [
+    "job stats",
+    "application stats",
+    "how many jobs applied",
+    "job statistics",
+    "application summary",
+    "how many applications today",
+    "job numbers"
+  ],
+  "search_config": [
+    "search config",
+    "update search",
+    "change job search",
+    "modify search criteria",
+    "update job titles",
+    "set search location",
+    "configure job search"
+  ],
+  "pause_jobs": [
+    "pause jobs",
+    "stop applying",
+    "hold off on applications",
+    "pause autopilot",
+    "stop job applications",
+    "disable auto apply",
+    "pause the scanner"
+  ],
+  "resume_jobs": [
+    "resume jobs",
+    "start applying again",
+    "unpause jobs",
+    "resume autopilot",
+    "restart applications",
+    "enable auto apply",
+    "resume the scanner"
+  ],
+  "job_detail": [
+    "job detail",
+    "show job 1",
+    "details for job 3",
+    "tell me about that job",
+    "job info",
+    "more details on application",
+    "describe that job"
   ]
 }

@@ -8,7 +8,7 @@ def test_classify_tier_auto_easy():
 
 
 def test_classify_tier_auto_complex():
-    assert classify_action(92.0, False) == "auto_submit_with_preview"
+    assert classify_action(96.0, False) == "auto_submit_with_preview"
 
 
 def test_classify_tier_review():
