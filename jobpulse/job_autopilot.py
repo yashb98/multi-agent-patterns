@@ -279,6 +279,20 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
 
         screen = store.pre_screen_jd(listing)
 
+        # Record skill gaps for ALL tiers (reject, skip, apply, strong)
+        try:
+            from jobpulse.skill_gap_tracker import record_gap
+            record_gap(
+                job_id=listing.job_id,
+                title=listing.title,
+                company=listing.company,
+                missing_skills=screen.missing_skills,
+                matched_skills=screen.matched_skills,
+                gate3_score=screen.gate3_score,
+            )
+        except Exception as exc:
+            logger.debug("job_autopilot: skill_gap_tracker.record_gap failed: %s", exc)
+
         if screen.tier == "reject":
             gate_rejected += 1
             logger.info(

@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
-        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, profile-sync, test")
+        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -187,6 +187,28 @@ def main():
         print(f"Found: {stats['found']}")
         print(f"Skipped: {stats['skipped']}")
         print(f"Avg ATS: {stats['avg_ats']}%")
+
+    elif command == "skill-gaps":
+        from jobpulse.skill_gap_tracker import get_top_gaps, export_gap_report
+        gaps = get_top_gaps(min_count=3)
+        if not gaps:
+            print("No skill gap data yet. Run some job scans first.")
+        else:
+            print(f"\n{'Rank':<5} {'Skill':<25} {'Missing':<10} {'Matched':<10} {'Action'}")
+            print("-" * 70)
+            for i, g in enumerate(gaps, 1):
+                action = "Has it" if g["have_it"] else "LEARN"
+                if not g["have_it"] and g["gap_count"] >= 10:
+                    action = "PRIORITY"
+                print(f"{i:<5} {g['skill']:<25} {g['gap_count']:<10} {g['match_count']:<10} {action}")
+            print(f"\nExporting full report...")
+            path = export_gap_report()
+            print(f"Saved to: {path}")
+
+    elif command == "skill-gap-export":
+        from jobpulse.skill_gap_tracker import export_gap_report
+        path = export_gap_report()
+        print(f"Exported to: {path}")
 
     elif command == "profile-sync":
         from jobpulse.github_profile_sync import sync_profile
