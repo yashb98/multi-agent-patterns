@@ -42,6 +42,25 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | Briefing | Collect all agents → RLM synthesis → Telegram | 8:03am daily |
 | Weekly Report | 7-day aggregate across all agents | On demand |
 | Voice Handler | Telegram voice → Whisper transcription → dispatch | On demand |
+| **Job Autopilot** | 4-gate pre-screen → scan → hybrid skill extract → CV/CL → apply | 7am, 10am, 1pm, 4pm, 7pm |
+| **Skill Graph Sync** | GitHub repos + resume + past apps → MindGraph skill/project graph | 3am nightly |
+| **Skill Gap Tracker** | Records missing skills across all JDs → CSV export for upskilling | On demand |
+
+### Job Autopilot Pre-Screen (4-Gate Recruiter Model)
+
+Models a senior IT recruiter's 6-30 second screening process. Zero LLM cost — pure deterministic Python.
+
+```
+250 raw jobs/day → Gate 0 (title filter) → Hybrid Skill Extraction (rule-based, LLM fallback <10 skills)
+→ Gate 1 (kill: seniority ≥5yr, primary lang missing, foreign domain)
+→ Gate 2 (must-haves: ≥4/5 top skills, ≥2 projects, ≥20 matches, ≥92% required)
+→ Gate 3 (competitiveness 0-100: hard skill 35 + project evidence 25 + coherence 15 + domain 15 + recency 10)
+→ ~3-5 strong matches/day → CV + Cover Letter (ReportLab, instant) → Apply
+```
+
+**Result:** 96% fewer LLM calls ($0.23/month vs $5.63). Quality over quantity — only genuinely competitive jobs get applications.
+
+**Skill Gap Tracker:** Every pre-screened job records which skills you're missing. `python -m jobpulse.runner skill-gaps` shows the top gaps ranked by frequency. Export CSV for Google Drive to plan your upskilling.
 
 ### 3. Knowledge MindGraph (mindgraph_app/)
 
@@ -167,6 +186,9 @@ python -m jobpulse.runner webhook <url>   # Start webhook server
 python -m jobpulse.runner slack           # Start Slack listener
 python -m jobpulse.runner discord         # Start Discord listener
 python -m jobpulse.runner multi           # All platform listeners
+python -m jobpulse.runner profile-sync   # Refresh skill/project graph
+python -m jobpulse.runner skill-gaps     # Show top missing skills + export CSV
+python -m jobpulse.runner skill-gap-export # Export gap report CSV only
 python run_all.py "topic"                 # Compare all 4 patterns
 ```
 
@@ -254,6 +276,9 @@ The blog pipeline uses 5 agents (Deep Reader → GRPO Writer → Fact Checker �
 
 ## Recent Features
 
+### 4-Gate Pre-Screen + Skill Gap Tracker (2026-03-30)
+Job autopilot now uses a 4-gate recruiter-grade pre-screen modeled after senior IT recruiter behavior. Gate 0: title relevance (pre-LLM). Gate 1: kill signals (seniority, primary language, foreign domain). Gate 2: must-haves (≥4/5 top skills, ≥2 projects with 3+ overlap, ≥20 matches, ≥92% required). Gate 3: competitiveness score (0-100 across 5 dimensions). Hybrid skill extraction uses a 582-entry taxonomy first (free), LLM fallback only when < 10 skills found (15% of JDs). **Result:** 250 → 10-11 LLM calls/day (96% reduction), $5.63 → $0.23/month. Skill gap tracker records every missing skill across all scanned JDs and exports ranked CSV for Google Drive upskilling. 7-day experiment running 2026-03-31 → 2026-04-06.
+
 ### Gmail Pre-Classifier (2026-03-27)
 Rule-based email triage that eliminates 70-85% of unnecessary LLM calls. Static rules match sender patterns, domain patterns, subject keywords, and dual subject+body patterns. Evidence-based attribution on every decision. Adaptive audit decay (50% → 10%). Telegram review flow with ✅/❌/🔄 for user feedback. Auto-graduates when rule accuracy exceeds 95%.
 
@@ -292,3 +317,5 @@ Major upgrade to arXiv ranking and fact-checking. **Multi-criteria scoring**: pa
 | Fact-Check Accuracy 9.5+ | Implemented | [docs/feature-fact-check-accuracy.md](docs/feature-fact-check-accuracy.md) |
 | Hybrid Fact Verification | Implemented | [docs/superpowers/specs/2026-03-28-hybrid-fact-verification-design.md](docs/superpowers/specs/2026-03-28-hybrid-fact-verification-design.md) |
 | Multi-Criteria arXiv Ranking | Implemented | [docs/superpowers/specs/2026-03-28-arxiv-ranking-fact-checking-design.md](docs/superpowers/specs/2026-03-28-arxiv-ranking-fact-checking-design.md) |
+| 4-Gate Pre-Screen Pipeline | Implemented | [docs/superpowers/specs/2026-03-30-job-pipeline-api-optimization-design.md](docs/superpowers/specs/2026-03-30-job-pipeline-api-optimization-design.md) |
+| Brutal Pre-Screen 7-Day Experiment | Running | [docs/experiments/2026-03-30-brutal-prescreen-7day.md](docs/experiments/2026-03-30-brutal-prescreen-7day.md) |

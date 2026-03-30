@@ -22,6 +22,7 @@
 - recruiter_screen.py — Gate 0 title filter (pre-LLM, instant, fuzzy matching + exclude keywords)
 - skill_graph_store.py — SkillGraphStore: 4-gate pre-screen (Gates 1-3), MindGraph abstraction, Neo4j-ready
 - github_profile_sync.py — Nightly 3am sync: GitHub repos + resume BASE_SKILLS + past apps → MindGraph graph
+- skill_gap_tracker.py — Records missing skills from every pre-screened job, exports ranked CSV for upskilling
 
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.
