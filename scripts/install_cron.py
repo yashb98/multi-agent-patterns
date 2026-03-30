@@ -53,6 +53,9 @@ PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Overnight scan (Glassdoor + TotalJobs)
  0 2 * * * {RUNNER} job-scan-slow >> {PROJECT_DIR}/logs/jobs.log 2>&1
 
+# Nightly skill/project profile sync (3am)
+ 0 3 * * * {RUNNER} profile-sync >> {PROJECT_DIR}/logs/profile_sync.log 2>&1
+
 # Follow-up reminders (9am daily)
  0 9 * * * {RUNNER} job-follow-ups >> {PROJECT_DIR}/logs/jobs.log 2>&1
 

@@ -377,7 +377,8 @@ def analyze_jd(
     ats_platform = detect_ats_platform(apply_url)
     easy_apply = detect_easy_apply(url, jd_text)
 
-    llm_data = extract_skills_llm(jd_text)
+    from jobpulse.skill_extractor import extract_skills_hybrid
+    llm_data = extract_skills_hybrid(jd_text)
 
     logger.info(
         "analyze_jd completed job_id=%s title=%r seniority=%s ats=%s",

@@ -5,8 +5,8 @@ Ties together all Job Autopilot pipeline tasks:
   L2: Analyze JDs     (jd_analyzer)
   L3: Deduplicate     (job_deduplicator)
   L4: Match projects  (github_matcher)
-  L5: Tailor CV       (cv_tailor)
-  L6: Cover letter    (cover_letter_agent)
+  L5: Generate CV PDF (cv_templates.generate_cv — ReportLab)
+  L6: Cover letter PDF(cv_templates.generate_cover_letter — ReportLab)
   L7: Score & tier    (cv_tailor.determine_match_tier)
   L8: Apply / queue   (applicator)
   L9: Notify          (telegram_bots)
@@ -36,6 +36,8 @@ from jobpulse.applicator import apply_job, classify_action
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
 from jobpulse.cover_letter_agent import generate_cover_letter
 from jobpulse.cv_tailor import determine_match_tier, generate_tailored_cv
+from jobpulse.cv_templates.generate_cv import generate_cv_pdf
+from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
 from jobpulse.github_matcher import fetch_and_cache_repos, pick_top_projects
 from jobpulse.jd_analyzer import analyze_jd
 from jobpulse.job_db import JobDB
@@ -201,6 +203,31 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         step_output=f"{total_found} raw jobs found",
     )
 
+    # --- Step 2b: Gate 0 — title relevance filter ---
+    from jobpulse.recruiter_screen import gate0_title_relevance
+    search_config = load_search_config()
+    gate0_config = {
+        "titles": search_config.get("titles", []),
+        "exclude_keywords": search_config.get("exclude_keywords", [
+            "senior", "lead", "principal", "staff", "director", "manager",
+            "10+ years", "8+ years", "7+ years", "5+ years",
+        ]),
+    }
+    filtered_jobs = []
+    gate0_rejected = 0
+    for raw in raw_jobs:
+        title = raw.get("title", "")
+        jd_snippet = raw.get("description", "")[:500]  # only check first 500 chars for speed
+        if gate0_title_relevance(title, jd_snippet, gate0_config):
+            filtered_jobs.append(raw)
+        else:
+            gate0_rejected += 1
+    trail.log_step(
+        "decision", "Gate 0: Title filter",
+        step_output=f"{len(filtered_jobs)} passed, {gate0_rejected} rejected",
+    )
+    raw_jobs = filtered_jobs
+
     # --- Step 3: analyze JDs ---
     trail.log_step("llm_call", "Analyze JDs", step_input=f"{total_found} raw jobs")
     listings = []
@@ -232,20 +259,63 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         step_output=f"{len(new_listings)} new (filtered {len(listings) - len(new_listings)})",
     )
 
-    # --- Step 5-7: process each new job ---
-    # Pre-fetch GitHub repos once for the whole window
+    # --- Step 5: Pre-screen with 4-gate recruiter filter ---
+    from jobpulse.skill_graph_store import SkillGraphStore
     try:
-        repos = fetch_and_cache_repos()
+        store = SkillGraphStore()
     except Exception as exc:
-        logger.warning("job_autopilot: fetch_and_cache_repos failed: %s", exc)
-        repos = []
+        logger.warning("job_autopilot: SkillGraphStore init failed: %s — skipping pre-screen", exc)
+        store = None
+
+    screened_listings = []
+    gate_rejected = 0
+    gate_skipped = 0
+
+    for listing in new_listings:
+        if store is None:
+            # No pre-screen available — pass all through
+            screened_listings.append((listing, None))
+            continue
+
+        screen = store.pre_screen_jd(listing)
+
+        if screen.tier == "reject":
+            gate_rejected += 1
+            logger.info(
+                "job_autopilot: REJECTED %s @ %s — %s",
+                listing.title, listing.company, screen.gate1_kill_reason,
+            )
+            db.save_listing(listing)
+            db.save_application(job_id=listing.job_id, status="Rejected", match_tier="reject")
+            continue
+
+        if screen.tier == "skip":
+            gate_skipped += 1
+            reason = screen.gate2_fail_reason or f"Score {screen.gate3_score}/100"
+            logger.info(
+                "job_autopilot: SKIPPED %s @ %s — %s",
+                listing.title, listing.company, reason,
+            )
+            db.save_listing(listing)
+            db.save_application(job_id=listing.job_id, status="Skipped", match_tier="skip")
+            continue
+
+        screened_listings.append((listing, screen))
+
+    trail.log_step(
+        "decision", "Gates 1-3 pre-screen",
+        step_output=f"{len(screened_listings)} pass, {gate_rejected} rejected, {gate_skipped} skipped",
+    )
+
+    # Fallback repos for when SkillGraphStore is unavailable
+    repos = []
 
     auto_applied = 0
     review_batch: list[dict[str, Any]] = []
     skipped = 0
     errors = 0
 
-    for listing in new_listings:
+    for listing, screen in screened_listings:
         if auto_applied >= remaining_cap:
             logger.info(
                 "job_autopilot: reached daily cap mid-batch, stopping at %d auto-applied",
@@ -274,40 +344,84 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                     notion_page_id=notion_page_id,
                 )
 
-            # Match GitHub projects
-            matched_repos = pick_top_projects(
-                repos,
-                jd_required=listing.required_skills,
-                jd_preferred=listing.preferred_skills,
-                top_n=4,
-            )
-            matched_project_names = [r.get("name", "") for r in matched_repos]
+            # Match GitHub projects — prefer pre-screened results
+            if screen and screen.best_projects:
+                matched_project_names = [p.name for p in screen.best_projects[:4]]
+            else:
+                if not repos:
+                    try:
+                        repos = fetch_and_cache_repos()
+                    except Exception as exc:
+                        logger.warning("job_autopilot: fetch_and_cache_repos fallback: %s", exc)
+                matched_repos = pick_top_projects(
+                    repos,
+                    jd_required=listing.required_skills,
+                    jd_preferred=listing.preferred_skills,
+                    top_n=4,
+                )
+                matched_project_names = [r.get("name", "") for r in matched_repos]
 
-            # Tailor CV
+            # Generate CV PDF (ReportLab — no xelatex dependency)
             cv_path = None
-            ats_score_obj = None
+            ats_score = 0.0
             try:
-                cv_path, ats_score_obj = generate_tailored_cv(listing, matched_project_names)
+                extra_skills = {}
+                jd_skills = listing.required_skills + listing.preferred_skills
+                if jd_skills:
+                    extra_skills["JD Match:"] = " | ".join(jd_skills[:10])
+                cv_path = generate_cv_pdf(
+                    company=listing.company,
+                    location=listing.location or "United Kingdom",
+                    extra_skills=extra_skills if extra_skills else None,
+                    output_dir=str(DATA_DIR / "applications" / listing.job_id),
+                )
+                # Run ATS scorer on the generated CV text
+                from jobpulse.ats_scorer import score_ats
+                from jobpulse.cv_templates.generate_cv import (
+                    BASE_SKILLS, DEFAULT_PROJECTS, EDUCATION, EXPERIENCE,
+                )
+                # Build representative CV text with section headers for scorer
+                cv_parts = [
+                    "PROFESSIONAL SUMMARY Software Engineer Python AI ML",
+                    "TECHNICAL SKILLS " + " ".join(BASE_SKILLS.values()),
+                ]
+                if extra_skills:
+                    cv_parts.append(" ".join(extra_skills.values()))
+                cv_parts.append("PROJECTS " + " ".join(
+                    p["title"] + " " + " ".join(p["bullets"])
+                    for p in DEFAULT_PROJECTS
+                ))
+                cv_parts.append("EXPERIENCE " + " ".join(
+                    e["title"] + " " + " ".join(e["bullets"])
+                    for e in EXPERIENCE
+                ))
+                cv_parts.append("EDUCATION " + " ".join(
+                    e["degree"] + " " + e["institution"]
+                    for e in EDUCATION
+                ))
+                cv_text = " ".join(cv_parts)
+                jd_skills = listing.required_skills + listing.preferred_skills
+                ats_score_obj = score_ats(jd_skills, cv_text)
+                ats_score = ats_score_obj.total
             except Exception as exc:
                 logger.warning(
-                    "job_autopilot: generate_tailored_cv failed for %s: %s",
+                    "job_autopilot: generate_cv_pdf failed for %s: %s",
                     listing.job_id[:8],
                     exc,
                 )
 
-            ats_score = ats_score_obj.total if ats_score_obj is not None else 0.0
-
-            # Generate cover letter
+            # Generate cover letter PDF (ReportLab — no LLM call needed)
             cover_letter_path = None
             try:
-                cover_letter_path = generate_cover_letter(
-                    listing,
-                    matched_skills=listing.required_skills[:8],
-                    matched_projects=matched_project_names,
+                cover_letter_path = generate_cover_letter_pdf(
+                    company=listing.company,
+                    role=listing.title,
+                    location=listing.location or "United Kingdom",
+                    output_dir=str(DATA_DIR / "applications" / listing.job_id),
                 )
             except Exception as exc:
                 logger.warning(
-                    "job_autopilot: generate_cover_letter failed for %s: %s",
+                    "job_autopilot: generate_cover_letter_pdf failed for %s: %s",
                     listing.job_id[:8],
                     exc,
                 )
@@ -455,7 +569,9 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
 
     summary_lines = [
         f"📊 Job Autopilot ({time_str} scan)",
-        f"Found: {total_found} | New: {len(new_listings)}",
+        f"Found: {total_found} | Gate 0 filtered: {gate0_rejected}",
+        f"New: {len(new_listings)} | Pre-screen: {gate_rejected} rejected, {gate_skipped} skipped",
+        f"Processed: {len(screened_listings)}",
         f"Auto-applied: {auto_applied}",
         f"Ready for review: {len(review_batch)}",
         f"Skipped: {skipped} (<82% match)",
