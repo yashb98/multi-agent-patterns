@@ -163,7 +163,8 @@ def extract_items_and_store(description: str) -> dict:
         items = [item.strip() for item in raw_items if item.strip() and len(item.strip()) > 1]
 
     if not items:
-        items = [description.strip()]
+        fallback = description.strip()
+        items = [fallback] if fallback else []
 
     # Save new store for future detection
     if store and len(store) > 2:
@@ -383,7 +384,7 @@ def add_transaction_row(category: str, week_start: str, amount: float,
     else:
         running_str = f"£{running:.2f}"
 
-    items_str = ", ".join(items) if items else description
+    items_str = ", ".join(items) if items else (description or "-")
     is_variable = category in ["Groceries", "Eating out", "Transport", "Shopping", "Entertainment", "Health", "Misc"]
     is_income = category in ["Salary", "Freelance", "Other"]
     is_savings = category in ["Savings", "Investments", "Credit card / Loan payment"]

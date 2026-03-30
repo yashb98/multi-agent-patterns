@@ -1186,6 +1186,11 @@ def undo_last_transaction(pick: int = None) -> str:
     target = recent[pick - 1]
 
     conn = _get_conn()
+    # Verify transaction still exists (guards against double-undo)
+    exists = conn.execute("SELECT id FROM transactions WHERE id=?", (target["id"],)).fetchone()
+    if not exists:
+        conn.close()
+        return "Transaction already deleted."
     conn.execute("DELETE FROM transactions WHERE id=?", (target["id"],))
     conn.commit()
     conn.close()
