@@ -31,6 +31,16 @@ python -m jobpulse.runner export       # Full data backup
 - Log errors immediately to `.claude/mistakes.md`
 - Full constraints in @docs/rules.md
 
+## Do NOT (extracted from production incidents)
+- NEVER update only one dispatcher — always update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
+- NEVER use http:// for external APIs — always HTTPS (arXiv HTTP→HTTPS redirect burned rate limit)
+- NEVER let tests touch production DBs in data/*.db — always patch DB_PATH to tmp_path
+- NEVER wait for Telegram replies in Claude Code sessions — poll the API directly
+- NEVER use GitHub Events API for commit counting — use Commits API per-repo
+- NEVER rewrite a file without first grepping for all function names used by other modules
+- NEVER use == for date filtering on pushed_at — use >= or < comparisons
+- NEVER assume Whisper output is lowercase — strip trailing punctuation before regex matching
+
 ## Telegram Commands
 
 ### Tasks & Productivity
@@ -77,6 +87,8 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 **Safety:** mutex on `apply_job()`, record-before-submit, pipeline lock, UTC daily caps.
 
+**CV/Cover Letter:** ReportLab PDFs (no xelatex). `cv_templates/generate_cv.py` + `generate_cover_letter.py`. Instant, no LLM calls.
+
 ## API (18 endpoints)
 
 `python -m jobpulse.runner webhook` — Swagger at `localhost:8080/docs`
@@ -102,7 +114,7 @@ Analytics: `/api/analytics/grpo` `/personas` `/costs` `/ab-tests` `/nlp` `/trend
 
 ## Stats
 
-~58,000 LOC | 248 Python files | 5 databases | 429 tests | 3 dashboards | 5 Telegram bots | 3 platforms
+~58,500 LOC | 250 Python files | 5 databases | 440 tests | 3 dashboards | 4 Telegram bots | 3 platforms
 
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
@@ -114,3 +126,9 @@ Analytics: `/api/analytics/grpo` `/personas` `/costs` `/ab-tests` `/nlp` `/trend
 - @docs/skills.md — GRPO, persona evolution, RLM, prompt optimization
 - @docs/subagents.md — Dynamic agent factory
 - @docs/hooks.md — Process trails, memory, logging, export
+
+## Module Context (auto-loaded per directory)
+- @jobpulse/CLAUDE.md — JobPulse agents, dispatch, Telegram
+- @patterns/CLAUDE.md — 4 LangGraph orchestration patterns
+- @mindgraph_app/CLAUDE.md — Knowledge graph, GraphRAG, 3D viz
+- @shared/CLAUDE.md — Cross-cutting utilities, NLP, fact-checker
