@@ -1,9 +1,10 @@
 """Job Scanner — scrapes/queries job platforms and returns raw job dicts.
 
 Platform coverage:
-  - Reed: fully functional via official Reed.co.uk API
-  - LinkedIn: Playwright browser automation (if installed + session saved)
-  - Indeed, TotalJobs, Glassdoor: stubs (log + return []) pending full scraper work
+  - Reed: fully functional via official Reed.co.uk API (search + detail endpoint for full JD)
+  - LinkedIn: Playwright browser automation (if installed + session saved), click-to-detail for full JD
+  - Indeed: Playwright browser automation (public search, no login required)
+  - TotalJobs, Glassdoor: stubs (log + return []) pending full scraper work
 
 Each returned dict conforms to the shape expected by job_db.py / JobListing.
 """
@@ -184,9 +185,9 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
 
             for job in data.get("results", []):
                 url = job.get("jobUrl", "")
+                reed_id = str(job.get("jobId", ""))
                 if not url:
                     # Fall back to constructing a canonical URL from jobId
-                    reed_id = job.get("jobId", "")
                     url = f"https://www.reed.co.uk/jobs/{reed_id}" if reed_id else ""
 
                 results.append(
@@ -199,7 +200,8 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
                         "salary_max": _to_float(job.get("maximumSalary")),
                         "description": job.get("jobDescription", ""),
                         "platform": "reed",
-                        "job_id": _make_job_id(url) if url else _make_job_id(str(job.get("jobId", ""))),
+                        "job_id": _make_job_id(url) if url else _make_job_id(reed_id),
+                        "reed_id": reed_id,
                     }
                 )
 
@@ -217,30 +219,174 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
 
         _anti_detection_sleep()
 
+    # Second pass: fetch full JD text via detail API
+    # The search API returns truncated jobDescription (1-2 sentences).
+    # The detail endpoint returns the complete description.
+    detail_url = "https://www.reed.co.uk/api/1.0/jobs"
+    for job in results:
+        reed_id = job.get("reed_id", "")
+        if not reed_id:
+            continue
+
+        try:
+            with httpx.Client(timeout=15) as client:
+                resp = client.get(
+                    f"{detail_url}/{reed_id}",
+                    auth=(REED_API_KEY, ""),
+                    headers={"User-Agent": _random_ua()},
+                )
+                if resp.status_code == 200:
+                    detail = resp.json()
+                    full_desc = detail.get("jobDescription", "")
+                    if full_desc and len(full_desc) > len(job.get("description", "")):
+                        job["description"] = full_desc
+                        logger.debug(
+                            "scan_reed: enriched JD for %s (%d chars)",
+                            reed_id,
+                            len(full_desc),
+                        )
+                elif resp.status_code == 429:
+                    logger.warning(
+                        "scan_reed: rate limited on detail fetch, stopping enrichment"
+                    )
+                    break
+        except Exception as exc:
+            logger.debug("scan_reed: detail fetch failed for %s: %s", reed_id, exc)
+
+        # Brief pause between detail fetches
+        time.sleep(random.uniform(0.5, 1.5))
+
     logger.info("scan_reed: returning %d total results", len(results))
     return results
 
 
 def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
-    """Indeed.co.uk public search scraper — stub (HTML parsing complex).
+    """Indeed.co.uk job search via Playwright (public search, no login required).
 
-    Logs a fetch attempt for observability but returns an empty list.
-    Full implementation requires HTML parsing (BeautifulSoup / Playwright).
+    Scrapes job cards from uk.indeed.com and clicks into each to extract the
+    full job description text.
     """
-    for title in config.titles:
-        url = (
-            f"https://uk.indeed.com/jobs"
-            f"?q={httpx.QueryParams({'q': title}).get('q')}"
-            f"&l={config.location}&fromage=1&limit=20"
+    try:
+        from playwright.sync_api import sync_playwright as _  # noqa: F401
+    except ImportError:
+        logger.warning(
+            "scan_indeed: playwright not installed. "
+            "Install with: pip install playwright && playwright install chromium"
         )
-        logger.info("scan_indeed: [stub] would fetch %s", url)
-        _anti_detection_sleep()
+        return []
 
-    logger.warning(
-        "scan_indeed: stub — returning []. "
-        "Full HTML scraper not yet implemented."
-    )
-    return []
+    results: list[dict[str, Any]] = []
+
+    try:
+        # Indeed doesn't need a saved profile — public search
+        with managed_persistent_browser(
+            user_data_dir=str(DATA_DIR / "indeed_profile"),
+            headless=False,
+            executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            args=["--disable-blink-features=AutomationControlled", "--disable-infobars"],
+            ignore_default_args=["--enable-automation"],
+            user_agent=_random_ua(),
+            viewport={"width": 1280, "height": 800},
+        ) as (_browser, page):
+            for title in config.titles:
+                if len(results) >= MAX_REQUESTS_PER_PLATFORM:
+                    break
+
+                search_url = (
+                    f"https://uk.indeed.com/jobs"
+                    f"?q={_url_encode(title)}"
+                    f"&l={_url_encode(config.location)}"
+                    f"&fromage=1"  # past 24 hours
+                )
+
+                try:
+                    logger.info("scan_indeed: fetching '%s'", search_url)
+                    page.goto(search_url, timeout=30_000, wait_until="domcontentloaded")
+                    _anti_detection_sleep()
+
+                    # Find job cards
+                    cards = page.query_selector_all(
+                        ".job_seen_beacon, .resultContent, [data-jk]"
+                    )
+                    logger.info(
+                        "scan_indeed: found %d cards for '%s'", len(cards), title
+                    )
+
+                    for card in cards:
+                        try:
+                            title_el = card.query_selector(
+                                "h2.jobTitle a, h2 a, .jobTitle a"
+                            )
+                            company_el = card.query_selector(
+                                "[data-testid='company-name'], .companyName, .company"
+                            )
+                            location_el = card.query_selector(
+                                "[data-testid='text-location'], .companyLocation, .location"
+                            )
+
+                            job_title = (
+                                title_el.inner_text().strip() if title_el else ""
+                            )
+                            company = (
+                                company_el.inner_text().strip() if company_el else ""
+                            )
+                            location = (
+                                location_el.inner_text().strip() if location_el else ""
+                            )
+                            href = (
+                                title_el.get_attribute("href") if title_el else ""
+                            )
+
+                            if href and not href.startswith("http"):
+                                href = "https://uk.indeed.com" + href
+
+                            if not href or not job_title:
+                                continue
+
+                            # Click to get full description
+                            description = ""
+                            try:
+                                if title_el:
+                                    title_el.click()
+                                    time.sleep(random.uniform(1.5, 3.0))
+                                    desc_el = page.query_selector(
+                                        ".jobsearch-jobDescriptionText, "
+                                        "#jobDescriptionText, "
+                                        "[class*='jobDescription']"
+                                    )
+                                    if desc_el:
+                                        description = desc_el.inner_text()[:5000]
+                            except Exception:
+                                pass
+
+                            results.append(
+                                {
+                                    "title": job_title,
+                                    "company": company,
+                                    "url": href,
+                                    "location": location,
+                                    "salary_min": None,
+                                    "salary_max": None,
+                                    "description": description,
+                                    "platform": "indeed",
+                                    "job_id": _make_job_id(href),
+                                }
+                            )
+                        except Exception as card_err:
+                            logger.debug(
+                                "scan_indeed: card parse error: %s", card_err
+                            )
+
+                except Exception as page_err:
+                    logger.error(
+                        "scan_indeed: error fetching '%s': %s", search_url, page_err
+                    )
+
+    except Exception as exc:
+        logger.error("scan_indeed: Playwright error: %s", exc)
+
+    logger.info("scan_indeed: returning %d total results", len(results))
+    return results
 
 
 def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
@@ -343,6 +489,27 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                             if not href:
                                 continue
 
+                            # Click into job to get full description
+                            description = ""
+                            try:
+                                card.click()
+                                time.sleep(random.uniform(1.5, 3.0))
+                                # LinkedIn shows JD in a side panel or detail view
+                                desc_el = page.query_selector(
+                                    ".jobs-description__content, "
+                                    ".jobs-box__html-content, "
+                                    ".job-details-jobs-unified-top-card__job-insight, "
+                                    ".jobs-description, "
+                                    "[class*='description']"
+                                )
+                                if desc_el:
+                                    description = desc_el.inner_text()[:5000]
+                            except Exception as desc_err:
+                                logger.debug(
+                                    "scan_linkedin: could not fetch JD detail: %s",
+                                    desc_err,
+                                )
+
                             results.append(
                                 {
                                     "title": job_title,
@@ -351,7 +518,7 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                                     "location": location,
                                     "salary_min": None,
                                     "salary_max": None,
-                                    "description": "",
+                                    "description": description,
                                     "platform": "linkedin",
                                     "job_id": _make_job_id(href),
                                 }
@@ -459,7 +626,7 @@ def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:
         logger.warning("scan_platforms: unknown platforms %s — ignoring", unknown)
         platforms = [p for p in platforms if p in PLATFORM_SCANNERS]
 
-    stub_platforms = {"indeed", "totaljobs", "glassdoor"}
+    stub_platforms = {"totaljobs", "glassdoor"}
 
     all_jobs: list[dict[str, Any]] = []
 
@@ -467,7 +634,7 @@ def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:
         if platform in stub_platforms:
             logger.warning(
                 "scan_platforms: '%s' is not yet implemented — skipping. "
-                "Only reed and linkedin are functional.",
+                "Only reed, linkedin, and indeed are functional.",
                 platform,
             )
             continue
