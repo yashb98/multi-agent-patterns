@@ -1794,13 +1794,16 @@ def undo_hours(pick: int = None) -> str:
     conn.close()
 
     # Also remove the matching salary income transaction
+    # Use exact hours + rate match to avoid fuzzy LIKE collisions
+    hourly_rate = float(os.getenv("HOURLY_RATE", "13.99"))
+    expected_gross = round(target["hours"] * hourly_rate, 2)
     conn2 = _get_conn()
     conn2.execute(
         "DELETE FROM transactions WHERE id = ("
-        "  SELECT id FROM transactions WHERE description LIKE ? AND date=? AND type='income' "
-        "  ORDER BY created_at DESC LIMIT 1"
+        "  SELECT id FROM transactions WHERE amount=? AND date=? AND type='income' "
+        "  AND description LIKE 'Salary%' ORDER BY created_at DESC LIMIT 1"
         ")",
-        (f"Salary ({target['hours']}%", target["date"])
+        (expected_gross, target["date"])
     )
     conn2.commit()
     conn2.close()
