@@ -413,6 +413,14 @@ def _update_section_totals(week_start: str = None):
 
 def add_transaction(amount: float, description: str, category: str,
                     section: str, txn_type: str) -> dict:
+    # Validate amount before touching the database
+    if not isinstance(amount, (int, float)) or amount <= 0:
+        logger.warning("add_transaction: rejected invalid amount: %s", amount)
+        return {"error": f"Invalid amount: {amount}. Must be a positive number."}
+    if amount > 100_000:
+        logger.warning("add_transaction: rejected excessive amount: %s", amount)
+        return {"error": f"Amount {amount} exceeds maximum (100,000)."}
+
     now = datetime.now()
     week_start = _get_week_start(now)
     today = now.strftime("%Y-%m-%d")
@@ -446,6 +454,9 @@ def add_transaction(amount: float, description: str, category: str,
 
 
 def set_planned_budget(category: str, section: str, amount: float, week_start: str = None):
+    if amount < 0:
+        logger.warning("set_planned_budget: rejected negative amount: %s", amount)
+        return {"error": f"Budget cannot be negative: {amount}"}
     week_start = week_start or _get_week_start()
     conn = _get_conn()
     conn.execute(
