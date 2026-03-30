@@ -574,6 +574,9 @@ def get_weekly_comparison() -> str:
 
 def get_budget_dataset_csv() -> str:
     """Export all transactions as CSV for ML analysis."""
+    import csv
+    import io
+
     conn = _get_conn()
     rows = conn.execute(
         "SELECT amount, description, category, section, type, date, week_start, "
@@ -584,18 +587,30 @@ def get_budget_dataset_csv() -> str:
     if not rows:
         return "No transactions to export."
 
-    header = "amount,description,category,section,type,date,week_start,items,store,time_of_day,day_of_week,created_at"
-    lines = [header]
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "amount", "description", "category", "section", "type",
+        "date", "week_start", "items", "store", "time_of_day",
+        "day_of_week", "created_at",
+    ])
     for r in rows:
         d = dict(r)
         day_of_week = datetime.strptime(d["date"], "%Y-%m-%d").strftime("%A")
-        line = (f"{d['amount']},\"{d['description']}\",\"{d['category']}\",{d['section']},"
-                f"{d['type']},{d['date']},{d['week_start']},\"{d.get('items', '')}\","
-                f"\"{d.get('store', '')}\",{d.get('time_of_day', '')},{day_of_week},{d['created_at']}")
-        lines.append(line)
+        writer.writerow([
+            d["amount"], d.get("description", ""), d.get("category", ""),
+            d.get("section", ""), d.get("type", ""), d["date"],
+            d.get("week_start", ""), d.get("items", ""),
+            d.get("store", ""), d.get("time_of_day", ""),
+            day_of_week, d.get("created_at", ""),
+        ])
 
     csv_path = DATA_DIR / "transactions_export.csv"
-    csv_path.write_text("\n".join(lines))
+    try:
+        csv_path.write_text(output.getvalue(), encoding="utf-8")
+    except OSError as exc:
+        logger.error("CSV export failed: %s", exc)
+        return f"Export failed: {exc}"
     return str(csv_path)
 
 
