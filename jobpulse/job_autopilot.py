@@ -25,6 +25,7 @@ External entry points (called by dispatcher.py):
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -124,8 +125,13 @@ def _applied_today(db: JobDB) -> int:
 # ---------------------------------------------------------------------------
 
 
+_scan_lock = threading.Lock()
+
+
 def run_scan_window(platforms: list[str] | None = None) -> str:
     """Execute one scan window — the full pipeline.
+
+    Thread-safe: uses a lock to prevent concurrent pipeline runs (cron + Telegram).
 
     Steps:
     1. Check if enabled / paused / daily cap
@@ -142,6 +148,17 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
     Returns:
         Human-readable summary string.
     """
+    if not _scan_lock.acquire(blocking=False):
+        logger.warning("run_scan_window: already running — skipping concurrent invocation")
+        return "A scan is already in progress. Try again in a few minutes."
+    try:
+        return _run_scan_window_inner(platforms)
+    finally:
+        _scan_lock.release()
+
+
+def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
+    """Inner pipeline logic — called by run_scan_window() under lock."""
     trail = ProcessTrail("job_autopilot", "scan_window")
     notion_failures: list[str] = []
 

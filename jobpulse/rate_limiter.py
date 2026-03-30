@@ -65,7 +65,9 @@ class RateLimiter:
             conn.commit()
 
     def _today(self) -> str:
-        return date.today().isoformat()
+        """Return today's date as ISO string. Uses UTC to prevent timezone drift."""
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     def _get_platform_count(self, platform: str) -> int:
         with sqlite3.connect(self.db_path) as conn:

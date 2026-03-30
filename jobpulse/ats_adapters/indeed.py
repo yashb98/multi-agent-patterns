@@ -33,7 +33,11 @@ class IndeedAdapter(BaseATSAdapter):
         try:
             from jobpulse.utils.safe_io import managed_browser
 
-            with managed_browser(headless=True) as (_browser, page):
+            with managed_browser(
+                headless=False,
+                args=["--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"],
+            ) as (_browser, page):
                 page.goto(url, timeout=30000)
 
                 # Fill common Indeed form fields
