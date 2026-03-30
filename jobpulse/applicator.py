@@ -130,8 +130,16 @@ def apply_job(
 
     if result.get("success"):
         limiter.record_application(platform_key)
+        total = limiter.get_total_today()
         logger.info("Application submitted via %s (%d/%d today)",
-                    adapter.name, limiter.get_total_today(), 40)
+                    adapter.name, total, 40)
+
+        # Anti-detection: random delay between submissions (15-30s)
+        # Prevents rapid-fire applies that trigger platform detection
+        import random
+        delay = random.uniform(15, 30)
+        logger.info("Anti-detection delay: %.0fs before next application", delay)
+        time.sleep(delay)
     else:
         logger.warning("Application failed via %s: %s", adapter.name, result.get("error"))
 
