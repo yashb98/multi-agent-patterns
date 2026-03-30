@@ -672,8 +672,10 @@ def parse_transaction(text: str) -> dict | None:
     else:
         text = re.sub(r"^(spent|spend|paid|bought|got)\s+", "", text, flags=re.IGNORECASE)
 
-    # Extract amount
-    match = re.search(r"[£$€]?\s*(\d+(?:\.\d{1,2})?)", text)
+    # Extract amount — supports: 15, 15.99, .50, £1,000, $1,000.50
+    # First strip commas from numbers like 1,000
+    text_clean = re.sub(r"(\d),(\d{3})", r"\1\2", text)
+    match = re.search(r"[£$€]?\s*(\d*\.?\d+)", text_clean)
     if not match:
         return None
 
