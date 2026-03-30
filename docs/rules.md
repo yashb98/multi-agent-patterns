@@ -136,6 +136,32 @@ All intents recognized by `command_router.py`:
 | `FILE_OPS` | "show: file.py", "logs", "errors", "more" |
 | `SYSTEM_STATUS` | "status", "daemon check" |
 | `CLEAR_CHAT` | "clear chat", "new conversation" |
+| `SCAN_JOBS` | "scan jobs", "find jobs", "run autopilot" |
+| `SHOW_JOBS` | "jobs", "show jobs", "pending jobs" |
+| `APPROVE_JOBS` | "apply 1,3,5", "apply all" |
+| `REJECT_JOB` | "reject 2", "skip 3" |
+| `JOB_DETAIL` | "job 3", "details 5" |
+| `JOB_STATS` | "job stats", "application stats" |
+| `SEARCH_CONFIG` | "search: add title X" |
+| `PAUSE_JOBS` | "pause jobs", "stop autopilot" |
+| `RESUME_JOBS` | "resume jobs", "start autopilot" |
+
+## Job Autopilot Rules
+
+### Rate Limits (March 2026 — research-backed)
+- **Total daily cap**: 25 applications across all platforms
+- **LinkedIn**: 10/day, session break of 30min every 5 apps (ML detection risk)
+- **Indeed**: 5/day (aggressive IP banning, permanent account suspension)
+- **Workday**: 5/day (behavioral analysis + 3rd-party bot detection)
+- **All platforms**: 20-45s random delay between submissions, 10min break every 5 apps
+
+### Anti-Detection
+- All adapters use headed mode (not headless) with `--disable-blink-features=AutomationControlled`
+- LinkedIn uses persistent browser profile with human-like typing (50-150ms/char)
+- Thread mutex prevents concurrent `apply_job()` calls (TOCTOU race protection)
+- Pipeline lock prevents concurrent `run_scan_window()` runs (cron vs Telegram)
+- Application recorded BEFORE submission (prevents silent limit bypass on error)
+- UTC timezone for daily cap tracking (prevents midnight drift)
 
 ## Input Modes
 

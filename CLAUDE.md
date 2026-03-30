@@ -33,7 +33,9 @@ python -m jobpulse.runner discord         # Start Discord listener
 **2. JobPulse Automation** — Gmail, Calendar, GitHub, Notion, Budget, arXiv, Telegram agents running 24/7
 **3. Knowledge MindGraph** — Entity extraction, GraphRAG retrieval, Three.js 3D visualization
 
-**4. NLP Intent Classification** — 3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 31 intents, continuous learning.
+**4. NLP Intent Classification** — 3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 41 intents, continuous learning.
+**5. Job Autopilot** — Scan Reed/LinkedIn → analyze JDs → tailor CV → score ATS → apply/queue. 25 apps/day max with anti-detection.
+**6. Form Engine** — Generic form detector + filler (select, radio, checkbox, text, date, file, multi-select, validation) with gotchas DB.
 
 **Current dispatch mode:** Enhanced Swarm (set `JOBPULSE_SWARM=false` in .env to revert to flat)
 
@@ -74,6 +76,19 @@ IMPORTANT: Non-negotiable. Violating any = log to `.claude/mistakes.md`. Full de
 | "export" | Full data backup (databases, personas, experiences) |
 | voice message | Whisper transcription → intent classification → agent |
 | "help" | Lists all commands |
+
+### Job Autopilot (Jobs Bot)
+| You type | What happens |
+|----------|-------------|
+| "scan jobs" | Scan Reed → analyze JDs → score → queue for review |
+| "jobs" / "show jobs" | Show pending review jobs |
+| "apply 1,3,5" / "apply all" | Submit applications for selected jobs |
+| "reject 2" | Skip/reject a specific job |
+| "job 3" | Full details for job #3 |
+| "job stats" | Application statistics |
+| "pause jobs" | Pause the autopilot |
+| "resume jobs" | Resume the autopilot |
+| "search: add title X" | Update search config |
 
 ### Stop / Undo Last Action
 | You type | What happens |
@@ -128,8 +143,34 @@ Four separate Telegram bots, each with its own chat/channel:
 | **Budget** | Expenses, income, savings, recurring, weekly summary | `TELEGRAM_BUDGET_BOT_TOKEN`, `TELEGRAM_BUDGET_CHAT_ID` |
 | **Research** | Knowledge queries, MindGraph, trending repos, arXiv digest | `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` |
 | **Alert** | Gmail alerts, interview notifications, urgent reminders | `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` |
+| **Jobs** | Job scanning, application review, apply/reject | `TELEGRAM_JOBS_BOT_TOKEN`, `TELEGRAM_JOBS_CHAT_ID` |
 
 Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicated token is not set.
+
+## Job Autopilot Rate Limits
+
+| Platform | Daily Cap | Anti-Detection |
+|----------|-----------|---------------|
+| LinkedIn | 10 | Persistent browser, human typing, 30min session breaks |
+| Greenhouse | 7 | Anti-automation flags, headed mode |
+| Lever | 7 | Anti-automation flags, headed mode |
+| Indeed | 5 | Conservative (aggressive IP banning) |
+| Workday | 5 | Conservative (behavioral analysis) |
+| Generic | 5 | Pattern-based fill, headed mode |
+| Reed | 4 | Official API, 429 retry with backoff |
+| **Total** | **25/day** | 20-45s delay between apps, 10min break every 5 |
+
+## Webhook API (18 endpoints)
+
+Start: `python -m jobpulse.runner webhook` (port 8080). Swagger UI at `/docs`.
+
+| Group | Endpoints |
+|-------|-----------|
+| Papers | `GET /api/papers/fetch`, `/digest`, `/stats`, `/{index}` |
+| GitHub | `GET /api/github/commits`, `/trending` |
+| Health | `GET /api/health/status`, `/errors`, `/agents`, `/rate-limits`, `POST /export` |
+| Analytics | `GET /api/analytics/grpo`, `/personas`, `/costs`, `/ab-tests`, `/nlp`, `/trends` |
+| Telegram | `POST /webhook/telegram` |
 
 ## Env Vars
 
@@ -146,10 +187,16 @@ Falls back to `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` for any bot whose dedicate
 - `JOBPULSE_SWARM=true` — Enhanced Swarm dispatch (false = flat)
 - `CONVERSATION_MODEL=gpt-4o-mini` — model for free-form chat
 - `RLM_BACKEND=openai`, `RLM_ROOT_MODEL=gpt-4o-mini`, `RLM_MAX_BUDGET=0.10`
+- `TELEGRAM_JOBS_BOT_TOKEN`, `TELEGRAM_JOBS_CHAT_ID` (optional)
+- `REED_API_KEY` — Reed.co.uk job search API
+- `GITHUB_TOKEN` — GitHub API for repo matching
+- `JOB_AUTOPILOT_AUTO_SUBMIT=false` — safe mode (all jobs go to review)
+- `JOB_AUTOPILOT_MAX_DAILY=10` — max applications per day (overrides default 25)
+- `NOTION_APPLICATIONS_DB_ID` — Notion DB for job application tracking
 
 ## NLP 3-Tier Intent Classification
 
-3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 31 intents, continuous learning. See @docs/agents.md for full details.
+3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 41 intents, continuous learning. See @docs/agents.md for full details.
 
 ## Stats
 

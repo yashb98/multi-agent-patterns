@@ -57,3 +57,15 @@ Format for each entry:
 - **Root cause**: When budget_agent.py was completely rewritten in Phase 1/3, the `sync_expense_to_notion()` and `_get_or_create_weekly_budget_page()` functions were not carried over from the old version. `log_transaction()` called `sync_expense_to_notion()` but it didn't exist.
 - **Fix applied**: Added both functions back to the rewritten file.
 - **Rule to prevent recurrence**: When rewriting a file completely, grep the old version for all function names called by other modules BEFORE deleting. Verify every function referenced in `log_transaction`, `dispatcher.py`, and `morning_briefing.py` exists in the new version.
+
+### [2026-03-30] arXiv papers fetching failed — HTTP instead of HTTPS + no retry
+- **What went wrong**: arXiv digest returned "Could not fetch papers" — 0 papers instead of ~200.
+- **Root cause**: Used `http://export.arxiv.org` which triggered a 301 redirect to HTTPS, burning a rate limit slot. The subsequent HTTPS request got 429 rate-limited. No retry logic existed.
+- **Fix applied**: (1) Changed to `https://` directly. (2) Added 3-attempt retry with 5/10/15s backoff on 429. (3) Added proper `User-Agent` header per arXiv API policy.
+- **Rule to prevent recurrence**: Always use HTTPS for external APIs. Always handle 429 with retry + backoff. Check API documentation for required headers.
+
+### [2026-03-30] All Telegram job commands returned "I didn't recognize" — swarm_dispatcher missing ALL job intents
+- **What went wrong**: Every job command (scan jobs, show jobs, apply, reject, etc.) on the Telegram Jobs bot returned "I didn't recognize". The intent was classified correctly but the handler was missing.
+- **Root cause**: `swarm_dispatcher.py` (used when `JOBPULSE_SWARM=true`) had ZERO job intents in its `AGENT_MAP`. All 9 job commands fell through to `_handle_unknown`. The regular `dispatcher.py` had the handlers, but it was never called because swarm mode was active.
+- **Fix applied**: Added all 9 job intents (scan_jobs, show_jobs, approve_jobs, reject_job, job_stats, search_config, pause_jobs, resume_jobs, job_detail) to both the import list and AGENT_MAP in swarm_dispatcher.py. Also added `scan_jobs` to JOBS_INTENTS in telegram_bots.py.
+- **Rule to prevent recurrence**: When adding new intents, update BOTH `dispatcher.py` AND `swarm_dispatcher.py`. The swarm dispatcher must mirror every intent the regular dispatcher handles. Always test with `JOBPULSE_SWARM=true` (the production setting).
