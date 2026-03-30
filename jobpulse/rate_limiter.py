@@ -9,19 +9,33 @@ from jobpulse.config import DATA_DIR
 
 logger = get_logger(__name__)
 
+# Per-platform daily caps — conservative limits based on March 2026 platform policies.
+#
+# LinkedIn: Official limit 50/24hr, but ML behavioral detection triggers at ~15-20.
+#           Use per-session cap of 5 with 30min breaks (enforced in applicator).
+# Indeed:   Aggressive IP banning + ML anomaly detection. Permanent bans with no appeal.
+# Reed:     Official API with 1000 req/day. 4 apps/day is very conservative.
+# Greenhouse/Lever/Workday: Company-hosted ATS. 7/day spread across companies is safe.
+#           Lever: 2 POST/sec limit. Greenhouse: per-30s window.
+#           Workday: 10 calls/sec but has behavioral analysis.
+# TotalJobs/Glassdoor: Stubs — no actual scanning or applying yet.
 DAILY_CAPS: dict[str, int] = {
-    "linkedin": 15,
-    "indeed": 10,
-    "reed": 4,
-    "totaljobs": 4,
-    "greenhouse": 7,
-    "lever": 7,
-    "workday": 7,
-    "generic": 7,
+    "linkedin": 10,     # reduced from 15 — ML detection risk at higher volumes
+    "indeed": 5,        # reduced from 10 — aggressive IP banning, permanent suspension
+    "reed": 4,          # API-based, safe
+    "totaljobs": 4,     # stub
+    "greenhouse": 7,    # company-hosted, low risk
+    "lever": 7,         # 2 req/sec limit, safe
+    "workday": 5,       # behavioral analysis, some companies have 3rd-party bot detection
+    "generic": 5,       # unknown targets, be conservative
 }
-TOTAL_DAILY_CAP = 40
-SESSION_BREAK_EVERY = 10
-SESSION_BREAK_MINUTES = 5
+TOTAL_DAILY_CAP = 25          # reduced from 40 — quality over quantity
+SESSION_BREAK_EVERY = 5       # reduced from 10 — break every 5 apps
+SESSION_BREAK_MINUTES = 10    # increased from 5 — longer breaks between batches
+
+# Per-session cap for LinkedIn (applied separately in applicator)
+LINKEDIN_SESSION_CAP = 5
+LINKEDIN_SESSION_BREAK_MINUTES = 30
 
 
 class RateLimiter:
@@ -60,6 +74,10 @@ class RateLimiter:
                 (self._today(), platform),
             ).fetchone()
             return row[0] if row else 0
+
+    def get_platform_count(self, platform: str) -> int:
+        """Public: how many applications today for this platform."""
+        return self._get_platform_count(platform.lower())
 
     def get_total_today(self) -> int:
         """Total applications recorded today across all platforms."""

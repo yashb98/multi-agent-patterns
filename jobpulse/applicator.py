@@ -87,7 +87,11 @@ def apply_job(
         rate_limited (bool), break_taken (bool)
     """
     import asyncio
-    from jobpulse.rate_limiter import RateLimiter
+    import time
+    from jobpulse.rate_limiter import (
+        RateLimiter, LINKEDIN_SESSION_CAP, LINKEDIN_SESSION_BREAK_MINUTES,
+        SESSION_BREAK_MINUTES,
+    )
     from jobpulse.screening_answers import get_answer
 
     platform_key = (ats_platform or "generic").lower()
@@ -99,11 +103,20 @@ def apply_job(
         logger.warning("Rate limit hit for %s. Remaining: %s", platform_key, remaining)
         return {"success": False, "error": f"Daily limit reached for {platform_key}", "rate_limited": True}
 
-    # Session break check
+    # LinkedIn per-session cap — longer breaks to avoid ML behavioral detection
+    if platform_key == "linkedin":
+        linkedin_today = limiter.get_platform_count("linkedin")
+        if linkedin_today > 0 and linkedin_today % LINKEDIN_SESSION_CAP == 0:
+            logger.info(
+                "LinkedIn session cap (%d apps) — pausing %d minutes to avoid detection",
+                LINKEDIN_SESSION_CAP, LINKEDIN_SESSION_BREAK_MINUTES,
+            )
+            time.sleep(LINKEDIN_SESSION_BREAK_MINUTES * 60)
+
+    # Session break check (all platforms)
     if limiter.should_take_break():
-        import time
-        logger.info("Session break: pausing 5 minutes (every 10 applications)")
-        time.sleep(5 * 60)
+        logger.info("Session break: pausing %d minutes (every 5 applications)", SESSION_BREAK_MINUTES)
+        time.sleep(SESSION_BREAK_MINUTES * 60)
 
     merged_answers: dict = dict(WORK_AUTH)
     if custom_answers:
