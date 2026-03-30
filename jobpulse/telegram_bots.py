@@ -144,6 +144,7 @@ RESEARCH_INTENTS = {
 JOBS_INTENTS = {
     "show_jobs", "approve_jobs", "reject_job", "job_stats",
     "search_config", "pause_jobs", "resume_jobs", "job_detail",
+    "scan_jobs",
 }
 
 # Alert bot is send-only — these are for proactive notifications, not replies
