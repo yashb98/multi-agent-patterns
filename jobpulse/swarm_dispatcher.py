@@ -375,6 +375,9 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         _handle_file_ops, _handle_system_status,
         _handle_log_hours, _handle_show_hours, _handle_confirm_savings, _handle_undo_hours,
         _handle_undo_budget, _handle_recurring_budget, _handle_weekly_plan,
+        _handle_scan_jobs, _handle_show_jobs, _handle_approve_jobs,
+        _handle_reject_job, _handle_job_stats, _handle_search_config,
+        _handle_pause_jobs, _handle_resume_jobs, _handle_job_detail,
     )
 
     # Direct agent mapping
@@ -411,6 +414,16 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         Intent.UNDO_BUDGET.value: _handle_undo_budget,
         Intent.RECURRING_BUDGET.value: _handle_recurring_budget,
         Intent.WEEKLY_PLAN.value: _handle_weekly_plan,
+        # Job autopilot
+        Intent.SCAN_JOBS.value: _handle_scan_jobs,
+        Intent.SHOW_JOBS.value: _handle_show_jobs,
+        Intent.APPROVE_JOBS.value: _handle_approve_jobs,
+        Intent.REJECT_JOB.value: _handle_reject_job,
+        Intent.JOB_STATS.value: _handle_job_stats,
+        Intent.SEARCH_CONFIG.value: _handle_search_config,
+        Intent.PAUSE_JOBS.value: _handle_pause_jobs,
+        Intent.RESUME_JOBS.value: _handle_resume_jobs,
+        Intent.JOB_DETAIL.value: _handle_job_detail,
     }
 
     # Briefing sub-agents (collect phases)
