@@ -122,6 +122,7 @@ class TestFetchPapers:
         import jobpulse.arxiv_agent as agent
 
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.text = SAMPLE_ARXIV_XML
         mock_resp.raise_for_status = MagicMock()
 
@@ -145,6 +146,7 @@ class TestFetchPapers:
         import jobpulse.arxiv_agent as agent
 
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.text = SAMPLE_ARXIV_XML_MULTI
         mock_resp.raise_for_status = MagicMock()
 
@@ -161,6 +163,7 @@ class TestFetchPapers:
         import jobpulse.arxiv_agent as agent
 
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.text = SAMPLE_ARXIV_XML_MULTI
         mock_resp.raise_for_status = MagicMock()
 
@@ -185,6 +188,7 @@ class TestFetchPapers:
         import jobpulse.arxiv_agent as agent
 
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.text = "<not><valid<xml"
         mock_resp.raise_for_status = MagicMock()
 

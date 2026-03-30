@@ -83,19 +83,40 @@ def fetch_papers(max_results: int = 200) -> list[dict]:
     """Fetch recent papers from arXiv API."""
     import httpx
 
+    import time
+
     cat_query = "+OR+".join(f"cat:{c}" for c in CATEGORIES)
     url = (
-        f"http://export.arxiv.org/api/query?"
+        f"https://export.arxiv.org/api/query?"
         f"search_query={cat_query}"
         f"&sortBy=submittedDate&sortOrder=descending"
         f"&start=0&max_results={max_results}"
     )
 
-    try:
-        resp = httpx.get(url, timeout=30, follow_redirects=True)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error("arXiv API error: %s", e)
+    # arXiv requires descriptive User-Agent per API policy
+    headers = {"User-Agent": "JobPulse/1.0 (mailto:bishnoiyash274@gmail.com)"}
+
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = httpx.get(url, timeout=30, headers=headers, follow_redirects=True)
+            if resp.status_code == 429:
+                wait = 5 * (attempt + 1)  # 5s, 10s, 15s — arXiv needs longer backoff
+                logger.warning("arXiv rate limited (429), retrying in %ds (attempt %d/3)", wait, attempt + 1)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        except Exception as e:
+            if attempt < 2:
+                logger.warning("arXiv API error (attempt %d/3): %s", attempt + 1, e)
+                time.sleep(5 * (attempt + 1))
+            else:
+                logger.error("arXiv API error after 3 attempts: %s", e)
+                return []
+
+    if resp is None or resp.status_code != 200:
+        logger.error("arXiv API: failed to get 200 after 3 attempts")
         return []
 
     ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
