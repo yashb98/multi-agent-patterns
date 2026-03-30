@@ -1,0 +1,493 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "JobPulse API",
+    "description": "JobPulse automation \u2014 papers, GitHub, health, and Telegram webhook.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/health/status": {
+      "get": {
+        "summary": "Get Status",
+        "description": "Overall system health: daemon heartbeat, uptime, connected platforms.",
+        "operationId": "get_status_api_health_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health/errors": {
+      "get": {
+        "summary": "Get Errors",
+        "description": "Recent errors from agent process trails.",
+        "operationId": "get_errors_api_health_errors_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health/agents": {
+      "get": {
+        "summary": "Get Agent Health",
+        "description": "Per-agent success rates and stats.",
+        "operationId": "get_agent_health_api_health_agents_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health/rate-limits": {
+      "get": {
+        "summary": "Get Rate Limit Status",
+        "description": "Current API rate limit status.",
+        "operationId": "get_rate_limit_status_api_health_rate_limits_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health/export": {
+      "post": {
+        "summary": "Trigger Export",
+        "description": "Trigger a full data export.",
+        "operationId": "trigger_export_api_health_export_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/analytics/grpo": {
+      "get": {
+        "summary": "Get Grpo Stats",
+        "description": "GRPO experience success rates grouped by intent.",
+        "operationId": "get_grpo_stats_api_analytics_grpo_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/analytics/personas": {
+      "get": {
+        "summary": "Get Persona Stats",
+        "description": "Persona evolution status per agent.",
+        "operationId": "get_persona_stats_api_analytics_personas_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/analytics/costs": {
+      "get": {
+        "summary": "Get Cost Estimates",
+        "description": "Estimated cost per agent based on LLM call counts.",
+        "operationId": "get_cost_estimates_api_analytics_costs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/analytics/ab-tests": {
+      "get": {
+        "summary": "Get Ab Tests",
+        "description": "Get all A/B tests with results.",
+        "operationId": "get_ab_tests_api_analytics_ab_tests_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/analytics/nlp": {
+      "get": {
+        "summary": "Get Nlp Stats",
+        "description": "Get NLP classifier statistics \u2014 model, examples, learned count.",
+        "operationId": "get_nlp_stats_api_analytics_nlp_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/analytics/trends": {
+      "get": {
+        "summary": "Get Trends",
+        "description": "Daily dispatch counts, errors, and LLM calls over time.",
+        "operationId": "get_trends_api_analytics_trends_get",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 14,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/papers/fetch": {
+      "get": {
+        "tags": [
+          "papers"
+        ],
+        "summary": "Fetch Papers Endpoint",
+        "description": "Fetch latest AI papers from arXiv.",
+        "operationId": "fetch_papers_endpoint_api_papers_fetch_get",
+        "parameters": [
+          {
+            "name": "max_results",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Max Results"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/papers/digest": {
+      "get": {
+        "tags": [
+          "papers"
+        ],
+        "summary": "Get Papers Digest",
+        "description": "Get today's ranked paper digest.",
+        "operationId": "get_papers_digest_api_papers_digest_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/papers/stats": {
+      "get": {
+        "tags": [
+          "papers"
+        ],
+        "summary": "Get Papers Stats",
+        "description": "Paper reading stats \u2014 total, read, unread, this week.",
+        "operationId": "get_papers_stats_api_papers_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/papers/{index}": {
+      "get": {
+        "tags": [
+          "papers"
+        ],
+        "summary": "Get Paper Detail",
+        "description": "Get full details for a specific paper by index (1-based).",
+        "operationId": "get_paper_detail_api_papers__index__get",
+        "parameters": [
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Index"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github/commits": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "Get Github Commits",
+        "description": "Get yesterday's commit activity across all repos.",
+        "operationId": "get_github_commits_api_github_commits_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github/trending": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "Get Github Trending",
+        "description": "Get trending GitHub repos.",
+        "operationId": "get_github_trending_api_github_trending_get",
+        "parameters": [
+          {
+            "name": "count",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 5,
+              "title": "Count"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook/telegram": {
+      "post": {
+        "summary": "Telegram Webhook",
+        "description": "Handle incoming Telegram webhook updates.",
+        "operationId": "telegram_webhook_webhook_telegram_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

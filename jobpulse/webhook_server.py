@@ -14,7 +14,70 @@ if USE_SWARM:
 else:
     from jobpulse.dispatcher import dispatch
 
-app = FastAPI(title="JobPulse Webhook")
+app = FastAPI(
+    title="JobPulse API",
+    version="1.0.0",
+    description="JobPulse automation — papers, GitHub, health, and Telegram webhook.",
+)
+
+# Mount sub-routers
+from jobpulse.health_api import health_router
+from jobpulse.analytics_api import analytics_router
+app.include_router(health_router)
+app.include_router(analytics_router)
+
+
+# ── Papers endpoints ──
+
+@app.get("/api/papers/fetch", tags=["papers"])
+def fetch_papers_endpoint(max_results: int = 20):
+    """Fetch latest AI papers from arXiv."""
+    from jobpulse.arxiv_agent import fetch_papers
+    papers = fetch_papers(max_results=max_results)
+    return {"count": len(papers), "papers": papers}
+
+
+@app.get("/api/papers/digest", tags=["papers"])
+def get_papers_digest():
+    """Get today's ranked paper digest."""
+    from jobpulse.arxiv_agent import build_digest
+    digest = build_digest()
+    return {"digest": digest, "length": len(digest)}
+
+
+@app.get("/api/papers/stats", tags=["papers"])
+def get_papers_stats():
+    """Paper reading stats — total, read, unread, this week."""
+    from jobpulse.arxiv_agent import get_reading_stats
+    return get_reading_stats()
+
+
+@app.get("/api/papers/{index}", tags=["papers"])
+def get_paper_detail(index: int):
+    """Get full details for a specific paper by index (1-based)."""
+    from jobpulse.arxiv_agent import get_paper_by_index
+    from datetime import date
+    paper = get_paper_by_index(date.today().isoformat(), index)
+    if paper is None:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"error": f"No paper #{index} in today's digest"})
+    return paper
+
+
+# ── GitHub endpoints ──
+
+@app.get("/api/github/commits", tags=["github"])
+def get_github_commits():
+    """Get yesterday's commit activity across all repos."""
+    from jobpulse.github_agent import get_yesterday_commits
+    return get_yesterday_commits(trigger="api_call")
+
+
+@app.get("/api/github/trending", tags=["github"])
+def get_github_trending(count: int = 5):
+    """Get trending GitHub repos."""
+    from jobpulse.github_agent import get_trending_repos
+    return get_trending_repos(count=count)
 
 
 @app.post("/webhook/telegram")

@@ -37,10 +37,17 @@ def _gh_api(endpoint: str) -> tuple[list, str | None]:
             return [], err
         if not result.stdout.strip():
             return [], None  # Success, but no data
-        data = json.loads(result.stdout)
+        try:
+            data = json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error("gh api: non-JSON response for %s: %s", endpoint, e)
+            return [], f"Invalid JSON response: {e}"
         if not isinstance(data, list):
             data = [data]
         return data, None
+    except FileNotFoundError:
+        logger.error("gh CLI not found. Install: brew install gh && gh auth login")
+        return [], "gh CLI not installed"
     except Exception as exc:
         logger.error("gh api error: %s", exc)
         return [], str(exc)

@@ -166,7 +166,11 @@ def _extract_json_array(raw: str) -> list:
     # Find the first [ ... ] block
     match = re.search(r"\[.*\]", cleaned, re.DOTALL)
     if match:
-        return json.loads(match.group(0))
+        try:
+            return json.loads(match.group(0))
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning("_extract_json_array: found [...] but invalid JSON: %s", e)
+            return []
     return []
 
 
