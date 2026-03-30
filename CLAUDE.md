@@ -10,6 +10,7 @@ python -m jobpulse.runner stop         # Stop all daemons
 python -m jobpulse.runner webhook      # API server (port 8080, Swagger at /docs)
 python -m jobpulse.runner briefing     # Morning digest
 python -m jobpulse.runner export       # Full data backup
+python -m jobpulse.runner profile-sync # Refresh skill/project graph (3am cron)
 ```
 
 ## Architecture
@@ -18,7 +19,8 @@ python -m jobpulse.runner export       # Full data backup
 |--------|------|
 | Orchestration | 4 LangGraph patterns (hierarchical, peer debate, dynamic swarm, enhanced swarm) |
 | JobPulse | 10+ agents: Gmail, Calendar, GitHub, Notion, Budget, arXiv, Jobs — 24/7 via Telegram |
-| Job Autopilot | Scan → analyze JD → tailor CV → ATS score → apply/queue (25 apps/day, anti-detection) |
+| Job Autopilot | 4-gate pre-screen → scan → hybrid skill extract → tailor CV → ATS score → apply/queue (25 apps/day) |
+| Skill Graph | Nightly 3am GitHub sync → MindGraph skill/project graph → recruiter-grade pre-screen |
 | Form Engine | Detect + fill any HTML input (select, radio, checkbox, text, date, file, multi-select) |
 | MindGraph | Entity extraction, GraphRAG retrieval, Three.js 3D visualization |
 | NLP Classifier | 3-tier: regex → embeddings (5ms) → LLM fallback. 250+ examples, 41 intents |
@@ -88,6 +90,12 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 **Safety:** mutex on `apply_job()`, record-before-submit, pipeline lock, UTC daily caps.
 
 **CV/Cover Letter:** ReportLab PDFs (no xelatex). `cv_templates/generate_cv.py` + `generate_cover_letter.py`. Instant, no LLM calls.
+
+**Pre-Screen (4-Gate Recruiter Model):**
+Gate 0: Title relevance (instant, pre-LLM) → Gate 1: Kill signals (seniority, primary lang, domain) →
+Gate 2: Must-haves (top-5 skills, project evidence, 12+ matches, 65%+ required) →
+Gate 3: Competitiveness score (0-100: hard skill 35 + project evidence 25 + coherence 15 + domain 15 + recency 10).
+Tiers: reject | skip (<55) | apply (55-74) | strong (75+). LLM calls: ~10/day ($0.23/month vs $5.63 before).
 
 ## API (18 endpoints)
 
