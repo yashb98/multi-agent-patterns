@@ -364,5 +364,17 @@
     "job info",
     "more details on application",
     "describe that job"
+  ],
+  "scan_jobs": [
+    "scan jobs",
+    "scan for jobs",
+    "find new jobs",
+    "start scanning",
+    "run autopilot",
+    "check for new jobs",
+    "look for jobs",
+    "start job search",
+    "search for new opportunities",
+    "run job scanner"
   ]
 }

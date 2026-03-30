@@ -112,6 +112,7 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.GIT_OPS: _handle_git_ops,
         Intent.FILE_OPS: _handle_file_ops,
         Intent.SYSTEM_STATUS: _handle_system_status,
+        Intent.SCAN_JOBS: _handle_scan_jobs,
         Intent.SHOW_JOBS: _handle_show_jobs,
         Intent.APPROVE_JOBS: _handle_approve_jobs,
         Intent.REJECT_JOB: _handle_reject_job,
@@ -755,6 +756,12 @@ def _handle_help(cmd: ParsedCommand) -> str:
 \U0001f4ac CHAT:
   Just type anything \u2014 free-form conversation
   "clear chat" \u2014 reset conversation history"""
+
+
+def _handle_scan_jobs(cmd: ParsedCommand) -> str:
+    """Trigger a job scan — runs the full autopilot pipeline."""
+    from jobpulse.job_autopilot import run_scan_window
+    return run_scan_window(platforms=["reed"])
 
 
 def _handle_show_jobs(cmd: ParsedCommand) -> str:

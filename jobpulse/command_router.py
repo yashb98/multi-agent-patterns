@@ -58,6 +58,7 @@ class Intent(str, Enum):
     PAUSE_JOBS = "pause_jobs"
     RESUME_JOBS = "resume_jobs"
     JOB_DETAIL = "job_detail"
+    SCAN_JOBS = "scan_jobs"
     UNKNOWN = "unknown"
 
 
@@ -185,6 +186,12 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"(export|backup|download data|save data|dump)",
     ]),
     # Job Autopilot
+    (Intent.SCAN_JOBS, [
+        r"^scan\s*(jobs?|for jobs?)?\s*$",
+        r"^(start|run)\s*(scan|scanning|autopilot|auto.?pilot)\s*$",
+        r"^(find|search for|look for|check for)\s*new\s*jobs?\s*$",
+        r"^(find|search for)\s*jobs?\s*$",
+    ]),
     (Intent.APPROVE_JOBS, [
         r"^apply\s+([\d,\s\-]+|all)\s*$",
         r"^approve\s+([\d,\s\-]+|all)\s*$",
@@ -334,6 +341,7 @@ FILE_OPS — user wants to view a file, see logs, see errors, or paginate
 SYSTEM_STATUS — user wants system/daemon health status
 CLEAR_CHAT — user wants to clear chat history or start a new conversation
 STOP — user wants to undo/reverse/cancel their last command (said "stop", "cancel", "undo that", "oops", "nope", "take that back")
+SCAN_JOBS — user wants to scan for new jobs, run the autopilot, or start a job search
 SHOW_JOBS — user wants to see available/pending job applications
 APPROVE_JOBS — user wants to approve specific jobs for application (e.g., "apply 1,3,5" or "apply all")
 REJECT_JOB — user wants to skip/reject a specific job (e.g., "reject 3")
