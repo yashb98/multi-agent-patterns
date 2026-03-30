@@ -338,11 +338,21 @@ class SkillGraphStore:
             if int(m) >= 5:
                 return False, f"Seniority kill: JD requires {m}+ years experience"
 
-        # K2: Primary language — first required skill not in profile
-        if required:
-            first = self._normalize(required[0])
-            if first not in profile and not self._skill_match(required[0], profile):
-                return False, f"Primary skill kill: '{required[0]}' not in profile"
+        # K2: Primary technical skill — find the first non-soft-skill required skill
+        _SOFT_SKILLS = {
+            "project management", "communication", "teamwork", "leadership",
+            "problem solving", "time management", "adaptability", "collaboration",
+            "analytical thinking", "critical thinking", "stakeholder management",
+            "presentation skills", "mentoring", "coaching", "prioritization",
+            "attention to detail", "self motivated", "fast learner",
+        }
+        primary = None
+        for skill in required:
+            if self._normalize(skill) not in _SOFT_SKILLS:
+                primary = skill
+                break
+        if primary and self._normalize(primary) not in profile and not self._skill_match(primary, profile):
+            return False, f"Primary skill kill: '{primary}' not in profile"
 
         # K3: Foreign domain — top 3 required all in one foreign domain
         if len(required) >= 3:

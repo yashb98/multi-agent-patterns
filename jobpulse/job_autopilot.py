@@ -207,8 +207,8 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
     from jobpulse.recruiter_screen import gate0_title_relevance
     search_config = load_search_config()
     gate0_config = {
-        "titles": search_config.get("titles", []),
-        "exclude_keywords": search_config.get("exclude_keywords", [
+        "titles": search_config.titles if hasattr(search_config, "titles") else search_config.get("titles", []),
+        "exclude_keywords": search_config.exclude_keywords if hasattr(search_config, "exclude_keywords") else search_config.get("exclude_keywords", [
             "senior", "lead", "principal", "staff", "director", "manager",
             "10+ years", "8+ years", "7+ years", "5+ years",
         ]),
