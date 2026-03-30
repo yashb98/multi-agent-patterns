@@ -206,7 +206,11 @@ def get_or_create_category_page(category: str, week_start: str) -> str:
 
     # Create new sub-page
     parent_id = _get_budget_page_id()
-    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    try:
+        week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    except ValueError:
+        logger.error("get_or_create_category_page: invalid week_start date: %s", week_start)
+        return ""
     title = f"{category} — {week_start} to {week_end}"
 
     # Choose columns based on category type
@@ -326,6 +330,11 @@ def add_transaction_row(category: str, week_start: str, amount: float,
     """Append a transaction row to the category's sub-page table. Returns page URL."""
     page_id = get_or_create_category_page(category, week_start)
     if not page_id:
+        logger.warning(
+            "add_transaction_row: category page creation failed for %s/%s — "
+            "transaction saved in SQLite but not synced to Notion",
+            category, week_start,
+        )
         return ""
 
     # Find the table block
