@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
-        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, test")
+        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, profile-sync, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -187,6 +187,10 @@ def main():
         print(f"Found: {stats['found']}")
         print(f"Skipped: {stats['skipped']}")
         print(f"Avg ATS: {stats['avg_ats']}%")
+
+    elif command == "profile-sync":
+        from jobpulse.github_profile_sync import sync_profile
+        sync_profile()
 
     elif command == "test":
         from jobpulse.telegram_agent import send_message
