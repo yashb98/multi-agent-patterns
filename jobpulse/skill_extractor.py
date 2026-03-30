@@ -13,6 +13,19 @@ from pathlib import Path
 
 from shared.logging_config import get_logger
 
+# Soft skills to filter out — we focus on technical skills only
+_SOFT_SKILLS = {
+    "project management", "communication", "teamwork", "leadership",
+    "problem solving", "time management", "adaptability", "collaboration",
+    "analytical thinking", "critical thinking", "stakeholder management",
+    "presentation skills", "mentoring", "coaching", "prioritization",
+    "attention to detail", "self motivated", "fast learner",
+    "team collaboration", "cross functional", "negotiation",
+    "decision making", "conflict resolution", "emotional intelligence",
+    "creativity", "interpersonal skills", "organizational skills",
+    "work ethic", "flexibility", "multitasking", "strategic thinking",
+}
+
 logger = get_logger(__name__)
 
 SYNONYMS_PATH: str = str(Path(__file__).parent.parent / "data" / "skill_synonyms.json")
@@ -138,6 +151,15 @@ def extract_skills_rule_based(jd_text: str) -> dict:
     if "unsectioned" in sections:
         # All skills go to required when no sections detected
         required_skills = _match_skills(sections["unsectioned"])
+
+    # Deprioritize soft skills — technical skills first, soft skills at the end
+    required_tech = [s for s in required_skills if _normalize(s) not in _SOFT_SKILLS]
+    required_soft = [s for s in required_skills if _normalize(s) in _SOFT_SKILLS]
+    required_skills = required_tech + required_soft
+
+    preferred_tech = [s for s in preferred_skills if _normalize(s) not in _SOFT_SKILLS]
+    preferred_soft = [s for s in preferred_skills if _normalize(s) in _SOFT_SKILLS]
+    preferred_skills = preferred_tech + preferred_soft
 
     # Industry detection
     industry = _detect_industry(jd_text)
