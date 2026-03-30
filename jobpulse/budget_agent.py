@@ -826,7 +826,18 @@ def set_budget(text: str) -> str:
         return "Which category? E.g.: set budget groceries 50"
 
     section, category = classify_transaction(desc, amount, "expense")
-    set_planned_budget(category, section, amount)
+
+    # Validate that the resolved category is a known budget category
+    known_categories = {c for _, c in ALL_CATEGORIES.values()}
+    if category not in known_categories:
+        return (
+            f"Unknown category '{category}'. Known categories:\n"
+            + ", ".join(sorted(known_categories))
+        )
+
+    result = set_planned_budget(category, section, amount)
+    if isinstance(result, dict) and "error" in result:
+        return result["error"]
 
     # Update the Planned (col 1) column in Notion
     row_id = ROW_IDS.get(category)
@@ -923,8 +934,22 @@ def add_recurring(amount: float, description: str, category: str,
                   section: str, txn_type: str, frequency: str,
                   day: int | None = None) -> dict:
     """Add a recurring transaction rule (daily/weekly/monthly)."""
+    # Validate frequency
+    valid_frequencies = ("daily", "weekly", "monthly")
+    if frequency not in valid_frequencies:
+        return {"error": f"Invalid frequency '{frequency}'. Must be one of: {', '.join(valid_frequencies)}"}
+
     now = datetime.now()
     conn = _get_conn()
+
+    # Check for duplicate rule (same description + frequency)
+    existing = conn.execute(
+        "SELECT id FROM recurring_transactions WHERE description=? AND frequency=? AND active=1",
+        (description, frequency)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return {"error": f"Recurring rule already exists for '{description}' ({frequency})"}
 
     day_of_month = None
     day_of_week = None
@@ -1353,8 +1378,7 @@ def _parse_date_from_text(text: str) -> tuple[str, datetime]:
         if m:
             current_day = now.weekday()
             days_ago = (current_day - i) % 7
-            if days_ago == 0:
-                days_ago = 7  # "monday" means last monday, not today
+            # days_ago == 0 means today IS that day — treat as today, not last week
             cleaned = text[:m.start()] + text[m.end():]
             return re.sub(r"\s+", " ", cleaned).strip(), now - timedelta(days=days_ago)
 
