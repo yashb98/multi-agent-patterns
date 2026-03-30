@@ -363,26 +363,26 @@ class SkillGraphStore:
         matched: list[str],
         projects: list[ProjectMatch],
     ) -> tuple[bool, str | None]:
-        # M1: >= 3 of top-5 required skills in profile
+        # M1: >= 4 of top-5 required skills in profile (brutal: recruiter expects near-perfect core match)
         top5 = required[:5]
         top5_matched = [s for s in top5 if s in [m.lower() for m in matched]]
-        if len(top5_matched) < 3:
-            return False, f"M1 fail: only {len(top5_matched)}/5 top required skills matched (need 3)"
+        if len(top5_matched) < 4:
+            return False, f"M1 fail: only {len(top5_matched)}/5 top required skills matched (need 4)"
 
         # M2: >= 2 projects demonstrating 3+ JD skills
         strong_projects = [p for p in projects if p.skill_overlap >= 3]
         if len(strong_projects) < 2:
             return False, f"M2 fail: only {len(strong_projects)} projects with 3+ skill overlap (need 2)"
 
-        # M3: >= 12 absolute matches AND >= 65% of required
+        # M3: >= 20 absolute matches AND >= 92% of required (brutal: ATS keyword density must be near-total)
         if len(required) > 0:
             match_pct = len(matched) / len(required) * 100
         else:
             match_pct = 0
-        if len(matched) < 12 or match_pct < 65:
+        if len(matched) < 20 or match_pct < 92:
             return False, (
                 f"M3 fail: {len(matched)} matches ({match_pct:.0f}%) — "
-                f"need >= 12 absolute AND >= 65%"
+                f"need >= 20 absolute AND >= 92%"
             )
 
         return True, None

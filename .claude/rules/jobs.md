@@ -28,7 +28,9 @@
 - Skill extraction uses hybrid approach: rule-based first (582-entry taxonomy), LLM fallback when < 10 skills
 - Nightly profile sync (3am): github_profile_sync.py → MindGraph SKILL/PROJECT entities
 - SkillGraphStore is Neo4j-ready — only swap internals when going multi-user
-- Pre-screen thresholds are HARD: ≥12 absolute matches, ≥65% required, ≥3 of top-5, ≥2 projects with 3+ overlap
+- Pre-screen thresholds are BRUTAL (7-day experiment 2026-03-31→04-06):
+  M1: ≥4 of top-5 required skills | M2: ≥2 projects with 3+ overlap | M3: ≥20 matches AND ≥92% required
+- Experiment tracker: @docs/experiments/2026-03-30-brutal-prescreen-7day.md
 
 ## Safety
 - JOB_AUTOPILOT_AUTO_SUBMIT=false by default — requires explicit approval

@@ -224,6 +224,8 @@ class TestPreScreen:
             "python", "fastapi", "django", "flask", "docker",
             "kubernetes", "postgresql", "redis", "aws", "terraform",
             "git", "ci/cd", "sql", "react", "typescript",
+            "rest api", "machine learning", "pytorch", "pandas", "numpy",
+            "mlflow", "langchain", "openai", "anthropic", "prompt engineering",
         ]
         for s in skills:
             store.upsert_skill(s)
@@ -233,29 +235,39 @@ class TestPreScreen:
             "description": "Distributed microservices",
             "html_url": "https://github.com/user/microservices",
             "language": "Python",
-            "topics": ["fastapi", "docker", "kubernetes", "postgresql", "redis"],
+            "topics": ["fastapi", "docker", "kubernetes", "postgresql", "redis", "rest api"],
         })
         store.upsert_project({
             "name": "infra-automation",
             "description": "Infrastructure as code",
             "html_url": "https://github.com/user/infra",
             "language": "Python",
-            "topics": ["terraform", "aws", "docker", "ci/cd"],
+            "topics": ["terraform", "aws", "docker", "ci/cd", "mlflow"],
         })
         store.upsert_project({
             "name": "web-dashboard",
             "description": "Admin dashboard",
             "html_url": "https://github.com/user/dashboard",
             "language": "Python",
-            "topics": ["django", "react", "postgresql"],
+            "topics": ["django", "react", "postgresql", "typescript"],
+        })
+        store.upsert_project({
+            "name": "ml-pipeline",
+            "description": "ML training pipeline",
+            "html_url": "https://github.com/user/ml-pipeline",
+            "language": "Python",
+            "topics": ["pytorch", "pandas", "numpy", "machine learning", "langchain"],
         })
 
     def test_strong_match(self, store):
         self._seed_strong_profile(store)
+        # 22 required skills, all in profile — must pass M3 (≥20 matches, ≥92%)
         listing = _make_listing(
             required_skills=["python", "fastapi", "django", "flask", "docker",
                              "kubernetes", "postgresql", "redis", "aws", "terraform",
-                             "sql", "git", "ci/cd", "react", "typescript"],
+                             "sql", "git", "ci/cd", "react", "typescript",
+                             "rest api", "machine learning", "pytorch", "pandas", "numpy",
+                             "mlflow", "langchain"],
             preferred_skills=[],
             description_raw="We need a backend engineer with 2 years experience.",
         )
@@ -264,7 +276,7 @@ class TestPreScreen:
         assert result.gate2_passed is True
         assert result.gate3_score > 0
         assert result.tier in ("apply", "strong")
-        assert len(result.matched_skills) >= 12
+        assert len(result.matched_skills) >= 20
 
     def test_low_overlap_skip(self, store):
         # Minimal profile
