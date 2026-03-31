@@ -97,7 +97,8 @@ Gate 0: Title relevance (instant, pre-LLM) → Gate 1: Kill signals (seniority, 
 Gate 2: Must-haves (top-5 skills, project evidence, 12+ matches, 65%+ required) →
 Gate 3: Competitiveness score (0-100: hard skill 35 + project evidence 25 + coherence 15 + domain 15 + recency 10).
 Tiers: reject | skip (<55) | apply (55-74) | strong (75+). LLM calls: ~10/day ($0.23/month vs $5.63 before).
-**Skill Gap Tracker:** Every pre-screened job records missing skills → `skill-gaps` command shows top gaps → CSV export for Google Drive.
+**Skill Gap Tracker:** Every pre-screened job records missing skills → `skill-gaps` command shows top gaps → CSV export.
+**Notion Skill Tracker:** Unverified skills → Notion as "Pending" → user marks "I Know" / "Don't Know" → verified skills auto-sync to profile. Telegram link after every scan.
 
 ## API (18 endpoints)
 

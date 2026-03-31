@@ -23,6 +23,7 @@
 - skill_graph_store.py — SkillGraphStore: 4-gate pre-screen (Gates 1-3), MindGraph abstraction, Neo4j-ready
 - github_profile_sync.py — Nightly 3am sync: GitHub repos + resume BASE_SKILLS + past apps → MindGraph graph
 - skill_gap_tracker.py — Records missing skills from every pre-screened job, exports ranked CSV for upskilling
+- skill_tracker_notion.py — Notion Skill Tracker: pending skills for user verification (I Know / Don't Know / Learning)
 
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.
@@ -44,6 +45,9 @@ Gate 0: Title relevance (instant, before LLM) → Gate 1: Kill signals (seniorit
 Tiers: reject (<Gate 1) | skip (<55) | apply (55-74) | strong (75+)
 LLM calls: ~10-11/day (96% reduction from 250/day). Cost: $0.23/month.
 Nightly sync: `python -m jobpulse.runner profile-sync` (3am cron) — GitHub repos + resume + past apps → MindGraph.
+Skill Tracker: `python -m jobpulse.runner skill-verify` — syncs Notion-verified skills to profile.
+`python -m jobpulse.runner skill-pending` — shows pending skills.
+Every scan sends Notion Skill Tracker link to Telegram with pending count.
 
 ## Critical Rules
 - All money as float with 2 decimal places
