@@ -15,6 +15,13 @@
 - Application recorded BEFORE submission (prevents silent limit bypass on error)
 - UTC timezone for daily cap tracking (prevents midnight drift)
 
+## Pre-Generation Checklist (MANDATORY before every CV/Cover Letter)
+1. Run `sync_verified_to_profile()` — pull latest "I Know" skills from Notion Skill Tracker
+2. Run `sync_profile()` or check profile stats — ensure README skills are synced
+3. Re-run pre-screen with updated profile to get accurate match score
+4. THEN generate CV + Cover Letter with the latest skill data
+NEVER generate CV/CL with stale profile data. Always sync first.
+
 ## CV & Cover Letter PDF Generation
 - Use ReportLab generators in cv_templates/ — NOT xelatex (cv_tailor.py is legacy)
 - CV: generate_cv_pdf(company, location, extra_skills) → instant PDF, no LLM

@@ -49,6 +49,13 @@ Skill Tracker: `python -m jobpulse.runner skill-verify` — syncs Notion-verifie
 `python -m jobpulse.runner skill-pending` — shows pending skills.
 Every scan sends Notion Skill Tracker link to Telegram with pending count.
 
+## Pre-Generation Checklist (before every CV/Cover Letter)
+1. Sync Notion Skill Tracker → `skill-verify` pulls latest verified skills
+2. Sync profile → `profile-sync` ensures README skills are current
+3. Re-run pre-screen with updated profile for accurate match score
+4. THEN generate CV + Cover Letter
+NEVER generate with stale data. Always sync first.
+
 ## Critical Rules
 - All money as float with 2 decimal places
 - One handler per Telegram message — never let two bots handle the same message
