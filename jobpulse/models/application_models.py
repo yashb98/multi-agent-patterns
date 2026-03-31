@@ -91,6 +91,10 @@ class JobListing(BaseModel):
         default=False,
         description="True if the platform offers a one-click / Easy Apply flow.",
     )
+    recruiter_email: str | None = Field(
+        default=None,
+        description="Recruiter or HR contact email extracted from the job description.",
+    )
 
 
 # ---------------------------------------------------------------------------

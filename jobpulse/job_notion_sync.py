@@ -152,6 +152,9 @@ def build_create_payload(job: JobListing, db_id: str) -> dict:
             "select": {"name": ats_name}
         }
 
+    if job.recruiter_email is not None:
+        properties["Recruiter Email"] = {"email": job.recruiter_email}
+
     return {
         "parent": {"database_id": db_id},
         "properties": properties,
@@ -169,6 +172,7 @@ def build_update_payload(
     ats_platform: str | None = None,
     cv_drive_link: str | None = None,
     cl_drive_link: str | None = None,
+    recruiter_email: str | None = None,
 ) -> dict:
     """Build Notion update-page payload with only the provided (non-None) fields.
 
@@ -216,6 +220,9 @@ def build_update_payload(
         properties["Cover Letter"] = {
             "files": [{"type": "external", "name": "CoverLetter.pdf", "external": {"url": cl_drive_link}}]
         }
+
+    if recruiter_email is not None:
+        properties["Recruiter Email"] = {"email": recruiter_email}
 
     return {"properties": properties}
 

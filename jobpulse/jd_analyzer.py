@@ -341,6 +341,50 @@ def extract_skills_llm(jd_text: str) -> dict:  # type: ignore[return]
 
 
 # ---------------------------------------------------------------------------
+# Recruiter email extraction
+# ---------------------------------------------------------------------------
+
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+
+_DISCARD_PREFIXES = frozenset([
+    "noreply", "no-reply", "donotreply", "info", "admin",
+    "support", "hello", "contact", "enquiries", "feedback",
+])
+
+_GENERIC_HR_PREFIXES = frozenset([
+    "jobs", "careers", "hr", "recruitment", "hiring",
+    "talent", "apply", "applications",
+])
+
+
+def extract_recruiter_email(jd_text: str) -> str | None:
+    """Extract the most useful recruiter/HR email from a job description.
+
+    Priority: personal recruiter email > generic HR email > None.
+    Discards noreply/info/support addresses entirely.
+    """
+    emails = _EMAIL_RE.findall(jd_text)
+
+    recruiter_emails: list[str] = []
+    generic_hr_emails: list[str] = []
+
+    for email in emails:
+        local_part = email.split("@")[0].lower()
+        if any(local_part.startswith(prefix) for prefix in _DISCARD_PREFIXES):
+            continue
+        if any(local_part.startswith(prefix) for prefix in _GENERIC_HR_PREFIXES):
+            generic_hr_emails.append(email)
+        else:
+            recruiter_emails.append(email)
+
+    if recruiter_emails:
+        return recruiter_emails[0]
+    if generic_hr_emails:
+        return generic_hr_emails[0]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Full analysis orchestrator
 # ---------------------------------------------------------------------------
 
@@ -377,6 +421,8 @@ def analyze_jd(
     ats_platform = detect_ats_platform(apply_url)
     easy_apply = detect_easy_apply(url, jd_text)
 
+    recruiter_email = extract_recruiter_email(jd_text)
+
     from jobpulse.skill_extractor import extract_skills_hybrid
     llm_data = extract_skills_hybrid(jd_text)
 
@@ -405,4 +451,5 @@ def analyze_jd(
         ats_platform=ats_platform,
         found_at=datetime.now(UTC),
         easy_apply=easy_apply,
+        recruiter_email=recruiter_email,
     )
