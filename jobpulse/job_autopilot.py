@@ -32,7 +32,8 @@ from typing import Any
 
 from shared.logging_config import get_logger
 
-from jobpulse.applicator import apply_job, classify_action
+from jobpulse.applicator import classify_action
+from jobpulse.ralph_loop import ralph_apply_sync
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
 from jobpulse.cover_letter_agent import generate_cover_letter
 from jobpulse.cv_tailor import determine_match_tier, generate_tailored_cv
@@ -619,7 +620,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                     _queue_for_review(listing, ats_score, review_batch)
                 else:
                     try:
-                        result = apply_job(
+                        result = ralph_apply_sync(
                             url=listing.url,
                             ats_platform=listing.ats_platform,
                             cv_path=cv_path,
@@ -867,7 +868,7 @@ def approve_jobs(args: str) -> str:
             ats_platform = listing_row.get("ats_platform") if listing_row else None
             listing_url = listing_row.get("url", "") if listing_row else job_id
 
-            result = apply_job(
+            result = ralph_apply_sync(
                 url=listing_url,
                 ats_platform=ats_platform,
                 cv_path=cv_path or Path("/dev/null"),
