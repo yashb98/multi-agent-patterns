@@ -674,7 +674,7 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                             try:
                                 card.click()
                                 signals.record_request()
-                                time.sleep(random.uniform(delay_min, delay_max))
+                                time.sleep(random.uniform(1.5, 3.0))
 
                                 # Check for verification wall after card click
                                 wall = detect_verification_wall(page)
@@ -686,21 +686,83 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                                     _handle_block(engine, "linkedin", wall, signals)
                                     return results
 
-                                # LinkedIn shows JD in a side panel or detail view
-                                desc_el = page.query_selector(
+                                # Wait for JD side panel to render (LinkedIn loads async via AJAX)
+                                _JD_PANEL_SELECTORS = (
+                                    "#job-details, "
+                                    ".jobs-description-content__text, "
                                     ".jobs-description__content, "
                                     ".jobs-box__html-content, "
-                                    ".job-details-jobs-unified-top-card__job-insight, "
-                                    ".jobs-description, "
-                                    "[class*='description']"
+                                    ".jobs-unified-top-card__job-insight, "
+                                    "[class*='jobs-description']"
                                 )
+                                try:
+                                    page.wait_for_selector(_JD_PANEL_SELECTORS, timeout=8_000)
+                                except Exception:
+                                    logger.debug("scan_linkedin: JD panel selector timeout for %s", job_title)
+
+                                # Try extracting from side panel
+                                desc_el = page.query_selector(_JD_PANEL_SELECTORS)
                                 if desc_el:
                                     description = desc_el.inner_text()[:5000]
+
+                                # Fallback: if description is empty/too short, navigate to full job page
+                                if len(description.strip()) < 50 and href:
+                                    logger.info(
+                                        "scan_linkedin: side panel empty for '%s', navigating to full page",
+                                        job_title,
+                                    )
+                                    try:
+                                        page.goto(href, timeout=20_000, wait_until="networkidle")
+                                        time.sleep(random.uniform(1.5, 3.0))
+                                        simulate_human_interaction(page)
+
+                                        # Full page has different selectors
+                                        full_desc_el = page.query_selector(
+                                            "#job-details, "
+                                            ".description__text, "
+                                            ".show-more-less-html__markup, "
+                                            "[class*='description']"
+                                        )
+                                        if full_desc_el:
+                                            description = full_desc_el.inner_text()[:5000]
+                                            logger.info(
+                                                "scan_linkedin: got %d chars from full page for '%s'",
+                                                len(description), job_title,
+                                            )
+
+                                        # Navigate back to search results
+                                        page.go_back(timeout=15_000)
+                                        time.sleep(random.uniform(1.0, 2.0))
+                                    except Exception as nav_err:
+                                        logger.debug(
+                                            "scan_linkedin: full page fallback failed: %s", nav_err
+                                        )
+                                        # Try to get back to search
+                                        try:
+                                            page.goto(search_url, timeout=30_000, wait_until="networkidle")
+                                            time.sleep(random.uniform(2.0, 4.0))
+                                        except Exception:
+                                            pass
                             except Exception as desc_err:
                                 logger.debug(
                                     "scan_linkedin: could not fetch JD detail: %s",
                                     desc_err,
                                 )
+
+                            # Try extracting salary from card text
+                            salary_min_val = None
+                            salary_max_val = None
+                            card_text = " ".join(lines)
+                            import re as _re
+                            sal_match = _re.search(
+                                r"£([\d,]+)\s*[-–]\s*£([\d,]+)", card_text
+                            )
+                            if sal_match:
+                                try:
+                                    salary_min_val = float(sal_match.group(1).replace(",", ""))
+                                    salary_max_val = float(sal_match.group(2).replace(",", ""))
+                                except ValueError:
+                                    pass
 
                             results.append(
                                 {
@@ -708,8 +770,8 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                                     "company": company,
                                     "url": href,
                                     "location": location,
-                                    "salary_min": None,
-                                    "salary_max": None,
+                                    "salary_min": salary_min_val,
+                                    "salary_max": salary_max_val,
                                     "description": description,
                                     "platform": "linkedin",
                                     "job_id": _make_job_id(href),
