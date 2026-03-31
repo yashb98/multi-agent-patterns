@@ -119,7 +119,7 @@ def build_create_payload(job: JobListing, db_id: str) -> dict:
             "select": {"name": platform_display(job.platform)}
         },
         "Status": {
-            "select": {"name": "Found"}
+            "status": {"name": "Found"}
         },
         "Location": {
             "rich_text": [{"text": {"content": job.location}}]
@@ -177,14 +177,14 @@ def build_update_payload(
     properties: dict = {}
 
     if status is not None:
-        properties["Status"] = {"select": {"name": status}}
+        properties["Status"] = {"status": {"name": status}}
 
     if ats_score is not None:
         properties["ATS Score"] = {"number": ats_score}
 
     if match_tier is not None:
         tier_name = MATCH_TIER_NAMES.get(match_tier, match_tier.title())
-        properties["Match Tier"] = {"select": {"name": tier_name}}
+        properties["Match Tier"] = {"rich_text": [{"text": {"content": tier_name}}]}
 
     if matched_projects is not None:
         properties["Matched Projects"] = {
