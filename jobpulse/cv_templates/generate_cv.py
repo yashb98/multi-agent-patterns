@@ -205,36 +205,36 @@ def generate_cv_pdf(
     _register_fonts()
 
     F = 'MyArial'
-    SZ = 10
+    SZ = 9.5
     PW = A4[0] - 28 * mm
-    LN = 13
-    LW = 28 * mm
+    LN = 11.5
+    LW = 27 * mm
 
-    # --- Styles ---
-    name_s = ParagraphStyle('N', fontName=F, fontSize=22, alignment=TA_CENTER,
-                            spaceAfter=2, leading=26, textColor=TEXT_COLOR)
+    # --- Styles (tight but readable) ---
+    name_s = ParagraphStyle('N', fontName=F, fontSize=20, alignment=TA_CENTER,
+                            spaceAfter=1, leading=24, textColor=TEXT_COLOR)
     tag_s = ParagraphStyle('T', fontName=F, fontSize=SZ, alignment=TA_CENTER,
-                           spaceAfter=2, leading=LN, textColor=SUB_COLOR)
+                           spaceAfter=1, leading=LN, textColor=SUB_COLOR)
     contact_s = ParagraphStyle('C', fontName=F, fontSize=SZ, alignment=TA_CENTER,
-                               spaceAfter=6, leading=LN, textColor=TEXT_COLOR)
-    sec_s = ParagraphStyle('S', fontName=F, fontSize=12, spaceBefore=8, spaceAfter=2,
-                           leading=15, textColor=HEADER_COLOR)
-    body_s = ParagraphStyle('B', fontName=F, fontSize=SZ, spaceAfter=2,
+                               spaceAfter=4, leading=LN, textColor=TEXT_COLOR)
+    sec_s = ParagraphStyle('S', fontName=F, fontSize=11, spaceBefore=6, spaceAfter=1,
+                           leading=13, textColor=HEADER_COLOR)
+    body_s = ParagraphStyle('B', fontName=F, fontSize=SZ, spaceAfter=1,
                             leading=LN, textColor=TEXT_COLOR)
     right_s = ParagraphStyle('R', fontName=F, fontSize=SZ, alignment=TA_RIGHT,
-                             spaceAfter=2, leading=LN, textColor=TEXT_COLOR)
-    bullet_s = ParagraphStyle('Bu', fontName=F, fontSize=SZ, leftIndent=16,
-                              firstLineIndent=-10, spaceAfter=2, leading=LN,
+                             spaceAfter=1, leading=LN, textColor=TEXT_COLOR)
+    bullet_s = ParagraphStyle('Bu', fontName=F, fontSize=SZ, leftIndent=14,
+                              firstLineIndent=-8, spaceAfter=1, leading=LN,
                               textColor=TEXT_COLOR)
     sl = ParagraphStyle('SL', fontName=F, fontSize=SZ, leading=LN, textColor=TEXT_COLOR)
     sv = ParagraphStyle('SV', fontName=F, fontSize=SZ, leading=LN, textColor=TEXT_COLOR)
     sr = ParagraphStyle('Sr', fontName=F, fontSize=SZ, alignment=TA_RIGHT,
-                        spaceAfter=1, leading=LN, textColor=TEXT_COLOR)
+                        spaceAfter=0, leading=LN, textColor=TEXT_COLOR)
     it = ParagraphStyle('I', fontName=F, fontSize=SZ, spaceAfter=1,
                         leading=LN, textColor=TEXT_COLOR)
     center_s = ParagraphStyle('Cn', fontName=F, fontSize=SZ, alignment=TA_CENTER,
-                              spaceAfter=2, leading=LN, textColor=LINK_COLOR)
-    comm_s = ParagraphStyle('Co', fontName=F, fontSize=SZ, spaceAfter=4,
+                              spaceAfter=1, leading=LN, textColor=LINK_COLOR)
+    comm_s = ParagraphStyle('Co', fontName=F, fontSize=SZ, spaceAfter=2,
                             leading=LN, textColor=TEXT_COLOR)
 
     # --- Helpers ---
@@ -246,9 +246,9 @@ def generate_cv_pdf(
         return f'<link href="{url}" color="{LINK_COLOR}"><u>{text}</u></link>'
 
     def section(text):
-        el.append(Spacer(1, 6))
+        el.append(Spacer(1, 3))
         el.append(Paragraph(B(text), sec_s))
-        el.append(HRFlowable(width="100%", thickness=0.8, spaceAfter=4,
+        el.append(HRFlowable(width="100%", thickness=0.8, spaceAfter=3,
                               color=HexColor(HEADER_COLOR)))
 
     def bul(text):
@@ -273,8 +273,8 @@ def generate_cv_pdf(
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('LEFTPADDING', (0, 0), (-1, -1), 0),
             ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), 2),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+            ('TOPPADDING', (0, 0), (-1, -1), 1.5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 1.5),
         ]))
         el.append(t)
 
@@ -347,13 +347,13 @@ def generate_cv_pdf(
         for b in proj["bullets"]:
             bul(b)
         if i < len(proj_list) - 1:
-            el.append(Spacer(1, 4))
+            el.append(Spacer(1, 2))
 
     # ── EXPERIENCE ──
     section('Experience')
     for i, exp in enumerate(EXPERIENCE):
         if i > 0:
-            el.append(Spacer(1, 4))
+            el.append(Spacer(1, 2))
         row(B(exp["title"]), exp["dates"])
         el.append(Paragraph(exp["company"], it))
         for b in exp["bullets"]:
@@ -373,7 +373,6 @@ def generate_cv_pdf(
 
     # ── REFERENCES ──
     section('References')
-    el.append(Spacer(1, 4))
     el.append(Paragraph(f'{B(I("Available upon request"))}', center_s))
 
     doc.build(el)
