@@ -38,6 +38,11 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - ALL section content aligned with section header — same left margin, no extra indent
 - Skills as inline paragraphs, NOT two-column tables
 - Role-adaptive tagline + summary: get_role_profile(role_title) matches JD to profile (data scientist, data analyst, ml engineer, ai engineer)
+- YOE: Data Analyst = 3+ YOE, all other roles = 2+ YOE
+- 5 base skill categories (Languages, AI/ML, DevOps, BI/Tools, Practices) + dynamic "Also proficient in:" from JD
+- build_extra_skills() deduplicates via synonym matching (AWS=Amazon Web Services, ML=Machine Learning, etc.)
+- Soft skills filtered from extra skills (customer focus, teamwork, etc. never appear in technical skills section)
+- Skills table separator: 29mm between category label and values
 - File naming: Yash_Bishnoi_{Company}.pdf (CV), Yash_Bishnoi_{Company}_CoverLetter.pdf (CL)
 - All project URLs must link to CORRECT GitHub repo — verify before generating
 - No "JD Match" row in skills section
