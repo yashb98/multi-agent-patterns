@@ -1,15 +1,18 @@
-"""Gate 4 Phase A — JD quality and company background checks.
+"""Gate 4 — Application Quality Check.
 
-Pre-LLM filters that block low-quality or suspicious job postings
-before they consume API budget.
+Phase A (pre-generation): JD quality, company background.
+Phase B (post-generation): Deterministic CV scrutiny, LLM FAANG recruiter review.
 """
 
 from __future__ import annotations
 
+import json as _json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from shared.logging_config import get_logger
+from jobpulse.utils.safe_io import safe_openai_call
 
 logger = get_logger(__name__)
 
@@ -139,4 +142,157 @@ def check_company_background(
         is_generic=is_generic,
         previously_applied=previously_applied,
         note=note,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase B: Post-generation CV scrutiny
+# ---------------------------------------------------------------------------
+
+_CONVERSATIONAL_PATTERNS: list[str] = [
+    r"\bI worked\b", r"\bI helped\b", r"\bI was responsible\b",
+    r"\bMy role was\b", r"\bI have\b", r"\bI am\b",
+]
+
+_INFORMAL_WORDS: list[str] = [
+    r"\breally\b", r"\bvery\b", r"\bjust\b",
+    r"\bstuff\b", r"\bthings\b", r"\bnice\b",
+]
+
+_METRIC_PATTERN = re.compile(
+    r"\d+[%xX]|\d+\+|\$[\d,.]+|£[\d,.]+|\d+[kKmM]\b"
+    r"|\d+ (?:users|requests|apps|tests|skills|projects|endpoints|agents|bots)"
+)
+
+_MAX_CV_CHARS = 4500  # heuristic for 2-page limit
+
+
+@dataclass
+class CVScrutinyResult:
+    status: str = "clean"  # "clean" | "acceptable" | "needs_fix"
+    has_error: bool = False
+    missing_metrics_count: int = 0
+    conversational_count: int = 0
+    informal_count: int = 0
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LLMScrutinyResult:
+    score: int = 0
+    verdict: str = "reject"
+    needs_review: bool = True
+    strengths: list[str] = field(default_factory=list)
+    weaknesses: list[str] = field(default_factory=list)
+    breakdown: dict[str, int] = field(default_factory=dict)
+
+
+def scrutinize_cv_deterministic(cv_text: str) -> CVScrutinyResult:
+    """B1: FAANG-level deterministic checks on CV text."""
+    result = CVScrutinyResult()
+
+    # Page limit heuristic
+    if len(cv_text) > _MAX_CV_CHARS:
+        result.has_error = True
+        result.warnings.append(f"CV too long ({len(cv_text)} chars, max {_MAX_CV_CHARS})")
+
+    # Metrics in bullet lines
+    lines = cv_text.split("\n")
+    bullet_lines = [
+        l for l in lines
+        if l.strip().startswith(("•", "-", "–", "·"))
+        or (len(l.strip()) > 20 and not l.strip().isupper())
+    ]
+    lines_without_metrics = 0
+    for line in bullet_lines:
+        if not _METRIC_PATTERN.search(line):
+            lines_without_metrics += 1
+    result.missing_metrics_count = lines_without_metrics
+
+    # Conversational text
+    for pattern in _CONVERSATIONAL_PATTERNS:
+        result.conversational_count += len(re.findall(pattern, cv_text, re.IGNORECASE))
+    if result.conversational_count > 0:
+        result.warnings.append(f"Conversational text: {result.conversational_count} instances")
+
+    # Informal words
+    for pattern in _INFORMAL_WORDS:
+        result.informal_count += len(re.findall(pattern, cv_text, re.IGNORECASE))
+    if result.informal_count > 0:
+        result.warnings.append(f"Informal words: {result.informal_count} instances")
+
+    # Status
+    total_warnings = len(result.warnings) + (1 if result.missing_metrics_count > 2 else 0)
+    if result.has_error:
+        result.status = "needs_fix"
+    elif total_warnings == 0:
+        result.status = "clean"
+    elif total_warnings <= 2:
+        result.status = "acceptable"
+    else:
+        result.status = "needs_fix"
+
+    return result
+
+
+def scrutinize_cv_llm(
+    cv_text: str,
+    role: str,
+    company: str,
+    required_skills: list[str],
+    preferred_skills: list[str],
+) -> LLMScrutinyResult:
+    """B2: GPT-5o-mini as a FAANG senior recruiter reviewing the CV."""
+    prompt = (
+        f"You are a senior IT recruiter at Google reviewing a CV for: {role} at {company}.\n\n"
+        f"Required skills: {', '.join(required_skills[:15])}\n"
+        f"Preferred skills: {', '.join(preferred_skills[:10])}\n\n"
+        f"CV:\n{cv_text[:3000]}\n\n"
+        f"Score 0-10:\n"
+        f"1. Relevance (0-3): Does it address requirements?\n"
+        f"2. Evidence (0-3): Claims backed by metrics/projects?\n"
+        f"3. Presentation (0-2): Professional, clear, no fluff?\n"
+        f"4. Standout (0-2): Would you want to interview?\n\n"
+        f"Return ONLY valid JSON:\n"
+        f'{{"total_score": 0-10, "relevance": 0-3, "evidence": 0-3, '
+        f'"presentation": 0-2, "standout": 0-2, '
+        f'"strengths": ["..."], "weaknesses": ["..."], '
+        f'"verdict": "shortlist"|"maybe"|"reject"}}'
+    )
+
+    import openai
+    client = openai.OpenAI()
+    response = safe_openai_call(
+        client,
+        model="gpt-5o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        caller="gate4_llm_scrutiny",
+    )
+
+    if not response:
+        logger.warning("Gate 4 LLM scrutiny returned None")
+        return LLMScrutinyResult(needs_review=True)
+
+    try:
+        data = _json.loads(response)
+    except _json.JSONDecodeError:
+        logger.warning("Gate 4 LLM scrutiny invalid JSON: %s", response[:200])
+        return LLMScrutinyResult(needs_review=True)
+
+    score = int(data.get("total_score", 0))
+    verdict = data.get("verdict", "reject")
+
+    return LLMScrutinyResult(
+        score=score,
+        verdict=verdict,
+        needs_review=score < 7,
+        strengths=data.get("strengths", []),
+        weaknesses=data.get("weaknesses", []),
+        breakdown={
+            "relevance": data.get("relevance", 0),
+            "evidence": data.get("evidence", 0),
+            "presentation": data.get("presentation", 0),
+            "standout": data.get("standout", 0),
+        },
     )
