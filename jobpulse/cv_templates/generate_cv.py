@@ -159,7 +159,7 @@ DEFAULT_PROJECTS = [
             'Developed <b>clustering</b> and classification workflows grouping policy documents by topic, risk level, and compliance status.',
             'Built <b>dashboards</b> surfacing audit results, compliance metrics, and <b>content performance</b> indicators in real time.',
             'Delivered clear, <b>actionable insights</b> from messy data sources, bridging data science with strategic compliance decisions.',
-            'Turns out, batching vector insertions cut indexing time by 60%; finding the right lever mattered more than model complexity.',
+            'Optimised vector insertion pipeline, reducing indexing time by <b>60%</b> through batch processing and query tuning.',
         ],
     },
     {
@@ -169,7 +169,7 @@ DEFAULT_PROJECTS = [
             '30+ projects spanning <b>NLP</b>, <b>web scraping</b>, <b>clustering</b>, <b>forecasting</b>, and statistical testing using <b>Python</b>, <b>SQL</b>, and Scikit-learn.',
             'Built <b>web scraping</b> pipelines using BeautifulSoup and Scrapy to collect, clean, and structure data from multiple online sources.',
             'Ran <b>statistical tests</b> (A/B testing, hypothesis validation, correlation analysis) to measure experimental outcomes and validate insights.',
-            'The tricky part was handling messy, multi-source datasets; I didn\'t expect format inconsistencies to compound that fast.',
+            'Standardised <b>data cleaning</b> workflows across multi-source datasets, resolving format inconsistencies that impacted <b>40%</b> of raw inputs.',
         ],
     },
     {
