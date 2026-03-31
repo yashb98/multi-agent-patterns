@@ -7,7 +7,7 @@ databases are never touched (per mistakes.md 2026-03-25 rule).
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -235,3 +235,91 @@ def test_sync_repos_handles_sparse_repo():
 
     stats = store.get_profile_stats()
     assert stats["total_projects"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 8: sync_readme_skills extracts skills from README text
+# ---------------------------------------------------------------------------
+
+
+def test_sync_readme_skills_extracts_from_readme():
+    """Test that README skills are extracted and linked to projects."""
+    from jobpulse.github_profile_sync import sync_readme_skills
+
+    # Mock the GitHub API response with a fake README
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = """
+    # My Project
+    Built with Python, FastAPI, Docker, and Kubernetes.
+    Uses PostgreSQL for data storage and Redis for caching.
+    Implements CI/CD pipelines with GitHub Actions.
+    Machine learning models trained with PyTorch.
+    """
+
+    with patch("httpx.Client") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+        mock_client.return_value.__exit__ = MagicMock(return_value=False)
+        mock_instance.get.return_value = mock_response
+
+        # Patch time.sleep to avoid delays in test
+        with patch("jobpulse.github_profile_sync.time.sleep"):
+            store = _make_store()
+            sync_readme_skills(SAMPLE_REPOS, store)
+
+    # Check that projects have README-extracted skills
+    stats = store.get_profile_stats()
+    # Should have created skill entities from README text
+    assert stats["total_skills"] > 0, "Expected skills extracted from README"
+    # Should have DEMONSTRATES relations
+    assert stats["total_demonstrates"] > 0, "Expected DEMONSTRATES relations from README skills"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: sync_readme_skills handles missing README gracefully
+# ---------------------------------------------------------------------------
+
+
+def test_sync_readme_skills_handles_404():
+    """sync_readme_skills should skip repos with no README (404)."""
+    from jobpulse.github_profile_sync import sync_readme_skills
+
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+
+    with patch("httpx.Client") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+        mock_client.return_value.__exit__ = MagicMock(return_value=False)
+        mock_instance.get.return_value = mock_response
+
+        with patch("jobpulse.github_profile_sync.time.sleep"):
+            store = _make_store()
+            sync_readme_skills(SAMPLE_REPOS, store)
+
+    stats = store.get_profile_stats()
+    assert stats["total_skills"] == 0
+    assert stats["total_demonstrates"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 10: sync_readme_skills skips repos without owner/repo name format
+# ---------------------------------------------------------------------------
+
+
+def test_sync_readme_skills_skips_invalid_names():
+    """Repos without owner/repo format (no slash) should be skipped."""
+    from jobpulse.github_profile_sync import sync_readme_skills
+
+    repos_no_slash = [
+        {"name": "no-slash-repo", "description": "", "languages": [], "topics": []},
+    ]
+
+    with patch("jobpulse.github_profile_sync.time.sleep"):
+        store = _make_store()
+        # Should not attempt any HTTP calls for repos without "/"
+        sync_readme_skills(repos_no_slash, store)
+
+    stats = store.get_profile_stats()
+    assert stats["total_skills"] == 0

@@ -11,6 +11,8 @@ Cron: 3am daily
 
 from __future__ import annotations
 
+import time
+
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -57,6 +59,76 @@ def sync_repos_to_graph(repos: list[dict], store) -> None:  # type: ignore[type-
                 adapted.get("name"),
                 exc,
             )
+
+
+# ---------------------------------------------------------------------------
+# Source 1b: README-based skill extraction
+# ---------------------------------------------------------------------------
+
+
+def sync_readme_skills(repos: list[dict], store) -> None:  # type: ignore[type-arg]
+    """Fetch README for each repo and extract skills via rule-based taxonomy.
+
+    Creates DEMONSTRATES relations between projects and skills found in READMEs.
+    No LLM calls -- uses the 582-entry skill taxonomy for free extraction.
+    """
+    import httpx
+
+    from jobpulse.config import GITHUB_TOKEN
+    from jobpulse.skill_extractor import extract_skills_rule_based
+
+    headers = {"Accept": "application/vnd.github.raw"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    total_skills = 0
+    for repo in repos:
+        repo_name = repo.get("name", "")
+        if not repo_name or "/" not in repo_name:
+            continue
+
+        try:
+            with httpx.Client(timeout=15) as client:
+                resp = client.get(
+                    f"https://api.github.com/repos/{repo_name}/readme",
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    logger.debug("No README for %s (status %d)", repo_name, resp.status_code)
+                    continue
+
+                readme_text = resp.text
+                if len(readme_text) < 50:
+                    continue
+
+                # Extract skills from README using rule-based taxonomy
+                result = extract_skills_rule_based(readme_text)
+                skills = result.get("required_skills", []) + result.get("preferred_skills", [])
+
+                if skills:
+                    # Build enriched repo dict with README-extracted skills merged into topics
+                    languages: list[str] = repo.get("languages") or []
+                    primary_language: str = languages[0] if languages else ""
+                    enriched: dict = {
+                        "name": repo_name,
+                        "description": repo.get("description", "") or "",
+                        "language": primary_language,
+                        "topics": list(
+                            {*repo.get("topics", []), *(s.lower() for s in skills)}
+                        ),
+                        "html_url": repo.get("url", ""),
+                    }
+                    store.upsert_project(enriched)
+                    total_skills += len(skills)
+                    logger.debug("README enriched %s with %d skills", repo_name, len(skills))
+
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("README fetch failed for %s: %s", repo_name, exc)
+
+        # Brief pause to respect GitHub rate limits
+        time.sleep(0.3)
+
+    logger.info("Synced README skills: %d skills across %d repos", total_skills, len(repos))
 
 
 # ---------------------------------------------------------------------------
@@ -181,12 +253,20 @@ def sync_profile() -> None:
     store = SkillGraphStore()
 
     # --- Source 1: GitHub repos ---
+    repos: list[dict] = []
     try:
         repos = fetch_and_cache_repos()
         logger.info("Fetched %d repos from GitHub", len(repos))
         sync_repos_to_graph(repos, store)
     except Exception as exc:  # noqa: BLE001
         logger.error("GitHub repo sync failed: %s", exc)
+
+    # --- Source 1b: README-based skill extraction ---
+    if repos:
+        try:
+            sync_readme_skills(repos, store)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("README skill sync failed: %s", exc)
 
     # --- Source 2: Resume skills ---
     try:

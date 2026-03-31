@@ -456,12 +456,34 @@ class SkillGraphStore:
         breakdown["stack_coherence"] = coherence
 
         # --- Domain Relevance (0-15) ---
-        # Simple heuristic: check how many required skills are in known clusters
+        # Heuristic: check how many required skills are in known clusters,
+        # plus AI/ML keyword detection for roles where industry field is generic.
         required_normalized = {self._normalize(s) for s in required}
         domain_overlap = 0
         for cluster_skills in _STACK_CLUSTERS.values():
             overlap = len(required_normalized & cluster_skills)
             domain_overlap = max(domain_overlap, overlap)
+
+        # AI/ML keyword detection: if 3+ AI/ML-related skills appear in required,
+        # treat as AI/ML domain match regardless of the industry field.
+        _AI_ML_KEYWORDS = {
+            "python", "machine learning", "deep learning", "nlp",
+            "natural language processing", "pytorch", "tensorflow",
+            "llm", "large language models", "computer vision", "cv",
+            "reinforcement learning", "transformers", "huggingface",
+            "langchain", "langgraph", "rag", "embeddings", "vector",
+            "scikit-learn", "keras", "mlflow", "mlops", "data science",
+            "neural networks", "generative ai", "genai", "agents",
+            "openai", "anthropic", "gpt", "claude",
+        }
+        ai_ml_hits = len(required_normalized & _AI_ML_KEYWORDS)
+
+        # User domains we can match against
+        user_domains = {"ai/ml", "data science", "fintech", "saas", "technology"}
+
+        if ai_ml_hits >= 3:
+            # Strong AI/ML signal from required skills -- boost domain score
+            domain_overlap = max(domain_overlap, 4)
 
         if domain_overlap >= 4:
             domain_score = 15.0  # direct match
