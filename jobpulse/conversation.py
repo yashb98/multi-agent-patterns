@@ -82,7 +82,7 @@ def chat(user_message: str) -> str:
         from openai import OpenAI
         client = OpenAI(api_key=OPENAI_API_KEY)
 
-        model = os.getenv("CONVERSATION_MODEL", "gpt-5o-mini")
+        model = os.getenv("CONVERSATION_MODEL", "gpt-4.1-mini")
 
         messages = [{"role": "system", "content": _build_system_prompt()}]
         messages.extend(_history)

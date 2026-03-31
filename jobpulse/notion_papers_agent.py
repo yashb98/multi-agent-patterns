@@ -24,7 +24,7 @@ def generate_paper_summary(paper: dict) -> str:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-5o-mini",
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": f"""Write a ~500 word summary of this paper with these sections:
 
 **Problem**: What gap or challenge does this address?

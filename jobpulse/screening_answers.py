@@ -148,7 +148,7 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
-            model="gpt-5o-mini",
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
             temperature=0.4,

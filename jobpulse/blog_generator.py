@@ -19,7 +19,7 @@ def _llm_call(system: str, user: str, max_tokens: int = 2500, temperature: float
     from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
     response = client.chat.completions.create(
-        model="gpt-5o-mini",
+        model="gpt-4.1-mini",
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},

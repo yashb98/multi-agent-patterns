@@ -144,7 +144,7 @@ def generate_cover_letter(
     matched_skills: list[str],
     matched_projects: list[str],
 ) -> Path | None:
-    """Generate a cover letter via gpt-5o-mini and save as a text file.
+    """Generate a cover letter via gpt-4.1-mini and save as a text file.
 
     Saves to data/applications/{job.job_id}/cover_letter.txt
     Returns the file path on success, None on failure.
@@ -174,7 +174,7 @@ def generate_cover_letter(
 
     cover_letter_text = safe_openai_call(
         client,
-        model="gpt-5o-mini",
+        model="gpt-4.1-mini",
         temperature=0.5,
         messages=[{"role": "user", "content": prompt}],
         caller="cover_letter_agent",

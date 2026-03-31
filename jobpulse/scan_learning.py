@@ -446,7 +446,7 @@ class ScanLearningEngine:
         client = openai.OpenAI()
         response = safe_openai_call(
             client,
-            model="gpt-5o-mini",
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             caller="scan_learning_llm_analysis",

@@ -57,7 +57,7 @@ def get_cost_estimates():
             "GROUP BY agent_name ORDER BY llm_calls DESC"
         ).fetchall()
         conn.close()
-        # Estimate: ~$0.001 per gpt-5o-mini call
+        # Estimate: ~$0.001 per gpt-4.1-mini call
         costs = []
         for r in rows:
             d = dict(r)

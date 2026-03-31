@@ -313,7 +313,7 @@ def classify_llm(text: str) -> ParsedCommand:
 
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
-            model="gpt-5o-mini",
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": f"""Classify this Telegram message into ONE intent:
 
 CREATE_TASKS — user wants to add tasks/todos

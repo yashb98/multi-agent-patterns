@@ -78,7 +78,7 @@ def managed_persistent_browser(
 def safe_openai_call(
     client: Any,
     *,
-    model: str = "gpt-5o-mini",
+    model: str = "gpt-4.1-mini",
     messages: list[dict[str, str]],
     temperature: float = 0.5,
     timeout: float = 60.0,

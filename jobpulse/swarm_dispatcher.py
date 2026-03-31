@@ -233,7 +233,7 @@ def rlm_synthesize(sections: dict, query: str) -> str | None:
         backend = os.getenv("RLM_BACKEND", "openai")
         rlm = RLM(
             backend=backend,
-            backend_kwargs={"model": os.getenv("RLM_ROOT_MODEL", "gpt-5o-mini")},
+            backend_kwargs={"model": os.getenv("RLM_ROOT_MODEL", "gpt-4.1-mini")},
             max_depth=1,
             max_iterations=int(os.getenv("RLM_MAX_ITERATIONS", "10")),
             max_budget=float(os.getenv("RLM_MAX_BUDGET", "0.10")),

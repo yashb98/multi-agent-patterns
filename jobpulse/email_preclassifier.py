@@ -472,7 +472,7 @@ Respond in JSON only."""
 
     try:
         response = client.chat.completions.create(
-            model="gpt-5o-mini",
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
             temperature=0,
