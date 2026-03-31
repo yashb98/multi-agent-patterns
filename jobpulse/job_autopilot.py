@@ -392,7 +392,14 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                 if jd_skills:
                     extra_skills["JD Match:"] = " | ".join(jd_skills[:10])
 
-                # Dynamic project selection — pick top 4 from MindGraph
+                # Pre-generation: sync Notion Skill Tracker (user may have approved new skills)
+                try:
+                    from jobpulse.skill_tracker_notion import sync_verified_to_profile
+                    sync_verified_to_profile()
+                except Exception:
+                    pass  # Non-blocking — profile data from 3am cron is still valid
+
+                # Dynamic project selection — pick top 4 from MindGraph (priority-ordered)
                 from jobpulse.project_portfolio import get_best_projects_for_jd
                 matched_projects = get_best_projects_for_jd(
                     listing.required_skills, listing.preferred_skills,

@@ -72,6 +72,7 @@ EDUCATION = [
         "institution": "University of Dundee",
         "dates": "Jan 2025 \u2013 Jan 2026",
         "dissertation": "Deep Learning for Facial 3D Reconstruction - Simulator",
+        "dissertation_url": "https://github.com/yashb98/Deep-Learning-for-Facial-3D-Reconstruction---Simulator",
         "modules": "Machine Learning | Advanced Programming Techniques | Design Methods | Software Engineering | Software Development | Web Development | Database Systems",
     },
     {
@@ -135,8 +136,8 @@ COMMUNITY = [
 # Base skills — 4 clean categories
 BASE_SKILLS = {
     "Languages:": "Python | SQL | JavaScript | TypeScript",
-    "AI/ML:": "NLP | Text Analysis | Clustering | Scikit-learn | PyTorch | TensorFlow | Pandas | NumPy | LangChain | Hugging Face | Web Scraping",
-    "BI/Tools:": "Power BI | DAX | Looker | Excel | APIs | FastAPI | Flask | Docker | AWS | GCP | Azure | Git | GitHub",
+    "AI/ML:": "NLP | Text Analysis | Clustering | Scikit-learn | PyTorch | TensorFlow | Pandas | NumPy | LangChain | Hugging Face | RAG",
+    "BI/Tools:": "Power BI | DAX | Looker | Excel | APIs | FastAPI | Flask | Docker | AWS | GCP | Azure | Git | GitHub | Web Scraping",
     "Practices:": "Statistical Testing | Forecasting | Dashboards | Data Modelling | EDA | Data Cleaning | MLOps | Documentation",
 }
 
@@ -313,8 +314,8 @@ def generate_cv_pdf(
         el.append(Paragraph(summary, body_s))
     else:
         el.append(Paragraph(
-            f'{B("Software Engineer")} who built a {B("54,500 LOC")} production AI system with '
-            f'{B("350 tests")} using {B("Claude Code")} as primary development tool. '
+            f'{B("Software Engineer")} who built a {B("61,500+ LOC")} production AI system with '
+            f'{B("488 tests")} using {B("Claude Code")} as primary development tool. '
             f'Researches and deploys emerging {B("AI tools")} ({I("Cursor")}, {I("Copilot")}, '
             f'{I("Codex")}) into working systems used by real teams. Specialises in '
             f'{B("rapid prototyping")}, {B("Python API integrations")}, and '
@@ -328,7 +329,10 @@ def generate_cv_pdf(
             el.append(Spacer(1, 3))
         row(f'{B(edu["degree"])}, {edu["institution"]}', edu["dates"])
         if "dissertation" in edu:
-            el.append(Paragraph(f'{B("Dissertation:")} {edu["dissertation"]}', body_s))
+            diss_text = edu["dissertation"]
+            if "dissertation_url" in edu:
+                diss_text = f'{L(edu["dissertation_url"], edu["dissertation"])}'
+            el.append(Paragraph(f'{B("Dissertation:")} {diss_text}', body_s))
         if "modules" in edu:
             el.append(Paragraph(f'{B("Core Modules:")} {edu["modules"]}', body_s))
         if "cgpa" in edu:

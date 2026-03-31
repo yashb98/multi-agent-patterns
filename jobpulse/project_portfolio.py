@@ -23,8 +23,9 @@ PORTFOLIO: dict[str, dict] = {
     "yashb98/multi-agent-patterns": {
         "title": "Multi-Agent Orchestration System | Python | LangGraph | OpenAI",
         "url": "https://github.com/yashb98/multi-agent-patterns",
+        "priority": 1,  # Always first if it matches — strongest project
         "bullets": [
-            'Built a <b>54,500 LOC</b> production AI system with <b>350 tests</b>, <b>215 files</b>, and <b>5 databases</b>.',
+            'Built a <b>61,500+ LOC</b> production AI system with <b>488 tests</b>, <b>259 files</b>, and <b>5 databases</b> — actively growing.',
             'Designed <b>4 LangGraph</b> orchestration patterns with GRPO experiential learning and persona evolution.',
             'Shipped <b>10+</b> autonomous agents (Gmail, Calendar, GitHub, Notion, Budget) running <b>24/7</b> via Telegram.',
             'Built multi-source <b>fact-checking</b> pipeline using Semantic Scholar API with <b>9.5/10</b> accuracy gate.',
@@ -188,11 +189,21 @@ def get_best_projects_for_jd(
         logger.warning("project_portfolio: SkillGraphStore query failed: %s", exc)
         matches = []
 
-    selected: list[dict] = []
+    # Sort matches: priority projects first (lower number = higher priority), then by skill overlap
+    prioritized = []
     for match in matches:
+        entry = PORTFOLIO.get(match.name)
+        if entry:
+            priority = entry.get("priority", 99)
+            prioritized.append((priority, match.skill_overlap, match, entry))
+
+    # Sort by priority first (1 before 99), then by skill overlap desc
+    prioritized.sort(key=lambda x: (x[0], -x[1]))
+
+    selected: list[dict] = []
+    for _priority, _overlap, match, entry in prioritized:
         if len(selected) >= top_n:
             break
-        entry = PORTFOLIO.get(match.name)
         if entry:
             numbered = dict(entry)
             numbered["title"] = f"{len(selected) + 1}. {entry['title']}"
