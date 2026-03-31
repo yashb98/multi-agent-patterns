@@ -20,16 +20,16 @@ logger = get_logger(__name__)
 #           Workday: 10 calls/sec but has behavioral analysis.
 # TotalJobs/Glassdoor: Stubs — no actual scanning or applying yet.
 DAILY_CAPS: dict[str, int] = {
-    "linkedin": 10,     # reduced from 15 — ML detection risk at higher volumes
-    "indeed": 5,        # reduced from 10 — aggressive IP banning, permanent suspension
-    "reed": 4,          # API-based, safe
+    "linkedin": 15,     # updated 2026-03-31 per user request
+    "indeed": 8,        # updated 2026-03-31 per user request
+    "reed": 7,          # updated 2026-03-31 per user request
     "totaljobs": 4,     # stub
     "greenhouse": 7,    # company-hosted, low risk
     "lever": 7,         # 2 req/sec limit, safe
     "workday": 5,       # behavioral analysis, some companies have 3rd-party bot detection
     "generic": 5,       # unknown targets, be conservative
 }
-TOTAL_DAILY_CAP = 25          # reduced from 40 — quality over quantity
+TOTAL_DAILY_CAP = 30          # updated 2026-03-31 — LinkedIn 15 + Indeed 8 + Reed 7
 SESSION_BREAK_EVERY = 5       # reduced from 10 — break every 5 apps
 SESSION_BREAK_MINUTES = 10    # increased from 5 — longer breaks between batches
 

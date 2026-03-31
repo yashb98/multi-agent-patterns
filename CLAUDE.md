@@ -82,11 +82,11 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 | Platform | Cap | Notes |
 |----------|-----|-------|
-| LinkedIn | 10 | Persistent browser, human typing, 30min session breaks |
+| LinkedIn | 15 | Persistent browser, human typing, 30min session breaks |
 | Greenhouse/Lever | 7 | Anti-automation flags, headed mode |
-| Indeed/Workday/Generic | 5 | Conservative — aggressive detection |
-| Reed | 4 | Official API with 429 retry |
-| **Total** | **25** | 20-45s delay between apps, 10min break every 5 |
+| Indeed/Workday/Generic | 8 | Conservative — aggressive detection |
+| Reed | 7 | Official API with 429 retry |
+| **Total** | **30** | 20-45s delay between apps, 10min break every 5 |
 
 **Safety:** mutex on `apply_job()`, record-before-submit, pipeline lock, UTC daily caps.
 

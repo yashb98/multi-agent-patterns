@@ -1,11 +1,11 @@
 # Rules: Job Autopilot (jobpulse/job_**/*)
 
-## Daily Rate Limits (March 2026, research-backed)
-- LinkedIn: 10/day, 30min session break every 5 apps, persistent browser profile
+## Daily Rate Limits (updated 2026-03-31)
+- LinkedIn: 15/day, 30min session break every 5 apps, persistent browser profile
 - Greenhouse/Lever: 7/day, headed mode (not headless)
-- Indeed/Workday/Generic: 5/day, conservative — aggressive detection
-- Reed: 4/day, official API with 429 retry
-- Total: 25/day across all platforms
+- Indeed/Workday/Generic: 8/day, conservative — aggressive detection
+- Reed: 7/day, official API with 429 retry
+- Total: 30/day across all platforms
 
 ## Anti-Detection
 - All adapters: headed mode + --disable-blink-features=AutomationControlled

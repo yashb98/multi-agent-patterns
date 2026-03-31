@@ -150,8 +150,8 @@ All intents recognized by `command_router.py`:
 
 ### Rate Limits (March 2026 — research-backed)
 - **Total daily cap**: 25 applications across all platforms
-- **LinkedIn**: 10/day, session break of 30min every 5 apps (ML detection risk)
-- **Indeed**: 5/day (aggressive IP banning, permanent account suspension)
+- **LinkedIn**: 15/day, session break of 30min every 5 apps (ML detection risk)
+- **Indeed**: 8/day (aggressive IP banning, permanent account suspension)
 - **Workday**: 5/day (behavioral analysis + 3rd-party bot detection)
 - **All platforms**: 20-45s random delay between submissions, 10min break every 5 apps
 
