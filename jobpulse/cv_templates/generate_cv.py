@@ -298,7 +298,7 @@ def generate_cv_pdf(
     # ── HEADER ──
     el.append(Paragraph(B(IDENTITY["name"]), name_s))
     el.append(Spacer(1, 1))
-    tag = tagline or 'MSc Computer Science (UOD) | Software Engineer | Python | AI/ML | Claude Code | System Design'
+    tag = tagline or 'MSc Computer Science (UOD) | 3+ YOE | Software Engineer | Python | AI/ML | NLP | System Design'
     el.append(Paragraph(tag, tag_s))
     el.append(Paragraph(
         f'UK | {IDENTITY["phone"]} | '
