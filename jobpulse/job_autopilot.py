@@ -391,16 +391,24 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                 jd_skills = listing.required_skills + listing.preferred_skills
                 if jd_skills:
                     extra_skills["JD Match:"] = " | ".join(jd_skills[:10])
+
+                # Dynamic project selection — pick top 4 from MindGraph
+                from jobpulse.project_portfolio import get_best_projects_for_jd
+                matched_projects = get_best_projects_for_jd(
+                    listing.required_skills, listing.preferred_skills,
+                )
+
                 cv_path = generate_cv_pdf(
                     company=listing.company,
                     location=listing.location or "United Kingdom",
+                    projects=matched_projects,
                     extra_skills=extra_skills if extra_skills else None,
                     output_dir=str(DATA_DIR / "applications" / listing.job_id),
                 )
                 # Run ATS scorer on the generated CV text
                 from jobpulse.ats_scorer import score_ats
                 from jobpulse.cv_templates.generate_cv import (
-                    BASE_SKILLS, DEFAULT_PROJECTS, EDUCATION, EXPERIENCE,
+                    BASE_SKILLS, EDUCATION, EXPERIENCE,
                 )
                 # Build representative CV text with section headers for scorer
                 cv_parts = [
@@ -411,7 +419,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                     cv_parts.append(" ".join(extra_skills.values()))
                 cv_parts.append("PROJECTS " + " ".join(
                     p["title"] + " " + " ".join(p["bullets"])
-                    for p in DEFAULT_PROJECTS
+                    for p in matched_projects
                 ))
                 cv_parts.append("EXPERIENCE " + " ".join(
                     e["title"] + " " + " ".join(e["bullets"])
