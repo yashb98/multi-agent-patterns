@@ -27,6 +27,8 @@
 - verification_detector.py — Universal CAPTCHA/verification wall detection (Cloudflare, reCAPTCHA, hCaptcha, text, HTTP)
 - scan_learning.py — Scan learning engine: event recording (17 signals), statistical correlation, LLM analysis, adaptive params, cooldown
 - drive_uploader.py — Google Drive auto-upload for CV/CL PDFs, dedup, shareable links for Notion
+- gate4_quality.py — Gate 4: JD quality (A1), company background (A3), CV scrutiny (B1), LLM FAANG review (B2)
+- company_blocklist.py — Notion Company Blocklist: spam detection, user curation (Pending/Blocked/Approved), cached lookup
 
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.

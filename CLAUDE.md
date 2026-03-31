@@ -94,11 +94,13 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 **CV/Cover Letter:** ReportLab PDFs (no xelatex). `cv_templates/generate_cv.py` + `generate_cover_letter.py`. Instant, no LLM calls. Auto-uploaded to Google Drive (separate Resume/Cover Letter folders) with shareable links synced to Notion Job Tracker.
 
-**Pre-Screen (4-Gate Recruiter Model):**
+**Pre-Screen (5-Gate Recruiter Model):**
 Gate 0: Title relevance (instant, pre-LLM) → Gate 1: Kill signals (seniority, primary lang, domain) →
 Gate 2: Must-haves (top-5 skills, project evidence, 12+ matches, 65%+ required) →
 Gate 3: Competitiveness score (0-100: hard skill 35 + project evidence 25 + coherence 15 + domain 15 + recency 10).
 Tiers: reject | skip (<55) | apply (55-74) | strong (75+). LLM calls: ~10/day ($0.23/month vs $5.63 before).
+Gate 4A (pre-gen): JD quality (≥200 chars, ≥5 skills, no boilerplate) + Company Blocklist (Notion-curated spam detection) + company background.
+Gate 4B (post-gen): Deterministic CV scrutiny (metrics, tone, length) + LLM FAANG recruiter review (≥7/10 → proceed, <7 → Notion "Needs Review").
 **Skill Gap Tracker:** Every pre-screened job records missing skills → `skill-gaps` command shows top gaps → CSV export.
 **Notion Skill Tracker:** Unverified skills → Notion as "Pending" → user marks "I Know" / "Don't Know" → verified skills auto-sync to profile. Telegram link after every scan.
 

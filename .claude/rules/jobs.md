@@ -66,6 +66,17 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - JOB_AUTOPILOT_AUTO_SUBMIT=false by default — requires explicit approval
 - JOB_AUTOPILOT_MAX_DAILY=10 default (conservative, below platform limits)
 
+## Gate 4: Application Quality Check
+- Phase A (pre-generation, deterministic, free):
+  - A1: JD quality — block <200 chars, <5 skills, boilerplate (3+ generic phrases with <8 skills)
+  - A2: Company Blocklist — Notion "🚫 Company Blocklist" DB with Pending/Blocked/Approved status. Auto-detect spam keywords (training, bootcamp, recruitment agency) + 10+ listings/7d. Refresh cache before every scan
+  - A3: Company background — generic name detection, past application flag (soft, non-blocking)
+- Phase B (post-generation):
+  - B1: Deterministic CV scrutiny — metrics in bullets, no conversational text, no informal words, 2-page limit
+  - B2: LLM FAANG recruiter review — GPT-5o-mini scores CV 0-10 (relevance 3 + evidence 3 + presentation 2 + standout 2). Score ≥7 → proceed. Score <7 → Notion "Needs Review" with weaknesses in Notes
+- Files: gate4_quality.py, company_blocklist.py
+- Cost: Phase A free, Phase B ~$0.002/call (only for jobs passing Gates 0-3 + Phase A)
+
 ## Verification Wall Learning
 - Universal detector: Cloudflare Turnstile, reCAPTCHA, hCaptcha, text challenges, HTTP 403/429, empty anomaly
 - 17 signals tracked per scan session: time of day, requests, delay, session age, UA, cookies, VPN, mouse, referrer, query, pages, fingerprint, page load
