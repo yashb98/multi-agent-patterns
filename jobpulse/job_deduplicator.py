@@ -33,8 +33,21 @@ def deduplicate(listings: list[JobListing], db: JobDB) -> list[JobListing]:
         return []
 
     new_listings: list[JobListing] = []
+    # Track company+title within this batch to catch same-batch duplicates
+    seen_in_batch: set[str] = set()
 
     for listing in listings:
+        # --- Check 0: within-batch dedup (same company+title) ---
+        batch_key = f"{listing.company.lower().strip()}|{listing.title.lower().strip()}"
+        if batch_key in seen_in_batch:
+            logger.debug(
+                "Dedup: batch duplicate — title=%r company=%r",
+                listing.title,
+                listing.company,
+            )
+            continue
+        seen_in_batch.add(batch_key)
+
         # --- Check 1: exact job_id match ---
         if db.listing_exists(listing.job_id):
             logger.debug(
