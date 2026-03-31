@@ -13,7 +13,11 @@ Usage:
     )
 """
 
+from __future__ import annotations
+
+import json
 import os
+import re
 from pathlib import Path
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
@@ -28,6 +32,142 @@ from jobpulse.config import DATA_DIR
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic point generation
+# ---------------------------------------------------------------------------
+
+_METRIC_RE = re.compile(r'\d+[%$£]|\d{2,}|\$\d|\£\d')
+
+
+def build_dynamic_points(
+    matched_projects: list[dict],
+    required_skills: list[str],
+) -> list[tuple[str, str]]:
+    """Build 4 cover-letter points from matched projects + required skills.
+
+    Each point header lists the JD skills the project demonstrates; the detail
+    is the first bullet containing a metric (falls back to first bullet).
+
+    If fewer than 4 projects are provided, generic education/cert points pad
+    the list to exactly 4.
+    """
+    if not matched_projects:
+        # Fall through to default points in the PDF generator
+        return _default_pad_points([])
+
+    points: list[tuple[str, str]] = []
+    skills_lower = [s.lower() for s in required_skills]
+
+    for proj in matched_projects[:4]:
+        bullets: list[str] = proj.get("bullets", [])
+        title: str = proj.get("title", "Project")
+
+        # Find which required skills overlap with this project's bullets
+        combined_text = " ".join(bullets).lower() + " " + title.lower()
+        overlapping = [s for s, sl in zip(required_skills, skills_lower) if sl in combined_text]
+
+        header = ", ".join(overlapping[:4]) + ":" if overlapping else f"{title}:"
+
+        # Prefer a bullet with a metric
+        detail = ""
+        for b in bullets:
+            if _METRIC_RE.search(b):
+                detail = b
+                break
+        if not detail and bullets:
+            detail = bullets[0]
+        if not detail:
+            detail = f"Built {title} demonstrating production-grade engineering."
+
+        points.append((header, detail))
+
+    return _default_pad_points(points)
+
+
+def _default_pad_points(points: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Pad *points* to exactly 4 with generic education/certification entries."""
+    pad = [
+        (
+            "Education & Continuous Learning:",
+            "MSc Computer Science with focus on AI/ML systems and software engineering.",
+        ),
+        (
+            "Certifications & Self-Study:",
+            "Completed advanced courses in cloud architecture, DevOps, and distributed systems.",
+        ),
+        (
+            "Collaboration & Communication:",
+            "Experienced working in cross-functional teams with agile delivery practices.",
+        ),
+        (
+            "Problem Solving & Adaptability:",
+            "Track record of rapidly learning new frameworks and delivering under tight deadlines.",
+        ),
+    ]
+    idx = 0
+    while len(points) < 4 and idx < len(pad):
+        points.append(pad[idx])
+        idx += 1
+    return points[:4]
+
+
+def polish_points_llm(
+    points: list[tuple[str, str]],
+    role: str,
+    company: str,
+    required_skills: list[str],
+) -> list[tuple[str, str]]:
+    """Optionally refine deterministic points with GPT-5o-mini.
+
+    On any failure (network, bad JSON, missing key) the original *points*
+    are returned unchanged — the PDF will still be generated.
+    """
+    from openai import OpenAI
+    from jobpulse.utils.safe_io import safe_openai_call
+
+    client = OpenAI()
+
+    formatted = json.dumps(
+        [{"header": h, "detail": d} for h, d in points],
+        indent=2,
+    )
+
+    prompt = (
+        f"You are writing 4 numbered points for a cover letter for {role} at {company}. "
+        f"Key skills: {', '.join(required_skills[:8])}.\n\n"
+        f"Refine these points to sound more professional and tailored. "
+        f"Keep ALL metrics and numbers exactly as they are. "
+        f"Return ONLY a JSON array of objects with \"header\" and \"detail\" keys.\n\n"
+        f"{formatted}"
+    )
+
+    raw = safe_openai_call(
+        client,
+        model="gpt-5o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.4,
+        caller="polish_cover_letter_points",
+    )
+
+    if raw is None:
+        return points
+
+    try:
+        # Strip markdown fences if present
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned)
+
+        parsed = json.loads(cleaned)
+        if not isinstance(parsed, list) or len(parsed) < 4:
+            return points
+        result = [(item["header"], item["detail"]) for item in parsed[:4]]
+        return result
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return points
 
 # Template colors
 ORANGE_RED = '#f2511b'
@@ -71,6 +211,8 @@ def generate_cover_letter_pdf(
     points: list[tuple[str, str]] | None = None,
     closing: str | None = None,
     output_dir: str | None = None,
+    matched_projects: list[dict] | None = None,
+    required_skills: list[str] | None = None,
 ) -> Path:
     """Generate a tailored Cover Letter PDF.
 
@@ -83,11 +225,38 @@ def generate_cover_letter_pdf(
         points: List of (header, detail) tuples for the 4 numbered reasons.
         closing: Closing paragraph. Auto-generated if None.
         output_dir: Output directory. Defaults to data/applications/{company}/
+        matched_projects: Project dicts with title/url/bullets from project_portfolio.
+        required_skills: Skills extracted from the JD.
 
     Returns:
         Path to generated PDF.
     """
     _register_fonts()
+
+    # Build dynamic points from matched projects if available
+    if points is None and matched_projects and required_skills:
+        points = build_dynamic_points(matched_projects, required_skills)
+        try:
+            points = polish_points_llm(points, role, company, required_skills)
+        except Exception:
+            pass  # Use unpolished points on LLM failure
+
+    # Build dynamic intro from matched projects
+    if intro is None and matched_projects:
+        project_names = ", ".join(p["title"] for p in matched_projects[:3])
+        intro = (
+            f'I am writing to express my strong interest in the <b>{role}</b> '
+            f'role at <b>{company}</b>. My portfolio includes projects directly relevant '
+            f'to your requirements, including {project_names}.'
+        )
+
+    # Build dynamic hook from required skills
+    if hook is None and required_skills:
+        skill_str = ", ".join(f'<b>{s}</b>' for s in required_skills[:5])
+        hook = (
+            f'With hands-on experience in {skill_str}, I have built production systems '
+            f'that demonstrate these skills with measurable impact.'
+        )
 
     LEFT_COL_W = 33 * mm
     GAP = 5 * mm
