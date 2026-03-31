@@ -23,6 +23,8 @@ from shared.logging_config import get_logger
 from jobpulse.config import DATA_DIR, REED_API_KEY
 from jobpulse.models.application_models import SearchConfig
 from jobpulse.utils.safe_io import managed_persistent_browser
+from jobpulse.verification_detector import detect_verification_wall, simulate_human_interaction
+from jobpulse.scan_learning import ScanLearningEngine
 
 logger = get_logger(__name__)
 
@@ -83,6 +85,96 @@ def _random_ua() -> str:
 def _anti_detection_sleep() -> None:
     """Sleep 2–8 seconds between requests to avoid rate-limiting."""
     time.sleep(random.uniform(2.0, 8.0))
+
+
+class _SessionSignals:
+    """Track signals for the current scan session."""
+
+    def __init__(self, platform: str, user_agent: str) -> None:
+        self.platform = platform
+        self.start_time = time.monotonic()
+        self.request_times: list[float] = []
+        self.user_agent_hash = hashlib.sha256(user_agent.encode()).hexdigest()[:8]
+        self.browser_fingerprint = hashlib.sha256(
+            f"{platform}:1280x800:{user_agent}".encode()
+        ).hexdigest()[:8]
+        self.was_fresh_session = True
+        self.simulated_mouse = False
+        self.referrer_chain = "direct"
+        self.last_query = ""
+        self.waited_for_load = True
+        self.last_load_time_ms = 0
+
+    def record_request(self) -> None:
+        self.request_times.append(time.monotonic())
+
+    @property
+    def requests_count(self) -> int:
+        return len(self.request_times)
+
+    @property
+    def avg_delay(self) -> float:
+        if len(self.request_times) < 2:
+            return 0.0
+        deltas = [
+            self.request_times[i] - self.request_times[i - 1]
+            for i in range(1, len(self.request_times))
+        ]
+        return sum(deltas) / len(deltas)
+
+    @property
+    def session_age(self) -> float:
+        return time.monotonic() - self.start_time
+
+
+def _handle_block(engine: ScanLearningEngine, platform: str, wall: Any, signals: _SessionSignals) -> None:
+    """Record block event, start cooldown, update rules, optionally run LLM analysis."""
+    engine.record_event(
+        platform=platform,
+        requests_in_session=signals.requests_count,
+        avg_delay=signals.avg_delay,
+        session_age_seconds=signals.session_age,
+        user_agent_hash=signals.user_agent_hash,
+        was_fresh_session=signals.was_fresh_session,
+        used_vpn=False,
+        simulated_mouse=signals.simulated_mouse,
+        referrer_chain=signals.referrer_chain,
+        search_query=signals.last_query,
+        pages_before_block=signals.requests_count,
+        browser_fingerprint=signals.browser_fingerprint,
+        waited_for_page_load=signals.waited_for_load,
+        page_load_time_ms=signals.last_load_time_ms,
+        outcome="blocked",
+        wall_type=wall.wall_type,
+    )
+    engine.start_cooldown(platform, wall.wall_type)
+    engine.update_learned_rules(platform)
+    if engine.should_run_llm_analysis():
+        engine.run_llm_analysis(platform)
+
+
+def _record_success(engine: ScanLearningEngine, platform: str, signals: _SessionSignals) -> None:
+    """Record a successful scan session."""
+    if signals.requests_count > 0:
+        engine.record_event(
+            platform=platform,
+            requests_in_session=signals.requests_count,
+            avg_delay=signals.avg_delay,
+            session_age_seconds=signals.session_age,
+            user_agent_hash=signals.user_agent_hash,
+            was_fresh_session=signals.was_fresh_session,
+            used_vpn=False,
+            simulated_mouse=signals.simulated_mouse,
+            referrer_chain=signals.referrer_chain,
+            search_query=signals.last_query,
+            pages_before_block=signals.requests_count,
+            browser_fingerprint=signals.browser_fingerprint,
+            waited_for_page_load=signals.waited_for_load,
+            page_load_time_ms=signals.last_load_time_ms,
+            outcome="success",
+            wall_type=None,
+        )
+        engine.reset_cooldown(platform)
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +356,8 @@ def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
     """Indeed.co.uk job search via Playwright (public search, no login required).
 
     Scrapes job cards from uk.indeed.com and clicks into each to extract the
-    full job description text.
+    full job description text.  Integrates verification wall detection and
+    adaptive scan parameters via ScanLearningEngine.
     """
     try:
         from playwright.sync_api import sync_playwright as _  # noqa: F401
@@ -275,7 +368,23 @@ def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
         )
         return []
 
+    # --- Adaptive pre-scan gate ---
+    engine = ScanLearningEngine()
+    params = engine.get_adaptive_params("indeed")
+    if params.get("cooldown_active"):
+        logger.warning(
+            "scan_indeed: cooldown active until %s — skipping scan",
+            params.get("cooldown_until"),
+        )
+        return []
+
+    delay_min, delay_max = params.get("delay_range", (2.0, 8.0))
+    max_requests = params.get("max_requests", MAX_REQUESTS_PER_PLATFORM)
+    risk_level = params.get("risk_level", "medium")
+
     results: list[dict[str, Any]] = []
+    ua = _random_ua()
+    signals = _SessionSignals("indeed", ua)
 
     try:
         # Indeed doesn't need a saved profile — public search
@@ -285,11 +394,11 @@ def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
             executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             args=["--disable-blink-features=AutomationControlled", "--disable-infobars"],
             ignore_default_args=["--enable-automation"],
-            user_agent=_random_ua(),
+            user_agent=ua,
             viewport={"width": 1280, "height": 800},
         ) as (_browser, page):
             for title in config.titles:
-                if len(results) >= MAX_REQUESTS_PER_PLATFORM:
+                if len(results) >= max_requests:
                     break
 
                 search_url = (
@@ -298,11 +407,31 @@ def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
                     f"&l={_url_encode(config.location)}"
                     f"&fromage=1"  # past 24 hours
                 )
+                signals.last_query = title
 
                 try:
                     logger.info("scan_indeed: fetching '%s'", search_url)
-                    page.goto(search_url, timeout=30_000, wait_until="domcontentloaded")
-                    _anti_detection_sleep()
+                    load_start = time.monotonic()
+                    page.goto(search_url, timeout=30_000, wait_until="networkidle")
+                    signals.last_load_time_ms = int((time.monotonic() - load_start) * 1000)
+                    signals.record_request()
+
+                    # Simulate human interaction for medium/high risk
+                    if risk_level != "low":
+                        simulate_human_interaction(page)
+                        signals.simulated_mouse = True
+
+                    # Check for verification wall after page load
+                    wall = detect_verification_wall(page, expected_results=True)
+                    if wall and wall.confidence >= 0.7:
+                        logger.warning(
+                            "scan_indeed: verification wall detected (%s, %.0f%%) — aborting",
+                            wall.wall_type, wall.confidence * 100,
+                        )
+                        _handle_block(engine, "indeed", wall, signals)
+                        return results
+
+                    time.sleep(random.uniform(delay_min, delay_max))
 
                     # Find job cards
                     cards = page.query_selector_all(
@@ -348,7 +477,19 @@ def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
                             try:
                                 if title_el:
                                     title_el.click()
-                                    time.sleep(random.uniform(1.5, 3.0))
+                                    signals.record_request()
+                                    time.sleep(random.uniform(delay_min, delay_max))
+
+                                    # Check for verification wall after click
+                                    wall = detect_verification_wall(page)
+                                    if wall and wall.confidence >= 0.7:
+                                        logger.warning(
+                                            "scan_indeed: wall after card click (%s) — returning partial results",
+                                            wall.wall_type,
+                                        )
+                                        _handle_block(engine, "indeed", wall, signals)
+                                        return results
+
                                     desc_el = page.query_selector(
                                         ".jobsearch-jobDescriptionText, "
                                         "#jobDescriptionText, "
@@ -382,6 +523,9 @@ def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
                         "scan_indeed: error fetching '%s': %s", search_url, page_err
                     )
 
+            # Session completed without blocks — record success
+            _record_success(engine, "indeed", signals)
+
     except Exception as exc:
         logger.error("scan_indeed: Playwright error: %s", exc)
 
@@ -398,6 +542,8 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
          (created by running: playwright codegen --save-storage=data/linkedin_session)
 
     Returns an empty list if either prerequisite is missing.
+    Integrates verification wall detection and adaptive scan parameters
+    via ScanLearningEngine.
     """
     # Lazy import — Playwright may not be installed
     try:
@@ -419,7 +565,22 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
         )
         return []
 
+    # --- Adaptive pre-scan gate ---
+    engine = ScanLearningEngine()
+    params = engine.get_adaptive_params("linkedin")
+    if params.get("cooldown_active"):
+        logger.warning(
+            "scan_linkedin: cooldown active until %s — skipping scan",
+            params.get("cooldown_until"),
+        )
+        return []
+
+    delay_min, delay_max = params.get("delay_range", (2.0, 8.0))
+    max_requests = params.get("max_requests", MAX_REQUESTS_PER_PLATFORM)
+
     results: list[dict[str, Any]] = []
+    ua = _random_ua()
+    signals = _SessionSignals("linkedin", ua)
 
     try:
         with managed_persistent_browser(
@@ -431,11 +592,11 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                 "--disable-infobars",
             ],
             ignore_default_args=["--enable-automation"],
-            user_agent=_random_ua(),
+            user_agent=ua,
             viewport={"width": 1280, "height": 800},
         ) as (_browser, page):
             for title in config.titles:
-                if len(results) >= MAX_REQUESTS_PER_PLATFORM:
+                if len(results) >= max_requests:
                     break
 
                 search_url = (
@@ -445,10 +606,29 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                     f"&f_TPR=r86400"   # past 24 hours
                     f"&f_E=1,2"        # internship + entry level
                 )
+                signals.last_query = title
 
                 try:
                     logger.info("scan_linkedin: fetching '%s'", search_url)
-                    page.goto(search_url, timeout=45_000, wait_until="domcontentloaded")
+                    load_start = time.monotonic()
+                    page.goto(search_url, timeout=45_000, wait_until="networkidle")
+                    signals.last_load_time_ms = int((time.monotonic() - load_start) * 1000)
+                    signals.record_request()
+
+                    # LinkedIn has ML detection — always simulate human interaction
+                    simulate_human_interaction(page)
+                    signals.simulated_mouse = True
+
+                    # Check for verification wall after page load
+                    wall = detect_verification_wall(page, expected_results=True)
+                    if wall and wall.confidence >= 0.7:
+                        logger.warning(
+                            "scan_linkedin: verification wall detected (%s, %.0f%%) — aborting",
+                            wall.wall_type, wall.confidence * 100,
+                        )
+                        _handle_block(engine, "linkedin", wall, signals)
+                        return results
+
                     # Wait for job cards to render (LinkedIn loads async)
                     try:
                         page.wait_for_selector(".job-card-container, .jobs-search-results-list", timeout=15_000)
@@ -456,7 +636,7 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                         logger.warning("scan_linkedin: job cards not found, trying scroll")
                     # Scroll to trigger lazy loading
                     page.mouse.wheel(0, 500)
-                    _anti_detection_sleep()
+                    time.sleep(random.uniform(delay_min, delay_max))
 
                     cards = page.query_selector_all(".job-card-container")
                     logger.info("scan_linkedin: found %d job cards for '%s'", len(cards), title)
@@ -493,7 +673,19 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                             description = ""
                             try:
                                 card.click()
-                                time.sleep(random.uniform(1.5, 3.0))
+                                signals.record_request()
+                                time.sleep(random.uniform(delay_min, delay_max))
+
+                                # Check for verification wall after card click
+                                wall = detect_verification_wall(page)
+                                if wall and wall.confidence >= 0.7:
+                                    logger.warning(
+                                        "scan_linkedin: wall after card click (%s) — returning partial results",
+                                        wall.wall_type,
+                                    )
+                                    _handle_block(engine, "linkedin", wall, signals)
+                                    return results
+
                                 # LinkedIn shows JD in a side panel or detail view
                                 desc_el = page.query_selector(
                                     ".jobs-description__content, "
@@ -529,6 +721,9 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
 
                 except Exception as page_err:
                     logger.error("scan_linkedin: error fetching '%s': %s", search_url, page_err)
+
+            # Session completed without blocks — record success
+            _record_success(engine, "linkedin", signals)
 
     except Exception as exc:
         logger.error("scan_linkedin: Playwright session error: %s", exc)
