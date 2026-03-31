@@ -32,6 +32,20 @@
   M1: ≥3 of top-5 required skills | M2: ≥2 projects with 2+ overlap | M3: ≥92% of required skills (percentage-based)
 - Experiment tracker: @docs/experiments/2026-03-30-brutal-prescreen-7day.md
 
+## Notion Job Tracker (MANDATORY)
+- Every application MUST have ALL fields filled in the Notion Job Tracker database
+- Resume PDF: upload to Google Drive → paste link in Notion "Resume" field
+- Cover Letter PDF: upload to Google Drive → paste link in Notion "Cover Letter" field
+- Required fields: Company, Role, Platform, Status, Location, ATS Score, Match Tier, Matched Projects, Applied Date, Follow Up Date, Resume link, Cover Letter link
+- Reference: OakNorth application is the standard for how Notion entries should look
+- NEVER leave blank fields — if data unavailable, write "N/A" not empty
+
+## Notion Skill Tracker
+- Unverified skills from JDs → Notion "Pending" → user marks "I Know" / "Don't Know"
+- Run `skill-verify` to sync verified skills to MindGraph profile
+- Telegram scan summary includes Notion Skill Tracker link + pending count
+- Running for 10-15 days to build complete verified skill profile
+
 ## Safety
 - JOB_AUTOPILOT_AUTO_SUBMIT=false by default — requires explicit approval
 - JOB_AUTOPILOT_MAX_DAILY=10 default (conservative, below platform limits)
