@@ -33,7 +33,12 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - MANDATORY 2-page limit for CV — never exceed
 - Every project bullet MUST have a quantified metric (%, count, time saved)
 - No conversational bullets — always professional tone
-- Tagline: no niche tools (Claude Code removed), use universally understood terms
+- NEVER use em-dashes (—), en-dashes (–), or double dashes (--) in CV/CL text — use commas or periods
+- ALL text justified (TA_JUSTIFY) — body, bullets, community section
+- ALL section content aligned with section header — same left margin, no extra indent
+- Skills as inline paragraphs, NOT two-column tables
+- Role-adaptive tagline + summary: get_role_profile(role_title) matches JD to profile (data scientist, data analyst, ml engineer, ai engineer)
+- File naming: Yash_Bishnoi_{Company}.pdf (CV), Yash_Bishnoi_{Company}_CoverLetter.pdf (CL)
 - All project URLs must link to CORRECT GitHub repo — verify before generating
 - No "JD Match" row in skills section
 - Section headers: teal (#1a5276) with thin line

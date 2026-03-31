@@ -14,7 +14,7 @@ from pathlib import Path
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
 from reportlab.lib.colors import HexColor
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
 from reportlab.pdfbase import pdfmetrics
@@ -186,6 +186,75 @@ DEFAULT_PROJECTS = [
 
 
 # ---------------------------------------------------------------------------
+# Role-adaptive tagline and summary
+# ---------------------------------------------------------------------------
+
+_ROLE_PROFILES: dict[str, dict[str, str]] = {
+    "data scientist": {
+        "tagline": "MSc Computer Science (UOD) | 3+ YOE | Data Scientist | Python | Machine Learning | SQL | NLP",
+        "summary": (
+            '<b>Data Scientist</b> with hands-on experience building production ML systems, '
+            'statistical models, and data pipelines. Built a <b>61,500+ LOC</b> autonomous system '
+            'with <b>488 tests</b> integrating ML-based classification, NLP pipelines, and '
+            'experiential learning (GRPO). Specialises in <b>Python</b>, <b>SQL</b>, '
+            '<b>machine learning</b>, and translating complex data into <b>actionable business insights</b>.'
+        ),
+    },
+    "data analyst": {
+        "tagline": "MSc Computer Science (UOD) | 3+ YOE | Data Analyst | Python | SQL | Power BI | Statistical Analysis",
+        "summary": (
+            '<b>Data Analyst</b> with experience building dashboards, automating ETL workflows, '
+            'and delivering actionable insights. Built <b>Power BI</b> dashboards with <b>DAX</b> '
+            'for real-time sales and supplier analysis. Automated <b>SQL</b> and <b>Python</b> '
+            'data pipelines, cutting report prep time by <b>35%</b>. Specialises in '
+            '<b>statistical testing</b>, <b>forecasting</b>, and <b>data-driven decision making</b>.'
+        ),
+    },
+    "ml engineer": {
+        "tagline": "MSc Computer Science (UOD) | 3+ YOE | ML Engineer | Python | PyTorch | MLOps | System Design",
+        "summary": (
+            '<b>ML Engineer</b> who built a <b>61,500+ LOC</b> production AI system with '
+            '<b>488 tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
+            '<b>GRPO experiential learning</b> and <b>persona evolution</b>. Deployed '
+            '<b>10+ autonomous agents</b> running 24/7 with rate-limited automation, '
+            'compiled policy gates, and <b>Docker</b>-based sandboxing.'
+        ),
+    },
+    "ai engineer": {
+        "tagline": "MSc Computer Science (UOD) | 3+ YOE | AI Engineer | Python | LangChain | RAG | Multi-Agent Systems",
+        "summary": (
+            '<b>AI Engineer</b> who built a <b>61,500+ LOC</b> production multi-agent system with '
+            '<b>4 LangGraph orchestration patterns</b>, <b>GRPO experiential learning</b>, and '
+            '<b>RAG retrieval</b>. Shipped <b>10+ autonomous agents</b> with fact-checking, '
+            'persona evolution, and human-in-the-loop approval flows. Specialises in '
+            '<b>agentic architectures</b>, <b>tool-use</b>, and <b>production AI deployment</b>.'
+        ),
+    },
+}
+
+
+def get_role_profile(role_title: str) -> dict[str, str]:
+    """Match a JD role title to the best tagline + summary profile.
+
+    Returns dict with 'tagline' and 'summary' keys, or empty dict if no match.
+    """
+    role_lower = role_title.lower()
+    for key, profile in _ROLE_PROFILES.items():
+        if key in role_lower:
+            return profile
+    # Fallback: check individual keywords
+    if any(kw in role_lower for kw in ("data scien", "ds ", "machine learn")):
+        return _ROLE_PROFILES["data scientist"]
+    if any(kw in role_lower for kw in ("data analy", "bi ", "business intel")):
+        return _ROLE_PROFILES["data analyst"]
+    if any(kw in role_lower for kw in ("ml eng", "mlops")):
+        return _ROLE_PROFILES["ml engineer"]
+    if any(kw in role_lower for kw in ("ai eng", "llm", "agent")):
+        return _ROLE_PROFILES["ai engineer"]
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # PDF Generator
 # ---------------------------------------------------------------------------
 
@@ -219,24 +288,23 @@ def generate_cv_pdf(
     contact_s = ParagraphStyle('C', fontName=F, fontSize=SZ, alignment=TA_CENTER,
                                spaceAfter=4, leading=LN, textColor=TEXT_COLOR)
     sec_s = ParagraphStyle('S', fontName=F, fontSize=11, spaceBefore=6, spaceAfter=1,
-                           leading=13, textColor=HEADER_COLOR)
+                           leading=13, textColor=HEADER_COLOR, leftIndent=0)
     body_s = ParagraphStyle('B', fontName=F, fontSize=SZ, spaceAfter=1,
-                            leading=LN, textColor=TEXT_COLOR)
+                            leading=LN, textColor=TEXT_COLOR, alignment=TA_JUSTIFY,
+                            leftIndent=0)
     right_s = ParagraphStyle('R', fontName=F, fontSize=SZ, alignment=TA_RIGHT,
                              spaceAfter=1, leading=LN, textColor=TEXT_COLOR)
-    bullet_s = ParagraphStyle('Bu', fontName=F, fontSize=SZ, leftIndent=14,
+    bullet_s = ParagraphStyle('Bu', fontName=F, fontSize=SZ, leftIndent=8,
                               firstLineIndent=-8, spaceAfter=1, leading=LN,
-                              textColor=TEXT_COLOR)
-    sl = ParagraphStyle('SL', fontName=F, fontSize=SZ, leading=LN, textColor=TEXT_COLOR)
-    sv = ParagraphStyle('SV', fontName=F, fontSize=SZ, leading=LN, textColor=TEXT_COLOR)
+                              textColor=TEXT_COLOR, alignment=TA_JUSTIFY)
     sr = ParagraphStyle('Sr', fontName=F, fontSize=SZ, alignment=TA_RIGHT,
                         spaceAfter=0, leading=LN, textColor=TEXT_COLOR)
     it = ParagraphStyle('I', fontName=F, fontSize=SZ, spaceAfter=1,
-                        leading=LN, textColor=TEXT_COLOR)
+                        leading=LN, textColor=TEXT_COLOR, leftIndent=0)
     center_s = ParagraphStyle('Cn', fontName=F, fontSize=SZ, alignment=TA_CENTER,
                               spaceAfter=1, leading=LN, textColor=LINK_COLOR)
     comm_s = ParagraphStyle('Co', fontName=F, fontSize=SZ, spaceAfter=2,
-                            leading=LN, textColor=TEXT_COLOR)
+                            leading=LN, textColor=TEXT_COLOR, alignment=TA_JUSTIFY)
 
     # --- Helpers ---
     def B(t): return f'<b>{t}</b>'
@@ -257,7 +325,8 @@ def generate_cv_pdf(
 
     def row(left, right, ls=body_s, rs=right_s, split=0.70):
         t = Table([[Paragraph(left, ls), Paragraph(right, rs)]],
-                  colWidths=[PW * split, PW * (1 - split)])
+                  colWidths=[PW * split, PW * (1 - split)],
+                  hAlign='LEFT')
         t.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('LEFTPADDING', (0, 0), (-1, -1), 0),
@@ -268,16 +337,7 @@ def generate_cv_pdf(
         el.append(t)
 
     def skill_row(label, vals):
-        t = Table([[Paragraph(B(label), sl), Paragraph(vals, sv)]],
-                  colWidths=[LW, PW - LW])
-        t.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), 1.5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 1.5),
-        ]))
-        el.append(t)
+        el.append(Paragraph(f'{B(label)} {vals}', body_s))
 
     # --- Setup output ---
     if output_dir:

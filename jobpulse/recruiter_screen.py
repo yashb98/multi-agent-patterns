@@ -34,16 +34,13 @@ def gate0_title_relevance(title: str, jd_text: str, config: dict) -> bool:
     title_lower = title.lower()
     jd_lower = jd_text.lower() if jd_text else ""
 
-    # Check exclude keywords in title
+    # Check exclude keywords in title only
+    # NOTE: Previously also checked JD body, but that was too aggressive — JDs
+    # mention "senior" and "manager" when describing teammates, not the role itself.
+    # Gate 1 (K1 seniority) handles "X+ years" requirements in JD body.
     for kw in config.get("exclude_keywords", []):
         if kw.lower() in title_lower:
             logger.debug("gate0: title '%s' killed by exclude keyword '%s'", title, kw)
-            return False
-
-    # Check exclude keywords in JD body
-    for kw in config.get("exclude_keywords", []):
-        if kw.lower() in jd_lower:
-            logger.debug("gate0: JD body killed by exclude keyword '%s'", kw)
             return False
 
     # Fuzzy title matching
