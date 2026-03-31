@@ -39,6 +39,8 @@ from jobpulse.cv_tailor import determine_match_tier, generate_tailored_cv
 from jobpulse.cv_templates.generate_cv import generate_cv_pdf
 from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
 from jobpulse.drive_uploader import upload_cv, upload_cover_letter
+from jobpulse.gate4_quality import check_jd_quality, check_company_background, scrutinize_cv_deterministic, scrutinize_cv_llm
+from jobpulse.company_blocklist import detect_spam_company, flag_company_in_notion, BlocklistCache
 from jobpulse.github_matcher import fetch_and_cache_repos, pick_top_projects
 from jobpulse.jd_analyzer import analyze_jd
 from jobpulse.job_db import JobDB
@@ -330,6 +332,63 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         step_output=f"{len(screened_listings)} pass, {gate_rejected} rejected, {gate_skipped} skipped",
     )
 
+    # --- Gate 4 Phase A: Pre-generation quality check ---
+    blocklist = BlocklistCache()
+    try:
+        blocklist.refresh()
+    except Exception as exc:
+        logger.warning("job_autopilot: blocklist refresh failed: %s", exc)
+
+    gate4_filtered: list[tuple] = []
+    gate4_blocked = 0
+
+    for listing, screen in screened_listings:
+        # A2: Company blocklist check
+        if blocklist.is_blocked(listing.company):
+            gate4_blocked += 1
+            logger.info("job_autopilot: Gate 4 BLOCKED (blocklist) %s @ %s", listing.title, listing.company)
+            db.save_listing(listing)
+            db.save_application(job_id=listing.job_id, status="Blocked", match_tier="skip")
+            continue
+
+        # A2: Spam detection (auto-flag to Notion if not already known)
+        if not blocklist.is_approved(listing.company) and not blocklist.is_known(listing.company):
+            spam = detect_spam_company(listing.company)
+            if spam.is_spam:
+                gate4_blocked += 1
+                logger.info("job_autopilot: Gate 4 BLOCKED (spam) %s @ %s — %s", listing.title, listing.company, spam.reason)
+                try:
+                    flag_company_in_notion(listing.company, spam.reason, listing.platform)
+                except Exception:
+                    pass
+                db.save_listing(listing)
+                db.save_application(job_id=listing.job_id, status="Blocked", match_tier="skip")
+                continue
+
+        # A1: JD quality check
+        jd_quality = check_jd_quality(listing.description, listing.required_skills + listing.preferred_skills)
+        if not jd_quality.passed:
+            gate4_blocked += 1
+            logger.info("job_autopilot: Gate 4 BLOCKED (JD quality) %s @ %s — %s", listing.title, listing.company, jd_quality.reason)
+            db.save_listing(listing)
+            db.save_application(job_id=listing.job_id, status="Skipped", match_tier="skip")
+            continue
+
+        # A3: Company background (soft flags — don't block)
+        try:
+            past_apps = db.get_applications_by_company(listing.company)
+        except (AttributeError, Exception):
+            past_apps = []
+        bg = check_company_background(listing.company, past_apps)
+        if bg.previously_applied:
+            logger.info("job_autopilot: Gate 4 NOTE — %s", bg.note)
+        if bg.is_generic:
+            logger.info("job_autopilot: Gate 4 NOTE — generic company name: %s", listing.company)
+
+        gate4_filtered.append((listing, screen))
+
+    trail.log_step("decision", "Gate 4 Phase A", step_output=f"{len(gate4_filtered)} pass, {gate4_blocked} blocked")
+
     # Fallback repos for when SkillGraphStore is unavailable
     repos = []
 
@@ -338,7 +397,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
     skipped = 0
     errors = 0
 
-    for listing, screen in screened_listings:
+    for listing, screen in gate4_filtered:
         if auto_applied >= remaining_cap:
             logger.info(
                 "job_autopilot: reached daily cap mid-batch, stopping at %d auto-applied",
@@ -464,6 +523,30 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                     exc,
                 )
 
+            # --- Gate 4 Phase B: CV quality scrutiny ---
+            gate4b_notes = ""
+            if cv_path and cv_text:
+                b1_result = scrutinize_cv_deterministic(cv_text)
+                if b1_result.warnings:
+                    gate4b_notes = "B1: " + "; ".join(b1_result.warnings)
+                    logger.info("job_autopilot: Gate 4B warnings for %s: %s", listing.company, gate4b_notes)
+
+                if b1_result.status in ("clean", "acceptable"):
+                    try:
+                        b2_result = scrutinize_cv_llm(
+                            cv_text, listing.title, listing.company,
+                            listing.required_skills, listing.preferred_skills,
+                        )
+                        if b2_result.needs_review:
+                            weakness_str = "; ".join(b2_result.weaknesses[:3])
+                            gate4b_notes += f" | B2: {b2_result.score}/10 — {weakness_str}"
+                            logger.info(
+                                "job_autopilot: Gate 4B LLM score %d/10 for %s — %s",
+                                b2_result.score, listing.company, weakness_str,
+                            )
+                    except Exception as exc:
+                        logger.warning("job_autopilot: Gate 4B LLM failed: %s", exc)
+
             # Determine match tier
             tier = determine_match_tier(ats_score)
 
@@ -484,7 +567,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
             # Update DB with full analysis results
             db.save_application(
                 job_id=listing.job_id,
-                status="Ready",
+                status="Needs Review" if (gate4b_notes and "B2:" in gate4b_notes) else "Ready",
                 ats_score=ats_score,
                 match_tier=tier,
                 matched_projects=matched_project_names,
@@ -494,16 +577,21 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
             )
 
             # Update Notion with score, tier, and Drive links
+            notion_status = "Ready"
+            if gate4b_notes and "B2:" in gate4b_notes:
+                notion_status = "Needs Review"
+
             if notion_page_id:
                 try:
                     update_application_page(
                         notion_page_id,
-                        status="Ready",
+                        status=notion_status,
                         ats_score=ats_score,
                         match_tier=tier,
                         matched_projects=matched_project_names,
                         cv_drive_link=cv_drive_link,
                         cl_drive_link=cl_drive_link,
+                        notes=gate4b_notes if gate4b_notes else None,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -625,7 +713,8 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         f"📊 Job Autopilot ({time_str} scan)",
         f"Found: {total_found} | Gate 0 filtered: {gate0_rejected}",
         f"New: {len(new_listings)} | Pre-screen: {gate_rejected} rejected, {gate_skipped} skipped",
-        f"Processed: {len(screened_listings)}",
+        f"Gate 4: {gate4_blocked} blocked, {len(gate4_filtered)} passed",
+        f"Processed: {len(gate4_filtered)}",
         f"Auto-applied: {auto_applied}",
         f"Ready for review: {len(review_batch)}",
         f"Skipped: {skipped} (<82% match)",
