@@ -71,6 +71,7 @@ def apply_job(
     cover_letter_path: Path | None = None,
     cl_generator: Any | None = None,  # Callable[[], Path | None]
     custom_answers: dict | None = None,
+    overrides: dict | None = None,
 ) -> dict:
     """Submit a job application via the appropriate ATS adapter.
 
@@ -155,6 +156,7 @@ def apply_job(
         cover_letter_path=cover_letter_path,
         profile=PROFILE,
         custom_answers=merged_answers,
+        overrides=overrides,
     )
 
     if result.get("success"):

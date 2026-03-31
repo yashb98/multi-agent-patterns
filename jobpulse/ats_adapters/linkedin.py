@@ -49,6 +49,7 @@ class LinkedInAdapter(BaseATSAdapter):
         cover_letter_path: Path | None,
         profile: dict,
         custom_answers: dict,
+        overrides: dict | None = None,
     ) -> dict:
         try:
             from jobpulse.utils.safe_io import managed_persistent_browser
