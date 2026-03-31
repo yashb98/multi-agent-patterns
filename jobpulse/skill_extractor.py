@@ -224,7 +224,7 @@ def _extract_skills_llm(jd_text: str) -> dict:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": truncated},

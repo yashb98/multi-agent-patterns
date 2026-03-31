@@ -86,7 +86,7 @@ Respond with ONLY the category name. Nothing else."""
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=20,
             temperature=0,

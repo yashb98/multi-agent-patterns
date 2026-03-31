@@ -89,7 +89,7 @@ def _quick_evolve(agent_name: str, current_prompt: str, experiences: list,
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             messages=[{
                 "role": "user",
                 "content": f"""Evolve this agent prompt based on learned experiences.
@@ -154,7 +154,7 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
             client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             try:
                 response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-5o-mini",
                     messages=[
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": f"Process this: {input_text}"},
@@ -166,7 +166,7 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
 
                 # Score: ask LLM to rate the output
                 score_resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-5o-mini",
                     messages=[{
                         "role": "user",
                         "content": (

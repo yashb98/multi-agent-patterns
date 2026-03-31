@@ -76,7 +76,7 @@ class AgentError:
 
 # ─── LLM INITIALISATION ─────────────────────────────────────────
 
-def get_llm(temperature: float = 0.7, model: str = "gpt-4o-mini"):
+def get_llm(temperature: float = 0.7, model: str = "gpt-5o-mini"):
     """
     Factory function for LLM instances.
 
@@ -114,7 +114,7 @@ def run_agentic_loop(
     tools: list[dict] | None = None,
     temperature: float = 0.7,
     max_iterations: int = 10,
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5o-mini",
 ) -> dict:
     """
     Run an agentic loop with proper stop_reason handling.
@@ -412,7 +412,7 @@ specified in your instructions."""
     # Use response_format to GUARANTEE valid JSON (Domain 4, Task 4.3)
     # This eliminates JSON syntax errors — no more markdown stripping fallbacks
     llm = ChatOpenAI(
-        model="gpt-4o-mini",
+        model="gpt-5o-mini",
         temperature=0.2,
         model_kwargs={"response_format": {"type": "json_object"}},
     )

@@ -1,20 +1,25 @@
 {
     "titles": [
-        "Data Scientist",
-        "ML Engineer",
-        "AI Engineer",
-        "Data Engineer",
-        "Machine Learning Engineer",
         "Graduate Data Scientist",
-        "Junior AI Engineer",
         "Graduate ML Engineer",
+        "Graduate AI Engineer",
+        "Graduate Data Engineer",
+        "Graduate Software Engineer",
+        "Junior Data Scientist",
+        "Junior ML Engineer",
+        "Junior AI Engineer",
+        "Junior Data Engineer",
         "Data Science Intern",
-        "Machine Learning Intern"
+        "Machine Learning Intern",
+        "AI Intern",
+        "Data Engineer Intern",
+        "Early Careers Data Scientist",
+        "Early Careers AI Engineer"
     ],
     "location": "United Kingdom",
     "include_remote": true,
-    "salary_min": 27000,
+    "salary_min": 22000,
     "salary_max": null,
     "exclude_companies": [],
-    "exclude_keywords": ["senior", "lead", "principal", "staff", "10+ years", "8+ years", "director"]
+    "exclude_keywords": ["senior", "lead", "principal", "staff", "10+ years", "8+ years", "7+ years", "5+ years", "director", "manager", "head of", "architect", "consultant"]
 }

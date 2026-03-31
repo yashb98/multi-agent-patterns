@@ -163,7 +163,7 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 ### Conversation Handler (`conversation.py`)
 - Free-form LLM chat with project context injection
 - Maintains per-session conversation history
-- Uses `CONVERSATION_MODEL` (default gpt-4o-mini)
+- Uses `CONVERSATION_MODEL` (default gpt-5o-mini)
 
 ### Remote Shell (`remote_shell.py`)
 - Execute shell commands via Telegram (`run: <cmd>` or `$ <cmd>`)
@@ -195,7 +195,7 @@ Two agent systems: orchestration agents (blog generation) and JobPulse agents (d
 |------|--------|-------|------|-----------|
 | 1 | Regex patterns | Instant | Free | Exact command matches ("show tasks", "calendar", "budget") |
 | 2 | Semantic embeddings (all-MiniLM-L6-v2) | ~5ms | Free (local) | Fuzzy/natural phrasing ("what's on my schedule?") |
-| 3 | LLM fallback (gpt-4o-mini) | ~500ms | $0.001 | Truly ambiguous messages |
+| 3 | LLM fallback (gpt-5o-mini) | ~500ms | $0.001 | Truly ambiguous messages |
 
 - 250+ training examples across 31 intents in `data/intent_examples.json`
 - Continuous learning: when Tier 3 fires, the result is stored as a new Tier 2 example
@@ -222,10 +222,10 @@ Replaces flat dispatch with adaptive intelligence:
 ## LLM Configuration
 
 ```python
-get_llm(temperature=0.7, model="gpt-4o-mini")  # shared/agents.py
+get_llm(temperature=0.7, model="gpt-5o-mini")  # shared/agents.py
 ```
 
-JobPulse agents use OpenAI directly for classification (gpt-4o-mini).
+JobPulse agents use OpenAI directly for classification (gpt-5o-mini).
 RLM uses configurable backend via `RLM_BACKEND` env var.
 
 ## State Model (AgentState)

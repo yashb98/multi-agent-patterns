@@ -2,7 +2,7 @@
 
 Two-tier extraction:
   1. Rule-based (no LLM): salary, location, seniority, ATS platform, easy apply, job ID.
-  2. LLM-based (gpt-4o-mini): required skills, preferred skills, industry, sub_context.
+  2. LLM-based (gpt-5o-mini): required skills, preferred skills, industry, sub_context.
 
 Public API
 ----------
@@ -278,7 +278,7 @@ def detect_easy_apply(url: str, text: str) -> bool:
 
 
 def extract_skills_llm(jd_text: str) -> dict:  # type: ignore[return]
-    """Use gpt-4o-mini to extract structured skill data from a JD.
+    """Use gpt-5o-mini to extract structured skill data from a JD.
 
     Returns:
         {
@@ -310,7 +310,7 @@ def extract_skills_llm(jd_text: str) -> dict:  # type: ignore[return]
         user = f"Parse this job description:\n\n{jd_text[:4000]}"
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

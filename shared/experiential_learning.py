@@ -208,7 +208,7 @@ class TrainingFreeGRPO:
             
             from langchain_openai import ChatOpenAI
             variant_llm = ChatOpenAI(
-                model=self.llm.model_name if hasattr(self.llm, 'model_name') else "gpt-4o-mini",
+                model=self.llm.model_name if hasattr(self.llm, 'model_name') else "gpt-5o-mini",
                 temperature=temp,
             )
             

@@ -159,7 +159,7 @@ Return JSON: {{"claims": [{{"claim": "exact text", "type": "benchmark|date|...",
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1000,
             temperature=0,
@@ -294,7 +294,7 @@ Return JSON: {{"verifications": [...]}}"""
 
         try:
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-5o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=1500,
                 temperature=0,

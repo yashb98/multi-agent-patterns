@@ -222,7 +222,7 @@ Return ONLY a JSON array. Compute overall as: (novelty*0.3 + significance*0.25 +
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1200,
             temperature=0,
@@ -359,7 +359,7 @@ def summarize_paper(paper: dict) -> str:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             messages=[{"role": "user", "content": f"""Summarize this AI paper for a practitioner in 3-4 sentences:
 
 1. WHAT: What does the paper propose/discover? (1 sentence)

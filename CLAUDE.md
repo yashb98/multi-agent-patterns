@@ -121,7 +121,7 @@ Analytics: `/api/analytics/grpo` `/personas` `/costs` `/ab-tests` `/nlp` `/trend
 
 **Jobs:** `REED_API_KEY` `GITHUB_TOKEN` `JOB_AUTOPILOT_AUTO_SUBMIT=false` `JOB_AUTOPILOT_MAX_DAILY=10`
 
-**AI:** `JOBPULSE_SWARM=true` `CONVERSATION_MODEL=gpt-4o-mini` `RLM_BACKEND=openai` `RLM_ROOT_MODEL=gpt-4o-mini` `RLM_MAX_BUDGET=0.10`
+**AI:** `JOBPULSE_SWARM=true` `CONVERSATION_MODEL=gpt-5o-mini` `RLM_BACKEND=openai` `RLM_ROOT_MODEL=gpt-5o-mini` `RLM_MAX_BUDGET=0.10`
 
 ## Stats
 

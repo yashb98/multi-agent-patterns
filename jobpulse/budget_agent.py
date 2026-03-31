@@ -608,7 +608,7 @@ SAVINGS: Savings, Investments, Credit card / Loan payment"""
 
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             messages=[{"role": "user", "content": f"""Classify this {txn_type} into one category:
 {categories_list}
 

@@ -174,7 +174,7 @@ def generate_tailored_cv(
     """Full pipeline: build prompt → LLM generates .tex → compile → score → refine if < 95.
 
     Saves files to data/applications/{job.job_id}/cv.tex and cv.pdf
-    Uses gpt-4o-mini, temperature 0.3
+    Uses gpt-5o-mini, temperature 0.3
     Max 3 refinement attempts.
     """
     # Lazy imports to avoid hard dependency when not calling LLM
@@ -232,7 +232,7 @@ def generate_tailored_cv(
 
         tex_content = safe_openai_call(
             client,
-            model="gpt-4o-mini",
+            model="gpt-5o-mini",
             temperature=0.3,
             messages=messages,
             caller=f"cv_tailor:attempt_{attempt}",

@@ -92,7 +92,7 @@ RLM = LLM that writes programs that call other LLMs
 
 ```env
 RLM_BACKEND=openai
-RLM_ROOT_MODEL=gpt-4o-mini
+RLM_ROOT_MODEL=gpt-5o-mini
 RLM_MAX_ITERATIONS=10
 RLM_MAX_BUDGET=0.10      # $ cap per query
 ```
@@ -151,7 +151,7 @@ Messages pass through three tiers, stopping at the first confident match:
 ```
 1. REGEX (Tier 1)     → Pattern match against known commands    → Free, instant
 2. EMBEDDINGS (Tier 2) → Cosine similarity via all-MiniLM-L6-v2 → Free, ~5ms, local
-3. LLM (Tier 3)       → gpt-4o-mini classifies intent           → $0.001, ~500ms
+3. LLM (Tier 3)       → gpt-5o-mini classifies intent           → $0.001, ~500ms
 ```
 
 ### Continuous Learning

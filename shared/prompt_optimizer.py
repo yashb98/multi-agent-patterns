@@ -149,7 +149,7 @@ class PromptOptimizer:
         import dspy
         
         # Configure DSPy
-        lm = dspy.LM("openai/gpt-4o-mini")
+        lm = dspy.LM("openai/gpt-5o-mini")
         dspy.configure(lm=lm)
         
         # Define signature for the agent

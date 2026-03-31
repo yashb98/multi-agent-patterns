@@ -133,6 +133,9 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
         Intent.FILE_OPS, Intent.SYSTEM_STATUS,
         Intent.LOG_HOURS, Intent.SHOW_HOURS, Intent.CONFIRM_SAVINGS, Intent.UNDO_HOURS,
         Intent.UNDO_BUDGET, Intent.RECURRING_BUDGET, Intent.WEEKLY_PLAN,
+        Intent.SCAN_JOBS, Intent.SHOW_JOBS, Intent.APPROVE_JOBS, Intent.REJECT_JOB,
+        Intent.JOB_DETAIL, Intent.JOB_STATS, Intent.SEARCH_CONFIG,
+        Intent.PAUSE_JOBS, Intent.RESUME_JOBS,
     }
     if intent in SIMPLE_INTENTS:
         return [{"agent": intent.value, "priority": 1, "description": f"Direct: {intent.value}"}]
@@ -230,7 +233,7 @@ def rlm_synthesize(sections: dict, query: str) -> str | None:
         backend = os.getenv("RLM_BACKEND", "openai")
         rlm = RLM(
             backend=backend,
-            backend_kwargs={"model": os.getenv("RLM_ROOT_MODEL", "gpt-4o-mini")},
+            backend_kwargs={"model": os.getenv("RLM_ROOT_MODEL", "gpt-5o-mini")},
             max_depth=1,
             max_iterations=int(os.getenv("RLM_MAX_ITERATIONS", "10")),
             max_budget=float(os.getenv("RLM_MAX_BUDGET", "0.10")),

@@ -1,24 +1,28 @@
----
-paths: ["tests/**/*.py"]
-description: "Testing conventions — isolation, no production DB access"
----
-
-# Testing Conventions
+# Rules: Tests (tests/**/*)
 
 ## Database Isolation
-
-- Tests MUST NEVER operate on production databases
-- Any test that writes to SQLite MUST patch DB_PATH to a tmp_path fixture
-- NEVER add `clear_all()` or `DELETE` to any test without verifying the DB path is temporary
+CRITICAL: Tests MUST NEVER touch production databases in data/*.db.
+Always use tmp_path fixtures or monkeypatch DB paths.
+Incident: 2026-03-25 — test_mindgraph.py wiped production mindgraph.db via storage.clear_all().
+Fix: use_temp_db autouse fixture patches DB_PATH to tmp_path.
 
 ## Test Structure
+- Tests mirror source: tests/jobpulse/ ↔ jobpulse/, tests/patterns/ ↔ patterns/
+- Shared fixtures in conftest.py (root) and tests/conftest.py
+- Use pytest markers: @pytest.mark.slow for integration tests
 
-- Use pytest fixtures for setup/teardown
-- Each test file should have an `autouse` fixture for DB isolation if it touches SQLite
-- Mock external APIs (Telegram, Gmail, GitHub, Notion) — never make real API calls in tests
+## Running Tests
+```
+python -m pytest tests/ -v                    # Full suite
+python -m pytest tests/ -v --cov              # With coverage
+python -m pytest tests/ -v -k "budget"        # Budget tests only
+python -m pytest tests/ -v -k "dispatch"      # Dispatcher tests only
+python -m pytest tests/ -v -k "fact"          # Fact-checker tests only
+```
 
-## Assertions
-
-- Test both success and error paths
-- Verify structured error responses include `errorCategory` and `isRetryable`
-- Test that partial results are preserved on failure
+## What to Test for New Features
+- Intent routing: test in BOTH dispatcher AND swarm_dispatcher
+- Budget: test parsing, recurring, alerts, undo, CSV export, weekly comparison
+- NLP: test regex tier, embedding tier, and LLM fallback tier
+- Telegram: test command parsing with Whisper-style punctuation ("Help." not "help")
+- Database: test with tmp_path fixture, verify no data/*.db references in test files
