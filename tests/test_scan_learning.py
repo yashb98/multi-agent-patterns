@@ -416,3 +416,84 @@ class TestLLMPatternAnalyzer:
     def test_llm_analysis_no_events_does_nothing(self, mock_llm, engine, db_path: str):
         engine.run_llm_analysis("indeed")
         mock_llm.assert_not_called()
+
+
+class TestAdaptiveParams:
+    """Test adaptive parameter generation from learned rules."""
+
+    def test_default_params_no_history(self, engine):
+        params = engine.get_adaptive_params("indeed")
+        assert params["risk_level"] == "low"
+        assert params["delay_range"] == (2.0, 8.0)
+        assert params["max_requests"] == 50
+        assert params["wait_for_load"] is True
+        assert params["cooldown_active"] is False
+
+    def test_medium_risk_with_one_rule(self, db_path: str, engine):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at) "
+            "VALUES ('r1', 'indeed', 'Block in morning', 0.75, 'Avoid morning', 'statistical', '2026-03-31T10:00:00')",
+        )
+        conn.commit()
+        conn.close()
+
+        params = engine.get_adaptive_params("indeed")
+        assert params["risk_level"] == "medium"
+        assert params["delay_range"][0] >= 3.0
+        assert params["max_requests"] <= 25
+
+    def test_high_risk_with_multiple_rules(self, db_path: str, engine):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at) "
+            "VALUES ('r1', 'indeed', 'Block in morning', 0.80, 'Avoid', 'statistical', '2026-03-31T10:00:00')",
+        )
+        conn.execute(
+            "INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at) "
+            "VALUES ('r2', 'indeed', 'Block with low delay', 0.70, 'Increase', 'statistical', '2026-03-31T10:00:00')",
+        )
+        conn.commit()
+        conn.close()
+
+        params = engine.get_adaptive_params("indeed")
+        assert params["risk_level"] == "high"
+        assert params["simulate_human"] is True
+        assert params["max_requests"] <= 5
+
+    def test_cooldown_active_reflected_in_params(self, engine):
+        engine.start_cooldown("indeed", "cloudflare")
+        params = engine.get_adaptive_params("indeed")
+        assert params["cooldown_active"] is True
+        assert params["cooldown_until"] is not None
+
+    def test_params_independent_per_platform(self, db_path: str, engine):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at) "
+            "VALUES ('r1', 'indeed', 'Block pattern', 0.80, 'Fix', 'statistical', '2026-03-31T10:00:00')",
+        )
+        conn.execute(
+            "INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at) "
+            "VALUES ('r2', 'indeed', 'Another pattern', 0.70, 'Fix', 'statistical', '2026-03-31T10:00:00')",
+        )
+        conn.commit()
+        conn.close()
+
+        indeed_params = engine.get_adaptive_params("indeed")
+        linkedin_params = engine.get_adaptive_params("linkedin")
+        assert indeed_params["risk_level"] == "high"
+        assert linkedin_params["risk_level"] == "low"
+
+    def test_low_confidence_rules_ignored(self, db_path: str, engine):
+        """Rules with confidence < 0.50 should not affect risk level."""
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at) "
+            "VALUES ('r1', 'indeed', 'Weak signal', 0.30, 'Maybe', 'statistical', '2026-03-31T10:00:00')",
+        )
+        conn.commit()
+        conn.close()
+
+        params = engine.get_adaptive_params("indeed")
+        assert params["risk_level"] == "low"

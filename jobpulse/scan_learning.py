@@ -502,3 +502,53 @@ class ScanLearningEngine:
             "consecutive_blocks": row[2],
             "last_wall_type": row[3],
         }
+
+    # --- Adaptive Parameters ---
+
+    _DEFAULT_PARAMS: dict[str, Any] = {
+        "delay_range": (2.0, 8.0),
+        "max_requests": 50,
+        "simulate_human": False,
+        "session_max_age_seconds": 1800,
+        "referrer_strategy": "direct",
+        "wait_for_load": True,
+        "cooldown_active": False,
+        "cooldown_until": None,
+        "risk_level": "low",
+    }
+
+    def get_adaptive_params(self, platform: str) -> dict[str, Any]:
+        """Build scan parameters based on learned rules + cooldown state."""
+        params = dict(self._DEFAULT_PARAMS)
+
+        # Check cooldown
+        cooldown = self.get_cooldown_info(platform)
+        if cooldown and not self.can_scan_now(platform):
+            params["cooldown_active"] = True
+            params["cooldown_until"] = cooldown["cooldown_until"]
+
+        # Count active learned rules (confidence >= 0.50)
+        conn = sqlite3.connect(self.db_path)
+        rule_count = conn.execute(
+            "SELECT COUNT(*) FROM learned_rules WHERE platform = ? AND confidence >= 0.50",
+            (platform,),
+        ).fetchone()[0]
+        conn.close()
+
+        if rule_count == 0:
+            params["risk_level"] = "low"
+        elif rule_count == 1:
+            params["risk_level"] = "medium"
+            params["delay_range"] = (3.0, 12.0)
+            params["max_requests"] = 25
+            params["simulate_human"] = True
+            params["session_max_age_seconds"] = 600
+        else:
+            params["risk_level"] = "high"
+            params["delay_range"] = (5.0, 15.0)
+            params["max_requests"] = 5
+            params["simulate_human"] = True
+            params["session_max_age_seconds"] = 480
+            params["referrer_strategy"] = "homepage_first"
+
+        return params
