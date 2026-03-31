@@ -133,12 +133,13 @@ COMMUNITY = [
     },
 ]
 
-# Base skills — 4 clean categories
+# Base skills — 5 clean categories
 BASE_SKILLS = {
     "Languages:": "Python | SQL | JavaScript | TypeScript",
     "AI/ML:": "NLP | Text Analysis | Clustering | Scikit-learn | PyTorch | TensorFlow | Pandas | NumPy | LangChain | Hugging Face | RAG",
-    "BI/Tools:": "Power BI | DAX | Looker | Excel | APIs | FastAPI | Flask | Docker | AWS | GCP | Azure | Git | GitHub | Web Scraping",
-    "Practices:": "Statistical Testing | Forecasting | Dashboards | Data Modelling | EDA | Data Cleaning | MLOps | Documentation",
+    "DevOps:": "Docker | Kubernetes | AWS | GCP | Azure | CI/CD | GitHub Actions | Terraform | Linux",
+    "BI/Tools:": "Power BI | DAX | Looker | Excel | APIs | FastAPI | Flask | Git | GitHub | Web Scraping",
+    "Practices:": "Statistical Testing | Forecasting | Dashboards | Data Modelling | EDA | Data Cleaning | MLOps | A/B Testing | Documentation",
 }
 
 # Default projects
@@ -191,7 +192,7 @@ DEFAULT_PROJECTS = [
 
 _ROLE_PROFILES: dict[str, dict[str, str]] = {
     "data scientist": {
-        "tagline": "MSc Computer Science (UOD) | 3+ YOE | Data Scientist | Python | Machine Learning | SQL | NLP",
+        "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Scientist | Python | Machine Learning | SQL | NLP",
         "summary": (
             '<b>Data Scientist</b> with hands-on experience building production ML systems, '
             'statistical models, and data pipelines. Built a <b>61,500+ LOC</b> autonomous system '
@@ -211,7 +212,7 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
         ),
     },
     "ml engineer": {
-        "tagline": "MSc Computer Science (UOD) | 3+ YOE | ML Engineer | Python | PyTorch | MLOps | System Design",
+        "tagline": "MSc Computer Science (UOD) | 2+ YOE | ML Engineer | Python | PyTorch | MLOps | System Design",
         "summary": (
             '<b>ML Engineer</b> who built a <b>61,500+ LOC</b> production AI system with '
             '<b>488 tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
@@ -221,7 +222,7 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
         ),
     },
     "ai engineer": {
-        "tagline": "MSc Computer Science (UOD) | 3+ YOE | AI Engineer | Python | LangChain | RAG | Multi-Agent Systems",
+        "tagline": "MSc Computer Science (UOD) | 2+ YOE | AI Engineer | Python | LangChain | RAG | Multi-Agent Systems",
         "summary": (
             '<b>AI Engineer</b> who built a <b>61,500+ LOC</b> production multi-agent system with '
             '<b>4 LangGraph orchestration patterns</b>, <b>GRPO experiential learning</b>, and '
@@ -231,6 +232,66 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
         ),
     },
 }
+
+
+_SOFT_SKILL_WORDS = {
+    "communication", "teamwork", "leadership", "problem solving", "time management",
+    "adaptability", "collaboration", "analytical thinking", "critical thinking",
+    "stakeholder management", "mentoring", "coaching", "prioritization",
+    "attention to detail", "self motivated", "fast learner", "customer focus",
+    "decision making", "interviewing", "okrs", "presentation skills",
+    "project management", "strategic thinking", "negotiation",
+}
+
+
+def build_extra_skills(required_skills: list[str], preferred_skills: list[str]) -> dict[str, str]:
+    """Build extra skills line showing JD-relevant TECHNICAL skills not already in BASE_SKILLS.
+
+    Filters out soft skills. Returns dict like {"Also proficient in:": "Spark | Databricks | ..."}.
+    """
+    # Flatten BASE_SKILLS values into a set (including common synonyms)
+    base_set = set()
+    _SYNONYMS = {
+        "aws": "amazon web services", "amazon web services": "aws",
+        "gcp": "google cloud platform", "google cloud platform": "gcp",
+        "k8s": "kubernetes", "kubernetes": "k8s",
+        "ml": "machine learning", "machine learning": "ml",
+        "nlp": "natural language processing", "natural language processing": "nlp",
+        "dl": "deep learning", "deep learning": "dl",
+        "ci/cd": "continuous integration", "continuous integration": "ci/cd",
+        "js": "javascript", "javascript": "js",
+        "ts": "typescript", "typescript": "ts",
+        "tf": "tensorflow", "tensorflow": "tf",
+        "sklearn": "scikit-learn", "scikit-learn": "sklearn",
+        "hf": "hugging face", "hugging face": "hf",
+        "eda": "exploratory data analysis", "exploratory data analysis": "eda",
+        "a/b testing": "ab testing", "ab testing": "a/b testing",
+        "mlops": "ml ops", "ml ops": "mlops",
+    }
+    for vals in BASE_SKILLS.values():
+        for s in vals.split(" | "):
+            s_lower = s.strip().lower()
+            base_set.add(s_lower)
+            if s_lower in _SYNONYMS:
+                base_set.add(_SYNONYMS[s_lower])
+
+    # Find JD skills not in base and not soft skills
+    all_jd = required_skills + preferred_skills
+    extra = []
+    seen = set()
+    for skill in all_jd:
+        skill_lower = skill.lower().strip()
+        if (skill_lower not in base_set
+                and skill_lower not in seen
+                and skill_lower not in _SOFT_SKILL_WORDS
+                and len(skill_lower) > 2):
+            extra.append(skill.strip().title())
+            seen.add(skill_lower)
+
+    if not extra:
+        return {}
+
+    return {"Also proficient in:": " | ".join(extra[:12])}
 
 
 def get_role_profile(role_title: str) -> dict[str, str]:
@@ -278,7 +339,7 @@ def generate_cv_pdf(
     SZ = 9.5
     PW = A4[0] - 28 * mm
     LN = 11.5
-    LW = 27 * mm
+    LW = 29 * mm
 
     # --- Styles (tight but readable) ---
     name_s = ParagraphStyle('N', fontName=F, fontSize=20, alignment=TA_CENTER,
@@ -336,8 +397,22 @@ def generate_cv_pdf(
         ]))
         el.append(t)
 
+    skill_label_s = ParagraphStyle('SL', fontName=F, fontSize=SZ, leading=LN,
+                                    textColor=TEXT_COLOR, alignment=TA_JUSTIFY)
+    skill_val_s = ParagraphStyle('SV', fontName=F, fontSize=SZ, leading=LN,
+                                 textColor=TEXT_COLOR, alignment=TA_JUSTIFY)
+
     def skill_row(label, vals):
-        el.append(Paragraph(f'{B(label)} {vals}', body_s))
+        t = Table([[Paragraph(B(label), skill_label_s), Paragraph(vals, skill_val_s)]],
+                  colWidths=[LW, PW - LW], hAlign='LEFT')
+        t.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 1),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+        ]))
+        el.append(t)
 
     # --- Setup output ---
     if output_dir:
@@ -359,7 +434,7 @@ def generate_cv_pdf(
     # ── HEADER ──
     el.append(Paragraph(B(IDENTITY["name"]), name_s))
     el.append(Spacer(1, 1))
-    tag = tagline or 'MSc Computer Science (UOD) | 3+ YOE | Software Engineer | Python | AI/ML | NLP | System Design'
+    tag = tagline or 'MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | AI/ML | NLP | System Design'
     el.append(Paragraph(tag, tag_s))
     el.append(Paragraph(
         f'UK | {IDENTITY["phone"]} | '
@@ -402,6 +477,9 @@ def generate_cv_pdf(
     section('Technical Skills')
     for label, vals in BASE_SKILLS.items():
         skill_row(label, vals)
+    if extra_skills:
+        for label, vals in extra_skills.items():
+            skill_row(label, vals)
 
     # ── PROJECTS ──
     section('Projects')
