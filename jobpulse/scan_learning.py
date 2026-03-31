@@ -232,3 +232,84 @@ class ScanLearningEngine:
             ).fetchone()
         conn.close()
         return row[0] if row else 0
+
+    # --- Cooldown Manager ---
+
+    _COOLDOWN_HOURS: dict[int, int] = {1: 2, 2: 4}  # consecutive_blocks → hours
+    _MAX_COOLDOWN_HOURS: int = 48
+
+    def can_scan_now(self, platform: str) -> bool:
+        """Check if platform is NOT in cooldown."""
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT cooldown_until FROM cooldowns WHERE platform = ?",
+            (platform,),
+        ).fetchone()
+        if row is None:
+            conn.close()
+            return True
+        cooldown_until = datetime.fromisoformat(row[0])
+        if datetime.now(timezone.utc) >= cooldown_until:
+            conn.execute("DELETE FROM cooldowns WHERE platform = ?", (platform,))
+            conn.commit()
+            conn.close()
+            return True
+        conn.close()
+        return False
+
+    def start_cooldown(self, platform: str, wall_type: str) -> None:
+        """Start or extend cooldown for a platform after a block."""
+        now = datetime.now(timezone.utc)
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT consecutive_blocks FROM cooldowns WHERE platform = ?",
+            (platform,),
+        ).fetchone()
+
+        consecutive = (row[0] + 1) if row else 1
+        hours = self._COOLDOWN_HOURS.get(consecutive, self._MAX_COOLDOWN_HOURS)
+        cooldown_until = now + timedelta(hours=hours)
+
+        conn.execute(
+            """INSERT INTO cooldowns (platform, blocked_at, cooldown_until, consecutive_blocks, last_wall_type)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(platform) DO UPDATE SET
+                   blocked_at = ?, cooldown_until = ?, consecutive_blocks = ?, last_wall_type = ?""",
+            (
+                platform, now.isoformat(), cooldown_until.isoformat(), consecutive, wall_type,
+                now.isoformat(), cooldown_until.isoformat(), consecutive, wall_type,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        logger.warning(
+            "Cooldown started: %s blocked (%s), %dhr cooldown (block #%d), until %s",
+            platform, wall_type, hours, consecutive, cooldown_until.isoformat(),
+        )
+
+    def reset_cooldown(self, platform: str) -> None:
+        """Reset cooldown after a successful scan."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DELETE FROM cooldowns WHERE platform = ?", (platform,))
+        conn.commit()
+        conn.close()
+        logger.info("Cooldown reset for %s after successful scan", platform)
+
+    def get_cooldown_info(self, platform: str) -> dict[str, Any] | None:
+        """Get current cooldown state for a platform."""
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT blocked_at, cooldown_until, consecutive_blocks, last_wall_type "
+            "FROM cooldowns WHERE platform = ?",
+            (platform,),
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return {
+            "blocked_at": row[0],
+            "cooldown_until": row[1],
+            "consecutive_blocks": row[2],
+            "last_wall_type": row[3],
+        }

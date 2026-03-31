@@ -143,3 +143,80 @@ class TestScanEventRecording:
         assert engine.get_total_blocks(platform="indeed") == 3
         assert engine.get_total_blocks(platform="linkedin") == 2
         assert engine.get_total_blocks() == 5
+
+
+class TestCooldownManager:
+    """Test cooldown logic with exponential backoff."""
+
+    def test_no_cooldown_initially(self, engine):
+        assert engine.can_scan_now("indeed") is True
+
+    def test_first_block_sets_2hr_cooldown(self, engine):
+        engine.start_cooldown("indeed", "cloudflare")
+        assert engine.can_scan_now("indeed") is False
+
+    def test_cooldown_expires(self, db_path: str, engine):
+        """Manually insert an expired cooldown — should allow scanning."""
+        past = datetime.now(timezone.utc) - timedelta(hours=3)
+        expired = datetime.now(timezone.utc) - timedelta(hours=1)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO cooldowns (platform, blocked_at, cooldown_until, consecutive_blocks, last_wall_type) "
+            "VALUES (?, ?, ?, 1, 'cloudflare')",
+            ("indeed", past.isoformat(), expired.isoformat()),
+        )
+        conn.commit()
+        conn.close()
+        assert engine.can_scan_now("indeed") is True
+
+    def test_second_block_doubles_cooldown(self, db_path: str, engine):
+        engine.start_cooldown("indeed", "cloudflare")  # 2hr
+        engine.start_cooldown("indeed", "cloudflare")  # 4hr
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT consecutive_blocks FROM cooldowns WHERE platform = 'indeed'"
+        ).fetchone()
+        conn.close()
+        assert row[0] == 2
+
+    def test_third_block_triggers_48hr_skip(self, db_path: str, engine):
+        engine.start_cooldown("indeed", "cloudflare")
+        engine.start_cooldown("indeed", "cloudflare")
+        engine.start_cooldown("indeed", "cloudflare")  # 3rd → 48hr
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT consecutive_blocks, cooldown_until FROM cooldowns WHERE platform = 'indeed'"
+        ).fetchone()
+        conn.close()
+        assert row[0] == 3
+        cooldown_until = datetime.fromisoformat(row[1])
+        hours_until = (cooldown_until - datetime.now(timezone.utc)).total_seconds() / 3600
+        assert hours_until > 47.0
+
+    def test_successful_scan_resets_cooldown(self, db_path: str, engine):
+        engine.start_cooldown("indeed", "cloudflare")
+        engine.reset_cooldown("indeed")
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT * FROM cooldowns WHERE platform = 'indeed'").fetchone()
+        conn.close()
+        assert row is None
+
+    def test_cooldown_per_platform_independent(self, engine):
+        engine.start_cooldown("indeed", "cloudflare")
+        assert engine.can_scan_now("indeed") is False
+        assert engine.can_scan_now("linkedin") is True
+
+    def test_get_cooldown_info(self, engine):
+        engine.start_cooldown("indeed", "text_challenge")
+        info = engine.get_cooldown_info("indeed")
+        assert info is not None
+        assert info["consecutive_blocks"] == 1
+        assert info["last_wall_type"] == "text_challenge"
+
+    def test_get_cooldown_info_returns_none_when_no_cooldown(self, engine):
+        info = engine.get_cooldown_info("indeed")
+        assert info is None
+
+    def test_reset_cooldown_on_nonexistent_platform(self, engine):
+        """reset_cooldown on a platform with no cooldown should not raise."""
+        engine.reset_cooldown("indeed")  # Should not raise
