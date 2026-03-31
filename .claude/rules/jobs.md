@@ -65,3 +65,13 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 ## Safety
 - JOB_AUTOPILOT_AUTO_SUBMIT=false by default — requires explicit approval
 - JOB_AUTOPILOT_MAX_DAILY=10 default (conservative, below platform limits)
+
+## Verification Wall Learning
+- Universal detector: Cloudflare Turnstile, reCAPTCHA, hCaptcha, text challenges, HTTP 403/429, empty anomaly
+- 17 signals tracked per scan session: time of day, requests, delay, session age, UA, cookies, VPN, mouse, referrer, query, pages, fingerprint, page load
+- Statistical correlation engine: zero LLM cost, computes block rate per signal bucket, identifies risk factors (>50% block rate, ≥3 samples)
+- LLM pattern analyzer: GPT-5o-mini every 5th block event, ~$0.002/call, stores human-readable rules
+- Cooldown: 2hr → 4hr → 48hr (exponential backoff). Reset on successful scan. Telegram alert on 3rd consecutive block
+- Adaptive params: risk level (low/medium/high) adjusts delays, max requests, human simulation, session length
+- Human interaction: wait for networkidle, scroll 300-600px, random mouse movement, 1-3s reading delay
+- Database: data/scan_learning.db (scan_events, learned_rules, cooldowns)

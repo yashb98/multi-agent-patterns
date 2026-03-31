@@ -24,6 +24,8 @@
 - github_profile_sync.py — Nightly 3am sync: GitHub repos + README skill extraction + resume BASE_SKILLS + past apps → MindGraph graph (347 skills, 750 DEMONSTRATES relations)
 - skill_gap_tracker.py — Records missing skills from every pre-screened job, exports ranked CSV for upskilling
 - skill_tracker_notion.py — Notion Skill Tracker: pending skills for user verification (I Know / Don't Know / Learning)
+- verification_detector.py — Universal CAPTCHA/verification wall detection (Cloudflare, reCAPTCHA, hCaptcha, text, HTTP)
+- scan_learning.py — Scan learning engine: event recording (17 signals), statistical correlation, LLM analysis, adaptive params, cooldown
 
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.

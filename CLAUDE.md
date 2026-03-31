@@ -90,6 +90,8 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 **Safety:** mutex on `apply_job()`, record-before-submit, pipeline lock, UTC daily caps.
 
+**Verification Wall Learning:** Universal detection (Cloudflare, reCAPTCHA, hCaptcha, text challenges, HTTP blocks). Event-sourced learning with 17 signals per scan session. Statistical correlation engine (zero LLM cost) + periodic GPT-5o-mini analysis (every 5th block). 2hr cooldown with exponential backoff (max 48hr). Human-like page interaction (scroll, mouse, networkidle wait). DB: `data/scan_learning.db`.
+
 **CV/Cover Letter:** ReportLab PDFs (no xelatex). `cv_templates/generate_cv.py` + `generate_cover_letter.py`. Instant, no LLM calls.
 
 **Pre-Screen (4-Gate Recruiter Model):**

@@ -162,6 +162,7 @@ All intents recognized by `command_router.py`:
 - Pipeline lock prevents concurrent `run_scan_window()` runs (cron vs Telegram)
 - Application recorded BEFORE submission (prevents silent limit bypass on error)
 - UTC timezone for daily cap tracking (prevents midnight drift)
+- **Verification Wall Learning**: detect + record + correlate + adapt. 17 signals per session. Statistical engine (free) + LLM (every 5th block). 2hr→4hr→48hr cooldown. Human-like interaction on all Playwright scanners.
 
 ## Input Modes
 
