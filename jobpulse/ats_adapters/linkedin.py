@@ -63,9 +63,14 @@ class LinkedInAdapter(BaseATSAdapter):
 
             chrome_profile = str(DATA_DIR / "chrome_profile")
 
+            # Use real Chrome — matches browser_manager.py. Playwright's bundled
+            # Chromium can't open a profile created by real Chrome (SIGTRAP crash).
+            chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
             with managed_persistent_browser(
                 user_data_dir=chrome_profile,
                 headless=False,
+                executable_path=chrome_path,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--disable-infobars",
