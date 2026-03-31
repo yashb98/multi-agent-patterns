@@ -153,7 +153,7 @@ DEFAULT_PROJECTS = [
     },
     {
         "title": "2. Cloud Sentinel - AI Powered Cloud Security Platform with Python, React, Docker, Redis, Pinecone",
-        "url": "https://github.com/yashb98/multi-agent-patterns",
+        "url": "https://github.com/yashb98/nexusmind",
         "bullets": [
             'Built <b>NLP</b> and <b>text-based analysis</b> pipelines extracting insights from unstructured documents with 94% retrieval precision.',
             'Developed <b>clustering</b> and classification workflows grouping policy documents by topic, risk level, and compliance status.',
