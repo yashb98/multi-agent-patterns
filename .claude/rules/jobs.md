@@ -24,10 +24,16 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 
 ## CV & Cover Letter PDF Generation
 - Use ReportLab generators in cv_templates/ — NOT xelatex (cv_tailor.py is legacy)
-- CV: generate_cv_pdf(company, location, extra_skills) → instant PDF, no LLM
+- CV: generate_cv_pdf(company, location) → instant PDF, no LLM
 - Cover letter: generate_cover_letter_pdf(company, role, location) → instant PDF, no LLM
-- Fonts: Arial (system), Raleway/Spectral/Lato (data/fonts/)
-- ATS scoring runs on BASE_SKILLS text + JD-matched skills, not PDF extraction
+- Fonts: Arial 9.5pt (system), Raleway/Spectral/Lato (data/fonts/) for cover letter
+- MANDATORY 2-page limit for CV — never exceed
+- Every project bullet MUST have a quantified metric (%, count, time saved)
+- No conversational bullets — always professional tone
+- Tagline: no niche tools (Claude Code removed), use universally understood terms
+- All project URLs must link to CORRECT GitHub repo — verify before generating
+- No "JD Match" row in skills section
+- Section headers: teal (#1a5276) with thin line
 
 ## Pre-Screen Pipeline
 - Gate 0 (recruiter_screen.py) runs BEFORE any LLM call — title + exclude keyword filter
