@@ -9,9 +9,12 @@ from jobpulse.ralph_loop.pattern_store import (
     FixPattern,
     compute_error_signature,
 )
+from jobpulse.ralph_loop.loop import ralph_apply_sync, build_overrides_from_fixes
 
 __all__ = [
     "PatternStore",
     "FixPattern",
     "compute_error_signature",
+    "ralph_apply_sync",
+    "build_overrides_from_fixes",
 ]
