@@ -8,6 +8,7 @@ import random
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from shared.logging_config import get_logger
 
@@ -68,6 +69,7 @@ def apply_job(
     ats_platform: str | None,
     cv_path: Path,
     cover_letter_path: Path | None = None,
+    cl_generator: Any | None = None,  # Callable[[], Path | None]
     custom_answers: dict | None = None,
 ) -> dict:
     """Submit a job application via the appropriate ATS adapter.
@@ -130,6 +132,18 @@ def apply_job(
             answer = get_answer(value, {"title": "", "company": ""})
             if answer:
                 merged_answers[key] = answer
+
+    # Lazy CL generation: if no cover_letter_path but we have a generator,
+    # check if the adapter supports CL and generate on demand
+    if cover_letter_path is None and cl_generator is not None:
+        # Check if this platform typically has CL fields
+        if ats_platform and ats_platform.lower() in ("greenhouse", "lever"):
+            try:
+                cover_letter_path = cl_generator()
+                if cover_letter_path:
+                    logger.info("applicator: generated cover letter on demand for %s", ats_platform)
+            except Exception as exc:
+                logger.warning("applicator: on-demand CL generation failed: %s", exc)
 
     # Submit
     adapter = select_adapter(ats_platform)

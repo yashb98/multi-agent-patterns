@@ -507,21 +507,30 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                     exc,
                 )
 
-            # Generate cover letter PDF (ReportLab — no LLM call needed)
+            # Cover letter: lazy generation — only when ATS form needs it
             cover_letter_path = None
-            try:
-                cover_letter_path = generate_cover_letter_pdf(
-                    company=listing.company,
-                    role=listing.title,
-                    location=listing.location or "United Kingdom",
-                    output_dir=str(DATA_DIR / "applications" / listing.job_id),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "job_autopilot: generate_cover_letter_pdf failed for %s: %s",
-                    listing.job_id[:8],
-                    exc,
-                )
+            def _make_cl_generator(lst, proj, skills):
+                def _generate():
+                    cl_path = generate_cover_letter_pdf(
+                        company=lst.company,
+                        role=lst.title,
+                        location=lst.location or "United Kingdom",
+                        matched_projects=proj,
+                        required_skills=skills,
+                        output_dir=str(DATA_DIR / "applications" / lst.job_id),
+                    )
+                    # Upload to Drive if successful
+                    if cl_path:
+                        try:
+                            cl_link = upload_cover_letter(cl_path, lst.company)
+                            if cl_link and notion_page_id:
+                                update_application_page(notion_page_id, cl_drive_link=cl_link)
+                        except Exception:
+                            pass
+                    return cl_path
+                return _generate
+
+            cl_generator = _make_cl_generator(listing, matched_projects, listing.required_skills + listing.preferred_skills)
 
             # --- Gate 4 Phase B: CV quality scrutiny ---
             gate4b_notes = ""
@@ -558,11 +567,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                     cv_drive_link = upload_cv(cv_path, listing.company)
                 except Exception as exc:
                     logger.warning("job_autopilot: Drive CV upload failed: %s", exc)
-            if cover_letter_path:
-                try:
-                    cl_drive_link = upload_cover_letter(cover_letter_path, listing.company)
-                except Exception as exc:
-                    logger.warning("job_autopilot: Drive CL upload failed: %s", exc)
+            # CL Drive upload is handled inside cl_generator when triggered
 
             # Update DB with full analysis results
             db.save_application(
@@ -619,6 +624,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                             ats_platform=listing.ats_platform,
                             cv_path=cv_path,
                             cover_letter_path=cover_letter_path,
+                            cl_generator=cl_generator,
                             custom_answers=None,
                         )
                         if result.get("success"):
