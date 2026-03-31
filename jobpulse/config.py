@@ -59,6 +59,11 @@ MAX_FILE_LINES = int(os.getenv("MAX_FILE_LINES", "100"))
 # Notion Applications DB
 NOTION_APPLICATIONS_DB_ID = os.getenv("NOTION_APPLICATIONS_DB_ID", "")
 
+# Google Drive folders for CV/Cover Letter uploads
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+GOOGLE_DRIVE_RESUMES_FOLDER_ID = os.getenv("GOOGLE_DRIVE_RESUMES_FOLDER_ID", "")
+GOOGLE_DRIVE_COVERLETTERS_FOLDER_ID = os.getenv("GOOGLE_DRIVE_COVERLETTERS_FOLDER_ID", "")
+
 # Reed API
 REED_API_KEY = os.getenv("REED_API_KEY", "")
 

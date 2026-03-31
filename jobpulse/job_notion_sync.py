@@ -167,6 +167,8 @@ def build_update_payload(
     follow_up_date: date | None = None,
     notes: str | None = None,
     ats_platform: str | None = None,
+    cv_drive_link: str | None = None,
+    cl_drive_link: str | None = None,
 ) -> dict:
     """Build Notion update-page payload with only the provided (non-None) fields.
 
@@ -204,6 +206,16 @@ def build_update_payload(
         ats_key = ats_platform.lower()
         ats_name = ATS_PLATFORM_NAMES.get(ats_key, ats_platform.title())
         properties["ATS Platform"] = {"select": {"name": ats_name}}
+
+    if cv_drive_link is not None:
+        properties["CV Version"] = {
+            "files": [{"type": "external", "name": "CV.pdf", "external": {"url": cv_drive_link}}]
+        }
+
+    if cl_drive_link is not None:
+        properties["Cover Letter"] = {
+            "files": [{"type": "external", "name": "CoverLetter.pdf", "external": {"url": cl_drive_link}}]
+        }
 
     return {"properties": properties}
 

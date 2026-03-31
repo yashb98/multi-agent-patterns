@@ -26,6 +26,7 @@
 - skill_tracker_notion.py — Notion Skill Tracker: pending skills for user verification (I Know / Don't Know / Learning)
 - verification_detector.py — Universal CAPTCHA/verification wall detection (Cloudflare, reCAPTCHA, hCaptcha, text, HTTP)
 - scan_learning.py — Scan learning engine: event recording (17 signals), statistical correlation, LLM analysis, adaptive params, cooldown
+- drive_uploader.py — Google Drive auto-upload for CV/CL PDFs, dedup, shareable links for Notion
 
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.

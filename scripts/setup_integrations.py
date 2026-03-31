@@ -113,9 +113,16 @@ def test_github():
         return False
 
 
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+]
+
+
 def setup_google_oauth():
-    """Walk through Google OAuth2 setup for Gmail + Calendar."""
-    print("\n── Google OAuth2 (Gmail + Calendar) ──")
+    """Walk through Google OAuth2 setup for Gmail + Calendar + Drive."""
+    print("\n── Google OAuth2 (Gmail + Calendar + Drive) ──")
 
     client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID")
     client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET") or os.getenv("GOOGLE_CLIENT_SECRET")
@@ -123,17 +130,29 @@ def setup_google_oauth():
 
     if os.path.exists(token_path):
         print(f"✅ Token file exists: {token_path}")
-        # Test if it works
+        # Test if it works — check ALL required scopes
         try:
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(token_path,
-                ["https://www.googleapis.com/auth/gmail.readonly",
-                 "https://www.googleapis.com/auth/calendar.readonly"])
+            creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
 
-            if creds.valid:
-                print("   Token is valid — Gmail + Calendar ready")
+            # Check if token has drive.file scope by testing Drive API
+            has_drive = False
+            try:
+                from googleapiclient.discovery import build
+                svc = build("drive", "v3", credentials=creds)
+                svc.files().list(pageSize=1, fields="files(id)").execute()
+                has_drive = True
+            except Exception:
+                pass
+
+            if not has_drive:
+                print("   ⚠️  Token missing Drive scope — need to re-authorize.")
+                os.remove(token_path)
+                # Fall through to OAuth flow below
+            elif creds.valid:
+                print("   Token is valid — Gmail + Calendar + Drive ready")
                 return True
             elif creds.expired and creds.refresh_token:
                 creds.refresh(Request())
@@ -150,9 +169,10 @@ To set up Google OAuth2:
 
 1. Go to https://console.cloud.google.com/apis/credentials
 2. Create project (or select existing)
-3. Enable Gmail API and Google Calendar API:
+3. Enable Gmail API, Google Calendar API, and Google Drive API:
    - APIs & Services → Library → search "Gmail API" → Enable
    - APIs & Services → Library → search "Calendar API" → Enable
+   - APIs & Services → Library → search "Google Drive API" → Enable
 4. Create OAuth 2.0 credentials:
    - Credentials → Create → OAuth Client ID → Desktop App
 5. Add these to your .env:
@@ -178,10 +198,7 @@ To set up Google OAuth2:
 
         flow = InstalledAppFlow.from_client_config(
             client_config,
-            scopes=[
-                "https://www.googleapis.com/auth/gmail.readonly",
-                "https://www.googleapis.com/auth/calendar.readonly",
-            ]
+            scopes=GOOGLE_SCOPES,
         )
 
         print("Opening browser for Google OAuth2 consent...")

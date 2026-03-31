@@ -38,6 +38,7 @@ from jobpulse.cover_letter_agent import generate_cover_letter
 from jobpulse.cv_tailor import determine_match_tier, generate_tailored_cv
 from jobpulse.cv_templates.generate_cv import generate_cv_pdf
 from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
+from jobpulse.drive_uploader import upload_cv, upload_cover_letter
 from jobpulse.github_matcher import fetch_and_cache_repos, pick_top_projects
 from jobpulse.jd_analyzer import analyze_jd
 from jobpulse.job_db import JobDB
@@ -466,6 +467,20 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
             # Determine match tier
             tier = determine_match_tier(ats_score)
 
+            # Upload PDFs to Google Drive
+            cv_drive_link = None
+            cl_drive_link = None
+            if cv_path:
+                try:
+                    cv_drive_link = upload_cv(cv_path, listing.company)
+                except Exception as exc:
+                    logger.warning("job_autopilot: Drive CV upload failed: %s", exc)
+            if cover_letter_path:
+                try:
+                    cl_drive_link = upload_cover_letter(cover_letter_path, listing.company)
+                except Exception as exc:
+                    logger.warning("job_autopilot: Drive CL upload failed: %s", exc)
+
             # Update DB with full analysis results
             db.save_application(
                 job_id=listing.job_id,
@@ -478,7 +493,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                 notion_page_id=notion_page_id,
             )
 
-            # Update Notion with score and tier
+            # Update Notion with score, tier, and Drive links
             if notion_page_id:
                 try:
                     update_application_page(
@@ -487,6 +502,8 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                         ats_score=ats_score,
                         match_tier=tier,
                         matched_projects=matched_project_names,
+                        cv_drive_link=cv_drive_link,
+                        cl_drive_link=cl_drive_link,
                     )
                 except Exception as exc:
                     logger.warning(
