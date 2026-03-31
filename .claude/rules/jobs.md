@@ -1,7 +1,7 @@
 # Rules: Job Autopilot (jobpulse/job_**/*)
 
 ## Daily Rate Limits (updated 2026-03-31)
-- LinkedIn: 15/day, 30min session break every 5 apps, persistent browser profile
+- LinkedIn: 15/day, scanning via guest API (httpx + BeautifulSoup, no browser), Playwright only for Easy Apply submission
 - Greenhouse/Lever: 7/day, headed mode (not headless)
 - Indeed/Workday/Generic: 8/day, conservative — aggressive detection
 - Reed: 7/day, official API with 429 retry

@@ -82,7 +82,7 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 | Platform | Cap | Notes |
 |----------|-----|-------|
-| LinkedIn | 15 | Persistent browser, human typing, 30min session breaks |
+| LinkedIn | 15 | Guest API for scanning (httpx, no browser), Playwright only for applying |
 | Greenhouse/Lever | 7 | Anti-automation flags, headed mode |
 | Indeed/Workday/Generic | 8 | Conservative — aggressive detection |
 | Reed | 7 | Official API with 429 retry |
