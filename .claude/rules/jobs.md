@@ -26,7 +26,7 @@
 - Gate 0 (recruiter_screen.py) runs BEFORE any LLM call — title + exclude keyword filter
 - Gates 1-3 (skill_graph_store.py) run AFTER skill extraction — kill signals, must-haves, competitiveness
 - Skill extraction uses hybrid approach: rule-based first (582-entry taxonomy), LLM fallback when < 10 skills
-- Nightly profile sync (3am): github_profile_sync.py → MindGraph SKILL/PROJECT entities
+- Nightly profile sync (3am): github_profile_sync.py → GitHub API + README skill extraction + resume + past apps → MindGraph (347 skills, 750 DEMONSTRATES relations)
 - SkillGraphStore is Neo4j-ready — only swap internals when going multi-user
 - Pre-screen thresholds are BRUTAL (7-day experiment 2026-03-31→04-06):
   M1: ≥3 of top-5 required skills | M2: ≥2 projects with 2+ overlap | M3: ≥92% of required skills (percentage-based)

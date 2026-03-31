@@ -21,7 +21,7 @@
 - skill_extractor.py — Rule-based JD skill extraction (582-entry taxonomy), LLM fallback when < 10 skills
 - recruiter_screen.py — Gate 0 title filter (pre-LLM, instant, fuzzy matching + exclude keywords)
 - skill_graph_store.py — SkillGraphStore: 4-gate pre-screen (Gates 1-3), MindGraph abstraction, Neo4j-ready
-- github_profile_sync.py — Nightly 3am sync: GitHub repos + resume BASE_SKILLS + past apps → MindGraph graph
+- github_profile_sync.py — Nightly 3am sync: GitHub repos + README skill extraction + resume BASE_SKILLS + past apps → MindGraph graph (347 skills, 750 DEMONSTRATES relations)
 - skill_gap_tracker.py — Records missing skills from every pre-screened job, exports ranked CSV for upskilling
 - skill_tracker_notion.py — Notion Skill Tracker: pending skills for user verification (I Know / Don't Know / Learning)
 
