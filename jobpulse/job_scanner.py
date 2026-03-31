@@ -2,7 +2,7 @@
 
 Platform coverage:
   - Reed: fully functional via official Reed.co.uk API (search + detail endpoint for full JD)
-  - LinkedIn: Playwright browser automation (if installed + session saved), click-to-detail for full JD
+  - LinkedIn: public guest API (httpx + BeautifulSoup, no login/browser needed)
   - Indeed: Playwright browser automation (public search, no login required)
   - TotalJobs, Glassdoor: stubs (log + return []) pending full scraper work
 
@@ -14,10 +14,12 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 import time
 from typing import Any
 
 import httpx
+from bs4 import BeautifulSoup
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR, REED_API_KEY
@@ -534,37 +536,12 @@ def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
 
 
 def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
-    """LinkedIn job search via Playwright with saved browser session.
+    """LinkedIn job search via public guest API (no login required).
 
-    Requires:
-      1. `playwright` Python package installed
-      2. A saved browser session at data/linkedin_session/
-         (created by running: playwright codegen --save-storage=data/linkedin_session)
-
-    Returns an empty list if either prerequisite is missing.
-    Integrates verification wall detection and adaptive scan parameters
-    via ScanLearningEngine.
+    Uses LinkedIn's guest jobs API which returns public HTML listings.
+    No browser automation needed — uses httpx + BeautifulSoup.
+    No reCAPTCHA risk since no Playwright/browser fingerprinting.
     """
-    # Lazy import — Playwright may not be installed
-    try:
-        from playwright.sync_api import sync_playwright as _  # noqa: F401
-    except ImportError:
-        logger.warning(
-            "scan_linkedin: playwright not installed. "
-            "Install with: pip install playwright && playwright install chromium"
-        )
-        return []
-
-    # Use the shared chrome_profile (same as browser_manager.py)
-    chrome_profile = DATA_DIR / "chrome_profile"
-    if not chrome_profile.exists():
-        logger.warning(
-            "scan_linkedin: no Chrome profile at %s. "
-            "Run the login flow first to save LinkedIn cookies.",
-            chrome_profile,
-        )
-        return []
-
     # --- Adaptive pre-scan gate ---
     engine = ScanLearningEngine()
     params = engine.get_adaptive_params("linkedin")
@@ -575,7 +552,6 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
         )
         return []
 
-    delay_min, delay_max = params.get("delay_range", (2.0, 8.0))
     max_requests = params.get("max_requests", MAX_REQUESTS_PER_PLATFORM)
 
     results: list[dict[str, Any]] = []
@@ -583,184 +559,177 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
     signals = _SessionSignals("linkedin", ua)
 
     try:
-        with managed_persistent_browser(
-            user_data_dir=str(chrome_profile),
-            headless=False,
-            executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-            ],
-            ignore_default_args=["--enable-automation"],
-            user_agent=ua,
-            viewport={"width": 1280, "height": 800},
-        ) as (_browser, page):
+        with httpx.Client(
+            timeout=20,
+            headers={"User-Agent": ua, "Accept-Language": "en-GB,en;q=0.9"},
+            follow_redirects=True,
+        ) as client:
             for title in config.titles:
                 if len(results) >= max_requests:
                     break
 
-                search_url = (
-                    f"https://www.linkedin.com/jobs/search/"
-                    f"?keywords={_url_encode(title)}"
-                    f"&location={_url_encode(config.location)}"
-                    f"&f_TPR=r86400"   # past 24 hours
-                    f"&f_E=1,2"        # internship + entry level
-                )
                 signals.last_query = title
+                start = 0
 
-                try:
-                    logger.info("scan_linkedin: fetching '%s'", search_url)
-                    load_start = time.monotonic()
-                    page.goto(search_url, timeout=45_000, wait_until="networkidle")
-                    signals.last_load_time_ms = int((time.monotonic() - load_start) * 1000)
-                    signals.record_request()
+                while len(results) < max_requests:
+                    search_url = (
+                        "https://www.linkedin.com/jobs-guest/jobs/api/"
+                        "seeMoreJobPostings/search"
+                        f"?keywords={_url_encode(title)}"
+                        f"&location={_url_encode(config.location)}"
+                        f"&f_TPR=r86400"
+                        f"&start={start}"
+                    )
 
-                    # LinkedIn has ML detection — always simulate human interaction
-                    simulate_human_interaction(page)
-                    signals.simulated_mouse = True
+                    logger.info(
+                        "scan_linkedin: fetching page start=%d for '%s'",
+                        start, title,
+                    )
 
-                    # Check for verification wall after page load
-                    wall = detect_verification_wall(page, expected_results=True)
-                    if wall and wall.confidence >= 0.7:
-                        logger.warning(
-                            "scan_linkedin: verification wall detected (%s, %.0f%%) — aborting",
-                            wall.wall_type, wall.confidence * 100,
+                    # Fetch with retry on 429
+                    resp = None
+                    for retry in range(3):
+                        try:
+                            load_start = time.monotonic()
+                            resp = client.get(search_url)
+                            signals.last_load_time_ms = int(
+                                (time.monotonic() - load_start) * 1000
+                            )
+                            signals.record_request()
+                        except httpx.HTTPError as exc:
+                            logger.error(
+                                "scan_linkedin: HTTP error on page fetch: %s", exc,
+                            )
+                            resp = None
+                            break
+
+                        if resp.status_code == 429:
+                            wait = (retry + 1) * 5  # 5s, 10s, 15s
+                            logger.warning(
+                                "scan_linkedin: rate limited (429), waiting %ds "
+                                "(attempt %d/3)",
+                                wait, retry + 1,
+                            )
+                            time.sleep(wait)
+                            continue
+                        break
+
+                    if resp is None or resp.status_code != 200:
+                        if resp is not None:
+                            logger.warning(
+                                "scan_linkedin: got status %d for '%s', stopping "
+                                "pagination",
+                                resp.status_code, title,
+                            )
+                        break
+
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    cards = soup.select(
+                        "div.base-search-card, div.job-search-card"
+                    )
+
+                    if not cards:
+                        logger.info(
+                            "scan_linkedin: no more cards at start=%d for '%s'",
+                            start, title,
                         )
-                        _handle_block(engine, "linkedin", wall, signals)
-                        return results
+                        break  # No more results
 
-                    # Wait for job cards to render (LinkedIn loads async)
-                    try:
-                        page.wait_for_selector(".job-card-container, .jobs-search-results-list", timeout=15_000)
-                    except Exception:
-                        logger.warning("scan_linkedin: job cards not found, trying scroll")
-                    # Scroll to trigger lazy loading
-                    page.mouse.wheel(0, 500)
-                    time.sleep(random.uniform(delay_min, delay_max))
-
-                    cards = page.query_selector_all(".job-card-container")
-                    logger.info("scan_linkedin: found %d job cards for '%s'", len(cards), title)
+                    logger.info(
+                        "scan_linkedin: found %d cards at start=%d for '%s'",
+                        len(cards), start, title,
+                    )
 
                     for card in cards:
+                        if len(results) >= max_requests:
+                            break
+
                         try:
-                            # LinkedIn frequently changes class names.
-                            # Strategy: extract text lines and link from each card.
-                            link_el = card.query_selector('a[href*="/jobs/view"]')
-                            href = link_el.get_attribute("href") if link_el else ""
+                            title_el = card.select_one(
+                                "h3.base-search-card__title"
+                            )
+                            company_el = card.select_one(
+                                "h4.base-search-card__subtitle"
+                            )
+                            location_el = card.select_one(
+                                "span.job-search-card__location"
+                            )
+                            link_el = card.select_one(
+                                "a.base-card__full-link"
+                            )
 
-                            # The card's text is structured: title, company, location
-                            # Split inner_text by newlines and filter empties
-                            lines = [l.strip() for l in card.inner_text().split("\n") if l.strip()]
+                            job_title = (
+                                title_el.get_text(strip=True)
+                                if title_el else ""
+                            )
+                            company = (
+                                company_el.get_text(strip=True)
+                                if company_el else ""
+                            )
+                            location = (
+                                location_el.get_text(strip=True)
+                                if location_el else ""
+                            )
+                            href = (
+                                link_el["href"]
+                                if link_el and link_el.has_attr("href")
+                                else ""
+                            )
 
-                            # First non-empty line is usually the title
-                            # Company and location follow
-                            job_title = lines[0] if len(lines) > 0 else ""
-                            # Skip duplicate title line (LinkedIn often repeats it)
-                            start = 1
-                            if len(lines) > 1 and lines[1] == job_title:
-                                start = 2
-                            company = lines[start] if len(lines) > start else ""
-                            location = lines[start + 1] if len(lines) > start + 1 else ""
+                            if not href or not job_title:
+                                continue
 
                             # Normalise to absolute URL
                             if href and not href.startswith("http"):
                                 href = "https://www.linkedin.com" + href
 
-                            if not href:
-                                continue
-
-                            # Click into job to get full description
+                            # Fetch full JD from detail page
                             description = ""
                             try:
-                                card.click()
-                                signals.record_request()
                                 time.sleep(random.uniform(1.5, 3.0))
-
-                                # Check for verification wall after card click
-                                wall = detect_verification_wall(page)
-                                if wall and wall.confidence >= 0.7:
+                                detail_resp = client.get(href)
+                                signals.record_request()
+                                if detail_resp.status_code == 200:
+                                    detail_soup = BeautifulSoup(
+                                        detail_resp.text, "html.parser"
+                                    )
+                                    desc_el = detail_soup.select_one(
+                                        ".show-more-less-html__markup, "
+                                        ".description__text, "
+                                        "#job-details"
+                                    )
+                                    if desc_el:
+                                        description = desc_el.get_text(
+                                            separator="\n", strip=True
+                                        )[:5000]
+                                elif detail_resp.status_code == 429:
                                     logger.warning(
-                                        "scan_linkedin: wall after card click (%s) — returning partial results",
-                                        wall.wall_type,
+                                        "scan_linkedin: rate limited on detail "
+                                        "fetch, skipping remaining details"
                                     )
-                                    _handle_block(engine, "linkedin", wall, signals)
-                                    return results
-
-                                # Wait for JD side panel to render (LinkedIn loads async via AJAX)
-                                _JD_PANEL_SELECTORS = (
-                                    "#job-details, "
-                                    ".jobs-description-content__text, "
-                                    ".jobs-description__content, "
-                                    ".jobs-box__html-content, "
-                                    ".jobs-unified-top-card__job-insight, "
-                                    "[class*='jobs-description']"
-                                )
-                                try:
-                                    page.wait_for_selector(_JD_PANEL_SELECTORS, timeout=8_000)
-                                except Exception:
-                                    logger.debug("scan_linkedin: JD panel selector timeout for %s", job_title)
-
-                                # Try extracting from side panel
-                                desc_el = page.query_selector(_JD_PANEL_SELECTORS)
-                                if desc_el:
-                                    description = desc_el.inner_text()[:5000]
-
-                                # Fallback: if description is empty/too short, navigate to full job page
-                                if len(description.strip()) < 50 and href:
-                                    logger.info(
-                                        "scan_linkedin: side panel empty for '%s', navigating to full page",
-                                        job_title,
-                                    )
-                                    try:
-                                        page.goto(href, timeout=20_000, wait_until="networkidle")
-                                        time.sleep(random.uniform(1.5, 3.0))
-                                        simulate_human_interaction(page)
-
-                                        # Full page has different selectors
-                                        full_desc_el = page.query_selector(
-                                            "#job-details, "
-                                            ".description__text, "
-                                            ".show-more-less-html__markup, "
-                                            "[class*='description']"
-                                        )
-                                        if full_desc_el:
-                                            description = full_desc_el.inner_text()[:5000]
-                                            logger.info(
-                                                "scan_linkedin: got %d chars from full page for '%s'",
-                                                len(description), job_title,
-                                            )
-
-                                        # Navigate back to search results
-                                        page.go_back(timeout=15_000)
-                                        time.sleep(random.uniform(1.0, 2.0))
-                                    except Exception as nav_err:
-                                        logger.debug(
-                                            "scan_linkedin: full page fallback failed: %s", nav_err
-                                        )
-                                        # Try to get back to search
-                                        try:
-                                            page.goto(search_url, timeout=30_000, wait_until="networkidle")
-                                            time.sleep(random.uniform(2.0, 4.0))
-                                        except Exception:
-                                            pass
-                            except Exception as desc_err:
+                                    # Still add the job without description
+                            except Exception as detail_err:
                                 logger.debug(
-                                    "scan_linkedin: could not fetch JD detail: %s",
-                                    desc_err,
+                                    "scan_linkedin: detail fetch failed for "
+                                    "'%s': %s",
+                                    job_title, detail_err,
                                 )
 
-                            # Try extracting salary from card text
+                            # Extract salary from card text if present
                             salary_min_val = None
                             salary_max_val = None
-                            card_text = " ".join(lines)
-                            import re as _re
-                            sal_match = _re.search(
+                            card_text = card.get_text()
+                            sal_match = re.search(
                                 r"£([\d,]+)\s*[-–]\s*£([\d,]+)", card_text
                             )
                             if sal_match:
                                 try:
-                                    salary_min_val = float(sal_match.group(1).replace(",", ""))
-                                    salary_max_val = float(sal_match.group(2).replace(",", ""))
+                                    salary_min_val = float(
+                                        sal_match.group(1).replace(",", "")
+                                    )
+                                    salary_max_val = float(
+                                        sal_match.group(2).replace(",", "")
+                                    )
                                 except ValueError:
                                     pass
 
@@ -778,17 +747,21 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                                 }
                             )
                         except Exception as card_err:
-                            logger.debug("scan_linkedin: error parsing card: %s", card_err)
+                            logger.debug(
+                                "scan_linkedin: error parsing card: %s",
+                                card_err,
+                            )
                             continue
 
-                except Exception as page_err:
-                    logger.error("scan_linkedin: error fetching '%s': %s", search_url, page_err)
+                    # Paginate — next 25 results
+                    start += 25
+                    time.sleep(random.uniform(2.0, 5.0))
 
             # Session completed without blocks — record success
             _record_success(engine, "linkedin", signals)
 
     except Exception as exc:
-        logger.error("scan_linkedin: Playwright session error: %s", exc)
+        logger.error("scan_linkedin: guest API error: %s", exc)
 
     logger.info("scan_linkedin: returning %d total results", len(results))
     return results
