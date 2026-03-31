@@ -97,33 +97,30 @@ def build_weekly_report() -> str:
         logger.debug("Weekly report tasks: %s", e)
         sections["tasks"] = "  Data unavailable"
 
-    # 5. Job application stats
+    # 5. Job application stats (via job_analytics module)
     try:
-        from jobpulse.job_db import JobDB
-        job_db = JobDB()
-        conn = job_db._conn()
-        week_applied = conn.execute(
-            "SELECT COUNT(*) as c FROM applications WHERE applied_at >= ? AND status = 'Applied'",
-            (start_str,),
-        ).fetchone()["c"]
-        week_interviews = conn.execute(
-            "SELECT COUNT(*) as c FROM applications WHERE status = 'Interview' AND updated_at >= ?",
-            (start_str,),
-        ).fetchone()["c"]
-        week_found = conn.execute(
-            "SELECT COUNT(*) as c FROM job_listings WHERE found_at >= ?",
-            (start_str,),
-        ).fetchone()["c"]
-        avg_ats_row = conn.execute(
-            "SELECT AVG(ats_score) as avg FROM applications WHERE applied_at >= ? AND ats_score > 0",
-            (start_str,),
-        ).fetchone()
-        avg_ats = round(avg_ats_row["avg"], 1) if avg_ats_row["avg"] else 0
-        conn.close()
-        sections["jobs"] = (
-            f"  Found: {week_found} | Applied: {week_applied}\n"
-            f"  Interviews: {week_interviews} | Avg ATS: {avg_ats}%"
+        from jobpulse.job_analytics import get_conversion_funnel, get_platform_breakdown, get_gate_stats
+        funnel = get_conversion_funnel(days=7)
+        platforms = get_platform_breakdown(days=7)
+        gates = get_gate_stats(days=7)
+
+        funnel_line = (
+            f"  Found: {funnel['found']} → Applied: {funnel['applied']} "
+            f"({funnel['found_to_applied']:.0f}%) → Interview: {funnel['interview']} "
+            f"({funnel['applied_to_interview']:.0f}%)"
         )
+        status_line = f"  Rejected: {funnel['rejected']} | Skipped: {funnel['skipped']} | Blocked: {funnel['blocked']}"
+
+        platform_lines = []
+        for plat, counts in sorted(platforms.items(), key=lambda x: x[1].get("found", 0), reverse=True)[:3]:
+            platform_lines.append(
+                f"  {plat.title()}: {counts.get('found', 0)} found, {counts.get('applied', 0)} applied"
+            )
+        platform_str = "\n".join(platform_lines) if platform_lines else "  No platform data"
+
+        gate_line = f"  Blocked: {gates['blocked']} | Skipped: {gates['skipped']} | Screened: {gates['total_screened']}"
+
+        sections["jobs"] = f"{funnel_line}\n{status_line}\n  By Platform:\n{platform_str}\n  Gates:\n{gate_line}"
     except Exception as e:
         logger.debug("Weekly report jobs: %s", e)
         sections["jobs"] = "  Data unavailable"

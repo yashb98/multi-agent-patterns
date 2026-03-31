@@ -791,11 +791,8 @@ def _handle_reject_job(cmd: ParsedCommand) -> str:
 
 
 def _handle_job_stats(cmd: ParsedCommand) -> str:
-    from jobpulse.job_db import JobDB
-    db = JobDB()
-    stats = db.get_today_stats()
-    return (f"📊 Job Stats Today\nFound: {stats['found']}\nApplied: {stats['applied']}\n"
-            f"Skipped: {stats['skipped']}\nAvg ATS: {stats['avg_ats']}%")
+    from jobpulse.job_analytics import get_enhanced_job_stats
+    return get_enhanced_job_stats()
 
 
 def _handle_search_config(cmd: ParsedCommand) -> str:
