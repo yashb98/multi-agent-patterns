@@ -92,7 +92,9 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 **Verification Wall Learning:** Universal detection (Cloudflare, reCAPTCHA, hCaptcha, text challenges, HTTP blocks). Event-sourced learning with 17 signals per scan session. Statistical correlation engine (zero LLM cost) + periodic GPT-5o-mini analysis (every 5th block). 2hr cooldown with exponential backoff (max 48hr). Human-like page interaction (scroll, mouse, networkidle wait). DB: `data/scan_learning.db`.
 
-**CV/Cover Letter:** ReportLab PDFs (no xelatex). `cv_templates/generate_cv.py` + `generate_cover_letter.py`. Instant, no LLM calls. Auto-uploaded to Google Drive (separate Resume/Cover Letter folders) with shareable links synced to Notion Job Tracker.
+**CV/Cover Letter:** ReportLab PDFs (no xelatex). CV always generated upfront. Cover letter generated **lazily** — only when ATS form has a CL upload field (Greenhouse/Lever). Dynamic points from matched projects + LLM polish (~$0.002/call). Auto-uploaded to Google Drive with shareable links synced to Notion Job Tracker. Recruiter emails extracted from JDs and stored in Notion.
+
+**Application Analytics:** `job stats` command shows conversion funnel (Found→Applied→Interview with rates), per-platform breakdown, gate block stats. Weekly report includes same + budget comparison.
 
 **Pre-Screen (5-Gate Recruiter Model):**
 Gate 0: Title relevance (instant, pre-LLM) → Gate 1: Kill signals (seniority, primary lang, domain) →

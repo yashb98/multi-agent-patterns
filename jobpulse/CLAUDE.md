@@ -29,6 +29,7 @@
 - drive_uploader.py — Google Drive auto-upload for CV/CL PDFs, dedup, shareable links for Notion
 - gate4_quality.py — Gate 4: JD quality (A1), company background (A3), CV scrutiny (B1), LLM FAANG review (B2)
 - company_blocklist.py — Notion Company Blocklist: spam detection, user curation (Pending/Blocked/Approved), cached lookup
+- job_analytics.py — Application analytics: conversion funnel, platform breakdown, gate stats, formatted Telegram output
 
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.

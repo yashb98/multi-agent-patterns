@@ -24,8 +24,11 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 
 ## CV & Cover Letter PDF Generation
 - Use ReportLab generators in cv_templates/ — NOT xelatex (cv_tailor.py is legacy)
-- CV: generate_cv_pdf(company, location) → instant PDF, no LLM
-- Cover letter: generate_cover_letter_pdf(company, role, location) → instant PDF, no LLM
+- CV: generate_cv_pdf(company, location) → always generated upfront, instant PDF, no LLM
+- Cover letter: LAZY GENERATION — only when ATS form has CL upload field (Greenhouse/Lever detect it)
+  - generate_cover_letter_pdf(company, role, matched_projects, required_skills) → dynamic points + LLM polish
+  - cl_generator callback passed to apply_job(), triggered mid-form-fill if CL field detected
+  - If no CL field → no generation, no wasted resources
 - Fonts: Arial 9.5pt (system), Raleway/Spectral/Lato (data/fonts/) for cover letter
 - MANDATORY 2-page limit for CV — never exceed
 - Every project bullet MUST have a quantified metric (%, count, time saved)
@@ -86,3 +89,24 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - Adaptive params: risk level (low/medium/high) adjusts delays, max requests, human simulation, session length
 - Human interaction: wait for networkidle, scroll 300-600px, random mouse movement, 1-3s reading delay
 - Database: data/scan_learning.db (scan_events, learned_rules, cooldowns)
+
+## Application Analytics
+- `job stats` Telegram command → conversion funnel + platform breakdown + gate stats
+- Weekly report includes funnel (Found→Applied→Interview with conversion rates)
+- Per-platform breakdown (LinkedIn, Indeed, Reed)
+- Gate 4 block stats (spam, JD quality, blocklist)
+- Module: jobpulse/job_analytics.py
+
+## Recruiter Email Extraction
+- Extracted from JD text during jd_analyzer.py analysis
+- 3-tier classification: discard (noreply/info/support), store generic_hr (careers/hiring), store recruiter (personal)
+- Stored in Notion Job Tracker "Recruiter Email" column (email type)
+- Field on JobListing model: recruiter_email
+
+## Dynamic Cover Letter
+- Cover letter NOT generated upfront — lazy generation via cl_generator callback
+- ATS form detection: Greenhouse/Lever adapters trigger generation when CL field found
+- Dynamic points: build_dynamic_points() maps matched projects to JD skills with metrics
+- LLM polish: polish_points_llm() refines points via GPT-5o-mini (~$0.002/call)
+- Dynamic intro + hook generated from matched projects + required skills
+- Falls back to static defaults if no matched data available
