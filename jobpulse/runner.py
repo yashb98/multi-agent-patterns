@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
-        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, test")
+        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -213,6 +213,26 @@ def main():
     elif command == "profile-sync":
         from jobpulse.github_profile_sync import sync_profile
         sync_profile()
+
+    elif command == "skill-verify":
+        from jobpulse.skill_tracker_notion import sync_verified_to_profile, get_pending_skills
+        pending = get_pending_skills()
+        if pending:
+            print(f"\n{len(pending)} skills pending your review in Notion:")
+            for p in pending[:20]:
+                print(f"  - {p['skill']} (seen {p['times_seen']}x in: {p['source_jds']})")
+            print(f"\nMark them as 'I Know' or 'Don't Know' in Notion, then run this again.")
+        else:
+            print("No pending skills.")
+        synced = sync_verified_to_profile()
+        print(f"Synced {synced} verified skills to profile.")
+
+    elif command == "skill-pending":
+        from jobpulse.skill_tracker_notion import get_pending_skills
+        pending = get_pending_skills()
+        print(f"\n{len(pending)} skills pending review:")
+        for p in pending:
+            print(f"  {p['skill']:<30} seen {p['times_seen']}x  ({p['source_jds']})")
 
     elif command == "test":
         from jobpulse.telegram_agent import send_message

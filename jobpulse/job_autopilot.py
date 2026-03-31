@@ -293,6 +293,14 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         except Exception as exc:
             logger.debug("job_autopilot: skill_gap_tracker.record_gap failed: %s", exc)
 
+        # Sync missing skills to Notion Skill Tracker for user verification
+        try:
+            from jobpulse.skill_tracker_notion import sync_skills_to_notion
+            if screen and screen.missing_skills:
+                sync_skills_to_notion(screen.missing_skills, listing.company)
+        except Exception as exc:
+            logger.debug("skill_tracker_notion sync failed: %s", exc)
+
         if screen.tier == "reject":
             gate_rejected += 1
             logger.info(
