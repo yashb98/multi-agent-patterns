@@ -33,12 +33,19 @@ def deduplicate(listings: list[JobListing], db: JobDB) -> list[JobListing]:
         return []
 
     new_listings: list[JobListing] = []
-    # Track company+title within this batch to catch same-batch duplicates
+    # Track company+title within this batch — catches same-batch AND cross-platform duplicates
+    # e.g., "Graduate AI Engineer @ Agility" on both Reed and LinkedIn
     seen_in_batch: set[str] = set()
 
     for listing in listings:
-        # --- Check 0: within-batch dedup (same company+title) ---
-        batch_key = f"{listing.company.lower().strip()}|{listing.title.lower().strip()}"
+        # --- Check 0: within-batch dedup (same company+title, ANY platform) ---
+        # Normalize: strip whitespace, lowercase, remove common suffixes
+        norm_company = listing.company.lower().strip()
+        norm_title = listing.title.lower().strip()
+        # Remove platform-specific suffixes like "with verification"
+        for suffix in [" with verification", " - entry level"]:
+            norm_title = norm_title.replace(suffix, "")
+        batch_key = f"{norm_company}|{norm_title}"
         if batch_key in seen_in_batch:
             logger.debug(
                 "Dedup: batch duplicate — title=%r company=%r",

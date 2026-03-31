@@ -67,9 +67,10 @@ def sync_repos_to_graph(repos: list[dict], store) -> None:  # type: ignore[type-
 
 
 def sync_readme_skills(repos: list[dict], store) -> None:  # type: ignore[type-arg]
-    """Fetch README for each repo and extract skills via rule-based taxonomy.
+    """Fetch README + relevant .md files for each repo and extract skills.
 
-    Creates DEMONSTRATES relations between projects and skills found in READMEs.
+    Scans: README, CLAUDE.md, docs/*.md (top-level only).
+    Creates DEMONSTRATES relations between projects and skills found.
     No LLM calls -- uses the 582-entry skill taxonomy for free extraction.
     """
     import httpx
@@ -81,32 +82,47 @@ def sync_readme_skills(repos: list[dict], store) -> None:  # type: ignore[type-a
     if GITHUB_TOKEN:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
 
+    # MD files to scan per repo (README is fetched via dedicated endpoint)
+    EXTRA_MD_FILES = ["CLAUDE.md", "docs/ARCHITECTURE.md", "docs/README.md"]
+
     total_skills = 0
     for repo in repos:
         repo_name = repo.get("name", "")
         if not repo_name or "/" not in repo_name:
             continue
 
+        all_md_text = ""
+
         try:
             with httpx.Client(timeout=15) as client:
+                # Fetch README
                 resp = client.get(
                     f"https://api.github.com/repos/{repo_name}/readme",
                     headers=headers,
                 )
-                if resp.status_code != 200:
-                    logger.debug("No README for %s (status %d)", repo_name, resp.status_code)
+                if resp.status_code == 200 and len(resp.text) >= 50:
+                    all_md_text += resp.text + "\n"
+
+                # Fetch extra .md files (non-blocking — skip silently on 404)
+                for md_file in EXTRA_MD_FILES:
+                    try:
+                        md_resp = client.get(
+                            f"https://api.github.com/repos/{repo_name}/contents/{md_file}",
+                            headers=headers,
+                        )
+                        if md_resp.status_code == 200 and len(md_resp.text) >= 50:
+                            all_md_text += md_resp.text + "\n"
+                    except Exception:
+                        pass
+
+                if not all_md_text:
                     continue
 
-                readme_text = resp.text
-                if len(readme_text) < 50:
-                    continue
-
-                # Extract skills from README using rule-based taxonomy
-                result = extract_skills_rule_based(readme_text)
+                # Extract skills from all collected .md text
+                result = extract_skills_rule_based(all_md_text)
                 skills = result.get("required_skills", []) + result.get("preferred_skills", [])
 
                 if skills:
-                    # Build enriched repo dict with README-extracted skills merged into topics
                     languages: list[str] = repo.get("languages") or []
                     primary_language: str = languages[0] if languages else ""
                     enriched: dict = {
@@ -120,10 +136,10 @@ def sync_readme_skills(repos: list[dict], store) -> None:  # type: ignore[type-a
                     }
                     store.upsert_project(enriched)
                     total_skills += len(skills)
-                    logger.debug("README enriched %s with %d skills", repo_name, len(skills))
+                    logger.debug("MD files enriched %s with %d skills", repo_name, len(skills))
 
         except Exception as exc:  # noqa: BLE001
-            logger.debug("README fetch failed for %s: %s", repo_name, exc)
+            logger.debug("MD fetch failed for %s: %s", repo_name, exc)
 
         # Brief pause to respect GitHub rate limits
         time.sleep(0.3)

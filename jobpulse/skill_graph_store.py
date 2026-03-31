@@ -332,10 +332,10 @@ class SkillGraphStore:
         profile: set[str],
         description: str,
     ) -> tuple[bool, str | None]:
-        # K1: Seniority — 5+ years or more
+        # K1: Seniority — 3+ years or more
         years_matches = re.findall(r"\b(\d+)\+?\s*years?\b", description, re.IGNORECASE)
         for m in years_matches:
-            if int(m) >= 5:
+            if int(m) >= 3:
                 return False, f"Seniority kill: JD requires {m}+ years experience"
 
         # K2: Primary technical skill — find the first non-soft-skill required skill
