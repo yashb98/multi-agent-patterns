@@ -1,9 +1,11 @@
 """Tests for ScanLearningEngine — verification wall learning system."""
 
+import json
 import pytest
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 
 @pytest.fixture
@@ -334,3 +336,83 @@ class TestStatisticalCorrelation:
         no_mouse = next((f for f in mouse_factors if f["bucket"] == "0"), None)
         assert no_mouse is not None
         assert no_mouse["block_rate"] >= 0.90
+
+
+class TestLLMPatternAnalyzer:
+    """Test periodic LLM analysis of block patterns."""
+
+    def _seed_blocks(self, engine, count: int):
+        for i in range(count):
+            engine.record_event(**_make_event_kwargs(
+                platform="indeed",
+                outcome="blocked",
+                wall_type="cloudflare",
+                requests_in_session=8 + i,
+                avg_delay=1.5,
+            ))
+
+    def test_should_analyze_false_under_5_blocks(self, engine):
+        self._seed_blocks(engine, 3)
+        assert engine.should_run_llm_analysis() is False
+
+    def test_should_analyze_true_at_5_blocks(self, engine):
+        self._seed_blocks(engine, 5)
+        assert engine.should_run_llm_analysis() is True
+
+    def test_should_analyze_true_at_10_blocks(self, engine):
+        self._seed_blocks(engine, 10)
+        assert engine.should_run_llm_analysis() is True
+
+    def test_should_analyze_false_at_6_blocks(self, engine):
+        self._seed_blocks(engine, 6)
+        assert engine.should_run_llm_analysis() is False
+
+    @patch("jobpulse.scan_learning.safe_openai_call")
+    def test_llm_analysis_stores_rule(self, mock_llm, engine, db_path: str):
+        mock_llm.return_value = json.dumps({
+            "pattern": "Indeed blocks after 8+ requests with delay < 2s",
+            "confidence": 0.85,
+            "recommendation": "Increase delay to 5-8s, limit to 5 requests per session",
+        })
+        self._seed_blocks(engine, 5)
+        engine.run_llm_analysis("indeed")
+
+        conn = sqlite3.connect(db_path)
+        rules = conn.execute(
+            "SELECT rule_text, source, confidence FROM learned_rules WHERE source = 'llm'"
+        ).fetchall()
+        conn.close()
+        assert len(rules) == 1
+        assert rules[0][1] == "llm"
+        assert rules[0][2] == 0.85
+
+    @patch("jobpulse.scan_learning.safe_openai_call")
+    def test_llm_analysis_handles_invalid_json(self, mock_llm, engine, db_path: str):
+        mock_llm.return_value = "not valid json at all"
+        self._seed_blocks(engine, 5)
+        engine.run_llm_analysis("indeed")  # should not raise
+
+        conn = sqlite3.connect(db_path)
+        rules = conn.execute(
+            "SELECT COUNT(*) FROM learned_rules WHERE source = 'llm'"
+        ).fetchone()
+        conn.close()
+        assert rules[0] == 0
+
+    @patch("jobpulse.scan_learning.safe_openai_call")
+    def test_llm_analysis_handles_none_response(self, mock_llm, engine, db_path: str):
+        mock_llm.return_value = None
+        self._seed_blocks(engine, 5)
+        engine.run_llm_analysis("indeed")
+
+        conn = sqlite3.connect(db_path)
+        rules = conn.execute(
+            "SELECT COUNT(*) FROM learned_rules WHERE source = 'llm'"
+        ).fetchone()
+        conn.close()
+        assert rules[0] == 0
+
+    @patch("jobpulse.scan_learning.safe_openai_call")
+    def test_llm_analysis_no_events_does_nothing(self, mock_llm, engine, db_path: str):
+        engine.run_llm_analysis("indeed")
+        mock_llm.assert_not_called()

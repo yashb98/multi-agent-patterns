@@ -7,6 +7,7 @@ its scanning behaviour per platform.
 from __future__ import annotations
 
 import hashlib
+import json as _json
 import sqlite3
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -14,6 +15,7 @@ from typing import Any
 
 from shared.logging_config import get_logger
 from jobpulse.config import DATA_DIR
+from jobpulse.utils.safe_io import safe_openai_call
 
 logger = get_logger(__name__)
 
@@ -395,6 +397,93 @@ class ScanLearningEngine:
         conn.close()
         logger.info("Updated %d learned rules for %s", count, platform)
         return count
+
+    # --- LLM Pattern Analyzer ---
+
+    _LLM_ANALYSIS_EVERY_N_BLOCKS: int = 5
+
+    def should_run_llm_analysis(self) -> bool:
+        """True if total blocks across all platforms is a positive multiple of 5."""
+        total = self.get_total_blocks()
+        return total > 0 and total % self._LLM_ANALYSIS_EVERY_N_BLOCKS == 0
+
+    def run_llm_analysis(self, platform: str) -> None:
+        """Run GPT-5o-mini analysis on recent events for a platform."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM scan_events WHERE platform = ? ORDER BY timestamp DESC LIMIT 20",
+            (platform,),
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return
+
+        # Build events table for LLM
+        header = "timestamp | requests | avg_delay | session_age | ua_hash | fresh | mouse | referrer | pages | waited | outcome | wall_type"
+        lines = [header]
+        for r in rows:
+            lines.append(
+                f"{r['timestamp'][:16]} | {r['requests_in_session']} | "
+                f"{r['avg_delay']:.1f}s | {r['session_age_seconds']:.0f}s | "
+                f"{r['user_agent_hash'][:6]} | {bool(r['was_fresh_session'])} | "
+                f"{bool(r['simulated_mouse'])} | {r['referrer_chain']} | "
+                f"{r['pages_before_block']} | {bool(r['waited_for_page_load'])} | "
+                f"{r['outcome']} | {r['wall_type'] or 'n/a'}"
+            )
+        events_table = "\n".join(lines)
+
+        prompt = (
+            f"You are analyzing job scraping session data to find patterns that trigger verification walls.\n\n"
+            f"Here are the last {len(rows)} scan sessions for {platform}:\n{events_table}\n\n"
+            f"Identify the pattern that most likely triggers blocks. Return ONLY valid JSON:\n"
+            f'{{"pattern": "human-readable description", "confidence": 0.0-1.0, '
+            f'"recommendation": "specific parameter changes"}}'
+        )
+
+        import openai
+        client = openai.OpenAI()
+        response = safe_openai_call(
+            client,
+            model="gpt-5o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            caller="scan_learning_llm_analysis",
+        )
+
+        if not response:
+            logger.warning("LLM analysis returned None for %s", platform)
+            return
+
+        try:
+            result = _json.loads(response)
+        except _json.JSONDecodeError:
+            logger.warning("LLM analysis returned invalid JSON for %s: %s", platform, response[:200])
+            return
+
+        pattern = result.get("pattern", "")
+        confidence = float(result.get("confidence", 0.5))
+        recommendation = result.get("recommendation", "")
+
+        if not pattern:
+            return
+
+        rule_id = uuid.uuid4().hex[:16]
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            """INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at)
+               VALUES (?, ?, ?, ?, ?, 'llm', ?)""",
+            (rule_id, platform, pattern, confidence, recommendation,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        logger.info(
+            "LLM analysis for %s: pattern='%s' confidence=%.2f",
+            platform, pattern, confidence,
+        )
 
     def get_cooldown_info(self, platform: str) -> dict[str, Any] | None:
         """Get current cooldown state for a platform."""
