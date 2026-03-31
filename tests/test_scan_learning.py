@@ -220,3 +220,117 @@ class TestCooldownManager:
     def test_reset_cooldown_on_nonexistent_platform(self, engine):
         """reset_cooldown on a platform with no cooldown should not raise."""
         engine.reset_cooldown("indeed")  # Should not raise
+
+
+class TestStatisticalCorrelation:
+    """Test risk factor identification from event history."""
+
+    def _seed_events(self, engine, platform: str, events: list[dict]):
+        for e in events:
+            engine.record_event(**_make_event_kwargs(
+                platform=platform,
+                requests_in_session=e.get("requests", 5),
+                avg_delay=e.get("delay", 4.0),
+                session_age_seconds=e.get("age", 300.0),
+                user_agent_hash=e.get("ua", "ua1"),
+                was_fresh_session=e.get("fresh", True),
+                simulated_mouse=e.get("mouse", True),
+                referrer_chain=e.get("referrer", "direct"),
+                search_query=e.get("query", "python"),
+                pages_before_block=e.get("pages", 5),
+                browser_fingerprint=e.get("fp", "fp1"),
+                waited_for_page_load=e.get("waited", True),
+                page_load_time_ms=e.get("load_ms", 2000),
+                outcome=e["outcome"],
+                wall_type=e.get("wall", None),
+            ))
+
+    def test_no_events_returns_empty_risk_factors(self, engine):
+        factors = engine.compute_risk_factors("indeed")
+        assert factors == []
+
+    def test_high_block_rate_ua_becomes_risk_factor(self, engine):
+        self._seed_events(engine, "indeed", [
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+            {"outcome": "success", "ua": "bad_ua"},
+            {"outcome": "success", "ua": "good_ua"},
+            {"outcome": "success", "ua": "good_ua"},
+            {"outcome": "success", "ua": "good_ua"},
+        ])
+        factors = engine.compute_risk_factors("indeed")
+        signal_names = [f["signal"] for f in factors]
+        assert "user_agent_hash" in signal_names
+        ua_factor = next(f for f in factors if f["signal"] == "user_agent_hash")
+        assert ua_factor["bucket"] == "bad_ua"
+        assert ua_factor["block_rate"] >= 0.70
+
+    def test_low_delay_becomes_risk_factor(self, engine):
+        self._seed_events(engine, "indeed", [
+            {"outcome": "blocked", "wall": "text_challenge", "delay": 1.5},
+            {"outcome": "blocked", "wall": "text_challenge", "delay": 1.0},
+            {"outcome": "blocked", "wall": "text_challenge", "delay": 1.8},
+            {"outcome": "success", "delay": 6.0},
+            {"outcome": "success", "delay": 5.0},
+            {"outcome": "success", "delay": 7.0},
+        ])
+        factors = engine.compute_risk_factors("indeed")
+        signal_names = [f["signal"] for f in factors]
+        assert "avg_delay" in signal_names
+
+    def test_minimum_sample_size_enforced(self, engine):
+        """Only 2 events with same UA — below min_sample=3."""
+        self._seed_events(engine, "indeed", [
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "rare_ua"},
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "rare_ua"},
+        ])
+        factors = engine.compute_risk_factors("indeed")
+        ua_factors = [f for f in factors if f["signal"] == "user_agent_hash" and f["bucket"] == "rare_ua"]
+        assert len(ua_factors) == 0
+
+    def test_risk_factors_stored_as_learned_rules(self, db_path: str, engine):
+        self._seed_events(engine, "indeed", [
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+            {"outcome": "success", "ua": "good_ua"},
+            {"outcome": "success", "ua": "good_ua"},
+            {"outcome": "success", "ua": "good_ua"},
+        ])
+        engine.update_learned_rules("indeed")
+        conn = sqlite3.connect(db_path)
+        rules = conn.execute(
+            "SELECT rule_text, source FROM learned_rules WHERE platform = 'indeed'"
+        ).fetchall()
+        conn.close()
+        assert len(rules) > 0
+        assert any(r[1] == "statistical" for r in rules)
+
+    def test_risk_factors_only_for_requested_platform(self, engine):
+        """Events on linkedin should not affect indeed risk factors."""
+        self._seed_events(engine, "linkedin", [
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+            {"outcome": "blocked", "wall": "cloudflare", "ua": "bad_ua"},
+        ])
+        factors = engine.compute_risk_factors("indeed")
+        assert factors == []
+
+    def test_no_mouse_simulation_as_risk_factor(self, engine):
+        """Not simulating mouse should show as risk factor if correlated with blocks."""
+        self._seed_events(engine, "indeed", [
+            {"outcome": "blocked", "wall": "cloudflare", "mouse": False},
+            {"outcome": "blocked", "wall": "cloudflare", "mouse": False},
+            {"outcome": "blocked", "wall": "cloudflare", "mouse": False},
+            {"outcome": "success", "mouse": True},
+            {"outcome": "success", "mouse": True},
+            {"outcome": "success", "mouse": True},
+        ])
+        factors = engine.compute_risk_factors("indeed")
+        mouse_factors = [f for f in factors if f["signal"] == "simulated_mouse"]
+        assert len(mouse_factors) > 0
+        # The "0" (False) bucket should be the risky one
+        no_mouse = next((f for f in mouse_factors if f["bucket"] == "0"), None)
+        assert no_mouse is not None
+        assert no_mouse["block_rate"] >= 0.90

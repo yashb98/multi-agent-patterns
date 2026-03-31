@@ -296,6 +296,106 @@ class ScanLearningEngine:
         conn.close()
         logger.info("Cooldown reset for %s after successful scan", platform)
 
+    # --- Statistical Correlation Engine ---
+
+    _MIN_SAMPLE_SIZE: int = 3
+    _RISK_THRESHOLD: float = 0.50
+
+    _BUCKETED_SIGNALS: list[tuple[str, Any]] = [
+        ("time_of_day_bucket", None),
+        ("requests_in_session", staticmethod(_requests_bucket)),
+        ("avg_delay", staticmethod(_delay_bucket)),
+        ("session_age_seconds", staticmethod(_session_age_bucket)),
+        ("user_agent_hash", None),
+        ("was_fresh_session", None),
+        ("simulated_mouse", None),
+        ("referrer_chain", None),
+        ("pages_before_block", staticmethod(_pages_bucket)),
+        ("waited_for_page_load", None),
+    ]
+
+    def compute_risk_factors(self, platform: str) -> list[dict[str, Any]]:
+        """Compute block rate per signal bucket. Return factors above threshold."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM scan_events WHERE platform = ? ORDER BY timestamp DESC LIMIT 200",
+            (platform,),
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return []
+
+        risk_factors: list[dict[str, Any]] = []
+
+        for signal_col, bucket_fn in self._BUCKETED_SIGNALS:
+            buckets: dict[str, list[str]] = {}
+            for row in rows:
+                raw_val = row[signal_col]
+                if bucket_fn is not None:
+                    bucket_val = bucket_fn(raw_val)
+                else:
+                    bucket_val = str(raw_val)
+                buckets.setdefault(bucket_val, []).append(row["outcome"])
+
+            for bucket_val, outcomes in buckets.items():
+                total = len(outcomes)
+                if total < self._MIN_SAMPLE_SIZE:
+                    continue
+                blocked = sum(1 for o in outcomes if o == "blocked")
+                rate = blocked / total
+
+                if rate >= self._RISK_THRESHOLD:
+                    risk_factors.append({
+                        "signal": signal_col,
+                        "bucket": bucket_val,
+                        "block_rate": round(rate, 2),
+                        "sample_size": total,
+                        "blocked_count": blocked,
+                    })
+
+        risk_factors.sort(key=lambda f: f["block_rate"], reverse=True)
+        return risk_factors
+
+    def update_learned_rules(self, platform: str) -> int:
+        """Compute risk factors and store as learned rules. Returns count."""
+        factors = self.compute_risk_factors(platform)
+        if not factors:
+            return 0
+
+        count = 0
+        conn = sqlite3.connect(self.db_path)
+        for f in factors:
+            rule_id = hashlib.sha256(
+                f"{platform}:{f['signal']}:{f['bucket']}".encode()
+            ).hexdigest()[:16]
+            rule_text = (
+                f"High block rate ({f['block_rate']:.0%}) when "
+                f"{f['signal']} = {f['bucket']} "
+                f"({f['blocked_count']}/{f['sample_size']} sessions blocked)"
+            )
+            recommendation = (
+                f"Avoid {f['signal']} = {f['bucket']} — "
+                f"use alternative values or adjust timing"
+            )
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'statistical', ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       rule_text = ?, confidence = ?, recommendation = ?, created_at = ?""",
+                (
+                    rule_id, platform, rule_text, f["block_rate"], recommendation, now_iso,
+                    rule_text, f["block_rate"], recommendation, now_iso,
+                ),
+            )
+            count += 1
+        conn.commit()
+        conn.close()
+        logger.info("Updated %d learned rules for %s", count, platform)
+        return count
+
     def get_cooldown_info(self, platform: str) -> dict[str, Any] | None:
         """Get current cooldown state for a platform."""
         conn = sqlite3.connect(self.db_path)
