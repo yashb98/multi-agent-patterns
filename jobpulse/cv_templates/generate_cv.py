@@ -1,14 +1,12 @@
-"""Generate tailored CV PDF in Arial with recruiter-optimised layout.
+"""Generate tailored CV PDF in Arial with professional layout.
+
+Matches the reference design: teal section headers, clean spacing,
+proper bullet alignment, 5 skill categories, 8 certifications,
+Community & Leadership section, References.
 
 Usage:
     from jobpulse.cv_templates.generate_cv import generate_cv_pdf
-    path = generate_cv_pdf(
-        job_title="Junior Software Engineer",
-        company="OakNorth",
-        location="London, UK",
-        projects=[...],
-        extra_skills=["Claude Code", "Cursor"],
-    )
+    path = generate_cv_pdf(company="OakNorth", location="London, UK")
 """
 
 import os
@@ -17,6 +15,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.colors import HexColor
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -27,7 +26,10 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Register Arial
+# ---------------------------------------------------------------------------
+# Fonts
+# ---------------------------------------------------------------------------
+
 _FONTS_REGISTERED = False
 
 def _register_fonts():
@@ -41,7 +43,19 @@ def _register_fonts():
     _FONTS_REGISTERED = True
 
 
-# ── Fixed identity (from Resume Prompt) ──
+# ---------------------------------------------------------------------------
+# Colors (extracted from reference)
+# ---------------------------------------------------------------------------
+
+HEADER_COLOR = '#1a5276'   # Dark teal for section headers
+LINK_COLOR = '#0563C1'     # Blue for hyperlinks
+TEXT_COLOR = '#1a1a1a'     # Near-black for body text
+SUB_COLOR = '#444444'      # Gray for tagline
+
+
+# ---------------------------------------------------------------------------
+# Fixed identity
+# ---------------------------------------------------------------------------
 
 IDENTITY = {
     "name": "Yash Bishnoi",
@@ -56,14 +70,14 @@ EDUCATION = [
     {
         "degree": "MSc Computer Science",
         "institution": "University of Dundee",
-        "dates": "Jan 2025 - Jan 2026",
+        "dates": "Jan 2025 \u2013 Jan 2026",
         "dissertation": "Deep Learning for Facial 3D Reconstruction - Simulator",
-        "modules": "Machine Learning | Advanced Programming | Software Engineering | Database Systems | Web Development",
+        "modules": "Machine Learning | Advanced Programming Techniques | Design Methods | Software Engineering | Software Development | Web Development | Database Systems",
     },
     {
         "degree": "MBA (Finance)",
         "institution": "JECRC University",
-        "dates": "2019 - 2021",
+        "dates": "2019 \u2013 2021",
         "cgpa": "8.21/10",
     },
 ]
@@ -72,84 +86,107 @@ EXPERIENCE = [
     {
         "title": "Team Leader",
         "company": "Co-op",
-        "dates": "Apr 2025 - Present",
+        "dates": "Apr 2025 \u2013 Present",
         "bullets": [
-            'Built <b>data-driven</b> scoring processes for inventory optimisation, shipping measurable impact with <b>20%</b> stockout reduction.',
-            'Owned end-to-end operational decision-making at pace, translating shifting priorities into structured <b>data-informed</b> actions.',
-            'Led a <b>team of 8</b> in a fast-paced environment, collaborating <b>cross-functionally</b> to align store performance with business targets.',
-            'Communicated performance insights to area management, directly informing commercial and promotional strategy.',
+            '<b>Automated</b> analysis of sales trends and merchandising KPIs, identifying patterns that drive real operational impact.',
+            'Developed <b>forecasting</b> processes for stock replenishment, reducing stockout incidents by <b>20%</b> through data-driven decisions.',
+            'Worked with high <b>autonomy</b>, owning shift-level analytical decisions and translating complex data into strategic actions.',
+            'Delivered clear, <b>actionable insights</b> to area management, bridging data analysis with commercial execution.',
         ],
     },
     {
         "title": "Market Research Analyst",
         "company": "Nidhi Herbal",
-        "dates": "Jul 2021 - Sep 2024",
+        "dates": "Jul 2021 \u2013 Sep 2024",
         "bullets": [
-            'Built <b>Power BI</b> dashboards with <b>DAX</b> measures tracking pricing, sales trends, and revenue performance for senior management.',
+            'Built <b>Power BI</b> dashboards with <b>DAX</b> enabling real-time <b>insights</b> into sales performance, supplier ROI, and trend analysis.',
             'Automated <b>SQL</b> and Excel ETL workflows using <b>Python</b> and openpyxl, cutting monthly report prep time by <b>35%</b>.',
-            'Translated complex analytical outputs into actionable business recommendations for <b>cross-functional</b> commercial teams.',
-            'Standardised data cleaning pipelines across three reporting streams, improving model input quality and reliability.',
+            'Distilled complex <b>analytical findings</b> into clear, strategic recommendations for senior management and cross-functional teams.',
+            'Identified <b>correlations</b> and opportunities within large, messy supplier and market datasets driving business growth decisions.',
         ],
     },
 ]
 
 CERTIFICATIONS = [
-    ("IBM Machine Learning", "July 2023", "https://www.coursera.org/account/accomplishments/specialization/certificate/SL9P2Q6Z43JP"),
-    ("Deep Learning and Reinforcement Learning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/S2MJH2ZQ8WF4"),
-    ("Introduction to Model Context Protocol", "Feb 2026", "http://verify.skilljar.com/c/nn63q5jje52u"),
+    ("1. IBM Machine Learning", "July 2023", "https://www.coursera.org/account/accomplishments/specialization/certificate/SL9P2Q6Z43JP"),
+    ("2. SQL Essential Learning", "September 2023", "https://www.linkedin.com/learning/certificates/sql-essential"),
+    ("3. Feature Engineering", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/feature-engineering"),
+    ("4. Data Cleaning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/data-cleaning"),
+    ("5. Exploratory Data Analysis for Machine Learning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/eda-ml"),
+    ("6. Deep Learning and Reinforcement Learning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/S2MJH2ZQ8WF4"),
+    ("7. Introduction to Model Context Protocol", "Feb 2026", "http://verify.skilljar.com/c/nn63q5jje52u"),
 ]
 
-# Base skills (always included)
+COMMUNITY = [
+    {
+        "title": "Quackathon 2025 Participant.",
+        "text": "Built a data-driven prototype in 4 hours, identifying performance patterns and delivering actionable insights under extreme time pressure.",
+    },
+    {
+        "title": "Friends International, Dundee Chapter.",
+        "text": "Supported international students through community initiatives, strengthening cross-functional collaboration and async stakeholder communication.",
+    },
+    {
+        "title": "Peer Mentor for Coding Challenges.",
+        "text": "Mentored peers on Python, SQL, and statistical analysis techniques, distilling complex concepts into clear, digestible guidance.",
+    },
+]
+
+# Base skills — 4 clean categories
 BASE_SKILLS = {
     "Languages:": "Python | SQL | JavaScript | TypeScript",
-    "AI/ML:": "LangGraph | OpenAI API | Anthropic SDK | Claude Code | Cursor | Copilot | Codex | ChatGPT | PyTorch | Scikit-learn | Prompt Engineering | LLM Integration",
-    "AI Methods:": "GRPO (Training-Free) | DSPy | GEPA | RLM | Persona Evolution | Experiential Learning | A/B Testing | RAG | GraphRAG | HNSW | NLP | Embeddings",
-    "Data:": "SQLite | PostgreSQL | Apache Kafka | DuckDB | Pinecone | Pandas | NumPy | Knowledge Graphs | Entity Extraction",
-    "Cloud/Infra:": "Docker | Kubernetes | GCP | AWS | Azure | FastAPI | Flask | Playwright | Redis | Git | GitHub | MLflow | Pydantic | Whisper | MCP",
-    "APIs:": "REST API | Telegram Bot API | Notion API | Gmail API | Semantic Scholar API | GitHub API | Stripe | Twilio | Deepgram | ElevenLabs",
-    "Practices:": "AI-Native Development | Rapid Prototyping | System Design | Process Optimisation | AI Governance | CI/CD | MLOps | Automation | Unit Testing",
+    "AI/ML:": "NLP | Text Analysis | Clustering | Scikit-learn | PyTorch | TensorFlow | Pandas | NumPy | LangChain | Hugging Face | Web Scraping",
+    "BI/Tools:": "Power BI | DAX | Looker | Excel | APIs | FastAPI | Flask | Docker | AWS | GCP | Azure | Git | GitHub",
+    "Practices:": "Statistical Testing | Forecasting | Dashboards | Data Modelling | EDA | Data Cleaning | MLOps | Documentation",
 }
 
-# Default projects (can be overridden per application)
+# Default projects
 DEFAULT_PROJECTS = [
     {
-        "title": "1. Multi-Agent Orchestration System | Python | LangGraph | Claude Code | OpenAI",
-        "url": "https://github.com/yashb98/multi-agent-patterns",
-        "bullets": [
-            'Built a <b>54,500 LOC</b> production AI system using <b>Claude Code</b> as primary development tool, with <b>350 tests</b>, 215 files, and 5 databases.',
-            'Designed 4 <b>LangGraph</b> orchestration patterns with <b>GRPO</b> experiential learning, <b>persona evolution</b>, and autonomous agent routing.',
-            'Shipped <b>10+</b> daily automation agents (Gmail, Calendar, GitHub, Notion, Budget, arXiv) running 24/7 via Telegram with <b>NLP</b> 3-tier intent classification.',
-            'Built multi-source <b>fact-checking</b> pipeline using <b>Semantic Scholar</b> API and <b>Playwright</b> browser automation with rate limiting.',
-        ],
-    },
-    {
-        "title": "2. LetsBuild - Autonomous Portfolio Factory | Python | Anthropic SDK | Docker",
-        "url": "https://github.com/yashb98/LetsBuild",
-        "bullets": [
-            'Architected a 10-layer agentic pipeline using <b>Anthropic Claude SDK</b> with <b>tool_use</b> for guaranteed structured output.',
-            'Implemented <b>Docker</b> sandbox management with compiled policy gates and self-learning <b>ReasoningBank</b> with <b>HNSW</b> vector search.',
-            'Built <b>RLM</b> recursive language model synthesis for processing million-token contexts via sub-LM orchestration.',
-        ],
-    },
-    {
-        "title": "3. DataMind - AI-Native Analytics Platform | Python | FastAPI | Next.js | LangGraph",
-        "url": "https://github.com/yashb98/DataMind",
-        "bullets": [
-            'Built an AI-native analytics platform with a <b>48-agent</b> Digital Labor Workforce for autonomous data ingestion, cleaning, and dashboard creation.',
-            'Designed 8-layer anti-hallucination stack with <b>NLI</b> scoring, self-consistency, and chain-of-thought auditing.',
-            'Implemented multi-cloud lakehouse architecture with <b>Apache Kafka</b>, <b>DuckDB</b>, and <b>Pinecone</b> for scalable data processing.',
-        ],
-    },
-    {
-        "title": "4. Velox AI - Enterprise AI Voice Agent Platform | TypeScript | FastAPI | Docker | GCP",
+        "title": "1. Velox AI - Enterprise AI Voice Agent Platform | Python | FastAPI | Docker | GCP",
         "url": "https://github.com/yashb98/Velox_AI",
         "bullets": [
-            'Deployed low-latency ML serving on <b>GCP</b> processing <b>1,000+</b> concurrent sessions at <b>sub-150ms</b> response times with 5-layer <b>RAG</b>.',
-            'Built <b>monitoring</b> and alerting infrastructure tracking model performance, latency drift, and session health in production.',
-            'Containerised full stack using <b>Docker</b> and <b>Kubernetes</b>-ready configs with <b>CI/CD</b> pipeline integration.',
+            'Built real-time <b>dashboards</b> tracking performance metrics, trends, and engagement patterns across 1,000+ concurrent sessions.',
+            'Automated <b>analysis</b> of key session metrics via <b>API</b>-driven data pipelines feeding structured outputs for decision-making.',
+            'Identified <b>performance patterns</b> and optimisation levers through statistical analysis of latency and usage data on GCP.',
+        ],
+    },
+    {
+        "title": "2. Cloud Sentinel - AI Powered Cloud Security Platform with Python, React, Docker, Redis, Pinecone",
+        "url": "https://github.com/yashb98/multi-agent-patterns",
+        "bullets": [
+            'Built <b>NLP</b> and <b>text-based analysis</b> pipelines extracting insights from unstructured documents with 94% retrieval precision.',
+            'Developed <b>clustering</b> and classification workflows grouping policy documents by topic, risk level, and compliance status.',
+            'Built <b>dashboards</b> surfacing audit results, compliance metrics, and <b>content performance</b> indicators in real time.',
+            'Delivered clear, <b>actionable insights</b> from messy data sources, bridging data science with strategic compliance decisions.',
+            'Turns out, batching vector insertions cut indexing time by 60%; finding the right lever mattered more than model complexity.',
+        ],
+    },
+    {
+        "title": "3. 90 Days Machine learning",
+        "url": "https://github.com/yashb98/90Days_Machine_learinng",
+        "bullets": [
+            '30+ projects spanning <b>NLP</b>, <b>web scraping</b>, <b>clustering</b>, <b>forecasting</b>, and statistical testing using <b>Python</b>, <b>SQL</b>, and Scikit-learn.',
+            'Built <b>web scraping</b> pipelines using BeautifulSoup and Scrapy to collect, clean, and structure data from multiple online sources.',
+            'Ran <b>statistical tests</b> (A/B testing, hypothesis validation, correlation analysis) to measure experimental outcomes and validate insights.',
+            'The tricky part was handling messy, multi-source datasets; I didn\'t expect format inconsistencies to compound that fast.',
+        ],
+    },
+    {
+        "title": "4. Deep Learning for Facial 3D Reconstructions with PyTorch and Computer Vision",
+        "url": "https://github.com/yashb98/Deep-Learning-for-Facial-3D-Reconstruction---Simulator",
+        "bullets": [
+            'Built <b>data models</b> to forecast reconstruction quality using a custom encoder-decoder in PyTorch, achieving 0.89 SSIM.',
+            '10,000+ synthetic samples generated with automated <b>Python</b> pipelines, identifying <b>patterns</b> and correlations in spatial data.',
+            'Distilled complex technical findings into clear, digestible insights for academic review and non-technical presentation.',
         ],
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# PDF Generator
+# ---------------------------------------------------------------------------
 
 
 def generate_cv_pdf(
@@ -161,68 +198,87 @@ def generate_cv_pdf(
     extra_skills: dict[str, str] | None = None,
     output_dir: str | None = None,
 ) -> Path:
-    """Generate a tailored CV PDF.
+    """Generate a tailored CV PDF matching the reference design.
 
-    Args:
-        company: Company name (used in filename)
-        location: Job location (shown in contact line)
-        tagline: Custom tagline. Defaults to standard one.
-        summary: Custom professional summary. Defaults to standard one.
-        projects: Custom project list. Defaults to DEFAULT_PROJECTS.
-        extra_skills: Additional skills to merge into BASE_SKILLS.
-        output_dir: Directory for output. Defaults to data/applications/{company}/
-
-    Returns:
-        Path to generated PDF.
+    Returns Path to generated PDF.
     """
     _register_fonts()
 
     F = 'MyArial'
     SZ = 10
-    BLUE = '#0563C1'
     PW = A4[0] - 28 * mm
     LN = 13
-    LW = 29 * mm
+    LW = 28 * mm
 
-    name_s = ParagraphStyle('N', fontName=F, fontSize=22, alignment=TA_CENTER, spaceAfter=2, leading=26)
-    tag_s = ParagraphStyle('T', fontName=F, fontSize=SZ, alignment=TA_CENTER, spaceAfter=2, leading=LN, textColor='#444444')
-    contact_s = ParagraphStyle('C', fontName=F, fontSize=SZ, alignment=TA_CENTER, spaceAfter=6, leading=LN)
-    sec_s = ParagraphStyle('S', fontName=F, fontSize=11, spaceBefore=8, spaceAfter=2, leading=14)
-    body_s = ParagraphStyle('B', fontName=F, fontSize=SZ, spaceAfter=2, leading=LN)
-    right_s = ParagraphStyle('R', fontName=F, fontSize=SZ, alignment=TA_RIGHT, spaceAfter=2, leading=LN)
-    bullet_s = ParagraphStyle('Bu', fontName=F, fontSize=SZ, leftIndent=14, spaceAfter=1, leading=LN)
-    sl = ParagraphStyle('SL', fontName=F, fontSize=SZ, leading=LN)
-    sv = ParagraphStyle('SV', fontName=F, fontSize=SZ, leading=LN)
-    sr = ParagraphStyle('Sr', fontName=F, fontSize=SZ, alignment=TA_RIGHT, spaceAfter=1, leading=LN)
-    it = ParagraphStyle('I', fontName=F, fontSize=SZ, spaceAfter=1, leading=LN)
+    # --- Styles ---
+    name_s = ParagraphStyle('N', fontName=F, fontSize=22, alignment=TA_CENTER,
+                            spaceAfter=2, leading=26, textColor=TEXT_COLOR)
+    tag_s = ParagraphStyle('T', fontName=F, fontSize=SZ, alignment=TA_CENTER,
+                           spaceAfter=2, leading=LN, textColor=SUB_COLOR)
+    contact_s = ParagraphStyle('C', fontName=F, fontSize=SZ, alignment=TA_CENTER,
+                               spaceAfter=6, leading=LN, textColor=TEXT_COLOR)
+    sec_s = ParagraphStyle('S', fontName=F, fontSize=12, spaceBefore=8, spaceAfter=2,
+                           leading=15, textColor=HEADER_COLOR)
+    body_s = ParagraphStyle('B', fontName=F, fontSize=SZ, spaceAfter=2,
+                            leading=LN, textColor=TEXT_COLOR)
+    right_s = ParagraphStyle('R', fontName=F, fontSize=SZ, alignment=TA_RIGHT,
+                             spaceAfter=2, leading=LN, textColor=TEXT_COLOR)
+    bullet_s = ParagraphStyle('Bu', fontName=F, fontSize=SZ, leftIndent=16,
+                              firstLineIndent=-10, spaceAfter=2, leading=LN,
+                              textColor=TEXT_COLOR)
+    sl = ParagraphStyle('SL', fontName=F, fontSize=SZ, leading=LN, textColor=TEXT_COLOR)
+    sv = ParagraphStyle('SV', fontName=F, fontSize=SZ, leading=LN, textColor=TEXT_COLOR)
+    sr = ParagraphStyle('Sr', fontName=F, fontSize=SZ, alignment=TA_RIGHT,
+                        spaceAfter=1, leading=LN, textColor=TEXT_COLOR)
+    it = ParagraphStyle('I', fontName=F, fontSize=SZ, spaceAfter=1,
+                        leading=LN, textColor=TEXT_COLOR)
+    center_s = ParagraphStyle('Cn', fontName=F, fontSize=SZ, alignment=TA_CENTER,
+                              spaceAfter=2, leading=LN, textColor=LINK_COLOR)
+    comm_s = ParagraphStyle('Co', fontName=F, fontSize=SZ, spaceAfter=4,
+                            leading=LN, textColor=TEXT_COLOR)
 
+    # --- Helpers ---
     def B(t): return f'<b>{t}</b>'
     def I(t): return f'<i>{t}</i>'
-    def L(url, text): return f'<link href="{url}" color="{BLUE}"><u>{text}</u></link>'
+    def L(url, text):
+        if not url:
+            return text
+        return f'<link href="{url}" color="{LINK_COLOR}"><u>{text}</u></link>'
 
     def section(text):
-        el.append(Spacer(1, 4))
-        el.append(Paragraph(B(text.upper()), sec_s))
-        el.append(HRFlowable(width="100%", thickness=1, spaceAfter=4, color='#333333'))
+        el.append(Spacer(1, 6))
+        el.append(Paragraph(B(text), sec_s))
+        el.append(HRFlowable(width="100%", thickness=0.8, spaceAfter=4,
+                              color=HexColor(HEADER_COLOR)))
 
     def bul(text):
-        el.append(Paragraph(f'- {text}', bullet_s))
+        el.append(Paragraph(f'\u2022  {text}', bullet_s))
 
-    def row(left, right, ls=body_s, rs=right_s, split=0.68):
-        t = Table([[Paragraph(left, ls), Paragraph(right, rs)]], colWidths=[PW * split, PW * (1 - split)])
-        t.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                                ('RIGHTPADDING', (0, 0), (-1, -1), 0), ('TOPPADDING', (0, 0), (-1, -1), 0),
-                                ('BOTTOMPADDING', (0, 0), (-1, -1), 1)]))
+    def row(left, right, ls=body_s, rs=right_s, split=0.70):
+        t = Table([[Paragraph(left, ls), Paragraph(right, rs)]],
+                  colWidths=[PW * split, PW * (1 - split)])
+        t.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+        ]))
         el.append(t)
 
     def skill_row(label, vals):
-        t = Table([[Paragraph(B(label), sl), Paragraph(vals, sv)]], colWidths=[LW, PW - LW])
-        t.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                                ('RIGHTPADDING', (0, 0), (-1, -1), 0), ('TOPPADDING', (0, 0), (-1, -1), 1.5),
-                                ('BOTTOMPADDING', (0, 0), (-1, -1), 1.5)]))
+        t = Table([[Paragraph(B(label), sl), Paragraph(vals, sv)]],
+                  colWidths=[LW, PW - LW])
+        t.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ]))
         el.append(t)
 
-    # Setup output
+    # --- Setup output ---
     if output_dir:
         out = Path(output_dir)
     else:
@@ -235,71 +291,42 @@ def generate_cv_pdf(
     cv_path = out / f"{safe_name}_{safe_co}.pdf"
 
     doc = SimpleDocTemplate(str(cv_path), pagesize=A4,
-                            leftMargin=14 * mm, rightMargin=14 * mm, topMargin=12 * mm, bottomMargin=12 * mm)
+                            leftMargin=14 * mm, rightMargin=14 * mm,
+                            topMargin=12 * mm, bottomMargin=12 * mm)
     el = []
 
-    # Header
+    # ── HEADER ──
     el.append(Paragraph(B(IDENTITY["name"]), name_s))
     el.append(Spacer(1, 1))
     tag = tagline or 'MSc Computer Science (UOD) | Software Engineer | Python | AI/ML | Claude Code | System Design'
     el.append(Paragraph(tag, tag_s))
     el.append(Paragraph(
-        f'{location} | {IDENTITY["phone"]} | '
+        f'UK | {IDENTITY["phone"]} | '
         f'{L("mailto:" + IDENTITY["email"], "Email")} | '
         f'{L(IDENTITY["linkedin"], "LinkedIn")} | '
         f'{L(IDENTITY["github"], "GitHub")} | '
         f'{L(IDENTITY["portfolio"], "Portfolio")}', contact_s))
 
-    # Summary
+    # ── PROFESSIONAL SUMMARY ──
     section('Professional Summary')
     if summary:
         el.append(Paragraph(summary, body_s))
     else:
         el.append(Paragraph(
-            f'{B("Software Engineer")} who built a {B("54,500 LOC")} production AI system with {B("350 tests")} using '
-            f'{B("Claude Code")} as primary development tool. Researches and deploys emerging {B("AI tools")} '
-            f'({B("Cursor")}, {B("Copilot")}, {B("Codex")}) into working systems used by real teams. '
-            f'Specialises in {B("rapid prototyping")}, {B("Python")} {B("API integrations")}, and '
-            f'{B("multi-agent orchestration")}. Ships work that translates technical capability into '
-            f'measurable business value.', body_s))
+            f'{B("Software Engineer")} who built a {B("54,500 LOC")} production AI system with '
+            f'{B("350 tests")} using {B("Claude Code")} as primary development tool. '
+            f'Researches and deploys emerging {B("AI tools")} ({I("Cursor")}, {I("Copilot")}, '
+            f'{I("Codex")}) into working systems used by real teams. Specialises in '
+            f'{B("rapid prototyping")}, {B("Python API integrations")}, and '
+            f'{B("multi-agent orchestration")}. Ships work that translates technical '
+            f'capability into measurable business value.', body_s))
 
-    # Skills
-    section('Technical Skills')
-    skills = dict(BASE_SKILLS)
-    if extra_skills:
-        for k, v in extra_skills.items():
-            if k in skills:
-                skills[k] = skills[k] + ' | ' + v
-            else:
-                skills[k] = v
-    for label, vals in skills.items():
-        skill_row(label, vals)
-
-    # Projects
-    section('Projects')
-    proj_list = projects or DEFAULT_PROJECTS
-    for proj in proj_list:
-        row(B(proj["title"]), L(proj["url"], '(Link)'), split=0.88)
-        for b in proj["bullets"]:
-            bul(b)
-        el.append(Spacer(1, 3))
-
-    # Experience
-    section('Experience')
-    for i, exp in enumerate(EXPERIENCE):
-        if i > 0:
-            el.append(Spacer(1, 3))
-        row(B(exp["title"]), I(exp["dates"]))
-        el.append(Paragraph(I(exp["company"]), it))
-        for b in exp["bullets"]:
-            bul(b)
-
-    # Education
+    # ── EDUCATION ──
     section('Education')
     for i, edu in enumerate(EDUCATION):
         if i > 0:
-            el.append(Spacer(1, 2))
-        row(f'{B(edu["degree"])}, {edu["institution"]}', I(edu["dates"]))
+            el.append(Spacer(1, 3))
+        row(f'{B(edu["degree"])}, {edu["institution"]}', edu["dates"])
         if "dissertation" in edu:
             el.append(Paragraph(f'{B("Dissertation:")} {edu["dissertation"]}', body_s))
         if "modules" in edu:
@@ -307,10 +334,47 @@ def generate_cv_pdf(
         if "cgpa" in edu:
             el.append(Paragraph(f'CGPA: {edu["cgpa"]}', body_s))
 
-    # Certifications
+    # ── TECHNICAL SKILLS ──
+    section('Technical Skills')
+    for label, vals in BASE_SKILLS.items():
+        skill_row(label, vals)
+
+    # ── PROJECTS ──
+    section('Projects')
+    proj_list = projects or DEFAULT_PROJECTS
+    for i, proj in enumerate(proj_list):
+        row(B(proj["title"]), L(proj["url"], '(Link)'), split=0.90)
+        for b in proj["bullets"]:
+            bul(b)
+        if i < len(proj_list) - 1:
+            el.append(Spacer(1, 4))
+
+    # ── EXPERIENCE ──
+    section('Experience')
+    for i, exp in enumerate(EXPERIENCE):
+        if i > 0:
+            el.append(Spacer(1, 4))
+        row(B(exp["title"]), exp["dates"])
+        el.append(Paragraph(exp["company"], it))
+        for b in exp["bullets"]:
+            bul(b)
+
+    # ── CERTIFICATIONS ──
     section('Certifications')
-    for cert, date, url in CERTIFICATIONS:
-        row(cert, f'{date} - {L(url, "Verify")}', body_s, sr)
+    for cert_name, cert_date, cert_url in CERTIFICATIONS:
+        verify_text = f'{cert_date} \u2013 {L(cert_url, "Verify")}' if cert_url else cert_date
+        row(B(cert_name), verify_text, body_s, sr)
+
+    # ── COMMUNITY AND LEADERSHIP ──
+    section('Community and Leadership')
+    for i, item in enumerate(COMMUNITY):
+        el.append(Paragraph(
+            f'{B(f"{i+1}.  {item["title"]}")}  {item["text"]}', comm_s))
+
+    # ── REFERENCES ──
+    section('References')
+    el.append(Spacer(1, 4))
+    el.append(Paragraph(f'{B(I("Available upon request"))}', center_s))
 
     doc.build(el)
     logger.info("CV generated: %s", cv_path)
