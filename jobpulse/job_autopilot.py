@@ -601,6 +601,25 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
     if errors:
         summary_lines.append(f"Errors: {errors}")
 
+    # Add skill tracker link if there are pending skills
+    try:
+        from jobpulse.skill_tracker_notion import get_pending_skills
+        from pathlib import Path
+        pending = get_pending_skills()
+        if pending:
+            tracker_db_file = Path(__file__).parent.parent / "data" / "skill_tracker_db_id.txt"
+            if tracker_db_file.exists():
+                db_id = tracker_db_file.read_text().strip().replace("-", "")
+                tracker_url = f"https://www.notion.so/{db_id}"
+                summary_lines.append(f"\n🎯 {len(pending)} skills pending your review:")
+                for p in pending[:5]:
+                    summary_lines.append(f"  • {p['skill']} (seen {p['times_seen']}x)")
+                if len(pending) > 5:
+                    summary_lines.append(f"  ... +{len(pending) - 5} more")
+                summary_lines.append(f"\n📋 Review here: {tracker_url}")
+    except Exception as exc:
+        logger.debug("skill tracker notification failed: %s", exc)
+
     summary_msg = "\n".join(summary_lines)
     send_jobs(summary_msg)
 
