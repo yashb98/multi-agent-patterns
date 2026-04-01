@@ -94,6 +94,106 @@ def _click_next_or_submit(page) -> str:
     return "no_button"
 
 
+def _handle_login_wall(page) -> str:
+    """Detect and handle LinkedIn auth prompts before Easy Apply.
+
+    Checks for 'Continue as [Name]' (session refresh) and generic Sign-in.
+    Returns: 'clicked_continue' | 'needs_login' | 'no_wall'
+    """
+    # 'Continue as [Name]' — session cookie valid but needs confirmation
+    for sel in [
+        "button:has-text('Continue as')",
+        "a:has-text('Continue as')",
+        "[data-tracking-control-name*='continue']",
+        ".sign-in-modal__continue-btn",
+    ]:
+        el = page.query_selector(sel)
+        if el:
+            logger.info("LinkedIn: 'Continue as' button found — clicking")
+            el.click()
+            _human_delay(2.0, 3.0)
+            return "clicked_continue"
+
+    # Generic sign-in wall (session expired / guest layout)
+    for sel in [
+        "button:has-text('Sign in')",
+        "a:has-text('Sign in')",
+        ".authwall-join-form__form-toggle--bottom a",
+    ]:
+        el = page.query_selector(sel)
+        if el:
+            logger.warning(
+                "LinkedIn: Sign-in wall detected — session may be expired. "
+                "Run: python scripts/linkedin_login.py"
+            )
+            return "needs_login"
+
+    return "no_wall"
+
+
+def _dump_page_context(page) -> dict:
+    """Capture current page state for verbose logging and Ralph Loop diagnosis.
+
+    Returns a dict with url, modal_text, inputs (list), buttons (list), selects (list).
+    Each input entry: {type, name, id, placeholder, aria_label, value}.
+    """
+    ctx: dict = {
+        "url": page.url,
+        "modal_text": "",
+        "inputs": [],
+        "buttons": [],
+        "selects": [],
+    }
+
+    # Modal content
+    modal = _find_modal(page)
+    if modal:
+        ctx["modal_text"] = (modal.text_content() or "")[:500]
+
+    # Inputs — cap at 20 to avoid log spam
+    try:
+        for inp in page.query_selector_all("input:not([type='hidden'])")[:20]:
+            inp_type = inp.get_attribute("type") or "text"
+            value = ""
+            if inp_type not in ("file", "checkbox", "radio", "submit"):
+                try:
+                    value = inp.input_value() or ""
+                except Exception:
+                    pass
+            ctx["inputs"].append({
+                "type": inp_type,
+                "name": inp.get_attribute("name") or "",
+                "id": inp.get_attribute("id") or "",
+                "placeholder": inp.get_attribute("placeholder") or "",
+                "aria_label": inp.get_attribute("aria-label") or "",
+                "value": value[:80],
+            })
+    except Exception as exc:
+        logger.debug("_dump_page_context: input scan failed: %s", exc)
+
+    # Buttons
+    try:
+        for btn in page.query_selector_all("button")[:20]:
+            text = (btn.text_content() or "").strip()
+            if text:
+                ctx["buttons"].append(text)
+    except Exception:
+        pass
+
+    # Selects
+    try:
+        for sel_el in page.query_selector_all("select")[:10]:
+            ctx["selects"].append({
+                "name": sel_el.get_attribute("name") or "",
+                "id": sel_el.get_attribute("id") or "",
+                "aria_label": sel_el.get_attribute("aria-label") or "",
+            })
+    except Exception:
+        pass
+
+    return ctx
+
+
 def _fill_location_typeahead(page, location: str) -> None:
     """Fill the location typeahead field in the Easy Apply modal."""
     # LinkedIn location uses a typeahead with aria attributes
@@ -354,6 +454,27 @@ class LinkedInAdapter(BaseATSAdapter):
                 _human_delay(2, 4)
                 _screenshot(page, cv_path, "01_job_page")
 
+                # --- Login wall check ---
+                wall_result = _handle_login_wall(page)
+                logger.info("LinkedIn: login wall check → %s", wall_result)
+                if wall_result == "needs_login":
+                    _screenshot(page, cv_path, "01b_needs_login")
+                    return {
+                        "success": False,
+                        "screenshot": cv_path.parent / "linkedin_01b_needs_login.png",
+                        "error": "LinkedIn session expired. Run: python scripts/linkedin_login.py",
+                    }
+                if wall_result == "clicked_continue":
+                    _screenshot(page, cv_path, "01b_continued_as_yash")
+                    _human_delay(1.0, 2.0)
+
+                # --- Verbose page context (pre-modal) ---
+                ctx = _dump_page_context(page)
+                logger.info(
+                    "LinkedIn [PAGE CONTEXT]: url=%s buttons=%s",
+                    ctx["url"], ctx["buttons"][:5],
+                )
+
                 # --- Step 2: Click Easy Apply button ---
                 easy_apply_btn = None
                 for sel in [
@@ -423,6 +544,16 @@ class LinkedInAdapter(BaseATSAdapter):
                         logger.info("LinkedIn: answered questions page (%d)", page_num)
 
                     _screenshot(page, cv_path, f"page_{page_num:02d}")
+
+                    # Verbose context dump — shows all inputs/buttons for this page
+                    ctx = _dump_page_context(page)
+                    logger.info(
+                        "LinkedIn [PAGE %d CONTEXT] modal_text=%s... inputs=%s buttons=%s",
+                        page_num,
+                        ctx["modal_text"][:100],
+                        [{k: v for k, v in i.items() if v} for i in ctx["inputs"]],
+                        ctx["buttons"],
+                    )
 
                     # Click Next / Review / Submit
                     last_action = _click_next_or_submit(page)
