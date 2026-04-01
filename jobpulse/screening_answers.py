@@ -18,6 +18,71 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
+# Skill-specific experience years (used for "How many years with X?" questions)
+# ---------------------------------------------------------------------------
+SKILL_EXPERIENCE: dict[str, int] = {
+    # 3 years
+    "python": 3, "sql": 3,
+    # 2 years — ML/AI
+    "machine learning": 2, "ml": 2, "deep learning": 2,
+    "natural language processing": 2, "nlp": 2,
+    "large language model": 2, "llm": 2, "generative ai": 2,
+    "artificial intelligence": 2, "ai": 2,
+    "data science": 2, "data analysis": 2, "data analytics": 2,
+    "tensorflow": 2, "pytorch": 2, "scikit-learn": 2, "sklearn": 2,
+    "pandas": 2, "numpy": 2, "scipy": 2,
+    "computer vision": 2, "reinforcement learning": 2,
+    "mlops": 2, "model deployment": 2,
+    "a/b testing": 2, "ab testing": 2, "statistical analysis": 2,
+    "neural network": 2, "transformer": 2,
+    # 2 years — Software/DevOps
+    "software engineering": 2, "software development": 2,
+    "git": 2, "docker": 2, "linux": 2,
+    "aws": 2, "cloud": 2, "gcp": 2, "azure": 2,
+    "ci/cd": 2, "devops": 2,
+    "api": 2, "rest": 2, "fastapi": 2, "flask": 2,
+    # 2 years — Data Engineering
+    "spark": 2, "hadoop": 2, "airflow": 2,
+    "etl": 2, "data pipeline": 2, "data engineering": 2,
+    "tableau": 2, "power bi": 2,
+    "nosql": 2, "mongodb": 2, "redis": 2,
+    "postgresql": 2, "mysql": 2,
+    # 2 years — Other
+    "agile": 2, "scrum": 2, "jira": 2,
+    "r": 2, "matlab": 2, "java": 2, "c++": 2,
+    "javascript": 2, "typescript": 2, "react": 2,
+    # 3 years — Leadership
+    "team management": 3, "leadership": 3, "team leader": 3,
+}
+
+# ---------------------------------------------------------------------------
+# Role-aware salary expectations
+# ---------------------------------------------------------------------------
+ROLE_SALARY: dict[str, int] = {
+    "data scientist": 32000,
+    "machine learning engineer": 32000,
+    "ml engineer": 32000,
+    "ai engineer": 32000,
+    "data analyst": 28000,
+    "data engineer": 30000,
+    "software engineer": 30000,
+    "default": 28000,
+}
+
+# ---------------------------------------------------------------------------
+# Platform-aware source tracking
+# ---------------------------------------------------------------------------
+PLATFORM_SOURCE: dict[str, str] = {
+    "linkedin": "LinkedIn",
+    "indeed": "Indeed",
+    "reed": "Reed",
+    "greenhouse": "Company website",
+    "lever": "Company website",
+    "workday": "Company website",
+    "default": "Job board",
+}
+
+# ---------------------------------------------------------------------------
 # Pattern-based answers for frequent screening questions.
 # Value = str  -> return directly
 # Value = None -> needs LLM generation (open-ended / personalised)
@@ -60,6 +125,72 @@ COMMON_ANSWERS: dict[str, str | None] = {
     r"why.*apply|why.*interest|why.*company|motivation": None,
     r"tell.*about.*yourself|describe.*yourself": None,
 }
+
+
+# ---------------------------------------------------------------------------
+# Dynamic resolvers
+# ---------------------------------------------------------------------------
+
+
+def _extract_skill_from_question(question: str) -> str | None:
+    """Extract a skill/technology name from an experience question.
+
+    Looks for patterns like "experience with X", "experience in X",
+    "proficient in X", "familiar with X".
+    Returns lowercase skill name or None if no skill found.
+    """
+    patterns = [
+        r"experience (?:do you have )?(?:with|in) (.+?)[\?\.]?$",
+        r"(?:proficient|familiar|experienced) (?:in|with) (.+?)[\?\.]?$",
+        r"years of (.+?) experience",
+        r"experience (?:with|in) (.+?)[\?\.]?$",
+    ]
+    normalised = question.strip().lower()
+    for pat in patterns:
+        m = re.search(pat, normalised)
+        if m:
+            skill = m.group(1).strip().rstrip("?. ")
+            # Filter out generic adjectives that aren't real skills
+            generic = {"relevant", "overall", "total", "professional", "work", "related"}
+            if skill in generic:
+                return None
+            # Remove common suffixes
+            for suffix in ("development", "engineering", "programming"):
+                if skill.endswith(suffix) and skill != suffix:
+                    trimmed = skill[: -len(suffix)].strip()
+                    if trimmed in SKILL_EXPERIENCE:
+                        return trimmed
+            return skill if skill else None
+    return None
+
+
+def _resolve_skill_experience(skill: str | None, *, input_type: str | None) -> str:
+    """Return years of experience for a skill as a string."""
+    if skill is None:
+        years = 2
+    else:
+        years = SKILL_EXPERIENCE.get(skill.lower(), 2)
+    return str(years)
+
+
+def _resolve_role_salary(
+    job_context: dict | None, *, input_type: str | None
+) -> str:
+    """Return salary expectation based on job title and input type."""
+    title = ((job_context or {}).get("job_title") or "").lower()
+    salary = ROLE_SALARY["default"]
+    for role_key, role_salary in ROLE_SALARY.items():
+        if role_key != "default" and role_key in title:
+            salary = role_salary
+            break
+
+    if input_type == "number":
+        return str(salary)
+
+    # Text field — return a range
+    low = salary - 2000
+    high = salary + 3000
+    return f"{low:,}-{high:,}"
 
 
 # ---------------------------------------------------------------------------
