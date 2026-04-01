@@ -63,6 +63,21 @@ def test_handle_login_wall_sign_in_button_returns_needs_login(mock_page):
     assert result == "needs_login"
 
 
+def test_handle_login_wall_text_scan_fallback_finds_continue(mock_page):
+    """When query_selector misses 'Continue as', the text scan of <a>/<button> elements finds it."""
+    continue_link = MagicMock()
+    continue_link.text_content.return_value = "Continue as Yash"
+
+    # query_selector returns None for everything (selectors don't match)
+    mock_page.query_selector.return_value = None
+    # query_selector_all returns the link when scanning clickable elements
+    mock_page.query_selector_all.return_value = [continue_link]
+
+    result = _handle_login_wall(mock_page)
+    assert result == "clicked_continue"
+    continue_link.click.assert_called_once()
+
+
 def test_handle_login_wall_continue_takes_priority_over_signin(mock_page):
     """'Continue as Yash' must be tried before generic Sign-in."""
     continue_btn = MagicMock()

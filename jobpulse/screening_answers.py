@@ -23,17 +23,26 @@ logger = get_logger(__name__)
 # Value = None -> needs LLM generation (open-ended / personalised)
 # ---------------------------------------------------------------------------
 COMMON_ANSWERS: dict[str, str | None] = {
-    # Work authorization
+    # Work authorization — SPECIFIC patterns FIRST, then general
+    r"right.*work.*type|work.*type|work.*permit|work.*authorization.*type": (
+        "Graduate Visa"
+    ),
     r"authorized.*work.*uk|right to work|legally.*work": "Yes",
-    r"require.*sponsor|visa.*sponsor|sponsorship": "No",
+    r"require.*sponsor|visa.*sponsor|sponsorship|need.*sponsor": "No",
     r"visa.*status|immigration": (
         "Student Visa; converting to Graduate Visa from 9 May 2026 (valid 2 years)"
     ),
+    # Company / employment history
+    r"currently.*work.*for|ever.*work.*for|employed.*by|worked.*for": "No",
+    r"current.*salary|salary.*current|present.*salary": "25000",
+    # Location — uses JOB_LOCATION placeholder, resolved dynamically in get_answer()
+    r"current.*location|where.*located|your.*location|city.*you.*live|your.*city": "JOB_LOCATION",
+    r"where.*you.*based|based.*in|residing": "JOB_LOCATION",
     # Availability
-    r"notice.*period|start.*date|available.*start|when.*start": "Available immediately",
+    r"notice.*period|start.*date|available.*start|when.*start": "Immediately",
     r"willing.*relocate|open.*relocation": "Yes, within the UK",
-    # Salary
-    r"salary.*expect|expected.*salary|desired.*compensation|pay.*expect": "£27,000-32,000",
+    # Salary — numeric value for numeric fields, text for text fields
+    r"salary.*expect|expected.*salary|desired.*compensation|pay.*expect": "30000",
     # Experience
     r"years.*experience|experience.*years": (
         "1+ years (MSc Computer Science + industry experience)"
@@ -41,6 +50,12 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # Remote / on-site
     r"willing.*remote|work.*remote|open.*remote": "Yes",
     r"willing.*office|work.*on.?site|in.?person|work.*in.*office|in.*the.*office": "Yes",
+    # Equality / diversity — SPECIFIC multi-word patterns before single-word
+    r"gender.*identify|what.*gender|indicate.*gender": "Male",
+    r"sexual.*orientation|what.*orientation|indicate.*orientation": "Heterosexual/Straight",
+    r"ethnicity|ethnic.*background|racial|indicate.*ethnicity": "Prefer not to say",
+    r"disability|disabled|disabilit": "No",
+    r"veteran|military": "No",
     # Cover letter / Why — needs LLM
     r"why.*apply|why.*interest|why.*company|motivation": None,
     r"tell.*about.*yourself|describe.*yourself": None,
@@ -84,6 +99,11 @@ def get_answer(
     for pattern, answer in COMMON_ANSWERS.items():
         if re.search(pattern, normalised, re.IGNORECASE):
             if answer is not None:
+                # Resolve JOB_LOCATION placeholder from job_context
+                if answer == "JOB_LOCATION":
+                    location = (job_context or {}).get("location", "London, UK")
+                    logger.debug("Pattern match for '%s' -> location '%s'", normalised[:60], location)
+                    return location
                 logger.debug("Pattern match for '%s' -> '%s'", normalised[:60], answer)
                 return answer
             # Matched but needs LLM (answer is None)

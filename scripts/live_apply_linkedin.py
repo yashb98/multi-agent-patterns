@@ -33,6 +33,7 @@ from jobpulse.applicator import PROFILE
 from jobpulse.ats_adapters.linkedin import LinkedInAdapter
 from jobpulse.config import DATA_DIR
 from jobpulse.cv_templates.generate_cv import generate_cv_pdf
+from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
 
 GOUSTO_URL = "https://www.linkedin.com/jobs/view/4395143521/"
 OUTPUT_DIR = DATA_DIR / "applications" / "gousto_test"
@@ -58,9 +59,11 @@ def _pause_on_failure(result: dict) -> bool:
     print("\nReview the screenshot and tell Claude what you see.")
     print("Claude will diagnose + fix the issue, then re-run.\n")
     try:
-        input("Press Enter when ready to continue, or Ctrl+C to abort... ")
+        # Re-open /dev/tty so input() works even when stdout is piped through tee
+        with open("/dev/tty") as tty:
+            tty.readline()
         return True
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, EOFError, OSError):
         print("\nAborted by user.")
         return False
 
@@ -84,13 +87,29 @@ def main() -> None:
     _banner("Step 2: Running LinkedIn adapter")
     print("  Browser will open. Watch it fill the form.\n")
 
+    # Lazy CL generator — only called when the form has a CL upload field
+    def _cl_generator():
+        return generate_cover_letter_pdf(
+            company="Gousto",
+            role="Data Scientist",
+            location="London, UK",
+            output_dir=str(OUTPUT_DIR),
+        )
+
     adapter = LinkedInAdapter()
     result = adapter.fill_and_submit(
         url=GOUSTO_URL,
         cv_path=cv_path,
         cover_letter_path=None,
         profile=PROFILE,
-        custom_answers={},
+        custom_answers={
+            "_cl_generator": _cl_generator,
+            "_job_context": {
+                "job_title": "Data Scientist",
+                "company": "Gousto",
+                "location": "London, England, United Kingdom",
+            },
+        },
         overrides=None,
     )
 

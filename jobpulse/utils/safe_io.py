@@ -55,16 +55,26 @@ def managed_persistent_browser(
     """Context manager for persistent browser contexts (e.g. LinkedIn with saved cookies).
 
     Yields (context, page) — context IS the browser for persistent contexts.
+
+    If a storage_state JSON file exists alongside the user_data_dir
+    (at ``<parent>/linkedin_storage.json``), cookies from it are injected
+    after launch so that sessions survive across process restarts.
     """
     sync_playwright = _import_playwright()
     context = None
     with sync_playwright() as pw:
         try:
             context = pw.chromium.launch_persistent_context(user_data_dir, **launch_args)
-            page = context.new_page()
+            # Re-use the default page if one exists; otherwise create one
+            page = context.pages[0] if context.pages else context.new_page()
             yield context, page
         finally:
             if context:
+                with contextlib.suppress(Exception):
+                    # Save storage state before closing so next launch has fresh cookies
+                    storage_out = str(Path(user_data_dir).parent / "linkedin_storage.json")
+                    context.storage_state(path=storage_out)
+                    logger.debug("managed_persistent_browser: storage state saved to %s", storage_out)
                 with contextlib.suppress(Exception):
                     context.close()
                 logger.debug("managed_persistent_browser: context closed")
