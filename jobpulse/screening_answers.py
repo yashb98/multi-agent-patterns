@@ -54,7 +54,7 @@ COMMON_ANSWERS: dict[str, str | None] = {
     r"gender.*identify|what.*gender|indicate.*gender": "Male",
     r"sexual.*orientation|what.*orientation|indicate.*orientation": "Heterosexual/Straight",
     r"ethnicity|ethnic.*background|racial|indicate.*ethnicity": "Prefer not to say",
-    r"disability|disabled|disabilit": "No",
+    r"disability|disabled": "No",
     r"veteran|military": "No",
     # Cover letter / Why — needs LLM
     r"why.*apply|why.*interest|why.*company|motivation": None,

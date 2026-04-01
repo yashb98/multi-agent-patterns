@@ -115,7 +115,7 @@ CERTIFICATIONS = [
     ("4. Data Cleaning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/data-cleaning"),
     ("5. Exploratory Data Analysis for Machine Learning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/eda-ml"),
     ("6. Deep Learning and Reinforcement Learning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/S2MJH2ZQ8WF4"),
-    ("7. Introduction to Model Context Protocol", "Feb 2026", "http://verify.skilljar.com/c/nn63q5jje52u"),
+    ("7. Introduction to Model Context Protocol", "Feb 2026", "https://verify.skilljar.com/c/nn63q5jje52u"),
 ]
 
 COMMUNITY = [
