@@ -4,6 +4,36 @@ Read this FIRST every session. Append on error. Re-check before committing.
 
 ---
 
+### [2026-04-01] Ethnicity regex matched "city" in "ethnicity" → returned location instead
+- **Cause**: Pattern `your.*city` in COMMON_ANSWERS matched "your ethni**city**" — the word contains "city".
+- **Fix**: Changed to `what.*city.*live|which.*city` — requires full city-in-context phrasing.
+- **Rule**: NEVER use substring-matchable words in regex patterns. Test every pattern against ALL other question types (ethnicity, disability, etc.) before deploying.
+
+### [2026-04-01] LinkedIn Easy Apply — specific regex patterns matched by general ones first
+- **Cause**: "What is your Right to Work Type?" matched `right to work` (general → "Yes") before `right.*work.*type` (specific → "Graduate Visa"). Python dicts preserve insertion order but patterns were ordered general-first.
+- **Fix**: Reordered COMMON_ANSWERS — SPECIFIC multi-word patterns BEFORE general ones.
+- **Rule**: In regex pattern dicts, always put specific/longer patterns BEFORE general/shorter ones. Test with the actual questions from the form.
+
+### [2026-04-01] LinkedIn salary field rejected formatted currency string
+- **Cause**: Salary field is `type=numeric` on LinkedIn. Value `£27,000-32,000` triggered "Enter a decimal number larger than 0".
+- **Fix**: Changed to plain number `30000` (no currency symbol, no commas, no range).
+- **Rule**: For numeric ATS fields, always use plain integers. No currency symbols, commas, or ranges.
+
+### [2026-04-01] LinkedIn stuck-page detection false positive on page 3
+- **Cause**: Comparing first 200 chars of modal text for stuck detection. All pages start with `"Dialog content start..."` (generic wrapper), so every page matched as "stuck". By page 3, `stuck_count` hit 2 and bailed.
+- **Fix**: Compare chars 300-700 of modal text (skips generic wrapper, captures actual question content).
+- **Rule**: When comparing page content for stuck detection, skip generic container/wrapper text. Use a meaningful content slice.
+
+### [2026-04-01] LinkedIn guest layout served despite logged-in session
+- **Cause**: Direct navigation to `/jobs/view/` URL served guest layout (sign-in wall) even when logged in on `/feed/`. LinkedIn's auth context doesn't propagate to all URL patterns equally.
+- **Fix**: Navigate to `/jobs/` first (establishes logged-in jobs context), then navigate to the specific job URL. Also added sign-in overlay dismiss + page reload retry.
+- **Rule**: For LinkedIn, always navigate to the section root (`/jobs/`) before specific URLs. Add overlay dismiss and reload fallback for auth edge cases.
+
+### [2026-04-01] LinkedIn Easy Apply badge is an `<a>` tag, not `<button>`
+- **Cause**: Newer LinkedIn layout renders the green "Easy Apply" pill as an `<a>` element. All button selectors failed. Initially removed `<a>` selectors thinking the badge wasn't clickable — but it IS the button.
+- **Fix**: Added `a:has-text('Easy Apply')` as fallback AFTER all button selectors.
+- **Rule**: LinkedIn changes its UI frequently. Always have fallback selectors for different element types (`button`, `a`, `span`). Log all matching elements for diagnosis when primary selectors fail.
+
 ### [2026-03-30] swarm_dispatcher missing ALL job intents → "I didn't recognize"
 - **Cause**: `swarm_dispatcher.py` AGENT_MAP had zero job handlers. Regular dispatcher had them but was bypassed by `JOBPULSE_SWARM=true`.
 - **Fix**: Added all 9 job intents to swarm_dispatcher imports + AGENT_MAP. Added `scan_jobs` to JOBS_INTENTS.

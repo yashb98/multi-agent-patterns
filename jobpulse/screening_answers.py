@@ -36,7 +36,7 @@ COMMON_ANSWERS: dict[str, str | None] = {
     r"currently.*work.*for|ever.*work.*for|employed.*by|worked.*for": "No",
     r"current.*salary|salary.*current|present.*salary": "25000",
     # Location — uses JOB_LOCATION placeholder, resolved dynamically in get_answer()
-    r"current.*location|where.*located|your.*location|city.*you.*live|your.*city": "JOB_LOCATION",
+    r"current.*location|where.*located|your.*location|what.*city.*live|which.*city": "JOB_LOCATION",
     r"where.*you.*based|based.*in|residing": "JOB_LOCATION",
     # Availability
     r"notice.*period|start.*date|available.*start|when.*start": "Immediately",
