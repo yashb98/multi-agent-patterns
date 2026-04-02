@@ -64,11 +64,17 @@ class GreenhouseAdapter(BaseATSAdapter):
                     if cl_input:
                         cl_input.set_input_files(str(cover_letter_path))
 
-                # Fill custom answers
+                # Fill custom answers by field ID
                 for field_id, answer in custom_answers.items():
+                    if field_id.startswith("_"):
+                        continue  # Skip internal keys like _job_context
                     el = page.query_selector(f"#{field_id}")
                     if el:
                         el.fill(str(answer))
+
+                # Answer screening questions via shared get_answer() engine
+                job_context = custom_answers.get("_job_context") if custom_answers else None
+                self.answer_screening_questions(page, job_context)
 
                 screenshot_path = cv_path.parent / "greenhouse_screenshot.png"
                 page.screenshot(path=str(screenshot_path))
