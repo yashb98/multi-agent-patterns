@@ -13,7 +13,7 @@ import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from shared.logging_config import get_logger
@@ -442,6 +442,40 @@ class PatternStore:
 
         conn.close()
         return merged
+
+    # --- Pruning ---
+
+    def prune_stale_test_fixes(self, max_age_days: int = 14) -> int:
+        """Delete unconfirmed, single-occurrence test fixes older than max_age_days.
+
+        Prune criteria (ALL must match):
+          - source = 'test'
+          - confirmed = 0 (False)
+          - occurrence_count = 1
+          - created_at < (now - max_age_days)
+
+        Returns the number of rows deleted.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        cutoff_iso = cutoff.isoformat()
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.execute(
+            """DELETE FROM fix_patterns
+               WHERE source = 'test'
+                 AND confirmed = 0
+                 AND occurrence_count = 1
+                 AND created_at < ?""",
+            (cutoff_iso,),
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        if deleted:
+            logger.info("Pruned %d stale unconfirmed test fix(es) older than %d days", deleted, max_age_days)
+
+        return deleted
 
     # --- Helpers ---
 

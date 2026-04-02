@@ -597,3 +597,170 @@ class TestPatternStoreSourceTracking:
                 source="test",
             )
         assert fix.occurrence_count == 3
+
+
+# ---------------------------------------------------------------------------
+# PatternStore Pruning Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPatternStorePruning:
+    def test_prune_stale_test_fixes(self, store: PatternStore) -> None:
+        """Backdated (15 days old) unconfirmed test fix is deleted by prune."""
+        import sqlite3
+        from datetime import datetime, timezone, timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=15)
+        old_iso = cutoff.isoformat()
+
+        # Insert directly via SQL to backdate created_at
+        conn = sqlite3.connect(store.db_path)
+        conn.execute(
+            """INSERT INTO fix_patterns
+               (id, platform, step_name, error_signature, fix_type, fix_payload,
+                confidence, times_applied, times_succeeded, success_rate,
+                created_at, last_used_at, superseded_by, source, confirmed, occurrence_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "stale_test_fix", "linkedin", "click_apply_button", "sig_stale_test",
+                "selector_override", '{"original_selector": "a", "new_selector": "b"}',
+                0.5, 0, 0, 0.0, old_iso, None, None,
+                "test", 0, 1,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        deleted = store.prune_stale_test_fixes(max_age_days=14)
+        assert deleted == 1
+
+        # Verify it's gone
+        retrieved = store.get_fix("linkedin", "click_apply_button", "sig_stale_test")
+        assert retrieved is None
+
+    def test_prune_keeps_confirmed_test_fixes(self, store: PatternStore) -> None:
+        """Backdated confirmed test fix (occurrence_count=2) is NOT pruned."""
+        import sqlite3
+        from datetime import datetime, timezone, timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=15)
+        old_iso = cutoff.isoformat()
+
+        conn = sqlite3.connect(store.db_path)
+        conn.execute(
+            """INSERT INTO fix_patterns
+               (id, platform, step_name, error_signature, fix_type, fix_payload,
+                confidence, times_applied, times_succeeded, success_rate,
+                created_at, last_used_at, superseded_by, source, confirmed, occurrence_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "confirmed_test_fix", "indeed", "page_load", "sig_confirmed_test",
+                "wait_adjustment", '{"step": "page_load", "timeout_ms": 10000}',
+                0.7, 2, 1, 0.5, old_iso, None, None,
+                "test", 1, 2,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        deleted = store.prune_stale_test_fixes(max_age_days=14)
+        assert deleted == 0
+
+        # Verify it's still there
+        retrieved = store.get_fix("indeed", "page_load", "sig_confirmed_test")
+        assert retrieved is not None
+
+    def test_prune_keeps_production_fixes(self, store: PatternStore) -> None:
+        """Backdated production fix is NOT pruned (only test fixes are pruned)."""
+        import sqlite3
+        from datetime import datetime, timezone, timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=15)
+        old_iso = cutoff.isoformat()
+
+        conn = sqlite3.connect(store.db_path)
+        conn.execute(
+            """INSERT INTO fix_patterns
+               (id, platform, step_name, error_signature, fix_type, fix_payload,
+                confidence, times_applied, times_succeeded, success_rate,
+                created_at, last_used_at, superseded_by, source, confirmed, occurrence_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "old_prod_fix", "greenhouse", "contact_info", "sig_old_prod",
+                "field_remap", '{"field_label": "Phone", "profile_key": "phone"}',
+                0.9, 5, 4, 0.8, old_iso, None, None,
+                "production", 1, 1,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        deleted = store.prune_stale_test_fixes(max_age_days=14)
+        assert deleted == 0
+
+        # Verify it's still there
+        retrieved = store.get_fix("greenhouse", "contact_info", "sig_old_prod")
+        assert retrieved is not None
+
+
+# ---------------------------------------------------------------------------
+# Build Overrides Filtering Tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildOverridesFiltering:
+    def _make_fix(
+        self,
+        *,
+        fix_type: str = "selector_override",
+        fix_payload: str | None = None,
+        source: str = "production",
+        confirmed: bool = True,
+        superseded_by: str | None = None,
+        occurrence_count: int = 1,
+    ) -> FixPattern:
+        """Helper to build a FixPattern for filtering tests."""
+        if fix_payload is None:
+            fix_payload = json.dumps({"original_selector": "btn.old", "new_selector": "btn.new"})
+        return FixPattern(
+            id="fix_id",
+            platform="linkedin",
+            step_name="click_apply_button",
+            error_signature="sig_filter",
+            fix_type=fix_type,
+            fix_payload=fix_payload,
+            confidence=0.8,
+            times_applied=0,
+            times_succeeded=0,
+            success_rate=0.0,
+            created_at="2026-01-01T00:00:00+00:00",
+            last_used_at=None,
+            superseded_by=superseded_by,
+            source=source,
+            confirmed=confirmed,
+            occurrence_count=occurrence_count,
+        )
+
+    def test_skips_unconfirmed_test_fix(self) -> None:
+        """FixPattern with source='test', confirmed=False → selector_overrides stays empty."""
+        fix = self._make_fix(source="test", confirmed=False)
+        overrides = build_overrides_from_fixes([fix])
+        assert overrides["selector_overrides"] == {}
+
+    def test_applies_confirmed_test_fix(self) -> None:
+        """FixPattern with source='test', confirmed=True, occurrence_count=2 → selector applied."""
+        fix = self._make_fix(source="test", confirmed=True, occurrence_count=2)
+        overrides = build_overrides_from_fixes([fix])
+        assert overrides["selector_overrides"].get("btn.old") == "btn.new"
+
+    def test_applies_production_fix(self) -> None:
+        """FixPattern with source='production' → selector applied."""
+        fix = self._make_fix(source="production", confirmed=True)
+        overrides = build_overrides_from_fixes([fix])
+        assert overrides["selector_overrides"].get("btn.old") == "btn.new"
+
+    def test_skips_superseded_fix(self) -> None:
+        """FixPattern with superseded_by set → selector NOT applied."""
+        fix = self._make_fix(source="production", confirmed=True, superseded_by="winner1")
+        overrides = build_overrides_from_fixes([fix])
+        assert overrides["selector_overrides"] == {}

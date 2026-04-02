@@ -48,6 +48,19 @@ def build_overrides_from_fixes(fixes: list[FixPattern]) -> dict[str, Any]:
     }
 
     for fix in fixes:
+        # Skip superseded fixes (they have been replaced by a better one)
+        if fix.superseded_by is not None:
+            logger.debug("Skipping superseded fix %s (replaced by %s)", fix.id, fix.superseded_by)
+            continue
+
+        # Skip unconfirmed test fixes (not yet validated in production)
+        if fix.source == "test" and not fix.confirmed:
+            logger.warning(
+                "Skipping unconfirmed test fix %s for %s/%s (occurrence_count=%d)",
+                fix.id, fix.platform, fix.step_name, fix.occurrence_count,
+            )
+            continue
+
         payload = fix.payload
         if fix.fix_type == "selector_override":
             orig = payload.get("original_selector", "")
