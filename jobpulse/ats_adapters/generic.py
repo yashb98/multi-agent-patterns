@@ -61,9 +61,15 @@ class GenericAdapter(BaseATSAdapter):
 
                 # Fill custom answers by field name or id
                 for field_key, answer in custom_answers.items():
+                    if field_key.startswith("_"):
+                        continue  # Skip internal keys like _job_context
                     el = page.query_selector(f"[name='{field_key}'], [id='{field_key}']")
                     if el:
                         el.fill(str(answer))
+
+                # Answer screening questions via shared get_answer() engine
+                job_context = custom_answers.get("_job_context") if custom_answers else None
+                self.answer_screening_questions(page, job_context)
 
                 screenshot_path = cv_path.parent / "generic_screenshot.png"
                 page.screenshot(path=str(screenshot_path))
