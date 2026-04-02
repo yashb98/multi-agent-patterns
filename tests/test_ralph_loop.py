@@ -825,3 +825,47 @@ class TestLinkedInDryRun:
             f"fill_and_submit is missing 'dry_run' parameter. "
             f"Found params: {list(sig.parameters.keys())}"
         )
+
+
+# ---------------------------------------------------------------------------
+# PatternStore Mode Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPatternStoreMode:
+    """Tests for PatternStore mode parameter."""
+
+    def test_test_mode_auto_sets_source(self, db_path):
+        store = PatternStore(db_path=db_path, mode="test")
+        fix = store.save_fix(
+            platform="linkedin", step_name="s1", error_signature="e1",
+            fix_type="selector_override",
+            fix_payload={"original_selector": "a", "new_selector": "b"},
+        )
+        assert fix.source == "test"
+        assert fix.confirmed is False
+
+    def test_production_mode_auto_sets_source(self, db_path):
+        store = PatternStore(db_path=db_path, mode="production")
+        fix = store.save_fix(
+            platform="linkedin", step_name="s1", error_signature="e1",
+            fix_type="selector_override",
+            fix_payload={"original_selector": "a", "new_selector": "b"},
+        )
+        assert fix.source == "production"
+        assert fix.confirmed is True
+
+    def test_default_mode_is_production(self, db_path):
+        store = PatternStore(db_path=db_path)
+        assert store.mode == "production"
+
+    def test_explicit_source_overrides_mode(self, db_path):
+        store = PatternStore(db_path=db_path, mode="test")
+        fix = store.save_fix(
+            platform="linkedin", step_name="s1", error_signature="e1",
+            fix_type="selector_override",
+            fix_payload={"original_selector": "a", "new_selector": "b"},
+            source="manual",
+        )
+        assert fix.source == "manual"
+        assert fix.confirmed is True

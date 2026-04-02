@@ -96,8 +96,9 @@ def compute_error_signature(platform: str, step_name: str, error_message: str) -
 class PatternStore:
     """SQLite store for learned fix patterns and apply attempt history."""
 
-    def __init__(self, db_path: str | None = None) -> None:
+    def __init__(self, db_path: str | None = None, mode: str = "production") -> None:
         self.db_path = db_path or _DEFAULT_DB_PATH
+        self.mode = mode  # "test" | "production"
         self._init_db()
 
     def _init_db(self) -> None:
@@ -161,9 +162,11 @@ class PatternStore:
         fix_type: str,
         fix_payload: dict,
         confidence: float = 0.5,
-        source: str = "production",
+        source: str | None = None,
     ) -> FixPattern:
         """Save or update a fix pattern. Upserts on (platform, step_name, error_signature).
+
+        If source is None, defaults to self.mode (set at PatternStore init).
 
         Confirmation logic:
         - production: always confirmed=True
@@ -172,6 +175,9 @@ class PatternStore:
         - test (2nd+ occurrence): auto-promoted to confirmed=True
         - production overwriting an existing test: promoted to confirmed=True
         """
+        if source is None:
+            source = self.mode
+
         if fix_type not in FIX_TYPES:
             raise ValueError(f"Unknown fix_type: {fix_type}. Must be one of {FIX_TYPES}")
 

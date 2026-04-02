@@ -165,7 +165,7 @@ def ralph_apply_sync(
     """
     from jobpulse.applicator import apply_job, select_adapter, PROFILE, WORK_AUTH
 
-    store = PatternStore(db_path)
+    store = PatternStore(db_path, mode="test" if dry_run else "production")
     platform = (ats_platform or "generic").lower()
 
     # Load proactive fixes
