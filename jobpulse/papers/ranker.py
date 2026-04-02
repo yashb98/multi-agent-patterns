@@ -128,7 +128,7 @@ def llm_rank(
     def _fallback() -> list[RankedPaper]:
         top = candidates[:top_n]
         return [
-            RankedPaper(**p.model_dump(), fast_score=fast_score(p))
+            RankedPaper(**{**p.model_dump(), "fast_score": fast_score(p)})
             for p in top
         ]
 
@@ -176,17 +176,16 @@ def llm_rank(
             paper = paper_by_id.get(arxiv_id)
             if paper is None:
                 continue
-            results.append(
-                RankedPaper(
-                    **paper.model_dump(),
-                    fast_score=fast_score(paper),
-                    impact_score=float(entry.get("impact_score", 0.0)),
-                    impact_reason=entry.get("impact_reason", ""),
-                    category_tag=entry.get("category_tag", ""),
-                    key_technique=entry.get("key_technique", ""),
-                    practical_takeaway=entry.get("practical_takeaway", ""),
-                )
+            data = paper.model_dump()
+            data.update(
+                fast_score=fast_score(paper),
+                impact_score=float(entry.get("impact_score", 0.0)),
+                impact_reason=entry.get("impact_reason", ""),
+                category_tag=entry.get("category_tag", ""),
+                key_technique=entry.get("key_technique", ""),
+                practical_takeaway=entry.get("practical_takeaway", ""),
             )
+            results.append(RankedPaper(**data))
 
         if not results:
             logger.warning("llm_rank: no matching arxiv_ids from LLM — using fallback")
@@ -295,13 +294,8 @@ def summarize_and_verify(papers: list[Paper]) -> list[RankedPaper]:
     for paper in papers:
         summary = _summarize_paper(paper, client) if client else ""
         fact_check = _verify_paper(paper, summary) if summary else FactCheckResult()
-        results.append(
-            RankedPaper(
-                **paper.model_dump(),
-                fast_score=fast_score(paper),
-                summary=summary,
-                fact_check=fact_check,
-            )
-        )
+        data = paper.model_dump()
+        data.update(fast_score=fast_score(paper), summary=summary, fact_check=fact_check)
+        results.append(RankedPaper(**data))
 
     return results
