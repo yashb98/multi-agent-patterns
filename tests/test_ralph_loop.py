@@ -470,3 +470,130 @@ class TestRalphLoop:
         store = PatternStore(db_path=db_path)
         history = store.get_attempt_history("https://example.com/job/6")
         assert len(history) >= 1
+
+
+# ---------------------------------------------------------------------------
+# PatternStore Source Tracking Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPatternStoreSourceTracking:
+    def test_save_fix_defaults_to_production(self, store: PatternStore) -> None:
+        """Default source is 'production', confirmed=True, occurrence_count=1."""
+        fix = store.save_fix(
+            platform="linkedin",
+            step_name="click_apply_button",
+            error_signature="sig_prod_default",
+            fix_type="selector_override",
+            fix_payload={"original_selector": "btn.old", "new_selector": "btn.new"},
+            confidence=0.8,
+        )
+        assert fix.source == "production"
+        assert fix.confirmed is True
+        assert fix.occurrence_count == 1
+
+    def test_save_fix_test_source_unconfirmed(self, store: PatternStore) -> None:
+        """First save with source='test' → confirmed=False."""
+        fix = store.save_fix(
+            platform="linkedin",
+            step_name="click_apply_button",
+            error_signature="sig_test_unconfirmed",
+            fix_type="selector_override",
+            fix_payload={"original_selector": "btn.old", "new_selector": "btn.new"},
+            confidence=0.6,
+            source="test",
+        )
+        assert fix.source == "test"
+        assert fix.confirmed is False
+        assert fix.occurrence_count == 1
+
+    def test_save_fix_test_promotes_on_second_occurrence(self, store: PatternStore) -> None:
+        """Two saves with source='test' for same key → confirmed=True, count=2."""
+        store.save_fix(
+            platform="indeed",
+            step_name="page_load",
+            error_signature="sig_test_promote",
+            fix_type="wait_adjustment",
+            fix_payload={"step": "page_load", "timeout_ms": 10000},
+            confidence=0.5,
+            source="test",
+        )
+        fix2 = store.save_fix(
+            platform="indeed",
+            step_name="page_load",
+            error_signature="sig_test_promote",
+            fix_type="wait_adjustment",
+            fix_payload={"step": "page_load", "timeout_ms": 10000},
+            confidence=0.5,
+            source="test",
+        )
+        assert fix2.confirmed is True
+        assert fix2.occurrence_count == 2
+
+    def test_save_fix_production_promotes_test_fix(self, store: PatternStore) -> None:
+        """test then production for same key → source='production', confirmed=True."""
+        store.save_fix(
+            platform="greenhouse",
+            step_name="contact_info",
+            error_signature="sig_prod_promotes",
+            fix_type="field_remap",
+            fix_payload={"field_label": "Mobile", "profile_key": "phone"},
+            confidence=0.5,
+            source="test",
+        )
+        fix2 = store.save_fix(
+            platform="greenhouse",
+            step_name="contact_info",
+            error_signature="sig_prod_promotes",
+            fix_type="field_remap",
+            fix_payload={"field_label": "Mobile", "profile_key": "phone"},
+            confidence=0.7,
+            source="production",
+        )
+        assert fix2.source == "production"
+        assert fix2.confirmed is True
+
+    def test_save_fix_manual_always_confirmed(self, store: PatternStore) -> None:
+        """source='manual' → confirmed=True regardless of occurrence count."""
+        fix = store.save_fix(
+            platform="workday",
+            step_name="final_submit",
+            error_signature="sig_manual",
+            fix_type="interaction_change",
+            fix_payload={"action": "js_click"},
+            confidence=0.9,
+            source="manual",
+        )
+        assert fix.source == "manual"
+        assert fix.confirmed is True
+
+    def test_get_fix_includes_source_fields(self, store: PatternStore) -> None:
+        """Retrieved fix includes source, confirmed, and occurrence_count fields."""
+        store.save_fix(
+            platform="lever",
+            step_name="file_upload",
+            error_signature="sig_fields",
+            fix_type="strategy_switch",
+            fix_payload={"step": "file_upload", "new_strategy": "drag_and_drop"},
+            confidence=0.75,
+            source="production",
+        )
+        retrieved = store.get_fix("lever", "file_upload", "sig_fields")
+        assert retrieved is not None
+        assert retrieved.source == "production"
+        assert retrieved.confirmed is True
+        assert retrieved.occurrence_count == 1
+
+    def test_occurrence_count_increments_on_repeated_save(self, store: PatternStore) -> None:
+        """Each save for the same key increments occurrence_count."""
+        for i in range(3):
+            fix = store.save_fix(
+                platform="linkedin",
+                step_name="form_navigation",
+                error_signature="sig_count",
+                fix_type="selector_override",
+                fix_payload={"original_selector": "a.old", "new_selector": "a.new"},
+                confidence=0.5,
+                source="test",
+            )
+        assert fix.occurrence_count == 3

@@ -48,6 +48,9 @@ class FixPattern:
     created_at: str
     last_used_at: str | None
     superseded_by: str | None
+    source: str = "production"   # "test" | "production" | "manual"
+    confirmed: bool = True
+    occurrence_count: int = 1
 
     @property
     def payload(self) -> dict:
@@ -115,6 +118,9 @@ class PatternStore:
                 created_at TEXT NOT NULL,
                 last_used_at TEXT,
                 superseded_by TEXT,
+                source TEXT NOT NULL DEFAULT 'production',
+                confirmed BOOLEAN NOT NULL DEFAULT 1,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(platform, step_name, error_signature)
             );
 
@@ -155,8 +161,17 @@ class PatternStore:
         fix_type: str,
         fix_payload: dict,
         confidence: float = 0.5,
+        source: str = "production",
     ) -> FixPattern:
-        """Save or update a fix pattern. Upserts on (platform, step_name, error_signature)."""
+        """Save or update a fix pattern. Upserts on (platform, step_name, error_signature).
+
+        Confirmation logic:
+        - production: always confirmed=True
+        - manual: always confirmed=True
+        - test (1st occurrence): confirmed=False
+        - test (2nd+ occurrence): auto-promoted to confirmed=True
+        - production overwriting an existing test: promoted to confirmed=True
+        """
         if fix_type not in FIX_TYPES:
             raise ValueError(f"Unknown fix_type: {fix_type}. Must be one of {FIX_TYPES}")
 
@@ -167,24 +182,71 @@ class PatternStore:
         payload_json = json.dumps(fix_payload)
 
         conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            """INSERT INTO fix_patterns
-               (id, platform, step_name, error_signature, fix_type, fix_payload, confidence, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(platform, step_name, error_signature) DO UPDATE SET
-                   fix_type = excluded.fix_type,
-                   fix_payload = excluded.fix_payload,
-                   confidence = excluded.confidence,
-                   created_at = excluded.created_at
-            """,
-            (fix_id, platform, step_name, error_signature, fix_type, payload_json, confidence, now_iso),
-        )
+        conn.row_factory = sqlite3.Row
+
+        # Check for existing row to handle occurrence counting + promotion
+        existing = conn.execute(
+            "SELECT source, occurrence_count FROM fix_patterns WHERE id = ?",
+            (fix_id,),
+        ).fetchone()
+
+        if existing is None:
+            # First insert — determine confirmed based on source alone
+            confirmed = source != "test"
+            occurrence_count = 1
+            conn.execute(
+                """INSERT INTO fix_patterns
+                   (id, platform, step_name, error_signature, fix_type, fix_payload,
+                    confidence, created_at, source, confirmed, occurrence_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fix_id, platform, step_name, error_signature, fix_type,
+                    payload_json, confidence, now_iso,
+                    source, confirmed, occurrence_count,
+                ),
+            )
+        else:
+            prev_source: str = existing["source"]
+            occurrence_count = existing["occurrence_count"] + 1
+
+            # Promotion rules:
+            # - source is not "test" → always confirmed
+            # - test on 2nd+ occurrence → promote
+            # - production overwriting existing test → promote
+            if source != "test":
+                confirmed = True
+            elif occurrence_count >= 2:
+                confirmed = True
+            else:
+                confirmed = False
+
+            # production overwriting existing test also forces source update
+            if prev_source == "test" and source == "production":
+                effective_source = "production"
+            else:
+                effective_source = source
+
+            conn.execute(
+                """UPDATE fix_patterns SET
+                    fix_type = ?, fix_payload = ?, confidence = ?, created_at = ?,
+                    source = ?, confirmed = ?, occurrence_count = ?
+                   WHERE id = ?
+                """,
+                (
+                    fix_type, payload_json, confidence, now_iso,
+                    effective_source, confirmed, occurrence_count,
+                    fix_id,
+                ),
+            )
+            source = effective_source
+
         conn.commit()
         conn.close()
 
         logger.info(
-            "Saved fix pattern %s: platform=%s step=%s type=%s confidence=%.2f",
-            fix_id, platform, step_name, fix_type, confidence,
+            "Saved fix pattern %s: platform=%s step=%s type=%s confidence=%.2f source=%s confirmed=%s",
+            fix_id, platform, step_name, fix_type, confidence, source, confirmed,
         )
 
         return FixPattern(
@@ -201,6 +263,9 @@ class PatternStore:
             created_at=now_iso,
             last_used_at=None,
             superseded_by=None,
+            source=source,
+            confirmed=confirmed,
+            occurrence_count=occurrence_count,
         )
 
     def get_fix(
@@ -382,6 +447,7 @@ class PatternStore:
 
     @staticmethod
     def _row_to_fix(row: sqlite3.Row) -> FixPattern:
+        keys = row.keys()
         return FixPattern(
             id=row["id"],
             platform=row["platform"],
@@ -396,4 +462,7 @@ class PatternStore:
             created_at=row["created_at"],
             last_used_at=row["last_used_at"],
             superseded_by=row["superseded_by"],
+            source=row["source"] if "source" in keys else "production",
+            confirmed=bool(row["confirmed"]) if "confirmed" in keys else True,
+            occurrence_count=row["occurrence_count"] if "occurrence_count" in keys else 1,
         )
