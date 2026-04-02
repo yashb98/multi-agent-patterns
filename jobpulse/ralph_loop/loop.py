@@ -152,6 +152,8 @@ def ralph_apply_sync(
     cl_generator: Any | None = None,
     custom_answers: dict | None = None,
     db_path: str | None = None,
+    dry_run: bool = False,
+    iteration_callback: Any | None = None,
 ) -> dict:
     """Self-healing apply loop (sync).
 
@@ -188,6 +190,9 @@ def ralph_apply_sync(
             iteration, MAX_ITERATIONS, platform, url[:80],
         )
 
+        # Reset diagnosis at the start of every iteration so it's always defined
+        diagnosis: dict | None = None
+
         # First iteration: use apply_job (which handles rate limiting)
         # Subsequent iterations: call adapter directly (quota already consumed)
         if iteration == 1:
@@ -199,6 +204,7 @@ def ralph_apply_sync(
                 cl_generator=cl_generator,
                 custom_answers=custom_answers,
                 overrides=overrides,
+                dry_run=dry_run,
             )
         else:
             adapter = select_adapter(ats_platform)
@@ -213,6 +219,7 @@ def ralph_apply_sync(
                     profile=PROFILE,
                     custom_answers=merged_answers,
                     overrides=overrides,
+                    dry_run=dry_run,
                 )
             except Exception as exc:
                 result = {"success": False, "screenshot": None, "error": str(exc)}
@@ -246,6 +253,14 @@ def ralph_apply_sync(
                 store.consolidate_patterns(platform)
 
             result["ralph_iterations"] = iteration
+
+            if iteration_callback is not None:
+                screenshot_bytes = None
+                screenshot_path = result.get("screenshot")
+                if screenshot_path and Path(str(screenshot_path)).exists():
+                    screenshot_bytes = Path(str(screenshot_path)).read_bytes()
+                iteration_callback(iteration, screenshot_bytes, diagnosis, result)
+
             return result
 
         # --- FAILURE PATH ---
@@ -287,8 +302,6 @@ def ralph_apply_sync(
         already_tried_sigs.add(error_sig)
 
         # No known fix — try to diagnose
-        diagnosis: dict | None = None
-
         # Try vision diagnosis if we have a screenshot and page access
         screenshot_path = result.get("screenshot")
         page = result.get("_page")  # adapters can optionally pass the page object
@@ -346,6 +359,12 @@ def ralph_apply_sync(
                 "Ralph Loop: diagnosed %s → %s (confidence=%.2f), retrying",
                 step_name, fix_type, confidence,
             )
+
+            if iteration_callback is not None:
+                screenshot_bytes = None
+                if screenshot_path and Path(str(screenshot_path)).exists():
+                    screenshot_bytes = Path(str(screenshot_path)).read_bytes()
+                iteration_callback(iteration, screenshot_bytes, diagnosis, result)
         else:
             # Can't diagnose — record and stop
             aid = store.record_attempt(
@@ -362,6 +381,13 @@ def ralph_apply_sync(
             logger.warning(
                 "Ralph Loop: cannot diagnose %s/%s — stopping", platform, step_name,
             )
+
+            if iteration_callback is not None:
+                screenshot_bytes = None
+                if screenshot_path and Path(str(screenshot_path)).exists():
+                    screenshot_bytes = Path(str(screenshot_path)).read_bytes()
+                iteration_callback(iteration, screenshot_bytes, diagnosis, result)
+
             break
 
     # Exhausted all iterations

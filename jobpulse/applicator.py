@@ -72,6 +72,7 @@ def apply_job(
     cl_generator: Any | None = None,  # Callable[[], Path | None]
     custom_answers: dict | None = None,
     overrides: dict | None = None,
+    dry_run: bool = False,
 ) -> dict:
     """Submit a job application via the appropriate ATS adapter.
 
@@ -85,43 +86,45 @@ def apply_job(
     from jobpulse.screening_answers import get_answer
 
     platform_key = (ats_platform or "generic").lower()
+    total = 0  # fallback when dry_run skips the rate limiter section
 
-    # Acquire mutex — prevents TOCTOU race between can_apply() and record()
-    with _apply_lock:
-        limiter = RateLimiter()
+    if not dry_run:
+        # Acquire mutex — prevents TOCTOU race between can_apply() and record()
+        with _apply_lock:
+            limiter = RateLimiter()
 
-        # Check rate limit
-        if not limiter.can_apply(platform_key):
-            remaining = limiter.get_remaining()
-            logger.warning("Rate limit hit for %s. Remaining: %s", platform_key, remaining)
-            return {"success": False, "error": f"Daily limit reached for {platform_key}", "rate_limited": True}
+            # Check rate limit
+            if not limiter.can_apply(platform_key):
+                remaining = limiter.get_remaining()
+                logger.warning("Rate limit hit for %s. Remaining: %s", platform_key, remaining)
+                return {"success": False, "error": f"Daily limit reached for {platform_key}", "rate_limited": True}
 
-        # Record BEFORE submitting — prevents silent bypass if record fails after submission
-        # If submission fails later, we "waste" one quota slot. That's safer than double-submitting.
-        try:
-            limiter.record_application(platform_key)
-        except Exception as exc:
-            logger.error("Failed to record application for %s: %s — aborting to prevent untracked submission", platform_key, exc)
-            return {"success": False, "error": f"Rate limiter error: {exc}", "rate_limited": False}
+            # Record BEFORE submitting — prevents silent bypass if record fails after submission
+            # If submission fails later, we "waste" one quota slot. That's safer than double-submitting.
+            try:
+                limiter.record_application(platform_key)
+            except Exception as exc:
+                logger.error("Failed to record application for %s: %s — aborting to prevent untracked submission", platform_key, exc)
+                return {"success": False, "error": f"Rate limiter error: {exc}", "rate_limited": False}
 
-        total = limiter.get_total_today()
-        logger.info("Quota reserved for %s (%d/%d today)", platform_key, total, 25)
+            total = limiter.get_total_today()
+            logger.info("Quota reserved for %s (%d/%d today)", platform_key, total, 25)
 
-    # LinkedIn per-session cap — longer breaks to avoid ML behavioral detection
-    if platform_key == "linkedin":
-        linkedin_count = limiter.get_platform_count("linkedin")
-        # Break BEFORE the next batch of 5 (not after)
-        if linkedin_count > 0 and (linkedin_count % LINKEDIN_SESSION_CAP) == 0:
-            logger.info(
-                "LinkedIn session cap (%d apps) — pausing %d minutes to avoid detection",
-                LINKEDIN_SESSION_CAP, LINKEDIN_SESSION_BREAK_MINUTES,
-            )
-            time.sleep(LINKEDIN_SESSION_BREAK_MINUTES * 60)
+        # LinkedIn per-session cap — longer breaks to avoid ML behavioral detection
+        if platform_key == "linkedin":
+            linkedin_count = limiter.get_platform_count("linkedin")
+            # Break BEFORE the next batch of 5 (not after)
+            if linkedin_count > 0 and (linkedin_count % LINKEDIN_SESSION_CAP) == 0:
+                logger.info(
+                    "LinkedIn session cap (%d apps) — pausing %d minutes to avoid detection",
+                    LINKEDIN_SESSION_CAP, LINKEDIN_SESSION_BREAK_MINUTES,
+                )
+                time.sleep(LINKEDIN_SESSION_BREAK_MINUTES * 60)
 
-    # Session break check (all platforms)
-    if limiter.should_take_break():
-        logger.info("Session break: pausing %d minutes (every 5 applications)", SESSION_BREAK_MINUTES)
-        time.sleep(SESSION_BREAK_MINUTES * 60)
+        # Session break check (all platforms)
+        if limiter.should_take_break():
+            logger.info("Session break: pausing %d minutes (every 5 applications)", SESSION_BREAK_MINUTES)
+            time.sleep(SESSION_BREAK_MINUTES * 60)
 
     # Build answers
     merged_answers: dict = dict(WORK_AUTH)
@@ -163,6 +166,7 @@ def apply_job(
         profile=PROFILE,
         custom_answers=merged_answers,
         overrides=overrides,
+        dry_run=dry_run,
     )
 
     if result.get("success"):
@@ -170,10 +174,11 @@ def apply_job(
     else:
         logger.warning("Application failed via %s: %s (quota already consumed)", adapter.name, result.get("error"))
 
-    # Anti-detection: random delay between submissions (20-45s with jitter)
-    delay = random.uniform(20, 45)
-    logger.info("Anti-detection delay: %.0fs before next application", delay)
-    time.sleep(delay)
+    if not dry_run:
+        # Anti-detection: random delay between submissions (20-45s with jitter)
+        delay = random.uniform(20, 45)
+        logger.info("Anti-detection delay: %.0fs before next application", delay)
+        time.sleep(delay)
 
     result["rate_limited"] = False
     return result

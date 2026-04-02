@@ -25,6 +25,7 @@ class BaseATSAdapter(ABC):
         profile: dict,
         custom_answers: dict,
         overrides: dict[str, Any] | None = None,
+        dry_run: bool = False,
     ) -> dict:
         """Fill form and submit.
 

@@ -764,3 +764,46 @@ class TestBuildOverridesFiltering:
         fix = self._make_fix(source="production", confirmed=True, superseded_by="winner1")
         overrides = build_overrides_from_fixes([fix])
         assert overrides["selector_overrides"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Dry Run Flag Tests
+# ---------------------------------------------------------------------------
+
+
+class TestDryRunFlag:
+    def test_dry_run_passes_to_apply_job(self, db_path: str) -> None:
+        """ralph_apply_sync(dry_run=True) passes dry_run=True to apply_job."""
+        mock_result = {"success": True, "screenshot": None, "error": None}
+
+        with patch("jobpulse.applicator.apply_job", return_value=mock_result) as mock_apply:
+            ralph_apply_sync(
+                url="https://example.com/job/dry1",
+                ats_platform="greenhouse",
+                cv_path=Path("/tmp/test_cv.pdf"),
+                db_path=db_path,
+                dry_run=True,
+            )
+
+        call_kwargs = mock_apply.call_args
+        passed_dry_run = call_kwargs.kwargs.get("dry_run") if call_kwargs.kwargs else None
+        if passed_dry_run is None and call_kwargs.args:
+            # positional fallback — dry_run would be after overrides
+            passed_dry_run = call_kwargs.args[-1]
+        assert passed_dry_run is True, f"Expected dry_run=True, got {passed_dry_run!r}"
+
+    def test_dry_run_false_by_default(self, db_path: str) -> None:
+        """ralph_apply_sync without dry_run arg passes dry_run=False to apply_job."""
+        mock_result = {"success": True, "screenshot": None, "error": None}
+
+        with patch("jobpulse.applicator.apply_job", return_value=mock_result) as mock_apply:
+            ralph_apply_sync(
+                url="https://example.com/job/dry2",
+                ats_platform="greenhouse",
+                cv_path=Path("/tmp/test_cv.pdf"),
+                db_path=db_path,
+            )
+
+        call_kwargs = mock_apply.call_args
+        passed_dry_run = call_kwargs.kwargs.get("dry_run", False) if call_kwargs.kwargs else False
+        assert passed_dry_run is False, f"Expected dry_run=False (default), got {passed_dry_run!r}"
