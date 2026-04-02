@@ -353,6 +353,21 @@ class JobDB:
 
         return False
 
+    def count_applications_for_company(self, company: str) -> int:
+        """Return count of non-skipped applications for a company (case-insensitive)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) as cnt
+                FROM applications a
+                JOIN job_listings l ON a.job_id = l.job_id
+                WHERE LOWER(l.company) = LOWER(?)
+                  AND a.status NOT IN ('Skipped', 'Withdrawn')
+                """,
+                (company,),
+            ).fetchone()
+        return row["cnt"] if row else 0
+
     # ------------------------------------------------------------------
     # ATS answer cache
     # ------------------------------------------------------------------

@@ -193,6 +193,21 @@ def _resolve_role_salary(
     return f"{low:,}-{high:,}"
 
 
+def _check_previously_applied(
+    question: str,
+    job_context: dict | None,
+    *,
+    db: JobDB | None = None,
+) -> str:
+    """Check if we've previously applied to this company."""
+    company = (job_context or {}).get("company", "")
+    if not company:
+        return "No"
+    _db = db or JobDB()
+    count = _db.count_applications_for_company(company)
+    return "Yes" if count > 0 else "No"
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------

@@ -107,3 +107,53 @@ def test_role_salary_text_field_default():
     ctx = {"job_title": "Unknown Role", "company": "Unknown"}
     result = _resolve_role_salary(ctx, input_type="text")
     assert "26,000" in result or "26000" in result
+
+
+# ------------------------------------------------------------------
+# Previously applied check
+# ------------------------------------------------------------------
+
+from jobpulse.job_db import JobDB
+from jobpulse.screening_answers import _check_previously_applied
+
+
+def test_previously_applied_yes(tmp_path):
+    db = JobDB(db_path=tmp_path / "test.db")
+    # Insert a fake application for "Gousto"
+    with db._connect() as conn:
+        conn.execute(
+            "INSERT INTO job_listings (job_id, title, company, url, platform, found_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now'))",
+            ("j1", "Data Scientist", "Gousto", "https://example.com", "linkedin"),
+        )
+        conn.execute(
+            "INSERT INTO applications (job_id, status, created_at, updated_at) "
+            "VALUES (?, ?, datetime('now'), datetime('now'))",
+            ("j1", "Applied"),
+        )
+    result = _check_previously_applied(
+        "Have you previously applied to this company?",
+        {"company": "Gousto"},
+        db=db,
+    )
+    assert result == "Yes"
+
+
+def test_previously_applied_no(tmp_path):
+    db = JobDB(db_path=tmp_path / "test.db")
+    result = _check_previously_applied(
+        "Have you previously applied to this company?",
+        {"company": "Microsoft"},
+        db=db,
+    )
+    assert result == "No"
+
+
+def test_previously_applied_no_context(tmp_path):
+    db = JobDB(db_path=tmp_path / "test.db")
+    result = _check_previously_applied(
+        "Have you previously applied?",
+        None,
+        db=db,
+    )
+    assert result == "No"
