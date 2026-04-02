@@ -45,6 +45,8 @@ _ATS_PATTERNS: list[tuple[str, str]] = [
     (r"recruitee\.com", "recruitee"),
     (r"ashbyhq\.com", "ashby"),
     (r"bamboohr\.com", "bamboohr"),
+    (r"oraclecloud\.com/hcmUI", "oracle"),
+    (r"successfactors\.com", "successfactors"),
 ]
 
 # ---------------------------------------------------------------------------

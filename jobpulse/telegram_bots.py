@@ -128,6 +128,31 @@ def send_jobs(text: str) -> bool:
     return _send(token, text)
 
 
+def send_jobs_photo(photo_path: str, caption: str = "") -> bool:
+    """Send a photo via jobs bot. Falls back to main if not configured."""
+    token = TELEGRAM_JOBS_BOT_TOKEN or TELEGRAM_BOT_TOKEN
+    cid = TELEGRAM_CHAT_ID
+    if not token or not cid:
+        return False
+    try:
+        cmd = [
+            "curl", "-s", "-X", "POST",
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            "-F", f"chat_id={cid}",
+            "-F", f"photo=@{photo_path}",
+        ]
+        if caption:
+            cmd.extend(["-F", f"caption={caption[:1024]}"])
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        resp = json.loads(result.stdout)
+        if not resp.get("ok"):
+            logger.warning("Telegram sendPhoto error: %s", resp.get("description", "unknown"))
+        return resp.get("ok", False)
+    except Exception as e:
+        logger.warning("Telegram sendPhoto failed: %s", e)
+        return False
+
+
 # ── Intent → Bot mapping ──
 
 # Which intents route to which bot for REPLIES

@@ -150,6 +150,19 @@ class PatternStore:
             );
             """
         )
+
+        # Migrate older databases that lack source tracking columns
+        existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(fix_patterns)").fetchall()}
+        migrations = [
+            ("source", "ALTER TABLE fix_patterns ADD COLUMN source TEXT NOT NULL DEFAULT 'production'"),
+            ("confirmed", "ALTER TABLE fix_patterns ADD COLUMN confirmed BOOLEAN NOT NULL DEFAULT 1"),
+            ("occurrence_count", "ALTER TABLE fix_patterns ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 1"),
+        ]
+        for col_name, ddl in migrations:
+            if col_name not in existing_cols:
+                conn.execute(ddl)
+                logger.info("Migrated fix_patterns: added column %s", col_name)
+        conn.commit()
         conn.close()
 
     # --- Fix Pattern CRUD ---

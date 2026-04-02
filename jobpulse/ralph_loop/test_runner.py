@@ -163,4 +163,67 @@ def ralph_test_run(
         run_id, verdict, test_result.iterations, elapsed_ms,
     )
 
+    # Send results + screenshots to Telegram Jobs bot
+    _notify_telegram(test_result, result, screenshot_dir)
+
     return test_result
+
+
+def _notify_telegram(
+    test_result: TestRunResult,
+    raw_result: dict,
+    screenshot_dir: str,
+) -> None:
+    """Send ralph-test verdict + failure screenshots to Telegram Jobs bot."""
+    try:
+        from jobpulse.telegram_bots import send_jobs, send_jobs_photo
+    except Exception:
+        return
+
+    verdict_emoji = {
+        "success": "\u2705", "partial": "\u26a0\ufe0f",
+        "blocked": "\U0001f6ab", "error": "\u274c",
+    }
+    emoji = verdict_emoji.get(test_result.verdict, "\u2753")
+
+    lines = [
+        f"{emoji} Ralph Test: {test_result.verdict.upper()}",
+        f"Platform: {test_result.platform}",
+        f"URL: {test_result.url}",
+        f"Iterations: {test_result.iterations}",
+        f"Duration: {test_result.duration_ms / 1000:.1f}s",
+    ]
+    if test_result.error_summary:
+        lines.append(f"Error: {test_result.error_summary[:200]}")
+    if test_result.fields_filled:
+        lines.append(f"Fields: {test_result.fields_filled} filled, {test_result.fields_failed} failed")
+
+    send_jobs("\n".join(lines))
+
+    # Send screenshots on non-success verdicts for human review
+    if test_result.verdict != "success" and screenshot_dir:
+        screenshot_path = Path(screenshot_dir)
+        # Send the most diagnostic screenshots
+        priority_screenshots = [
+            "linkedin_03_no_modal.png",
+            "linkedin_02_apply_debug.png",
+            "linkedin_02_no_apply_button.png",
+            "linkedin_02_external_apply.png",
+            "linkedin_01_job_page.png",
+        ]
+        sent = 0
+        for name in priority_screenshots:
+            img = screenshot_path / name
+            if img.exists() and sent < 3:
+                send_jobs_photo(str(img), caption=f"Ralph Test [{test_result.platform}] — {name}")
+                sent += 1
+        # Also send any stuck/error screenshots
+        for img in sorted(screenshot_path.glob("linkedin_stuck_*.png")):
+            if sent < 4:
+                send_jobs_photo(str(img), caption=f"Ralph Test — {img.name}")
+                sent += 1
+        # Send last iteration screenshot if nothing else was sent
+        if sent == 0:
+            for img in sorted(screenshot_path.glob("iter_*.png"), reverse=True):
+                send_jobs_photo(str(img), caption=f"Ralph Test — {img.name}")
+                break

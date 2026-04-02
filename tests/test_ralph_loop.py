@@ -869,3 +869,74 @@ class TestPatternStoreMode:
         )
         assert fix.source == "manual"
         assert fix.confirmed is True
+
+
+class TestExternalRedirect:
+    """Tests for external redirect handling in Ralph Loop."""
+
+    def test_external_redirect_switches_platform(self, db_path: str) -> None:
+        """When LinkedIn returns external_redirect, Ralph Loop switches adapter."""
+        # First call: LinkedIn returns external redirect
+        linkedin_result = {
+            "success": False,
+            "external_redirect": True,
+            "external_url": "https://boards.greenhouse.io/company/jobs/123",
+            "external_platform": "greenhouse",
+            "error": "External Apply — redirected to greenhouse",
+        }
+
+        with patch("jobpulse.applicator.apply_job", return_value=linkedin_result):
+            with patch("jobpulse.applicator.select_adapter") as mock_select:
+                mock_adapter = MagicMock()
+                mock_adapter.fill_and_submit.return_value = {"success": True, "screenshot": None, "error": None}
+                mock_select.return_value = mock_adapter
+
+                result = ralph_apply_sync(
+                    url="https://linkedin.com/jobs/view/123",
+                    ats_platform="linkedin",
+                    cv_path=Path("/tmp/cv.pdf"),
+                    db_path=db_path,
+                    dry_run=True,
+                )
+
+        # Iteration 1: external redirect (not success) → iteration 2: adapter called directly
+        assert result.get("success") is True
+        # Adapter should have been called with the external URL
+        mock_adapter.fill_and_submit.assert_called_once()
+        call_kwargs = mock_adapter.fill_and_submit.call_args
+        assert call_kwargs[1]["url"] == "https://boards.greenhouse.io/company/jobs/123"
+
+    def test_external_redirect_preserves_in_result(self, db_path: str) -> None:
+        """Applicator tags external_redirect info on the final result."""
+        linkedin_result = {
+            "success": False,
+            "external_redirect": True,
+            "external_url": "https://jobs.lever.co/company/abc",
+            "error": "External Apply",
+            "rate_limited": False,
+        }
+        ext_result = {"success": True, "screenshot": None, "error": None}
+
+        with patch("jobpulse.applicator.select_adapter") as mock_select:
+            mock_linkedin = MagicMock()
+            mock_linkedin.name = "linkedin"
+            mock_linkedin.fill_and_submit.return_value = linkedin_result
+
+            mock_lever = MagicMock()
+            mock_lever.name = "lever"
+            mock_lever.fill_and_submit.return_value = ext_result
+
+            mock_select.side_effect = [mock_linkedin, mock_lever]
+
+            from jobpulse.applicator import apply_job
+            with patch("jobpulse.jd_analyzer.detect_ats_platform", return_value="lever"):
+                result = apply_job(
+                    url="https://linkedin.com/jobs/view/456",
+                    ats_platform="linkedin",
+                    cv_path=Path("/tmp/cv.pdf"),
+                    dry_run=True,
+                )
+
+        assert result.get("external_redirect") is True
+        assert result.get("external_url") == "https://jobs.lever.co/company/abc"
+        assert result.get("external_platform") == "lever"

@@ -761,8 +761,12 @@ class LinkedInAdapter(BaseATSAdapter):
                 # The green Easy Apply button is a <button> with class
                 # 'jobs-apply-button'. The green pill badge is an <a> tag
                 # that does NOT open the modal — we must skip it.
+                # IMPORTANT: Scope <a> selectors to the detail pane to avoid
+                # matching sidebar job card badges (which won't open the modal).
                 easy_apply_btn = None
-                for sel in [
+
+                # Phase 1: <button> selectors (most reliable)
+                button_selectors = [
                     self.resolve_selector("button.jobs-apply-button", overrides),
                     self.resolve_selector("button[aria-label*='Easy Apply']", overrides),
                     "button:has-text('Easy Apply')",
@@ -770,26 +774,191 @@ class LinkedInAdapter(BaseATSAdapter):
                     ".jobs-apply-button:not(a)",
                     ".jobs-s-apply button",
                     "[data-control-name='jobdetails_topcard_inapply']",
-                    # Top card apply button
+                    # Top card apply button — scoped to detail pane
                     ".jobs-unified-top-card button:has-text('Apply')",
                     ".job-details-jobs-unified-top-card__container--two-pane button:has-text('Apply')",
-                ]:
+                    # 2026 layout: detail pane container classes
+                    ".jobs-details button:has-text('Easy Apply')",
+                    ".jobs-details button:has-text('Apply')",
+                    ".scaffold-layout__detail button:has-text('Easy Apply')",
+                    ".scaffold-layout__detail button:has-text('Apply')",
+                    ".job-details-jobs-unified-top-card button:has-text('Apply')",
+                    # Direct aria-label match for Apply button
+                    "button[aria-label='Apply']",
+                    "button[aria-label='Easy Apply']",
+                ]
+                for sel in button_selectors:
                     easy_apply_btn = page.query_selector(sel)
                     if easy_apply_btn:
                         logger.info("LinkedIn: Easy Apply button found via '%s'", sel)
                         break
 
                 if not easy_apply_btn:
-                    # Fallback: the green "Easy Apply" pill/badge IS the clickable
-                    # element in newer LinkedIn layouts — it's an <a> tag.
-                    for a_sel in [
-                        "a:has-text('Easy Apply')",
-                        "a.jobs-apply-button",
-                    ]:
+                    # Phase 2: <a> tag fallback — SCOPED to the detail pane only
+                    # to avoid matching sidebar job card badges.
+                    detail_scoped_a_selectors = [
+                        ".jobs-unified-top-card a:has-text('Easy Apply')",
+                        ".job-details-jobs-unified-top-card a:has-text('Easy Apply')",
+                        ".scaffold-layout__detail a:has-text('Easy Apply')",
+                        ".jobs-details a:has-text('Easy Apply')",
+                        ".jobs-details a.jobs-apply-button",
+                        # Last resort: unscoped <a> but only if it's a large clickable
+                        # element (not a small badge in the sidebar)
+                    ]
+                    for a_sel in detail_scoped_a_selectors:
                         easy_apply_btn = page.query_selector(a_sel)
                         if easy_apply_btn:
                             logger.info("LinkedIn: Easy Apply <a> tag found via '%s' — using as button", a_sel)
                             break
+
+                if not easy_apply_btn:
+                    # Phase 3: JS-based discovery — find elements whose OWN text
+                    # (not child elements) contains "Easy Apply" or "Apply".
+                    # This avoids matching sidebar job cards whose child text
+                    # happens to include "apply" as part of the card content.
+                    try:
+                        js_btn = page.evaluate("""() => {
+                            const detail = document.querySelector(
+                                '.scaffold-layout__detail, .jobs-details, .jobs-unified-top-card'
+                            );
+                            const container = detail || document;
+                            const candidates = Array.from(
+                                container.querySelectorAll('button, a, [role="button"], span[role="button"]')
+                            ).filter(el => {
+                                if (el.offsetParent === null) return false;
+                                // Use DIRECT text (not child elements) to avoid
+                                // matching job cards that contain "Easy Apply" badges
+                                const ownText = Array.from(el.childNodes)
+                                    .filter(n => n.nodeType === 3)
+                                    .map(n => n.textContent.trim())
+                                    .join(' ').toLowerCase();
+                                const fullText = el.textContent.trim().toLowerCase();
+                                // Direct text match OR short full text (real buttons are short)
+                                const isApplyText = (
+                                    ownText.includes('easy apply') ||
+                                    ownText === 'apply' ||
+                                    (fullText.length < 30 && (fullText.includes('easy apply') || fullText === 'apply'))
+                                );
+                                // Exclude job cards (too tall, too wide = sidebar card)
+                                const rect = el.getBoundingClientRect();
+                                const isButton = rect.height < 80 && rect.width < 300;
+                                return isApplyText && isButton;
+                            });
+                            if (candidates.length === 0) return null;
+                            // Pick the largest candidate among button-sized elements
+                            candidates.sort((a, b) => {
+                                const aR = a.getBoundingClientRect();
+                                const bR = b.getBoundingClientRect();
+                                return (bR.width * bR.height) - (aR.width * aR.height);
+                            });
+                            const best = candidates[0];
+                            return {
+                                tag: best.tagName,
+                                text: best.textContent.trim().substring(0, 60),
+                                cls: best.className.substring(0, 80),
+                                w: best.getBoundingClientRect().width,
+                                h: best.getBoundingClientRect().height,
+                            };
+                        }""")
+                        if js_btn:
+                            btn_text = (js_btn.get("text") or "").lower().strip()
+                            is_easy_apply = "easy apply" in btn_text
+                            logger.info(
+                                "LinkedIn: JS discovery found %s element: %s",
+                                "Easy Apply" if is_easy_apply else "External Apply", js_btn,
+                            )
+
+                            if is_easy_apply:
+                                # Easy Apply button — click and proceed to modal
+                                page.evaluate("""() => {
+                                    const detail = document.querySelector(
+                                        '.scaffold-layout__detail, .jobs-details, .jobs-unified-top-card'
+                                    );
+                                    const container = detail || document;
+                                    const candidates = Array.from(
+                                        container.querySelectorAll('button, a, [role="button"], span[role="button"]')
+                                    ).filter(el => {
+                                        if (el.offsetParent === null) return false;
+                                        const ownText = Array.from(el.childNodes)
+                                            .filter(n => n.nodeType === 3)
+                                            .map(n => n.textContent.trim())
+                                            .join(' ').toLowerCase();
+                                        const fullText = el.textContent.trim().toLowerCase();
+                                        const isApplyText = (
+                                            ownText.includes('easy apply') ||
+                                            (fullText.length < 30 && fullText.includes('easy apply'))
+                                        );
+                                        const rect = el.getBoundingClientRect();
+                                        return isApplyText && rect.height < 80 && rect.width < 300;
+                                    });
+                                    if (candidates.length > 0) {
+                                        candidates.sort((a, b) => {
+                                            const aR = a.getBoundingClientRect();
+                                            const bR = b.getBoundingClientRect();
+                                            return (bR.width * bR.height) - (aR.width * aR.height);
+                                        });
+                                        candidates[0].click();
+                                    }
+                                }""")
+                                easy_apply_btn = True  # Flag that we used JS click
+                                logger.info("LinkedIn: clicked Easy Apply via JS (tag=%s, %dx%d)",
+                                            js_btn["tag"], js_btn.get("w", 0), js_btn.get("h", 0))
+                            else:
+                                # External Apply button — click, capture new tab, return redirect
+                                logger.info("LinkedIn: External Apply detected via JS — clicking to capture redirect")
+                                _screenshot(page, cv_path, "02_external_apply")
+
+                                new_tab_url = None
+                                try:
+                                    context = page.context
+                                    with context.expect_page(timeout=15000) as new_page_info:
+                                        page.evaluate("""() => {
+                                            const detail = document.querySelector(
+                                                '.scaffold-layout__detail, .jobs-details, .jobs-unified-top-card'
+                                            );
+                                            const container = detail || document;
+                                            const candidates = Array.from(
+                                                container.querySelectorAll('button, a, [role="button"], span[role="button"]')
+                                            ).filter(el => {
+                                                if (el.offsetParent === null) return false;
+                                                const fullText = el.textContent.trim().toLowerCase();
+                                                const rect = el.getBoundingClientRect();
+                                                return fullText === 'apply' && rect.height < 80 && rect.width < 300;
+                                            });
+                                            if (candidates.length > 0) candidates[0].click();
+                                        }""")
+                                    new_page = new_page_info.value
+                                    _human_delay(2.0, 4.0)
+                                    new_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                                    new_tab_url = new_page.url
+                                    logger.info("LinkedIn: External apply opened new tab: %s", new_tab_url)
+                                    _screenshot(new_page, cv_path, "02_external_landing")
+                                    new_page.close()
+                                except Exception as exc:
+                                    logger.warning("LinkedIn: Failed to capture new tab: %s", exc)
+                                    _human_delay(3.0, 5.0)
+                                    current = page.url
+                                    if "linkedin.com" not in current:
+                                        new_tab_url = current
+                                        logger.info("LinkedIn: Same-tab redirect to: %s", new_tab_url)
+
+                                if new_tab_url and "linkedin.com" not in new_tab_url:
+                                    return {
+                                        "success": False,
+                                        "external_redirect": True,
+                                        "external_url": new_tab_url,
+                                        "screenshot": cv_path.parent / "linkedin_02_external_apply.png",
+                                        "error": f"External Apply — redirected to {new_tab_url}",
+                                    }
+                                else:
+                                    return {
+                                        "success": False,
+                                        "screenshot": cv_path.parent / "linkedin_02_external_apply.png",
+                                        "error": "External Apply button clicked but could not capture redirect URL",
+                                        "_page": page,
+                                    }
+                    except Exception as exc:
+                        logger.warning("LinkedIn: JS apply discovery failed: %s", exc)
 
                 if not easy_apply_btn:
                     # Dump all visible buttons for diagnosis
@@ -808,15 +977,59 @@ class LinkedInAdapter(BaseATSAdapter):
                     _screenshot(page, cv_path, "02_apply_debug")
 
                 if not easy_apply_btn:
-                    # Check for external apply
-                    external = page.query_selector("a:has-text('Apply'), button:has-text('Apply')")
+                    # Check for external apply — click it, capture the redirect URL,
+                    # and hand off to the correct ATS adapter via the applicator.
+                    external = page.query_selector(
+                        ".scaffold-layout__detail a:has-text('Apply'), "
+                        ".jobs-details a:has-text('Apply'), "
+                        ".jobs-unified-top-card a:has-text('Apply'), "
+                        "a:has-text('Apply'), button:has-text('Apply')"
+                    )
                     if external:
                         _screenshot(page, cv_path, "02_external_apply")
-                        return {
-                            "success": False,
-                            "screenshot": cv_path.parent / "linkedin_02_external_apply.png",
-                            "error": "External Apply — not Easy Apply. Cannot auto-submit.",
-                        }
+                        logger.info("LinkedIn: External Apply detected — clicking to capture redirect URL")
+
+                        # Listen for new tab BEFORE clicking
+                        new_tab_url = None
+                        try:
+                            # context is _browser (the persistent browser context)
+                            context = page.context
+
+                            # Set up promise for new page event
+                            with context.expect_page(timeout=15000) as new_page_info:
+                                external.click()
+                            new_page = new_page_info.value
+                            _human_delay(2.0, 4.0)
+                            new_page.wait_for_load_state("domcontentloaded", timeout=15000)
+                            new_tab_url = new_page.url
+                            logger.info("LinkedIn: External apply redirected to: %s", new_tab_url)
+                            _screenshot(new_page, cv_path, "02_external_landing")
+                            new_page.close()
+                        except Exception as exc:
+                            logger.warning("LinkedIn: Failed to capture new tab from external apply: %s", exc)
+                            # Fallback: check if current page URL changed (some jobs redirect in same tab)
+                            _human_delay(3.0, 5.0)
+                            current = page.url
+                            if "linkedin.com" not in current:
+                                new_tab_url = current
+                                logger.info("LinkedIn: Same-tab redirect to: %s", new_tab_url)
+
+                        if new_tab_url and "linkedin.com" not in new_tab_url:
+                            return {
+                                "success": False,
+                                "external_redirect": True,
+                                "external_url": new_tab_url,
+                                "screenshot": cv_path.parent / "linkedin_02_external_apply.png",
+                                "error": f"External Apply — redirected to {new_tab_url}",
+                            }
+                        else:
+                            # Click happened but no external redirect captured
+                            return {
+                                "success": False,
+                                "screenshot": cv_path.parent / "linkedin_02_external_apply.png",
+                                "error": "External Apply button clicked but could not capture redirect URL",
+                                "_page": page,
+                            }
                     _screenshot(page, cv_path, "02_no_apply_button")
                     return {
                         "success": False,
@@ -824,27 +1037,76 @@ class LinkedInAdapter(BaseATSAdapter):
                         "error": "Easy Apply button not found on page",
                     }
 
-                easy_apply_btn.scroll_into_view_if_needed()
-                _human_delay(0.5, 1.5)
-                easy_apply_btn.click()
+                # Click button (skip if already clicked via JS above)
+                if easy_apply_btn is not True:
+                    easy_apply_btn.scroll_into_view_if_needed()
+                    _human_delay(0.5, 1.5)
+                    easy_apply_btn.click()
                 _human_delay(2.0, 4.0)
 
-                # Wait for modal to appear (poll up to 5 seconds)
+                # Wait for modal to appear (poll up to 8 seconds)
                 modal = None
-                for _wait in range(10):
+                for _wait in range(16):
                     modal = _find_modal(page)
                     if modal:
                         break
                     time.sleep(0.5)
 
+                if not modal:
+                    # Retry: JS click on the element — sometimes Playwright click
+                    # doesn't trigger LinkedIn's event handlers properly
+                    logger.info("LinkedIn: modal not open after first click — retrying with JS click")
+                    try:
+                        page.evaluate("""() => {
+                            const detail = document.querySelector(
+                                '.scaffold-layout__detail, .jobs-details, .jobs-unified-top-card'
+                            );
+                            const container = detail || document;
+                            const candidates = Array.from(
+                                container.querySelectorAll('button, a, [role="button"], span[role="button"]')
+                            ).filter(el => {
+                                if (el.offsetParent === null) return false;
+                                const ownText = Array.from(el.childNodes)
+                                    .filter(n => n.nodeType === 3)
+                                    .map(n => n.textContent.trim())
+                                    .join(' ').toLowerCase();
+                                const fullText = el.textContent.trim().toLowerCase();
+                                const isApplyText = (
+                                    ownText.includes('easy apply') ||
+                                    ownText === 'apply' ||
+                                    (fullText.length < 30 && (fullText.includes('easy apply') || fullText === 'apply'))
+                                );
+                                const rect = el.getBoundingClientRect();
+                                return isApplyText && rect.height < 80 && rect.width < 300;
+                            });
+                            if (candidates.length > 0) {
+                                candidates.sort((a, b) => {
+                                    const aR = a.getBoundingClientRect();
+                                    const bR = b.getBoundingClientRect();
+                                    return (bR.width * bR.height) - (aR.width * aR.height);
+                                });
+                                candidates[0].click();
+                            }
+                        }""")
+                    except Exception as exc:
+                        logger.warning("LinkedIn: JS retry click failed: %s", exc)
+                    _human_delay(2.0, 4.0)
+                    for _wait in range(10):
+                        modal = _find_modal(page)
+                        if modal:
+                            break
+                        time.sleep(0.5)
+
                 _screenshot(page, cv_path, "03_modal_open")
                 if not modal:
                     logger.warning("LinkedIn: Easy Apply modal did NOT open after clicking")
                     _screenshot(page, cv_path, "03_no_modal")
+                    # Pass page object so Ralph Loop can use vision diagnosis
                     return {
                         "success": False,
                         "screenshot": cv_path.parent / "linkedin_03_no_modal.png",
-                        "error": "Easy Apply button clicked but modal did not open",
+                        "error": "Easy Apply button clicked but modal did not open (tried Playwright + JS click)",
+                        "_page": page,
                     }
                 logger.info("LinkedIn: Easy Apply modal opened")
 

@@ -169,6 +169,42 @@ def apply_job(
         dry_run=dry_run,
     )
 
+    # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
+    # external ATS URL. Detect the ATS platform and re-apply via the correct adapter.
+    if result.get("external_redirect") and result.get("external_url"):
+        external_url = result["external_url"]
+        logger.info("External redirect detected: %s → %s", url, external_url)
+
+        from jobpulse.jd_analyzer import detect_ats_platform
+        ext_platform = detect_ats_platform(external_url)
+        ext_adapter = select_adapter(ext_platform)
+        logger.info("External ATS detected: %s — using %s adapter", ext_platform or "generic", ext_adapter.name)
+
+        # Lazy CL generation for external platforms that typically have CL fields
+        ext_cl_path = cover_letter_path
+        if ext_cl_path is None and cl_generator is not None:
+            if ext_platform and ext_platform.lower() in ("greenhouse", "lever"):
+                try:
+                    ext_cl_path = cl_generator()
+                    if ext_cl_path:
+                        logger.info("applicator: generated cover letter on demand for external %s", ext_platform)
+                except Exception as exc:
+                    logger.warning("applicator: on-demand CL generation for external failed: %s", exc)
+
+        result = ext_adapter.fill_and_submit(
+            url=external_url,
+            cv_path=cv_path,
+            cover_letter_path=ext_cl_path,
+            profile=PROFILE,
+            custom_answers=merged_answers,
+            overrides=overrides,
+            dry_run=dry_run,
+        )
+        # Tag the result so downstream knows this was an external redirect
+        result["external_redirect"] = True
+        result["external_url"] = external_url
+        result["external_platform"] = ext_platform or "generic"
+
     if result.get("success"):
         logger.info("Application submitted via %s (%d today)", adapter.name, total)
     else:

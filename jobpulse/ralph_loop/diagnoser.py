@@ -262,6 +262,17 @@ def diagnose_with_vision(
 # ---------------------------------------------------------------------------
 
 _HEURISTIC_MAP: list[tuple[re.Pattern[str], dict]] = [
+    # Modal did not open after clicking apply button
+    (
+        re.compile(r"modal did not open|modal.*not.*open|clicked but modal", re.I),
+        {
+            "fix_type": "interaction_change",
+            "fix_payload": {"action": "click_apply_button", "modifier": "js_click", "wait_ms": 5000,
+                            "step": "click_apply_button"},
+            "confidence": 0.6,
+            "diagnosis": "Easy Apply modal did not open after clicking — retry with JS click and longer wait",
+        },
+    ),
     # Timeout / page load
     (
         re.compile(r"timeout|timed?\s*out|waiting\s+for", re.I),

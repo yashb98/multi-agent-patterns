@@ -193,7 +193,7 @@ def ralph_apply_sync(
         # Reset diagnosis at the start of every iteration so it's always defined
         diagnosis: dict | None = None
 
-        # First iteration: use apply_job (which handles rate limiting)
+        # First iteration: use apply_job (which handles rate limiting + external redirect)
         # Subsequent iterations: call adapter directly (quota already consumed)
         if iteration == 1:
             result = apply_job(
@@ -206,6 +206,21 @@ def ralph_apply_sync(
                 overrides=overrides,
                 dry_run=dry_run,
             )
+            # If external redirect happened on iteration 1, update URL and platform
+            # so subsequent iterations target the external ATS directly.
+            if result.get("external_redirect") and result.get("external_url"):
+                url = result["external_url"]
+                ext_plat = result.get("external_platform")
+                if ext_plat:
+                    ats_platform = ext_plat
+                    platform = ext_plat.lower()
+                    # Reload fixes for the new platform
+                    known_fixes = store.get_fixes_for_platform(platform)
+                    overrides = build_overrides_from_fixes(known_fixes)
+                    logger.info(
+                        "Ralph Loop: external redirect — switched to %s adapter for %s",
+                        platform, url[:80],
+                    )
         else:
             adapter = select_adapter(ats_platform)
             merged_answers: dict = dict(WORK_AUTH)
