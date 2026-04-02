@@ -807,3 +807,21 @@ class TestDryRunFlag:
         call_kwargs = mock_apply.call_args
         passed_dry_run = call_kwargs.kwargs.get("dry_run", False) if call_kwargs.kwargs else False
         assert passed_dry_run is False, f"Expected dry_run=False (default), got {passed_dry_run!r}"
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn Dry Run Tests
+# ---------------------------------------------------------------------------
+
+
+class TestLinkedInDryRun:
+    def test_dry_run_param_in_signature(self) -> None:
+        """LinkedInAdapter.fill_and_submit must have a 'dry_run' parameter."""
+        import inspect
+        from jobpulse.ats_adapters.linkedin import LinkedInAdapter
+
+        sig = inspect.signature(LinkedInAdapter.fill_and_submit)
+        assert "dry_run" in sig.parameters, (
+            f"fill_and_submit is missing 'dry_run' parameter. "
+            f"Found params: {list(sig.parameters.keys())}"
+        )

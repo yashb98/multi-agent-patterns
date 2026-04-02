@@ -65,8 +65,12 @@ def _find_modal(page):
     return None
 
 
-def _click_next_or_submit(page) -> str:
-    """Click the Next/Review/Submit button inside the modal. Returns which button was found."""
+def _click_next_or_submit(page, dry_run: bool = False) -> str:
+    """Click the Next/Review/Submit button inside the modal. Returns which button was found.
+
+    When dry_run=True, the Submit button is identified but NOT clicked — returns "submit"
+    immediately so the caller can handle the dry-run exit path.
+    """
     modal = _find_modal(page)
     if not modal:
         return "no_modal"
@@ -82,6 +86,9 @@ def _click_next_or_submit(page) -> str:
         for btn in buttons:
             text = btn.text_content() or ""
             if label.lower() in text.strip().lower():
+                if action == "submit" and dry_run:
+                    logger.info("LinkedIn: DRY RUN — Submit button found, skipping click")
+                    return "submit"
                 try:
                     btn.scroll_into_view_if_needed()
                     _human_delay(0.3, 0.8)
@@ -913,10 +920,20 @@ class LinkedInAdapter(BaseATSAdapter):
                     )
 
                     # Click Next / Review / Submit
-                    last_action = _click_next_or_submit(page)
+                    last_action = _click_next_or_submit(page, dry_run=dry_run)
                     logger.info("LinkedIn: page %d → action=%s", page_num, last_action)
 
                     if last_action == "submit":
+                        if dry_run:
+                            _screenshot(page, cv_path, "dry_run_submit_ready")
+                            logger.info("LinkedIn: DRY RUN — reached Submit, stopping without clicking")
+                            return {
+                                "success": True,
+                                "screenshot": cv_path.parent / "linkedin_dry_run_submit_ready.png",
+                                "error": None,
+                                "dry_run": True,
+                                "needs_manual_submit": False,
+                            }
                         if _AUTO_SUBMIT:
                             _human_delay(1.0, 2.0)
                             _screenshot(page, cv_path, "submitted")
@@ -943,7 +960,7 @@ class LinkedInAdapter(BaseATSAdapter):
                         logger.info("LinkedIn: reached Review page")
 
                         if _AUTO_SUBMIT:
-                            last_action = _click_next_or_submit(page)
+                            last_action = _click_next_or_submit(page, dry_run=dry_run)
                             if last_action == "submit":
                                 _human_delay(1.0, 2.0)
                                 _screenshot(page, cv_path, "submitted")
