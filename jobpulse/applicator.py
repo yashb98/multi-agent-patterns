@@ -128,9 +128,15 @@ def apply_job(
     if custom_answers:
         merged_answers.update(custom_answers)
 
+    # Extract job context from custom_answers for dynamic screening resolution
+    job_context = (custom_answers or {}).get("_job_context")
+
     for key, value in list(merged_answers.items()):
         if isinstance(value, str) and value.endswith("?"):
-            answer = get_answer(value, {"title": "", "company": ""})
+            answer = get_answer(
+                value, job_context,
+                input_type=None, platform=platform_key,
+            )
             if answer:
                 merged_answers[key] = answer
 
