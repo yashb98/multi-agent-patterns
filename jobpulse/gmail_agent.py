@@ -143,7 +143,7 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
         # Step 2: Fetch inbox
         with trail.step("api_call", "Fetch inbox since last check",
                          step_input=f"Since: {last_check[:10]}") as s:
-            query = f"after:{last_check[:10]} in:inbox"
+            query = f"after:{last_check[:10].replace('-', '/')} in:inbox"
             results = service.users().messages().list(userId="me", q=query, maxResults=50).execute()
             messages = results.get("messages", [])
             s["output"] = f"Found {len(messages)} messages"

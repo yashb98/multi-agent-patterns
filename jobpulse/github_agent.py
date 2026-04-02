@@ -62,8 +62,8 @@ def get_yesterday_commits(trigger: str = "scheduled_check") -> dict:
     from jobpulse.process_logger import ProcessTrail
     trail = ProcessTrail("github_agent", trigger)
 
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    today = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
 
     # Step 1: Get recently pushed repos
     with trail.step("api_call", "Fetch recently pushed repos",

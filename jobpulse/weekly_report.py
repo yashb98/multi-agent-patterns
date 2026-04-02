@@ -40,11 +40,11 @@ def build_weekly_report() -> str:
         conn = budget_conn()
         spending = conn.execute(
             "SELECT SUM(amount) as total, COUNT(*) as cnt FROM transactions "
-            "WHERE date >= ? AND amount < 0", (start_str,)
+            "WHERE date >= ? AND type='expense'", (start_str,)
         ).fetchone()
         income = conn.execute(
             "SELECT SUM(amount) as total, COUNT(*) as cnt FROM transactions "
-            "WHERE date >= ? AND amount > 0", (start_str,)
+            "WHERE date >= ? AND type='income'", (start_str,)
         ).fetchone()
         conn.close()
         spend_total = abs(spending["total"] or 0)
