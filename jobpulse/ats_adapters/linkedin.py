@@ -393,7 +393,12 @@ def _answer_questions(page, profile: dict, custom_answers: dict) -> None:
 
             if tag == "select":
                 # Dropdown — try to pick the best answer
-                answer = get_answer(question, custom_answers.get("_job_context") if custom_answers else None)
+                answer = get_answer(
+                    question,
+                    custom_answers.get("_job_context") if custom_answers else None,
+                    input_type="select",
+                    platform="linkedin",
+                )
                 if answer:
                     options = input_el.query_selector_all("option")
                     for opt in options:
@@ -421,7 +426,12 @@ def _answer_questions(page, profile: dict, custom_answers: dict) -> None:
                     # LinkedIn wraps radios in labels that intercept clicks,
                     # so we click the <label> (via for= attr) or use force=True
                     radios = group.query_selector_all("input[type='radio']")
-                    answer = get_answer(question, custom_answers.get("_job_context") if custom_answers else None)
+                    answer = get_answer(
+                        question,
+                        custom_answers.get("_job_context") if custom_answers else None,
+                        input_type="radio",
+                        platform="linkedin",
+                    )
                     picked = False
                     for radio in radios:
                         radio_label = radio.evaluate("el => el.closest('label')?.textContent || el.nextSibling?.textContent || ''")
@@ -458,7 +468,12 @@ def _answer_questions(page, profile: dict, custom_answers: dict) -> None:
                     # 1. Single checkbox ("I agree", "I certify") → check it
                     # 2. Multi-checkbox group (skills, sources) → match answer or pick first
                     all_checkboxes = group.query_selector_all("input[type='checkbox']")
-                    answer = get_answer(question, custom_answers.get("_job_context") if custom_answers else None)
+                    answer = get_answer(
+                        question,
+                        custom_answers.get("_job_context") if custom_answers else None,
+                        input_type="checkbox",
+                        platform="linkedin",
+                    )
 
                     if len(all_checkboxes) <= 1:
                         # Single checkbox — check unless answer says "No"
@@ -509,7 +524,12 @@ def _answer_questions(page, profile: dict, custom_answers: dict) -> None:
 
                 elif input_type in ("text", "tel", "email", "number", ""):
                     if not current.strip():
-                        answer = get_answer(question, custom_answers.get("_job_context") if custom_answers else None)
+                        answer = get_answer(
+                            question,
+                            custom_answers.get("_job_context") if custom_answers else None,
+                            input_type=input_type,
+                            platform="linkedin",
+                        )
                         if answer:
                             input_el.fill(answer)
                             _human_delay(0.3, 0.5)
@@ -517,7 +537,12 @@ def _answer_questions(page, profile: dict, custom_answers: dict) -> None:
             elif tag == "textarea":
                 current = input_el.input_value() or ""
                 if not current.strip():
-                    answer = get_answer(question, custom_answers.get("_job_context") if custom_answers else None)
+                    answer = get_answer(
+                        question,
+                        custom_answers.get("_job_context") if custom_answers else None,
+                        input_type="textarea",
+                        platform="linkedin",
+                    )
                     if answer:
                         input_el.fill(answer)
                         _human_delay(0.3, 0.5)
