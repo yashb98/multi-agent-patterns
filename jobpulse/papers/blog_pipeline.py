@@ -7,7 +7,6 @@ import re
 import urllib.parse
 from datetime import datetime, timezone
 
-from jobpulse.papers.chart_generator import ChartGenerator
 from jobpulse.papers.models import BlogPost, Chart, Paper
 from shared.logging_config import get_logger
 
@@ -72,7 +71,12 @@ class BlogPipeline:
     """
 
     def __init__(self) -> None:
-        self.chart_gen = ChartGenerator()
+        try:
+            from jobpulse.papers.chart_generator import ChartGenerator
+
+            self.chart_gen = ChartGenerator()
+        except ImportError:
+            self.chart_gen = None  # type: ignore[assignment]
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -334,6 +338,9 @@ class BlogPipeline:
 
     def _generate_charts(self, paper: Paper, notes: str, output_dir: str) -> list[Chart]:
         """Delegate chart generation to ChartGenerator."""
+        if self.chart_gen is None:
+            logger.debug("_generate_charts: ChartGenerator not available, skipping")
+            return []
         try:
             return self.chart_gen.generate(paper, notes, output_dir)
         except Exception as exc:
