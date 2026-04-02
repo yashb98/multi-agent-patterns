@@ -7,6 +7,7 @@ with LLM fallback for open-ended questions and SQLite caching via JobDB.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 
 from openai import OpenAI
 
@@ -88,42 +89,155 @@ PLATFORM_SOURCE: dict[str, str] = {
 # Value = None -> needs LLM generation (open-ended / personalised)
 # ---------------------------------------------------------------------------
 COMMON_ANSWERS: dict[str, str | None] = {
-    # Work authorization — SPECIFIC patterns FIRST, then general
-    r"right.*work.*type|work.*type|work.*permit|work.*authorization.*type": (
-        "Graduate Visa"
-    ),
-    r"authorized.*work.*uk|right to work|legally.*work": "Yes",
+    # ===================================================================
+    # WORK AUTHORIZATION & VISA (6 patterns) — specific before general
+    # ===================================================================
+    r"right.*work.*type|work.*type|work.*permit|work.*authorization.*type|visa.*type|type.*visa.*hold": "Graduate Visa",
+    r"authorized.*work|right to work|legally.*work|eligible.*work|unrestricted.*right": "Yes",
     r"require.*sponsor|visa.*sponsor|sponsorship|need.*sponsor": "No",
-    r"visa.*status|immigration": (
+    r"visa.*status|immigration.*status|current.*visa|visa.*expire": (
         "Student Visa; converting to Graduate Visa from 9 May 2026 (valid 2 years)"
     ),
-    # Company / employment history
-    r"currently.*work.*for|ever.*work.*for|employed.*by|worked.*for": "No",
-    r"current.*salary|salary.*current|present.*salary": "25000",
-    # Location — uses JOB_LOCATION placeholder, resolved dynamically in get_answer()
-    r"current.*location|where.*located|your.*location|what.*city.*live|which.*city": "JOB_LOCATION",
-    r"where.*you.*based|based.*in|residing": "JOB_LOCATION",
-    # Availability
-    r"notice.*period|start.*date|available.*start|when.*start": "Immediately",
-    r"willing.*relocate|open.*relocation": "Yes, within the UK",
-    # Salary — numeric value for numeric fields, text for text fields
-    r"salary.*expect|expected.*salary|desired.*compensation|pay.*expect": "30000",
-    # Experience
-    r"years.*experience|experience.*years": (
-        "1+ years (MSc Computer Science + industry experience)"
-    ),
-    # Remote / on-site
-    r"willing.*remote|work.*remote|open.*remote": "Yes",
+    r"british.*citizen|eu.*national|\bilr\b|indefinite.*leave|settled.*status": "No",
+    r"subject.*immigration.*restrict|work.*without.*restrict": "No",
+
+    # ===================================================================
+    # SALARY & COMPENSATION (3 patterns) — current before expected
+    # ===================================================================
+    r"current.*salary|salary.*current|present.*salary|current.*compensation|current.*base": "22000",
+    r"salary.*expect|expected.*salary|desired.*compensation|pay.*expect|minimum.*salary|salary.*range|target.*salary|compensation.*require|salary.*requirement": "ROLE_SALARY",
+    r"daily.*rate|hourly.*rate|day.*rate": "150",
+
+    # ===================================================================
+    # NOTICE PERIOD & EMPLOYMENT (5 patterns)
+    # ===================================================================
+    r"notice.*period|when.*start|available.*start|start.*date|earliest.*start|how.*soon.*start|immediate.*start": "Immediately",
+    r"currently.*employ|current.*employment|employment.*status|are.*you.*employ": "Yes",
+    r"current.*job.*title|current.*role|current.*position|present.*role": "Team Leader",
+    r"current.*employer|who.*work.*for|present.*employer|company.*work.*for": "Co-op",
+    r"reason.*leaving|why.*leaving|why.*seeking|why.*new.*position": None,
+
+    # ===================================================================
+    # LOCATION & COMMUTE (3 patterns)
+    # ===================================================================
+    r"current.*location|where.*located|your.*location|what.*city.*live|which.*city|where.*you.*based|based.*in(?!.*uk)|residing|country.*resid": "JOB_LOCATION",
+    r"willing.*relocate|open.*relocation|relocate.*within|relocate.*to": "Yes, within the UK",
+    r"commut.*to|commuting.*distance|travel.*to.*office": "Yes",
+
+    # ===================================================================
+    # REMOTE / HYBRID / ON-SITE (3 patterns)
+    # ===================================================================
+    r"willing.*remote|work.*remote|open.*remote|comfortable.*remote|fully.*remote": "Yes",
     r"willing.*office|work.*on.?site|in.?person|work.*in.*office|in.*the.*office": "Yes",
-    # Equality / diversity — SPECIFIC multi-word patterns before single-word
-    r"gender.*identify|what.*gender|indicate.*gender": "Male",
+    r"hybrid.*work|hybrid.*arrange|days.*per.*week.*on.?site|days.*in.*office|comfortable.*hybrid": "Yes",
+
+    # ===================================================================
+    # EXPERIENCE (2 patterns)
+    # ===================================================================
+    r"years.*experience|experience.*years|how.*many.*years|total.*years.*experience": "SKILL_EXPERIENCE",
+    r"experience.*with|proficient.*in|familiar.*with|hands.?on.*experience|worked.*with": "SKILL_EXPERIENCE",
+
+    # ===================================================================
+    # EDUCATION (4 patterns) — specific before general
+    # ===================================================================
+    r"highest.*education|level.*education|highest.*qualification|completed.*education|highest.*degree": "Master's Degree",
+    r"degree.*subject|field.*study|what.*degree|degree.*type|what.*major|degree.*classification": "MSc Computer Science",
+    r"currently.*study|currently.*enrolled|enrolled.*education": "No",
+    r"stem.*degree|computer.*science.*degree|related.*field|relevant.*degree": "Yes",
+
+    # ===================================================================
+    # LANGUAGES (3 patterns) — specific before general
+    # ===================================================================
+    r"proficiency.*english|fluent.*english|english.*proficiency|level.*english": "Native or bilingual",
+    r"proficiency.*hindi|fluent.*hindi|hindi.*proficiency": "Native or bilingual",
+    r"languages.*speak|what.*languages|language.*skills|other.*language|do.*you.*speak": "English (Native), Hindi (Native)",
+
+    # ===================================================================
+    # DRIVING, TRAVEL & AVAILABILITY (4 patterns)
+    # ===================================================================
+    r"driv.*licen[cs]e|driver.*licen|valid.*driv|clean.*driv": "Yes",
+    r"willing.*travel|comfortable.*travel|travel.*required|percentage.*travel": "Yes",
+    r"shift.*work|work.*weekend|night.*shift|on.?call|work.*evening|bank.*holiday|overtime|flexible.*hour": "Yes",
+    r"permanent.*contract|preferred.*employment|full.?time|part.?time|employment.*type|fixed.?term|looking.*permanent": "Full-time",
+
+    # ===================================================================
+    # BACKGROUND, SECURITY & LEGAL (4 patterns)
+    # ===================================================================
+    r"background.*check|dbs.*check|criminal.*record|unspent.*conviction|willing.*undergo|pre.?employment.*screen": "Yes",
+    r"security.*clearance|hold.*clearance|sc.*clearance|dv.*clearance|bpss|level.*clearance": "None",
+    r"non.?compete|restrictive.*covenant|conflict.*interest|gardening.*leave": "No",
+    r"based.*in.*uk|resident.*uk|uk.*resid|live.*in.*uk|reside.*in.*united.*kingdom": "No",
+
+    # ===================================================================
+    # COMPANY & APPLICATION HISTORY (3 patterns)
+    # ===================================================================
+    r"currently.*work.*for|ever.*work.*for|employed.*by|worked.*for|former.*employee": "No",
+    r"previously.*applied|applied.*before|applied.*past|applied.*position": "PREVIOUSLY_APPLIED",
+    r"how.*hear.*about|how.*find.*this|where.*see.*vacanc|source.*application": "PLATFORM_SOURCE",
+
+    # ===================================================================
+    # REFERRAL (1 pattern)
+    # ===================================================================
+    r"referred.*employee|referral.*code|referral.*name|employee.*refer|were.*you.*referred": "No",
+
+    # ===================================================================
+    # DIVERSITY & EQUALITY MONITORING (10 patterns) — specific before general
+    # ===================================================================
+    r"gender.*identify|what.*gender|indicate.*gender|what.*your.*sex\b": "Male",
     r"sexual.*orientation|what.*orientation|indicate.*orientation": "Heterosexual/Straight",
-    r"ethnicity|ethnic.*background|racial|indicate.*ethnicity": "Prefer not to say",
-    r"disability|disabled": "No",
+    r"ethnicity|ethnic.*background|racial|indicate.*ethnicity|race.*ethnic": "Asian or Asian British - Indian",
+    r"disability|disabled|long.?term.*health|equality.*act.*2010|impairment.*health": "No",
     r"veteran|military": "No",
-    # Cover letter / Why — needs LLM
-    r"why.*apply|why.*interest|why.*company|motivation": None,
-    r"tell.*about.*yourself|describe.*yourself": None,
+    r"religion\b|belief\b|faith\b|spiritual": "Hindu",
+    r"marital.*status|civil.*status|relationship.*status": "Single",
+    r"what.*pronoun|preferred.*pronoun|indicate.*pronoun": "He/Him",
+    r"age.*group|what.*your.*age|date.*birth": "25-29",
+    r"over.*18|are.*you.*18|above.*18": "Yes",
+
+    # ===================================================================
+    # CARING & ADJUSTMENTS (2 patterns)
+    # ===================================================================
+    r"caring.*responsib|childcare|eldercare|dependant": "No",
+    r"reasonable.*adjust|access.*require|workplace.*adjust|special.*accommod|support.*application|assistive.*tech": "No",
+
+    # ===================================================================
+    # CONSENT & CONFIRMATIONS (1 pattern)
+    # ===================================================================
+    r"consent.*data|privacy.*policy|gdpr|data.*process|retain.*future|agree.*terms|information.*accurate|confirm.*read": "Yes",
+
+    # ===================================================================
+    # NATIONALITY & IDENTITY (2 patterns)
+    # ===================================================================
+    r"what.*nationality|country.*citizen|country.*birth": "Indian",
+    r"\btitle\b.*mr|salutation|honorific": "Mr",
+
+    # ===================================================================
+    # TEAM & MANAGEMENT (2 patterns) — specific before general
+    # ===================================================================
+    r"direct.*report|how.*many.*managed|people.*managed|team.*size|largest.*team": "8",
+    r"managing.*team|line.*management|managed.*people|leadership.*experience|management.*experience": "Yes",
+
+    # ===================================================================
+    # PORTFOLIO & LINKS (1 pattern)
+    # ===================================================================
+    r"portfolio.*url|github.*url|github.*profile|personal.*website|website.*url|kaggle|link.*to.*work": "PROFILE_LINK",
+
+    # ===================================================================
+    # PROFICIENCY RATINGS (1 pattern)
+    # ===================================================================
+    r"rate.*proficiency|rate.*your|proficiency.*level|skill.*level|how.*qualified|scale.*1.*5": "4",
+
+    # ===================================================================
+    # CERTIFICATIONS (1 pattern) — LLM
+    # ===================================================================
+    r"hold.*certification|professional.*cert|relevant.*cert|aws.*cert|certified": None,
+
+    # ===================================================================
+    # OPEN-ENDED / LLM (3 patterns)
+    # ===================================================================
+    r"why.*apply|why.*interest|why.*company|motivation|what.*excites": None,
+    r"tell.*about.*yourself|describe.*yourself|brief.*summary.*fit": None,
+    r"anything.*else|additional.*information|further.*comment|is.*there.*anything": None,
 }
 
 
@@ -209,6 +323,51 @@ def _check_previously_applied(
 
 
 # ---------------------------------------------------------------------------
+# Placeholder resolver
+# ---------------------------------------------------------------------------
+
+
+def _resolve_placeholder(
+    answer: str,
+    question: str,
+    job_context: dict | None,
+    *,
+    input_type: str | None = None,
+    platform: str | None = None,
+    db: JobDB | None = None,
+) -> str:
+    """Resolve special placeholder values in COMMON_ANSWERS."""
+    if answer == "JOB_LOCATION":
+        return (job_context or {}).get("location", "London, UK")
+
+    if answer == "SKILL_EXPERIENCE":
+        skill = _extract_skill_from_question(question)
+        return _resolve_skill_experience(skill, input_type=input_type)
+
+    if answer == "ROLE_SALARY":
+        return _resolve_role_salary(job_context, input_type=input_type)
+
+    if answer == "PREVIOUSLY_APPLIED":
+        return _check_previously_applied(question, job_context, db=db)
+
+    if answer == "PLATFORM_SOURCE":
+        return PLATFORM_SOURCE.get(platform or "", PLATFORM_SOURCE["default"])
+
+    if answer == "PROFILE_LINK":
+        return PROFILE.get("github", PROFILE.get("portfolio", ""))
+
+    # Input-type adaptations for non-placeholder answers
+    if answer == "Immediately" and input_type == "date":
+        target = datetime.now() + timedelta(days=14)
+        return target.strftime("%Y-%m-%d")
+
+    if answer == "22000" and input_type == "text":
+        return "22,000"
+
+    return answer
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -218,6 +377,8 @@ def get_answer(
     job_context: dict | None = None,
     *,
     db: JobDB | None = None,
+    input_type: str | None = None,
+    platform: str | None = None,
 ) -> str:
     """Return an answer for a screening question.
 
@@ -230,8 +391,10 @@ def get_answer(
 
     Args:
         question: The screening question text.
-        job_context: Optional dict with ``job_title`` and ``company`` keys.
+        job_context: Optional dict with ``job_title``, ``company``, ``location`` keys.
         db: Optional ``JobDB`` instance (created on demand if not supplied).
+        input_type: HTML input type (``text``, ``number``, ``date``, ``select``, etc.).
+        platform: ATS platform name (``linkedin``, ``greenhouse``, etc.).
 
     Returns:
         The answer string.
@@ -245,13 +408,12 @@ def get_answer(
     for pattern, answer in COMMON_ANSWERS.items():
         if re.search(pattern, normalised, re.IGNORECASE):
             if answer is not None:
-                # Resolve JOB_LOCATION placeholder from job_context
-                if answer == "JOB_LOCATION":
-                    location = (job_context or {}).get("location", "London, UK")
-                    logger.debug("Pattern match for '%s' -> location '%s'", normalised[:60], location)
-                    return location
-                logger.debug("Pattern match for '%s' -> '%s'", normalised[:60], answer)
-                return answer
+                resolved = _resolve_placeholder(
+                    answer, normalised, job_context,
+                    input_type=input_type, platform=platform, db=db,
+                )
+                logger.debug("Pattern match for '%s' -> '%s'", normalised[:60], resolved[:80])
+                return resolved
             # Matched but needs LLM (answer is None)
             logger.debug("Pattern match (LLM-required) for '%s'", normalised[:60])
             return _generate_answer(normalised, job_context)
@@ -260,7 +422,6 @@ def get_answer(
     _db = db or JobDB()
     cached = _db.get_cached_answer(normalised)
     if cached is not None:
-        # Increment usage counter by re-caching with the same text
         _db.cache_answer(normalised, cached)
         logger.debug("Cache hit for '%s'", normalised[:60])
         return cached

@@ -26,10 +26,10 @@ def test_common_authorization_question_matched():
 
 
 def test_salary_question_matched():
-    """Salary expectation questions should return the fixed range."""
-    assert get_answer("What is your expected salary?") == "£27,000-32,000"
-    assert get_answer("What salary do you expect for this role?") == "£27,000-32,000"
-    assert get_answer("Desired compensation?") == "£27,000-32,000"
+    """Salary expectation questions should return role-based range."""
+    assert get_answer("What is your expected salary?") == "26,000-31,000"
+    assert get_answer("What salary do you expect for this role?") == "26,000-31,000"
+    assert get_answer("Desired compensation?") == "26,000-31,000"
 
 
 def test_sponsorship_question_matched():
@@ -40,8 +40,8 @@ def test_sponsorship_question_matched():
 
 def test_availability_question_matched():
     """Start date / notice period questions should match."""
-    assert get_answer("When can you start?") == "Available immediately"
-    assert get_answer("What is your notice period?") == "Available immediately"
+    assert get_answer("When can you start?") == "Immediately"
+    assert get_answer("What is your notice period?") == "Immediately"
 
 
 def test_remote_question_matched():
@@ -57,9 +57,9 @@ def test_onsite_question_matched():
 
 
 def test_experience_question_matched():
-    """Years of experience questions should match."""
+    """Years of experience questions should return numeric years via SKILL_EXPERIENCE resolver."""
     answer = get_answer("How many years of experience do you have?")
-    assert "1+ years" in answer
+    assert answer == "2"  # Default experience years when no specific skill detected
 
 
 # ------------------------------------------------------------------
