@@ -623,3 +623,19 @@ def handle_blog_command(paper_index: int) -> str:
         f"  \"regenerate {paper_index}\" — try again\n"
         f"  \"skip\" — don't blog this paper"
     )
+
+
+# ── New pipeline wrapper ──
+
+def handle_blog_command_v2(paper_index: int) -> str:
+    """Blog command using new pipeline. Called by dispatcher."""
+    try:
+        from jobpulse.papers import PapersPipeline
+        pipeline = PapersPipeline()
+        blog = pipeline.generate_blog(paper_index)
+        return f"Blog generated: {blog.title} ({blog.word_count} words)"
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        logger.error("Blog generation failed: %s", e)
+        return f"Error generating blog: {e}"

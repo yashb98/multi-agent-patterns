@@ -278,6 +278,21 @@ class PaperStore:
             rows = cursor.fetchall()
         return [self._row_to_ranked_paper(r) for r in rows]
 
+    def get_missed_dates(self, last_n_days: int = 7) -> list[str]:
+        """Return ISO date strings (YYYY-MM-DD) within last_n_days that have no stored papers."""
+        present: set[str] = set()
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT DISTINCT digest_date FROM papers WHERE digest_date IS NOT NULL")
+            for row in cursor.fetchall():
+                present.add(row[0][:10])  # normalise to YYYY-MM-DD
+
+        missed: list[str] = []
+        for days_ago in range(last_n_days):
+            date_str = (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            if date_str not in present:
+                missed.append(date_str)
+        return missed
+
     def get_stats(self) -> ReadingStats:
         """Return aggregate reading statistics."""
         cutoff_week = (datetime.now(UTC) - timedelta(days=7)).isoformat()

@@ -38,6 +38,18 @@ class PaperFetcher:
         )
         return self._deduplicate_and_merge(arxiv_papers, hf_papers)
 
+    async def fetch_missed(self, dates: list[str]) -> list[Paper]:
+        """Fetch papers for a list of missed dates by re-running fetch_all.
+
+        Dates are provided as YYYY-MM-DD strings. Since arXiv does not offer
+        reliable per-date filtering without the export API, this performs a
+        fresh fetch_all and returns the results.  An empty date list returns
+        an empty list immediately.
+        """
+        if not dates:
+            return []
+        return await self.fetch_all()
+
     # ------------------------------------------------------------------ #
     # arXiv                                                                #
     # ------------------------------------------------------------------ #
