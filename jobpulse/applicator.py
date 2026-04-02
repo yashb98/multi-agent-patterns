@@ -23,10 +23,10 @@ _apply_lock = threading.Lock()
 # Work authorisation facts — injected into every application
 WORK_AUTH: dict[str, object] = {
     "requires_sponsorship": False,
-    "visa_status": "Student Visa (converting to Graduate Visa from 9 May 2026, valid 2 years)",
+    "visa_status": "Student Visa; converting to Graduate Visa from 9 May 2026 (valid 2 years)",
     "right_to_work_uk": True,
-    "notice_period": "Available immediately",
-    "salary_expectation": "27,000 - 32,000",
+    "notice_period": "Immediately",
+    "salary_expectation": "28000",
 }
 
 # Applicant profile — used to pre-fill standard form fields
