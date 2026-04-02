@@ -64,6 +64,22 @@ def get_paper_detail(index: int):
     return paper
 
 
+@app.post("/api/papers/blog/{index}", tags=["papers"])
+async def generate_paper_blog(index: int):
+    """Generate a blog post for paper at given index."""
+    try:
+        from jobpulse.papers import PapersPipeline
+        pipeline = PapersPipeline()
+        blog = pipeline.generate_blog(index)
+        return {"title": blog.title, "word_count": blog.word_count, "grpo_score": blog.grpo_score}
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── GitHub endpoints ──
 
 @app.get("/api/github/commits", tags=["github"])
