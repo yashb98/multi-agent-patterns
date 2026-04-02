@@ -69,6 +69,10 @@ class LeverAdapter(BaseATSAdapter):
                     if cl_input:
                         cl_input.set_input_files(str(cover_letter_path))
 
+                # Answer screening questions via shared get_answer() engine
+                job_context = custom_answers.get("_job_context") if custom_answers else None
+                self.answer_screening_questions(page, job_context)
+
                 screenshot_path = cv_path.parent / "lever_screenshot.png"
                 page.screenshot(path=str(screenshot_path))
 
