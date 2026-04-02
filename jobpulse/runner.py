@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
-        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, test")
+        logger.info("Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, ralph-test, test")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -233,6 +233,35 @@ def main():
         print(f"\n{len(pending)} skills pending review:")
         for p in pending:
             print(f"  {p['skill']:<30} seen {p['times_seen']}x  ({p['source_jds']})")
+
+    elif command == "ralph-test":
+        from jobpulse.ralph_loop.test_runner import ralph_test_run
+        from jobpulse.ralph_loop.cli_output import format_test_result
+
+        if len(sys.argv) < 3:
+            print("Usage: python -m jobpulse.runner ralph-test <url> [--platform linkedin] [--max-iterations 5]")
+            sys.exit(1)
+
+        url = sys.argv[2]
+        platform = "linkedin"
+        max_iters = 5
+
+        args = sys.argv[3:]
+        for i, arg in enumerate(args):
+            if arg == "--platform" and i + 1 < len(args):
+                platform = args[i + 1]
+            elif arg == "--max-iterations" and i + 1 < len(args):
+                max_iters = int(args[i + 1])
+
+        print(f"Running Ralph Loop dry-run test on {platform}: {url[:60]}")
+        result = ralph_test_run(platform=platform, url=url, max_iterations=max_iters)
+
+        from jobpulse.ralph_loop.test_store import TestStore
+        test_store = TestStore()
+        iterations = test_store.get_iterations(result.run_id) if result.run_id else []
+
+        output = format_test_result(result, iterations)
+        print(output)
 
     elif command == "test":
         from jobpulse.telegram_agent import send_message
