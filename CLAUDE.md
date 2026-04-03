@@ -131,7 +131,7 @@ Analytics: `/api/analytics/grpo` `/personas` `/costs` `/ab-tests` `/nlp` `/trend
 
 ## Stats
 
-~227,500 LOC | 930 Python files | 5 databases | 1002 tests | 3 dashboards | 4 Telegram bots | 3 platforms
+~54,500 LOC | 216 Python files | 12 databases | 1002 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
