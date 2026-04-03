@@ -6,18 +6,18 @@ Learned fixes persist to SQLite so future cron runs succeed on first try.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from shared.logging_config import get_logger
-from jobpulse.ralph_loop.pattern_store import PatternStore, FixPattern, compute_error_signature
+
 from jobpulse.ralph_loop.diagnoser import (
-    infer_step_from_error,
     capture_failure_context,
     diagnose_with_vision,
     heuristic_diagnosis,
+    infer_step_from_error,
 )
+from jobpulse.ralph_loop.pattern_store import FixPattern, PatternStore, compute_error_signature
 
 logger = get_logger(__name__)
 
@@ -57,7 +57,10 @@ def build_overrides_from_fixes(fixes: list[FixPattern]) -> dict[str, Any]:
         if fix.source == "test" and not fix.confirmed:
             logger.warning(
                 "Skipping unconfirmed test fix %s for %s/%s (occurrence_count=%d)",
-                fix.id, fix.platform, fix.step_name, fix.occurrence_count,
+                fix.id,
+                fix.platform,
+                fix.step_name,
+                fix.occurrence_count,
             )
             continue
 
@@ -163,7 +166,13 @@ def ralph_apply_sync(
     4. Max 5 iterations
     5. Returns same dict as apply_job: {success, screenshot, error, ...}
     """
-    from jobpulse.applicator import apply_job, select_adapter, PROFILE, WORK_AUTH
+    from jobpulse.applicator import (
+        PROFILE,
+        WORK_AUTH,
+        _call_fill_and_submit,
+        apply_job,
+        select_adapter,
+    )
 
     store = PatternStore(db_path, mode="test" if dry_run else "production")
     platform = (ats_platform or "generic").lower()
@@ -176,7 +185,8 @@ def ralph_apply_sync(
     if known_fixes:
         logger.info(
             "Ralph Loop: loaded %d proactive fixes for %s",
-            len(known_fixes), platform,
+            len(known_fixes),
+            platform,
         )
         store.mark_fixes_applied(applied_fix_ids)
 
@@ -187,7 +197,10 @@ def ralph_apply_sync(
     for iteration in range(1, MAX_ITERATIONS + 1):
         logger.info(
             "Ralph Loop iteration %d/%d for %s: %s",
-            iteration, MAX_ITERATIONS, platform, url[:80],
+            iteration,
+            MAX_ITERATIONS,
+            platform,
+            url[:80],
         )
 
         # Reset diagnosis at the start of every iteration so it's always defined
@@ -219,7 +232,8 @@ def ralph_apply_sync(
                     overrides = build_overrides_from_fixes(known_fixes)
                     logger.info(
                         "Ralph Loop: external redirect — switched to %s adapter for %s",
-                        platform, url[:80],
+                        platform,
+                        url[:80],
                     )
         else:
             adapter = select_adapter(ats_platform)
@@ -227,7 +241,8 @@ def ralph_apply_sync(
             if custom_answers:
                 merged_answers.update(custom_answers)
             try:
-                result = adapter.fill_and_submit(
+                result = _call_fill_and_submit(
+                    adapter,
                     url=url,
                     cv_path=cv_path,
                     cover_letter_path=cover_letter_path,
@@ -259,7 +274,9 @@ def ralph_apply_sync(
             if applied_fix_ids:
                 store.mark_fixes_successful(applied_fix_ids)
             logger.info(
-                "Ralph Loop: SUCCESS on iteration %d for %s", iteration, platform,
+                "Ralph Loop: SUCCESS on iteration %d for %s",
+                iteration,
+                platform,
             )
 
             # Trigger consolidation periodically
@@ -285,7 +302,9 @@ def ralph_apply_sync(
 
         logger.warning(
             "Ralph Loop: FAILED iteration %d — step=%s error=%s",
-            iteration, step_name, error_msg[:120],
+            iteration,
+            step_name,
+            error_msg[:120],
         )
 
         # Try known fix for this specific error (if not already tried)
@@ -294,7 +313,9 @@ def ralph_apply_sync(
             if existing_fix:
                 logger.info(
                     "Ralph Loop: found existing fix %s for %s/%s — retrying",
-                    existing_fix.id, platform, step_name,
+                    existing_fix.id,
+                    platform,
+                    step_name,
                 )
                 overrides = _merge_fix_into_overrides(overrides, existing_fix)
                 applied_fix_ids.append(existing_fix.id)
@@ -372,7 +393,9 @@ def ralph_apply_sync(
 
             logger.info(
                 "Ralph Loop: diagnosed %s → %s (confidence=%.2f), retrying",
-                step_name, fix_type, confidence,
+                step_name,
+                fix_type,
+                confidence,
             )
 
             if iteration_callback is not None:
@@ -394,7 +417,9 @@ def ralph_apply_sync(
             )
             attempt_ids.append(aid)
             logger.warning(
-                "Ralph Loop: cannot diagnose %s/%s — stopping", platform, step_name,
+                "Ralph Loop: cannot diagnose %s/%s — stopping",
+                platform,
+                step_name,
             )
 
             if iteration_callback is not None:
@@ -422,4 +447,5 @@ def ralph_apply_sync(
 def _url_to_job_id(url: str) -> str:
     """Extract a short job ID from a URL for directory naming."""
     import hashlib
+
     return hashlib.sha256(url.encode()).hexdigest()[:12]

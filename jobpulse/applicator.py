@@ -4,6 +4,8 @@ Thread-safe with mutex to prevent concurrent apply_job() calls.
 Records application BEFORE submission to prevent silent limit bypass.
 """
 
+import asyncio
+import inspect
 import random
 import threading
 import time
@@ -64,6 +66,30 @@ def select_adapter(ats_platform: str | None) -> BaseATSAdapter:
     return get_adapter(ats_platform)
 
 
+def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
+    """Call adapter.fill_and_submit(), handling both sync and async adapters.
+
+    ExtensionAdapter.fill_and_submit() is async; Playwright adapters are sync.
+    This bridges the gap by detecting coroutines and running them via asyncio.
+    """
+    result = adapter.fill_and_submit(**kwargs)
+    if inspect.isawaitable(result):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            # Already in an async context — create a task
+            # This shouldn't happen in normal flow, but handle gracefully
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                result = pool.submit(asyncio.run, result).result()
+        else:
+            result = asyncio.run(result)
+    return result
+
+
 def apply_job(
     url: str,
     ats_platform: str | None,
@@ -80,8 +106,10 @@ def apply_job(
     Records application BEFORE submission to prevent silent limit bypass.
     """
     from jobpulse.rate_limiter import (
-        RateLimiter, LINKEDIN_SESSION_CAP, LINKEDIN_SESSION_BREAK_MINUTES,
+        LINKEDIN_SESSION_BREAK_MINUTES,
+        LINKEDIN_SESSION_CAP,
         SESSION_BREAK_MINUTES,
+        RateLimiter,
     )
     from jobpulse.screening_answers import get_answer
 
@@ -97,15 +125,27 @@ def apply_job(
             if not limiter.can_apply(platform_key):
                 remaining = limiter.get_remaining()
                 logger.warning("Rate limit hit for %s. Remaining: %s", platform_key, remaining)
-                return {"success": False, "error": f"Daily limit reached for {platform_key}", "rate_limited": True}
+                return {
+                    "success": False,
+                    "error": f"Daily limit reached for {platform_key}",
+                    "rate_limited": True,
+                }
 
             # Record BEFORE submitting — prevents silent bypass if record fails after submission
             # If submission fails later, we "waste" one quota slot. That's safer than double-submitting.
             try:
                 limiter.record_application(platform_key)
             except Exception as exc:
-                logger.error("Failed to record application for %s: %s — aborting to prevent untracked submission", platform_key, exc)
-                return {"success": False, "error": f"Rate limiter error: {exc}", "rate_limited": False}
+                logger.error(
+                    "Failed to record application for %s: %s — aborting to prevent untracked submission",
+                    platform_key,
+                    exc,
+                )
+                return {
+                    "success": False,
+                    "error": f"Rate limiter error: {exc}",
+                    "rate_limited": False,
+                }
 
             total = limiter.get_total_today()
             logger.info("Quota reserved for %s (%d/%d today)", platform_key, total, 25)
@@ -117,13 +157,16 @@ def apply_job(
             if linkedin_count > 0 and (linkedin_count % LINKEDIN_SESSION_CAP) == 0:
                 logger.info(
                     "LinkedIn session cap (%d apps) — pausing %d minutes to avoid detection",
-                    LINKEDIN_SESSION_CAP, LINKEDIN_SESSION_BREAK_MINUTES,
+                    LINKEDIN_SESSION_CAP,
+                    LINKEDIN_SESSION_BREAK_MINUTES,
                 )
                 time.sleep(LINKEDIN_SESSION_BREAK_MINUTES * 60)
 
         # Session break check (all platforms)
         if limiter.should_take_break():
-            logger.info("Session break: pausing %d minutes (every 5 applications)", SESSION_BREAK_MINUTES)
+            logger.info(
+                "Session break: pausing %d minutes (every 5 applications)", SESSION_BREAK_MINUTES
+            )
             time.sleep(SESSION_BREAK_MINUTES * 60)
 
     # Build answers
@@ -137,8 +180,10 @@ def apply_job(
     for key, value in list(merged_answers.items()):
         if isinstance(value, str) and value.endswith("?"):
             answer = get_answer(
-                value, job_context,
-                input_type=None, platform=platform_key,
+                value,
+                job_context,
+                input_type=None,
+                platform=platform_key,
             )
             if answer:
                 merged_answers[key] = answer
@@ -159,7 +204,8 @@ def apply_job(
     adapter = select_adapter(ats_platform)
     logger.info("Applying via %s adapter to %s", adapter.name, url)
 
-    result = adapter.fill_and_submit(
+    result = _call_fill_and_submit(
+        adapter,
         url=url,
         cv_path=cv_path,
         cover_letter_path=cover_letter_path,
@@ -176,9 +222,14 @@ def apply_job(
         logger.info("External redirect detected: %s → %s", url, external_url)
 
         from jobpulse.jd_analyzer import detect_ats_platform
+
         ext_platform = detect_ats_platform(external_url)
         ext_adapter = select_adapter(ext_platform)
-        logger.info("External ATS detected: %s — using %s adapter", ext_platform or "generic", ext_adapter.name)
+        logger.info(
+            "External ATS detected: %s — using %s adapter",
+            ext_platform or "generic",
+            ext_adapter.name,
+        )
 
         # Lazy CL generation for external platforms that typically have CL fields
         ext_cl_path = cover_letter_path
@@ -187,11 +238,17 @@ def apply_job(
                 try:
                     ext_cl_path = cl_generator()
                     if ext_cl_path:
-                        logger.info("applicator: generated cover letter on demand for external %s", ext_platform)
+                        logger.info(
+                            "applicator: generated cover letter on demand for external %s",
+                            ext_platform,
+                        )
                 except Exception as exc:
-                    logger.warning("applicator: on-demand CL generation for external failed: %s", exc)
+                    logger.warning(
+                        "applicator: on-demand CL generation for external failed: %s", exc
+                    )
 
-        result = ext_adapter.fill_and_submit(
+        result = _call_fill_and_submit(
+            ext_adapter,
             url=external_url,
             cv_path=cv_path,
             cover_letter_path=ext_cl_path,
@@ -208,7 +265,11 @@ def apply_job(
     if result.get("success"):
         logger.info("Application submitted via %s (%d today)", adapter.name, total)
     else:
-        logger.warning("Application failed via %s: %s (quota already consumed)", adapter.name, result.get("error"))
+        logger.warning(
+            "Application failed via %s: %s (quota already consumed)",
+            adapter.name,
+            result.get("error"),
+        )
 
     if not dry_run:
         # Anti-detection: random delay between submissions (20-45s with jitter)
