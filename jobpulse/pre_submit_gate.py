@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
-
-from jobpulse.perplexity import CompanyResearch
 from shared.logging_config import get_logger
+
+if TYPE_CHECKING:
+    from jobpulse.perplexity import CompanyResearch
 
 logger = get_logger(__name__)
 

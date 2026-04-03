@@ -6,10 +6,13 @@ import asyncio
 import json
 import socket
 import uuid
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import websockets
+from shared.logging_config import get_logger
 from websockets.asyncio.server import Server, ServerConnection, serve
 
 from jobpulse.ext_models import (
@@ -17,7 +20,6 @@ from jobpulse.ext_models import (
     FillResult,
     PageSnapshot,
 )
-from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
@@ -77,7 +79,7 @@ class ExtensionBridge:
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
 
     @property
@@ -154,15 +156,13 @@ class ExtensionBridge:
         try:
             result = await asyncio.wait_for(fut, timeout=timeout_ms / 1000)
             return result
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(cmd_id, None)
             raise
 
     async def navigate(self, url: str, timeout_ms: int = 30000) -> PageSnapshot:
         """Navigate to URL and return a PageSnapshot."""
-        result = await self._send_command(
-            "navigate", {"url": url}, timeout_ms=timeout_ms
-        )
+        result = await self._send_command("navigate", {"url": url}, timeout_ms=timeout_ms)
         snap_data = result.get("snapshot")
         if snap_data:
             self._snapshot = PageSnapshot(**snap_data)
@@ -179,9 +179,7 @@ class ExtensionBridge:
 
     async def click(self, selector: str, timeout_ms: int = 10000) -> bool:
         """Click an element."""
-        result = await self._send_command(
-            "click", {"selector": selector}, timeout_ms=timeout_ms
-        )
+        result = await self._send_command("click", {"selector": selector}, timeout_ms=timeout_ms)
         return bool(result.get("success", False))
 
     async def upload(self, selector: str, file_path: Path, timeout_ms: int = 30000) -> bool:

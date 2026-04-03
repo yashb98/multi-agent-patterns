@@ -6,14 +6,17 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime, UTC
-from pathlib import Path
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import httpx
 from pydantic import BaseModel
+from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
-from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
@@ -170,10 +173,11 @@ class PerplexityClient:
         """Parse free-text company research into structured model."""
         now = datetime.now(UTC).isoformat()
         tech_pattern = re.findall(
-            r'\b(Python|Java|JavaScript|TypeScript|Go|Rust|C\+\+|Ruby|'
-            r'React|Next\.js|FastAPI|Django|Flask|Node\.js|'
-            r'AWS|GCP|Azure|Docker|Kubernetes|PostgreSQL|MongoDB|Redis)\b',
-            raw, re.IGNORECASE,
+            r"\b(Python|Java|JavaScript|TypeScript|Go|Rust|C\+\+|Ruby|"
+            r"React|Next\.js|FastAPI|Django|Flask|Node\.js|"
+            r"AWS|GCP|Azure|Docker|Kubernetes|PostgreSQL|MongoDB|Redis)\b",
+            raw,
+            re.IGNORECASE,
         )
         tech_stack = list(dict.fromkeys(t.strip() for t in tech_pattern))
 
@@ -187,8 +191,8 @@ class PerplexityClient:
     def _parse_salary(self, role: str, company: str, location: str, raw: str) -> SalaryResearch:
         """Parse salary text into structured model."""
         now = datetime.now(UTC).isoformat()
-        amounts = re.findall(r'£([\d,]+)', raw)
-        nums = sorted(int(a.replace(',', '')) for a in amounts)
+        amounts = re.findall(r"£([\d,]+)", raw)
+        nums = sorted(int(a.replace(",", "")) for a in amounts)
 
         min_gbp = nums[0] if len(nums) >= 1 else 0
         max_gbp = nums[-1] if len(nums) >= 2 else min_gbp

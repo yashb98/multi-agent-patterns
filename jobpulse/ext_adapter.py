@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from shared.logging_config import get_logger
 
 from jobpulse.ats_adapters.base import BaseATSAdapter
-from jobpulse.ext_bridge import ExtensionBridge
-from jobpulse.ext_models import PageSnapshot
 from jobpulse.state_machines import ApplicationState, get_state_machine
-from shared.logging_config import get_logger
+
+if TYPE_CHECKING:
+    from jobpulse.ext_bridge import ExtensionBridge
 
 logger = get_logger(__name__)
 
@@ -75,15 +77,21 @@ class ExtensionAdapter(BaseATSAdapter):
                 return {
                     "success": False,
                     "error": "Verification wall detected",
-                    "wall": snapshot.verification_wall.model_dump() if snapshot.verification_wall else {},
+                    "wall": snapshot.verification_wall.model_dump()
+                    if snapshot.verification_wall
+                    else {},
                 }
 
             if state == ApplicationState.LOGIN_WALL:
                 return {"success": False, "error": "Login required — user must log in manually"}
 
             actions = machine.get_actions(
-                state, snapshot, profile, custom_answers,
-                str(cv_path), str(cover_letter_path) if cover_letter_path else None,
+                state,
+                snapshot,
+                profile,
+                custom_answers,
+                str(cv_path),
+                str(cover_letter_path) if cover_letter_path else None,
             )
 
             if not actions and state not in (

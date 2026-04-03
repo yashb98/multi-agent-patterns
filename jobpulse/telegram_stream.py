@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-import httpx
+from typing import TYPE_CHECKING
 
-from jobpulse.config import TELEGRAM_JOBS_BOT_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_JOBS_CHAT_ID
-from jobpulse.perplexity import CompanyResearch
+import httpx
 from shared.logging_config import get_logger
+
+from jobpulse.config import TELEGRAM_BOT_TOKEN, TELEGRAM_JOBS_BOT_TOKEN, TELEGRAM_JOBS_CHAT_ID
+
+if TYPE_CHECKING:
+    from jobpulse.perplexity import CompanyResearch
 
 logger = get_logger(__name__)
 

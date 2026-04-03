@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
-from jobpulse.ext_models import Action, FieldInfo, PageSnapshot
 from shared.logging_config import get_logger
+
+from jobpulse.ext_models import Action, PageSnapshot
 
 logger = get_logger(__name__)
 
 
-class ApplicationState(str, Enum):
+class ApplicationState(StrEnum):
     """States in the job application flow."""
 
     INITIAL = "initial"
@@ -58,12 +59,15 @@ class PlatformStateMachine:
 
         # Confirmation detection (universal)
         text = snapshot.page_text_preview.lower()
-        if any(phrase in text for phrase in (
-            "thank you for applying",
-            "application has been received",
-            "application submitted",
-            "successfully submitted",
-        )):
+        if any(
+            phrase in text
+            for phrase in (
+                "thank you for applying",
+                "application has been received",
+                "application submitted",
+                "successfully submitted",
+            )
+        ):
             self.current_state = ApplicationState.CONFIRMATION
             return self.current_state
 
@@ -81,9 +85,7 @@ class PlatformStateMachine:
         labels_lower = [f.label.lower() for f in snapshot.fields]
 
         # File inputs = resume upload
-        if snapshot.has_file_inputs or any(
-            f.input_type == "file" for f in snapshot.fields
-        ):
+        if snapshot.has_file_inputs or any(f.input_type == "file" for f in snapshot.fields):
             return ApplicationState.RESUME_UPLOAD
 
         # Contact fields
@@ -145,11 +147,13 @@ class PlatformStateMachine:
             for keyword, profile_key in field_map.items():
                 if keyword in label and profile_key in profile:
                     if not field.current_value:
-                        actions.append(Action(
-                            type="fill",
-                            selector=field.selector,
-                            value=profile[profile_key],
-                        ))
+                        actions.append(
+                            Action(
+                                type="fill",
+                                selector=field.selector,
+                                value=profile[profile_key],
+                            )
+                        )
                     break
         return actions
 
@@ -162,13 +166,13 @@ class PlatformStateMachine:
             if field.input_type == "file":
                 label = field.label.lower()
                 if "cover" in label and cl_path:
-                    actions.append(Action(
-                        type="upload", selector=field.selector, file_path=cl_path
-                    ))
+                    actions.append(
+                        Action(type="upload", selector=field.selector, file_path=cl_path)
+                    )
                 else:
-                    actions.append(Action(
-                        type="upload", selector=field.selector, file_path=cv_path
-                    ))
+                    actions.append(
+                        Action(type="upload", selector=field.selector, file_path=cv_path)
+                    )
         return actions
 
     def _actions_screening(
@@ -201,17 +205,11 @@ class PlatformStateMachine:
                 continue
 
             if field.input_type == "select":
-                actions.append(Action(
-                    type="select", selector=field.selector, value=answer
-                ))
+                actions.append(Action(type="select", selector=field.selector, value=answer))
             elif field.input_type in ("radio", "checkbox"):
-                actions.append(Action(
-                    type="check", selector=field.selector, value=answer
-                ))
+                actions.append(Action(type="check", selector=field.selector, value=answer))
             else:
-                actions.append(Action(
-                    type="fill", selector=field.selector, value=answer
-                ))
+                actions.append(Action(type="fill", selector=field.selector, value=answer))
 
         return actions
 
@@ -222,12 +220,15 @@ class PlatformStateMachine:
                 return [Action(type="click", selector=btn.selector)]
         return []
 
-    def transition(self, from_state: ApplicationState, new_snapshot: PageSnapshot) -> ApplicationState:
+    def transition(
+        self, from_state: ApplicationState, new_snapshot: PageSnapshot
+    ) -> ApplicationState:
         """Transition to next state based on new snapshot."""
         return self.detect_state(new_snapshot)
 
 
 # --- Platform implementations ---
+
 
 class GreenhouseStateMachine(PlatformStateMachine):
     platform = "greenhouse"
@@ -252,7 +253,8 @@ class LinkedInStateMachine(PlatformStateMachine):
         # Login wall: "sign in" in text and no meaningful fillable fields
         if "sign in" in text:
             fillable = [
-                f for f in snapshot.fields
+                f
+                for f in snapshot.fields
                 if f.input_type not in ("hidden",) and "password" not in f.label.lower()
             ]
             if not fillable:

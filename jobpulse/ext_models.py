@@ -12,9 +12,21 @@ class FieldInfo(BaseModel):
 
     selector: str
     input_type: Literal[
-        "text", "textarea", "select", "radio", "checkbox",
-        "file", "date", "email", "number", "tel", "custom_select",
-        "search_autocomplete", "multi_select", "toggle", "rich_text",
+        "text",
+        "textarea",
+        "select",
+        "radio",
+        "checkbox",
+        "file",
+        "date",
+        "email",
+        "number",
+        "tel",
+        "custom_select",
+        "search_autocomplete",
+        "multi_select",
+        "toggle",
+        "rich_text",
     ]
     label: str
     required: bool = False
@@ -61,8 +73,18 @@ class ExtCommand(BaseModel):
     """Command sent from Python to the Chrome extension."""
 
     id: str
-    action: Literal["navigate", "fill", "click", "upload", "screenshot",
-                     "select", "check", "scroll", "wait", "close_tab"]
+    action: Literal[
+        "navigate",
+        "fill",
+        "click",
+        "upload",
+        "screenshot",
+        "select",
+        "check",
+        "scroll",
+        "wait",
+        "close_tab",
+    ]
     payload: dict[str, Any] = {}
 
 
