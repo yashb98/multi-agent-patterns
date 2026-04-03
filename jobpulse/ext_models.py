@@ -2,9 +2,42 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel
+
+
+class PageType(StrEnum):
+    """Classification of what type of page we're looking at."""
+
+    JOB_DESCRIPTION = "job_description"
+    LOGIN_FORM = "login_form"
+    SIGNUP_FORM = "signup_form"
+    EMAIL_VERIFICATION = "email_verification"
+    APPLICATION_FORM = "application_form"
+    CONFIRMATION = "confirmation"
+    VERIFICATION_WALL = "verification_wall"
+    UNKNOWN = "unknown"
+
+
+class AccountInfo(BaseModel):
+    """Stored credentials for an ATS platform."""
+
+    domain: str
+    email: str
+    verified: bool = False
+    created_at: str = ""
+    last_login: str = ""
+
+
+class NavigationStep(BaseModel):
+    """One step in a learned navigation sequence."""
+
+    page_type: str
+    action: str  # click_apply, fill_login, fill_signup, verify_email, sso_google
+    selector: str = ""
+    url: str = ""
 
 
 class FieldInfo(BaseModel):

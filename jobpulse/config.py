@@ -83,5 +83,11 @@ EXT_BRIDGE_PORT = int(os.getenv("EXT_BRIDGE_PORT", "8765"))
 # Application engine mode: "extension" uses Chrome extension, "playwright" uses existing adapters
 APPLICATION_ENGINE = os.getenv("APPLICATION_ENGINE", "playwright")
 
+# External application engine
+ATS_ACCOUNT_PASSWORD = os.getenv("ATS_ACCOUNT_PASSWORD", "")
+GMAIL_VERIFY_TIMEOUT = int(os.getenv("GMAIL_VERIFY_TIMEOUT", "120"))
+GMAIL_VERIFY_POLL_INTERVAL = int(os.getenv("GMAIL_VERIFY_POLL_INTERVAL", "5"))
+PAGE_STABLE_TIMEOUT_MS = int(os.getenv("PAGE_STABLE_TIMEOUT_MS", "3000"))
+
 DATA_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
