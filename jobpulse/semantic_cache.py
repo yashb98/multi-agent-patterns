@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.logging_config import get_logger
@@ -166,7 +166,7 @@ class SemanticAnswerCache:
                         answer,
                         company,
                         json.dumps(embedding),
-                        datetime.utcnow().isoformat(),
+                        datetime.now(UTC).isoformat(),
                     ),
                 )
                 logger.debug("semantic_cache: stored new question (company=%r)", company)

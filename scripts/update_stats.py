@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CLAUDE_MD = ROOT / "CLAUDE.md"
 README_MD = ROOT / "README.md"
 
-EXCLUDE_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".git", "frontend/node_modules"}
+EXCLUDE_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".git", ".claude", "frontend/node_modules"}
 
 
 def count_python_files() -> int:
@@ -54,13 +54,26 @@ def count_tests() -> int:
 
 
 def count_databases() -> int:
-    return len(list(ROOT.rglob("*.db")))
+    """Count production databases in data/ (top-level only, excludes browser profiles)."""
+    data_dir = ROOT / "data"
+    if not data_dir.exists():
+        return 0
+    return len(list(data_dir.glob("*.db")))
 
 
-def build_stats_line(loc: int, files: int, tests: int) -> str:
+def count_dashboards() -> int:
+    """Count HTML dashboards served by the app (frontend + static)."""
+    count = 0
+    for d in [ROOT / "frontend", ROOT / "static"]:
+        if d.exists():
+            count += len(list(d.glob("*.html")))
+    return count
+
+
+def build_stats_line(loc: int, files: int, tests: int, databases: int, dashboards: int) -> str:
     # Round LOC to nearest 500
     loc_rounded = round(loc / 500) * 500
-    return f"~{loc_rounded:,} LOC | {files} Python files | 5 databases | {tests} tests | 3 dashboards | 4 Telegram bots | 3 platforms"
+    return f"~{loc_rounded:,} LOC | {files} Python files | {databases} databases | {tests} tests | {dashboards} dashboards | 5 Telegram bots | 3 platforms"
 
 
 def update_file(path: Path, stats_line: str) -> bool:
@@ -98,8 +111,10 @@ def main():
     loc = count_loc()
     files = count_python_files()
     tests = count_tests()
+    databases = count_databases()
+    dashboards = count_dashboards()
 
-    stats_line = build_stats_line(loc, files, tests)
+    stats_line = build_stats_line(loc, files, tests, databases, dashboards)
     print(f"  {stats_line}")
 
     changed = []
