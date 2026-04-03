@@ -118,6 +118,7 @@ class PlatformStateMachine:
         custom_answers: dict[str, str],
         cv_path: str,
         cl_path: str | None,
+        form_intelligence: object | None = None,
     ) -> list[Action]:
         """Return ordered list of actions for current state."""
         if state == ApplicationState.CONTACT_INFO:
@@ -125,7 +126,7 @@ class PlatformStateMachine:
         if state == ApplicationState.RESUME_UPLOAD:
             return self._actions_resume_upload(snapshot, cv_path, cl_path)
         if state == ApplicationState.SCREENING_QUESTIONS:
-            return self._actions_screening(snapshot, profile, custom_answers)
+            return self._actions_screening(snapshot, profile, custom_answers, form_intelligence)
         if state == ApplicationState.SUBMIT:
             return self._actions_submit(snapshot)
         return []
@@ -180,8 +181,10 @@ class PlatformStateMachine:
         snapshot: PageSnapshot,
         profile: dict[str, str],
         custom_answers: dict[str, str],
+        form_intelligence: object | None = None,
     ) -> list[Action]:
-        """Answer screening questions — deferred to screening_answers.get_answer()."""
+        """Answer screening questions — uses FormIntelligence router when provided,
+        otherwise falls back to screening_answers.get_answer()."""
         from jobpulse.screening_answers import get_answer
 
         actions: list[Action] = []
@@ -195,12 +198,22 @@ class PlatformStateMachine:
             if field.current_value:
                 continue  # Already filled
 
-            answer = get_answer(
-                field.label,
-                context_dict,
-                input_type=field.input_type,
-                platform=self.platform,
-            )
+            if form_intelligence is not None:
+                field_answer = form_intelligence.resolve(  # type: ignore[union-attr]
+                    question=field.label,
+                    job_context=context_dict,
+                    input_type=field.input_type,
+                    platform=self.platform,
+                )
+                answer = field_answer.answer if field_answer.answer else None
+            else:
+                answer = get_answer(
+                    field.label,
+                    context_dict,
+                    input_type=field.input_type,
+                    platform=self.platform,
+                )
+
             if not answer:
                 continue
 

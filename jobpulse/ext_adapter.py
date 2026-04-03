@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from shared.logging_config import get_logger
 
 from jobpulse.ats_adapters.base import BaseATSAdapter
+from jobpulse.form_intelligence import FormIntelligence
 from jobpulse.state_machines import ApplicationState, get_state_machine
 
 if TYPE_CHECKING:
@@ -65,6 +66,8 @@ class ExtensionAdapter(BaseATSAdapter):
         machine = get_state_machine(platform)
         logger.info("ExtensionAdapter: applying to %s via %s state machine", url, platform)
 
+        form_intelligence = FormIntelligence(bridge=self.bridge)
+
         snapshot = await self.bridge.navigate(url)
         iterations = 0
 
@@ -92,6 +95,7 @@ class ExtensionAdapter(BaseATSAdapter):
                 custom_answers,
                 str(cv_path),
                 str(cover_letter_path) if cover_letter_path else None,
+                form_intelligence=form_intelligence,
             )
 
             if not actions and state not in (
