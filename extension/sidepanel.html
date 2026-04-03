@@ -1,0 +1,51 @@
+<!-- extension/sidepanel.html -->
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="styles/sidepanel.css">
+</head>
+<body>
+  <div class="panel">
+    <header>
+      <h1>JobPulse</h1>
+      <span id="conn-status" class="badge disconnected">Disconnected</span>
+    </header>
+
+    <section id="current-app" class="section hidden">
+      <h2>Current Application</h2>
+      <div id="app-company" class="company-name"></div>
+      <div id="app-role" class="role-name"></div>
+      <div class="progress-bar"><div id="progress-fill"></div></div>
+      <div id="app-state" class="state-label"></div>
+    </section>
+
+    <section id="company-intel" class="section hidden">
+      <h2>Company Intel</h2>
+      <div id="intel-body"></div>
+    </section>
+
+    <section id="field-log" class="section">
+      <h2>Field Log</h2>
+      <div id="log-entries"></div>
+    </section>
+
+    <section id="controls" class="section">
+      <h2>Controls</h2>
+      <div class="btn-row">
+        <button id="btn-pause">Pause</button>
+        <button id="btn-skip">Skip Field</button>
+        <button id="btn-abort">Abort</button>
+      </div>
+    </section>
+
+    <section id="queue" class="section">
+      <h2>Queue</h2>
+      <div id="queue-list"><em>No pending applications.</em></div>
+    </section>
+  </div>
+
+  <script src="protocol.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

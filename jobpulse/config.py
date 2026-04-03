@@ -73,5 +73,15 @@ JOB_AUTOPILOT_ENABLED = os.getenv("JOB_AUTOPILOT_ENABLED", "true").lower() in ("
 JOB_AUTOPILOT_AUTO_SUBMIT = os.getenv("JOB_AUTOPILOT_AUTO_SUBMIT", "true").lower() in ("true", "1", "yes")
 JOB_AUTOPILOT_MAX_DAILY = int(os.getenv("JOB_AUTOPILOT_MAX_DAILY", "60"))
 
+# Perplexity
+PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
+
+# Extension bridge
+EXT_BRIDGE_HOST = os.getenv("EXT_BRIDGE_HOST", "localhost")
+EXT_BRIDGE_PORT = int(os.getenv("EXT_BRIDGE_PORT", "8765"))
+
+# Application engine mode: "extension" uses Chrome extension, "playwright" uses existing adapters
+APPLICATION_ENGINE = os.getenv("APPLICATION_ENGINE", "playwright")
+
 DATA_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
