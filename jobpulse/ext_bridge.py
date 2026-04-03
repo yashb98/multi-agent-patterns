@@ -227,6 +227,21 @@ class ExtensionBridge:
         b64 = result.get("data", "")
         return base64.b64decode(b64)
 
+    async def analyze_field_locally(
+        self, question: str, input_type: str, options: list[str], timeout_ms: int = 15000
+    ) -> str | None:
+        """Ask Gemini Nano (via Chrome extension) to analyze a field.
+
+        Returns the answer string, or None if Nano is unavailable.
+        """
+        result = await self._send_command(
+            "analyze_field",
+            {"question": question, "input_type": input_type, "options": options},
+            timeout_ms=timeout_ms,
+        )
+        answer = result.get("answer", "")
+        return answer if answer else None
+
     async def get_snapshot(self) -> PageSnapshot | None:
         """Return the latest cached page snapshot."""
         return self._snapshot

@@ -305,6 +305,56 @@ async function checkBox(selector, shouldCheck) {
   return { success: true, value_set: String(el.checked) };
 }
 
+// -- Gemini Nano (Chrome AI — Tier 2 local intelligence) --
+
+async function analyzeFieldLocally(question, inputType, options) {
+  // Check if Prompt API is available
+  if (!self.ai || !self.ai.languageModel) return null;
+
+  try {
+    const capabilities = await self.ai.languageModel.capabilities();
+    if (capabilities.available === "no") return null;
+
+    const session = await self.ai.languageModel.create({
+      systemPrompt:
+        "You fill job application forms for an ML Engineer with 2 years experience in the UK. " +
+        "Return only the answer value, nothing else. No explanation, no quotes.",
+    });
+
+    let prompt = `Field: "${question}" (${inputType})`;
+    if (options && options.length > 0) prompt += `\nOptions: ${options.join(", ")}`;
+    prompt += "\nAnswer:";
+
+    const answer = await session.prompt(prompt);
+    session.destroy();
+    return answer ? answer.trim() : null;
+  } catch (e) {
+    console.log("[JobPulse] Gemini Nano unavailable:", e.message);
+    return null;
+  }
+}
+
+async function writeShortAnswer(question) {
+  if (!self.ai || !self.ai.writer) return null;
+
+  try {
+    const capabilities = await self.ai.writer.capabilities();
+    if (capabilities.available === "no") return null;
+
+    const writer = await self.ai.writer.create({
+      tone: "formal",
+      length: "short",
+      sharedContext: "Job application for ML Engineer position in the UK.",
+    });
+    const answer = await writer.write(question);
+    writer.destroy();
+    return answer ? answer.trim() : null;
+  } catch (e) {
+    console.log("[JobPulse] Writer API unavailable:", e.message);
+    return null;
+  }
+}
+
 // -- Message handler (from background.js) --
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -329,6 +379,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       case "check":
         result = await checkBox(payload.selector, payload.value);
+        break;
+      case "analyze_field":
+        // Try Prompt API first, fall back to Writer API for textarea
+        let answer = await analyzeFieldLocally(
+          payload.question, payload.input_type, payload.options || []
+        );
+        if (!answer && payload.input_type === "textarea") {
+          answer = await writeShortAnswer(payload.question);
+        }
+        result = { success: !!answer, answer: answer || "" };
         break;
       default:
         result = { success: false, error: "Unknown action: " + action };

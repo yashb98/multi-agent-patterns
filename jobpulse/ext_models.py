@@ -84,6 +84,7 @@ class ExtCommand(BaseModel):
         "scroll",
         "wait",
         "close_tab",
+        "analyze_field",
     ]
     payload: dict[str, Any] = {}
 
