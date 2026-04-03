@@ -80,7 +80,7 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 ## Stats
 
-~61,000 LOC | 271 Python files | 12 databases | 1188 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~61,000 LOC | 272 Python files | 12 databases | 1190 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
