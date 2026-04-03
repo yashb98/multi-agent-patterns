@@ -111,3 +111,12 @@ class Action(BaseModel):
     selector: str = ""
     value: str | None = None
     file_path: str | None = None
+
+
+class FieldAnswer(BaseModel):
+    """Result of the form intelligence tier resolution."""
+
+    answer: str
+    tier: int  # 1=pattern, 2=semantic_cache, 3=nano, 4=llm, 5=vision
+    confidence: float  # 0.0-1.0
+    tier_name: str = "unknown"
