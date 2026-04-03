@@ -122,6 +122,18 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - Stored in Notion Job Tracker "Recruiter Email" column (email type)
 - Field on JobListing model: recruiter_email
 
+## External Application Engine
+- `ApplicationOrchestrator` manages: cookie dismiss → page detect → navigate → account → verify → fill
+- Hybrid page detection: DOM first (free), vision LLM fallback when confidence < 0.6
+- SSO priority: Google > LinkedIn > Microsoft > Apple. Prefers SSO over account creation.
+- Account credentials in SQLite (`data/ats_accounts.db`), one password via `ATS_ACCOUNT_PASSWORD`
+- Gmail verification: exponential backoff 1s→2s→4s→8s→16s→32s, requires `gmail.modify` scope
+- Navigation learning in SQLite (`data/navigation_learning.db`), replays per domain
+- Cookie dismisser runs before EVERY page detection — prevents misclassification
+- Multi-page: `find_next_button()` priority: Submit > Review > Save & Continue > Continue > Next > Proceed
+- Stuck detection: chars 200-700 comparison, abort after 2 identical pages
+- Max 10 navigation steps, max 20 form pages
+
 ## Dynamic Cover Letter
 - Cover letter NOT generated upfront — lazy generation via cl_generator callback
 - ATS form detection: Greenhouse/Lever adapters trigger generation when CL field found

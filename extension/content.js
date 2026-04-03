@@ -213,6 +213,8 @@ function buildSnapshot() {
     page_text_preview: (document.body?.innerText || "").substring(0, 500),
     has_file_inputs: document.querySelector("input[type='file']") !== null,
     iframe_count: document.querySelectorAll("iframe").length,
+    page_stable: !document.querySelector('[aria-busy="true"]')
+      && !document.querySelector('.loading, .spinner, [class*="loading"]'),
     timestamp: Date.now(),
   };
 }

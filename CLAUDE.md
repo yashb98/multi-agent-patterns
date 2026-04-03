@@ -76,7 +76,7 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 **AI:** `JOBPULSE_SWARM=true` `CONVERSATION_MODEL=gpt-5o-mini` `RLM_BACKEND=openai` `RLM_ROOT_MODEL=gpt-5o-mini` `RLM_MAX_BUDGET=0.10`
 
-**Extension Engine:** `APPLICATION_ENGINE=extension` (default: `playwright`) `EXT_BRIDGE_HOST=localhost` `EXT_BRIDGE_PORT=8765`
+**Extension Engine:** `APPLICATION_ENGINE=extension` (default: `playwright`) `EXT_BRIDGE_HOST=localhost` `EXT_BRIDGE_PORT=8765` `ATS_ACCOUNT_PASSWORD` (required for account creation) `GMAIL_VERIFY_TIMEOUT=120` `PAGE_STABLE_TIMEOUT_MS=3000`
 
 ## Stats
 
@@ -126,6 +126,16 @@ Python Backend ←— WebSocket (ws://localhost:8765) —→ Chrome Extension
 - `jobpulse/semantic_cache.py` — Embedding-based answer cache (sentence-transformers + SQLite)
 - `jobpulse/vision_tier.py` — Screenshot-based field analysis via GPT-4o-mini
 - `jobpulse/state_machines/` — Platform state machines (greenhouse, lever, linkedin, etc.)
+
+**Application Orchestrator** (`application_orchestrator.py`):
+Manages the full external application lifecycle:
+1. Dismiss cookie banners before any detection
+2. Hybrid page detection: DOM analysis (free) + Vision LLM fallback ($0.003 when unsure)
+3. SSO detection: "Sign in with Google/LinkedIn" → clicks SSO, skips account creation
+4. Account creation: `ATS_ACCOUNT_PASSWORD` env var, stores credentials per domain in SQLite
+5. Gmail verification: exponential polling (1s→2s→4s→...→32s), extracts verify links from HTML
+6. Navigation learning: saves successful sequences per domain, replays on repeat visits (zero cost)
+7. Multi-page form filling: state machine with Next button detection, progress tracking, stuck detection
 
 **Ralph Loop** (`ralph_loop/`): Self-healing retry wrapper. On failure: screenshot → diagnose (vision or heuristic) → save fix to SQLite → retry. Max 5 iterations. Works with both Playwright and extension adapters.
 
