@@ -14,7 +14,7 @@ from shared.logging_config import get_logger
 
 from jobpulse.account_manager import AccountManager
 from jobpulse.cookie_dismisser import CookieBannerDismisser
-from jobpulse.ext_models import PageType
+from jobpulse.ext_models import FieldInfo, ButtonInfo, PageType, PageSnapshot
 from jobpulse.gmail_verify import GmailVerifier
 from jobpulse.navigation_learner import NavigationLearner
 from jobpulse.page_analyzer import PageAnalyzer
@@ -253,6 +253,38 @@ class ApplicationOrchestrator:
         await self.bridge.navigate(return_url)
         return await self.bridge.get_snapshot()
 
+    @staticmethod
+    def _to_page_snapshot(snapshot: dict) -> PageSnapshot:
+        """Convert raw dict snapshot from bridge to a PageSnapshot Pydantic model."""
+        raw_fields = snapshot.get("fields", [])
+        raw_buttons = snapshot.get("buttons", [])
+
+        fields: list[FieldInfo] = []
+        for f in raw_fields:
+            try:
+                fields.append(FieldInfo(**f) if isinstance(f, dict) else f)
+            except Exception:
+                pass
+
+        buttons: list[ButtonInfo] = []
+        for b in raw_buttons:
+            try:
+                buttons.append(ButtonInfo(**b) if isinstance(b, dict) else b)
+            except Exception:
+                pass
+
+        vwall = snapshot.get("verification_wall")
+
+        return PageSnapshot(
+            url=snapshot.get("url", ""),
+            title=snapshot.get("title", ""),
+            fields=fields,
+            buttons=buttons,
+            verification_wall=vwall if isinstance(vwall, dict) or vwall is None else None,
+            page_text_preview=snapshot.get("page_text_preview", ""),
+            has_file_inputs=snapshot.get("has_file_inputs", False),
+        )
+
     async def _fill_application(
         self, platform, snapshot, cv_path, cover_letter_path, profile,
         custom_answers, overrides, dry_run, form_intelligence,
@@ -264,7 +296,8 @@ class ApplicationOrchestrator:
         last_screenshot = None
 
         for page_num in range(1, MAX_FORM_PAGES + 1):
-            state = machine.detect_state(snapshot)
+            page_snapshot = self._to_page_snapshot(snapshot) if isinstance(snapshot, dict) else snapshot
+            state = machine.detect_state(page_snapshot)
             logger.info("Form page %d: state=%s", page_num, state)
 
             if state == ApplicationState.CONFIRMATION:
@@ -282,9 +315,10 @@ class ApplicationOrchestrator:
                 stuck_count = 0
 
             actions = machine.get_actions(
-                state, snapshot, profile=profile, custom_answers=custom_answers,
-                cv_path=cv_path, cover_letter_path=cover_letter_path,
-                overrides=overrides, form_intelligence=form_intelligence,
+                state, page_snapshot, profile=profile, custom_answers=custom_answers,
+                cv_path=str(cv_path) if cv_path else "",
+                cl_path=str(cover_letter_path) if cover_letter_path else None,
+                form_intelligence=form_intelligence,
             )
 
             for action in actions:
