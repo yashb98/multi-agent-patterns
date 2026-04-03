@@ -331,3 +331,58 @@ def get_state_machine(platform: str) -> PlatformStateMachine:
     """Return a fresh state machine for the given platform."""
     cls = _MACHINES.get(platform, GenericStateMachine)
     return cls()
+
+
+import re as _re
+
+_BUTTON_PRIORITY = [
+    (_re.compile(r"submit\s*(application|my\s*application)?", _re.IGNORECASE), 100),
+    (_re.compile(r"review(\s+(&|and)\s+submit)?", _re.IGNORECASE), 90),
+    (_re.compile(r"save\s*(and|&)\s*(continue|next|proceed)", _re.IGNORECASE), 70),
+    (_re.compile(r"continue", _re.IGNORECASE), 60),
+    (_re.compile(r"next(\s*step)?", _re.IGNORECASE), 50),
+    (_re.compile(r"proceed", _re.IGNORECASE), 40),
+]
+
+_PROGRESS_PATTERNS = [
+    _re.compile(r"step\s+(\d+)\s+(?:of|/)\s+(\d+)", _re.IGNORECASE),
+    _re.compile(r"page\s+(\d+)\s+(?:of|/)\s+(\d+)", _re.IGNORECASE),
+    _re.compile(r"(\d+)\s+(?:of|/)\s+(\d+)", _re.IGNORECASE),
+]
+
+
+def find_next_button(buttons: list[dict]) -> dict | None:
+    """Find highest-priority navigation button (Submit > Review > Continue > Next)."""
+    candidates: list[tuple[dict, int]] = []
+    for btn in buttons:
+        if not btn.get("enabled", True):
+            continue
+        text = btn.get("text", "")
+        for pattern, priority in _BUTTON_PRIORITY:
+            if pattern.search(text):
+                candidates.append((btn, priority))
+                break
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates[0][0]
+
+
+def detect_progress(page_text: str) -> tuple[int, int] | None:
+    """Parse 'Step 2 of 5' indicators. Returns (current, total) or None."""
+    for pattern in _PROGRESS_PATTERNS:
+        match = pattern.search(page_text)
+        if match:
+            current, total = int(match.group(1)), int(match.group(2))
+            if 1 <= current <= total <= 20:
+                return current, total
+    return None
+
+
+def is_page_stuck(prev_snapshot: dict, curr_snapshot: dict) -> bool:
+    """Detect if page hasn't changed. Compares chars 200-700 to skip wrappers."""
+    prev_text = prev_snapshot.get("page_text_preview", "")
+    curr_text = curr_snapshot.get("page_text_preview", "")
+    prev_slice = prev_text[200:700] if len(prev_text) > 700 else prev_text
+    curr_slice = curr_text[200:700] if len(curr_text) > 700 else curr_text
+    return prev_slice == curr_slice and len(prev_slice) > 10
