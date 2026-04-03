@@ -2,7 +2,7 @@
 
 Production autonomous agent system: 4 orchestration patterns, 10+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval, NLP intent classification, AI research blog pipeline.
 
-**~60,000 LOC** | **266 Python files** | **12 databases** | **1166 tests** | **4 dashboards** | **5 Telegram bots** | **3 platforms**
+**~60,500 LOC** | **268 Python files** | **12 databases** | **1171 tests** | **4 dashboards** | **5 Telegram bots** | **3 platforms**
 
 > Stats auto-updated via `scripts/update_stats.py`. Source of truth: [CLAUDE.md](CLAUDE.md).
 
