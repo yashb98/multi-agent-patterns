@@ -38,7 +38,8 @@ def _get_gmail_service():
         creds = None
         if os.path.exists(GOOGLE_TOKEN_PATH):
             creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_PATH,
-                ["https://www.googleapis.com/auth/gmail.readonly"])
+                ["https://www.googleapis.com/auth/gmail.readonly",
+                 "https://www.googleapis.com/auth/gmail.modify"])
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
