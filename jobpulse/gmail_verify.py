@@ -7,6 +7,7 @@ Uses exponential backoff: 1s → 2s → 4s → 8s → 16s → 32s → capped at 
 from __future__ import annotations
 
 import base64
+import contextlib
 import re
 import time
 from html.parser import HTMLParser
@@ -127,13 +128,11 @@ class GmailVerifier:
                     link = extract_verification_link(html_body, from_domain)
                     if link:
                         logger.info("Found verification link from %s: %s", from_domain, link[:80])
-                        try:
+                        with contextlib.suppress(Exception):
                             service.users().messages().modify(
                                 userId="me", id=msg_ref["id"],
                                 body={"removeLabelIds": ["UNREAD"]},
                             ).execute()
-                        except Exception:
-                            pass
                         return link
             except Exception as exc:
                 logger.warning("Gmail poll error: %s", exc)

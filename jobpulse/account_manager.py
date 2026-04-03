@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 
 from shared.logging_config import get_logger
 
-from jobpulse.config import ATS_ACCOUNT_PASSWORD
 from jobpulse.ext_models import AccountInfo
 
 logger = get_logger(__name__)
@@ -54,11 +53,11 @@ class AccountManager:
 
     def create_account(self, domain_or_url: str) -> tuple[str, str]:
         from jobpulse.applicator import PROFILE
-        import jobpulse.account_manager as _self_mod
+        from jobpulse.config import ATS_ACCOUNT_PASSWORD
 
         domain = self._normalize_domain(domain_or_url)
         email = PROFILE["email"]
-        password = _self_mod.ATS_ACCOUNT_PASSWORD
+        password = ATS_ACCOUNT_PASSWORD
 
         if not password:
             raise ValueError("ATS_ACCOUNT_PASSWORD env var not set")

@@ -7,7 +7,7 @@ from jobpulse.account_manager import AccountManager
 
 @pytest.fixture
 def mgr(tmp_path):
-    with patch("jobpulse.account_manager.ATS_ACCOUNT_PASSWORD", "TestPass123!"):
+    with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "TestPass123!"):
         yield AccountManager(db_path=str(tmp_path / "accounts.db"))
 
 
@@ -61,7 +61,7 @@ def test_mark_login_success(mgr):
 
 
 def test_no_password_raises(tmp_path):
-    with patch("jobpulse.account_manager.ATS_ACCOUNT_PASSWORD", ""):
+    with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", ""):
         mgr = AccountManager(db_path=str(tmp_path / "accounts.db"))
         with pytest.raises(ValueError, match="ATS_ACCOUNT_PASSWORD"):
             mgr.create_account("example.com")

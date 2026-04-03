@@ -7,14 +7,17 @@ Flow: URL → cookie dismiss → page stability wait → detect page type (DOM+V
 """
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+import contextlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from shared.logging_config import get_logger
 
 from jobpulse.account_manager import AccountManager
 from jobpulse.cookie_dismisser import CookieBannerDismisser
-from jobpulse.ext_models import FieldInfo, ButtonInfo, PageType, PageSnapshot
+from jobpulse.ext_models import ButtonInfo, FieldInfo, PageSnapshot, PageType
 from jobpulse.gmail_verify import GmailVerifier
 from jobpulse.navigation_learner import NavigationLearner
 from jobpulse.page_analyzer import PageAnalyzer
@@ -261,17 +264,13 @@ class ApplicationOrchestrator:
 
         fields: list[FieldInfo] = []
         for f in raw_fields:
-            try:
+            with contextlib.suppress(Exception):
                 fields.append(FieldInfo(**f) if isinstance(f, dict) else f)
-            except Exception:
-                pass
 
         buttons: list[ButtonInfo] = []
         for b in raw_buttons:
-            try:
+            with contextlib.suppress(Exception):
                 buttons.append(ButtonInfo(**b) if isinstance(b, dict) else b)
-            except Exception:
-                pass
 
         vwall = snapshot.get("verification_wall")
 

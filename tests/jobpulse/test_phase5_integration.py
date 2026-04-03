@@ -127,7 +127,7 @@ async def test_sso_google_detected(orchestrator, bridge):
 
 
 @pytest.mark.asyncio
-@patch("jobpulse.account_manager.ATS_ACCOUNT_PASSWORD", "TestPass123!")
+@patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "TestPass123!")
 async def test_signup_verify_login_apply(orchestrator, bridge):
     signup = _snapshot(
         fields=[

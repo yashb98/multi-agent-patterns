@@ -26,7 +26,7 @@ _ACCEPT_PATTERNS = [
 _COOKIE_CONTEXT = re.compile(
     r"(cookie|gdpr|privacy|consent|tracking)", re.IGNORECASE
 )
-_CLOSE_PATTERN = re.compile(r"^(close|dismiss|×|✕|x)$", re.IGNORECASE)
+_CLOSE_PATTERN = re.compile(r"^(close|dismiss|\u00d7|\u2715|x)$", re.IGNORECASE)
 
 # Never click these
 _ANTI_PATTERNS = re.compile(
