@@ -236,3 +236,113 @@ class TestReindexFile:
         ci.reindex_file("utils.py", str(sample_project))
         nodes = ci.conn.execute("SELECT * FROM nodes WHERE file_path='utils.py'").fetchall()
         assert len(nodes) == 0
+
+
+class TestFindSymbol:
+    def test_find_function_by_name(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.find_symbol("login")
+        assert result is not None
+        assert result["name"] == "login"
+        assert result["kind"] == "function"
+        assert "file" in result
+        assert "risk_score" in result
+
+    def test_find_class(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.find_symbol("AuthManager")
+        assert result is not None
+        assert result["kind"] == "class"
+
+    def test_find_nonexistent(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        assert ci.find_symbol("nonexistent_xyz") is None
+
+    def test_find_method(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.find_symbol("verify_token")
+        assert result is not None
+        assert result["kind"] == "method"
+
+
+class TestCallersOf:
+    def test_finds_callers(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.callers_of("verify_token")
+        assert result["total"] >= 1
+
+    def test_max_results(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.callers_of("verify_token", max_results=1)
+        assert len(result["callers"]) <= 1
+
+
+class TestCalleesOf:
+    def test_finds_callees(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.callees_of("login")
+        assert result["total"] >= 1
+
+
+class TestImpactAnalysis:
+    def test_impact_from_file(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.impact_analysis(["auth.py"])
+        assert len(result["impacted_files"]) >= 1
+        assert "total_functions" in result
+
+
+class TestRiskReport:
+    def test_ordered_by_risk(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.risk_report(top_n=5)
+        scores = [f["risk"] for f in result["functions"]]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_per_file(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.risk_report(file="auth.py")
+        for fn in result["functions"]:
+            assert fn["file"] == "auth.py"
+
+
+class TestSemanticSearch:
+    def test_keyword_match(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        results = ci.semantic_search("authentication token")
+        assert len(results) > 0
+
+    def test_has_scores(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        results = ci.semantic_search("login")
+        assert all("score" in r for r in results)
+
+
+class TestModuleSummary:
+    def test_python_file(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.module_summary("auth.py")
+        assert result["file"] == "auth.py"
+        assert len(result["classes"]) >= 1
+        assert len(result["functions"]) >= 1
+
+
+class TestRecentChanges:
+    def test_no_git(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.recent_changes(n_commits=3, root=str(sample_project))
+        assert result["commits"] == []
+
+
+class TestGetPrimer:
+    def test_contains_fingerprint(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        primer = ci.get_primer()
+        assert "Code Intelligence" in primer
+        assert "MCP tools" in primer
+
+    def test_includes_risk(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        primer = ci.get_primer(top_risk=3)
+        # Auth functions have security keywords
+        assert "verify_token" in primer or "login" in primer

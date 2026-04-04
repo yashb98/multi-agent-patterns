@@ -154,10 +154,6 @@ class CodeIntelligence:
             logger.warning("voyageai package not installed — using FTS5-only search")
             return None
 
-    def close(self):
-        """Close the database connection."""
-        self.conn.close()
-
     # ─── INDEXING ──────────────────────────────────────────────────
 
     def index_directory(self, root: str) -> dict[str, Any]:
@@ -540,3 +536,341 @@ class CodeIntelligence:
             "risk_updated": len(risk_updates),
             "time_ms": elapsed_ms,
         }
+
+    # ─── MCP QUERY METHODS ────────────────────────────────────────
+
+    def find_symbol(self, name: str) -> dict[str, Any] | None:
+        """Find a function, class, or method by name. Exact match first, LIKE fallback."""
+        row = self.conn.execute(
+            "SELECT qualified_name, name, kind, file_path, line_start, line_end, "
+            "risk_score, is_async FROM nodes WHERE name=? AND kind != 'document' LIMIT 1",
+            (name,),
+        ).fetchone()
+
+        if row is None:
+            row = self.conn.execute(
+                "SELECT qualified_name, name, kind, file_path, line_start, line_end, "
+                "risk_score, is_async FROM nodes WHERE name LIKE ? AND kind != 'document' LIMIT 1",
+                (f"%{name}%",),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        qname = row[0]
+        callers = self._graph.callers_of(name)
+        callees = self._graph.callees_of(qname)
+
+        return {
+            "qualified_name": qname,
+            "name": row[1],
+            "kind": row[2],
+            "file": row[3],
+            "line_start": row[4],
+            "line_end": row[5],
+            "risk_score": row[6],
+            "is_async": bool(row[7]),
+            "callers_count": len(callers),
+            "callees_count": len(callees),
+        }
+
+    def callers_of(self, name: str, max_results: int = 20) -> dict[str, Any]:
+        """Find all functions that call the given name."""
+        raw = self._graph.callers_of(name)
+        callers = [
+            {
+                "name": r["source_qname"].split(".")[-1],
+                "qualified_name": r["source_qname"],
+                "file": r["file_path"],
+                "line": r["line"],
+            }
+            for r in raw[:max_results]
+        ]
+        return {"target": name, "callers": callers, "total": len(raw)}
+
+    def callees_of(self, name: str, max_results: int = 20) -> dict[str, Any]:
+        """Find all functions called by the given name."""
+        # Resolve qualified name from the nodes table
+        row = self.conn.execute(
+            "SELECT qualified_name FROM nodes WHERE name=? AND kind != 'document' LIMIT 1",
+            (name,),
+        ).fetchone()
+        qname = row[0] if row else name
+
+        raw = self._graph.callees_of(qname)
+        callees = [
+            {
+                "name": r["target_qname"].split(".")[-1],
+                "qualified_name": r["target_qname"],
+                "file": r["file_path"],
+                "line": r["line"],
+            }
+            for r in raw[:max_results]
+        ]
+        return {"source": name, "callees": callees, "total": len(raw)}
+
+    def impact_analysis(self, files: list[str], max_depth: int = 2) -> dict[str, Any]:
+        """Compute blast radius from changed files."""
+        radius = self._graph.impact_radius(files, max_depth)
+        impacted_files: set[str] = radius.get("impacted_files", set())
+        impacted_nodes: list[dict[str, Any]] = radius.get("impacted_nodes", [])
+        depth_map: dict[str, int] = radius.get("depth_map", {})
+
+        # Enumerate functions directly changed in the specified files
+        changed_functions: list[str] = []
+        for f in files:
+            rows = self.conn.execute(
+                "SELECT name FROM nodes WHERE file_path=? AND kind IN ('function', 'method')",
+                (f,),
+            ).fetchall()
+            changed_functions.extend(r[0] for r in rows)
+
+        enriched: list[dict[str, Any]] = []
+        for node in impacted_nodes:
+            node_file = node.get("file_path", "")
+            risk_row = self.conn.execute(
+                "SELECT risk_score FROM nodes WHERE qualified_name=?",
+                (node.get("qualified_name", ""),),
+            ).fetchone()
+            risk = risk_row[0] if risk_row else 0.0
+            enriched.append({
+                "name": node.get("name", ""),
+                "file": node_file,
+                "depth": depth_map.get(node_file, 0),
+                "risk": risk,
+            })
+
+        max_risk = max((e["risk"] for e in enriched), default=0.0)
+
+        return {
+            "changed_functions": changed_functions,
+            "impacted": enriched,
+            "impacted_files": list(impacted_files),
+            "total_functions": len(enriched),
+            "max_risk": max_risk,
+        }
+
+    def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
+        """Top-N highest-risk functions, optionally filtered by file."""
+        if file is not None:
+            rows = self.conn.execute(
+                "SELECT name, file_path, risk_score FROM nodes "
+                "WHERE kind IN ('function', 'method') AND file_path=? "
+                "ORDER BY risk_score DESC LIMIT ?",
+                (file, top_n),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT name, file_path, risk_score FROM nodes "
+                "WHERE kind IN ('function', 'method') "
+                "ORDER BY risk_score DESC LIMIT ?",
+                (top_n,),
+            ).fetchall()
+
+        functions = [{"name": r[0], "file": r[1], "risk": r[2]} for r in rows]
+        return {"functions": functions}
+
+    def semantic_search(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
+        """Hybrid FTS5 + vector semantic search."""
+        raw = self._search.query(query, top_k)
+        results: list[dict[str, Any]] = []
+        for item in raw:
+            metadata = item.get("metadata") or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (json.JSONDecodeError, TypeError):
+                    metadata = {}
+            results.append({
+                "name": item.get("id", ""),
+                "file": metadata.get("file_path", ""),
+                "score": item.get("score", 0.0),
+                "snippet": (item.get("text") or "")[:200],
+            })
+        return results
+
+    def module_summary(self, file: str) -> dict[str, Any]:
+        """Summary of a file: classes, functions, risk, imports."""
+        # Classes
+        class_rows = self.conn.execute(
+            "SELECT name, line_start, line_end FROM nodes WHERE file_path=? AND kind='class'",
+            (file,),
+        ).fetchall()
+
+        classes: list[dict[str, Any]] = []
+        for crow in class_rows:
+            class_name = crow[0]
+            # Find methods belonging to this class
+            method_rows = self.conn.execute(
+                "SELECT name FROM nodes WHERE file_path=? AND kind='method' "
+                "AND qualified_name LIKE ?",
+                (file, f"%.{class_name}.%"),
+            ).fetchall()
+            methods = [m[0] for m in method_rows]
+            lines = (crow[2] or 0) - (crow[1] or 0)
+            classes.append({"name": class_name, "methods": methods, "lines": lines})
+
+        # Top-level functions
+        func_rows = self.conn.execute(
+            "SELECT name, line_start, line_end, risk_score FROM nodes "
+            "WHERE file_path=? AND kind='function' ORDER BY line_start",
+            (file,),
+        ).fetchall()
+        functions = [
+            {
+                "name": r[0],
+                "lines": (r[2] or 0) - (r[1] or 0),
+                "risk": r[3],
+            }
+            for r in func_rows
+        ]
+
+        # Average risk across all functions + methods in this file
+        risk_rows = self.conn.execute(
+            "SELECT AVG(risk_score) FROM nodes WHERE file_path=? AND kind IN ('function', 'method')",
+            (file,),
+        ).fetchone()
+        avg_risk: float = risk_rows[0] if risk_rows and risk_rows[0] is not None else 0.0
+
+        # imports_from: files that this file's functions are called from
+        qname_rows = self.conn.execute(
+            "SELECT qualified_name FROM nodes WHERE file_path=? AND kind IN ('function', 'method')",
+            (file,),
+        ).fetchall()
+        all_qnames = [r[0] for r in qname_rows]
+        imports_from: list[str] = []
+        if all_qnames:
+            placeholders = ",".join("?" * len(all_qnames))
+            caller_rows = self.conn.execute(
+                f"SELECT DISTINCT file_path FROM edges "
+                f"WHERE target_qname IN ({placeholders})",
+                all_qnames,
+            ).fetchall()
+            imports_from = [r[0] for r in caller_rows if r[0] != file]
+
+        # imported_by: files that this file's functions call into
+        imported_by: list[str] = []
+        if all_qnames:
+            callee_rows = self.conn.execute(
+                f"SELECT DISTINCT file_path FROM edges "
+                f"WHERE source_qname IN ({placeholders})",
+                all_qnames,
+            ).fetchall()
+            imported_by = [r[0] for r in callee_rows if r[0] != file]
+
+        return {
+            "file": file,
+            "classes": classes,
+            "functions": functions,
+            "avg_risk": avg_risk,
+            "imports_from": imports_from,
+            "imported_by": imported_by,
+        }
+
+    def recent_changes(self, n_commits: int = 3, root: str | None = None) -> dict[str, Any]:
+        """Cross-reference recent git commits with code graph."""
+        if root is None:
+            root = str(Path(self.db_path).parent)
+
+        try:
+            result = subprocess.run(
+                [
+                    "git", "log",
+                    f"--max-count={n_commits}",
+                    "--name-only",
+                    "--pretty=format:%H %s",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=root,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return {"commits": [], "hotspots": [], "new_high_risk": []}
+
+        if result.returncode != 0:
+            return {"commits": [], "hotspots": [], "new_high_risk": []}
+
+        # Parse output: alternating header lines and file lists separated by blank lines
+        commits: list[dict[str, Any]] = []
+        current_commit: dict[str, Any] | None = None
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                if current_commit is not None:
+                    commits.append(current_commit)
+                    current_commit = None
+                continue
+            if current_commit is None:
+                # Header line: "<sha> <message>"
+                parts = line.split(" ", 1)
+                sha = parts[0]
+                message = parts[1] if len(parts) > 1 else ""
+                current_commit = {"sha": sha, "message": message, "files": []}
+            else:
+                current_commit["files"].append(line)
+
+        if current_commit is not None:
+            commits.append(current_commit)
+
+        # Hotspots: files that appear in multiple commits
+        from collections import Counter
+        file_counts: Counter[str] = Counter()
+        for commit in commits:
+            for f in commit["files"]:
+                file_counts[f] += 1
+        hotspots = [f for f, count in file_counts.most_common(5) if count > 1]
+
+        # New high-risk: functions in changed files with risk > 0.5
+        changed_files = list(file_counts.keys())
+        new_high_risk: list[str] = []
+        for f in changed_files:
+            rows = self.conn.execute(
+                "SELECT name FROM nodes WHERE file_path=? AND risk_score > 0.5 "
+                "AND kind IN ('function', 'method')",
+                (f,),
+            ).fetchall()
+            new_high_risk.extend(r[0] for r in rows)
+
+        return {"commits": commits, "hotspots": hotspots, "new_high_risk": new_high_risk}
+
+    # ─── SESSION PRIMER ───────────────────────────────────────────
+
+    def get_primer(self, top_risk: int = 5, n_commits: int = 3) -> str:
+        """Formatted codebase fingerprint for SessionStart hook."""
+        stats = self._graph.get_stats()
+        total_nodes = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        total_edges = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+
+        lines: list[str] = [
+            "=== Code Intelligence Primer ===",
+            f"Nodes: {total_nodes}  Edges: {total_edges}",
+        ]
+
+        # Top-risk functions
+        risk = self.risk_report(top_n=top_risk)
+        if risk["functions"]:
+            lines.append(f"\nTop-{top_risk} high-risk functions:")
+            for fn in risk["functions"]:
+                lines.append(f"  • {fn['name']} ({fn['file']})  risk={fn['risk']:.2f}")
+
+        # Recent commits
+        changes = self.recent_changes(n_commits=n_commits)
+        if changes["commits"]:
+            lines.append(f"\nRecent {n_commits} commits:")
+            for commit in changes["commits"]:
+                sha_short = commit["sha"][:7]
+                lines.append(f"  [{sha_short}] {commit['message']}")
+
+        # Available MCP tools
+        lines.append(
+            "\nMCP tools: find_symbol · callers_of · callees_of · "
+            "impact_analysis · risk_report · semantic_search · "
+            "module_summary · recent_changes"
+        )
+
+        return "\n".join(lines)
+
+    def close(self) -> None:
+        """Close the database connection."""
+        self.conn.close()
