@@ -20,18 +20,11 @@ WHY THIS SEPARATION MATTERS:
 - Same agent logic, three different architectures
 - Easy to test agents in isolation
 - Easy to swap an agent (e.g., upgrade Writer) without touching wiring
-
-AGENTIC LOOP PATTERN (Claude Certified Architect Domain 1):
-The run_agentic_loop() function implements proper stop_reason handling:
-- Continues when stop_reason is "tool_use" (execute tools, feed results back)
-- Terminates when stop_reason is "end_turn" (model is done)
-- Tool results are appended to conversation history for next iteration
 """
 
 import json
-import os
+import re
 from datetime import datetime
-from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
@@ -40,110 +33,25 @@ from shared.state import AgentState
 from shared.prompts import RESEARCHER_PROMPT, WRITER_PROMPT, REVIEWER_PROMPT
 from shared.logging_config import get_logger
 
+# Re-export from split modules for backward compatibility
+from shared.cost_tracker import (  # noqa: F401
+    MODEL_COSTS,
+    estimate_cost,
+    track_llm_usage,
+    compute_cost_summary,
+)
+from shared.context_compression import (  # noqa: F401
+    MAX_RESEARCH_CHARS,
+    compress_research_notes,
+)
+from shared.agentic_loop import (  # noqa: F401
+    AgentError,
+    AGENT_TOOLS,
+    register_agent_tool,
+    run_agentic_loop,
+)
+
 logger = get_logger(__name__)
-
-
-# ─── COST TRACKING ─────────────────────────────────────────────
-# Approximate pricing per 1M tokens (USD) for common models.
-# Updated as of 2026-04. Override via OPENAI_COST_PER_1M_INPUT env var.
-
-MODEL_COSTS = {
-    # model_prefix: (input_per_1M, output_per_1M)
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4.1-mini": (0.40, 1.60),
-    "gpt-4.1": (2.00, 8.00),
-    "gpt-5o-mini": (0.15, 0.60),
-    "o3-mini": (1.10, 4.40),
-}
-
-
-def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """Estimate USD cost for a single LLM call based on token counts."""
-    costs = MODEL_COSTS.get(model)
-    if not costs:
-        # Try prefix match (e.g. "gpt-4o-mini-2024-07-18" → "gpt-4o-mini")
-        for prefix, c in MODEL_COSTS.items():
-            if model.startswith(prefix):
-                costs = c
-                break
-    if not costs:
-        costs = (0.15, 0.60)  # Default to cheapest tier
-
-    return (prompt_tokens * costs[0] + completion_tokens * costs[1]) / 1_000_000
-
-
-def track_llm_usage(response, agent_name: str) -> dict:
-    """Extract token usage from a LangChain response and return a tracking dict.
-
-    Works with ChatOpenAI responses that have response_metadata.
-    """
-    metadata = getattr(response, "response_metadata", {}) or {}
-    usage = metadata.get("token_usage", {}) or {}
-    prompt_tokens = usage.get("prompt_tokens", 0)
-    completion_tokens = usage.get("completion_tokens", 0)
-    model = metadata.get("model_name", "gpt-5o-mini")
-    cost = estimate_cost(model, prompt_tokens, completion_tokens)
-
-    return {
-        "agent": agent_name,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-        "model": model,
-        "cost_usd": cost,
-    }
-
-
-def compute_cost_summary(token_usage: list[dict]) -> dict:
-    """Compute aggregate cost summary from accumulated token_usage entries."""
-    total_prompt = sum(u.get("prompt_tokens", 0) for u in token_usage)
-    total_completion = sum(u.get("completion_tokens", 0) for u in token_usage)
-    total_cost = sum(u.get("cost_usd", 0) for u in token_usage)
-    per_agent = {}
-    for u in token_usage:
-        agent = u.get("agent", "unknown")
-        per_agent.setdefault(agent, 0.0)
-        per_agent[agent] += u.get("cost_usd", 0)
-    return {
-        "total_prompt_tokens": total_prompt,
-        "total_completion_tokens": total_completion,
-        "total_tokens": total_prompt + total_completion,
-        "total_cost_usd": total_cost,
-        "calls": len(token_usage),
-        "cost_per_agent": per_agent,
-    }
-
-
-# ─── STRUCTURED ERROR RESPONSE ───────────────────────────────────
-
-class AgentError:
-    """Structured error object for agent failures (Domain 2, Task 2.2)."""
-
-    def __init__(self, error_category: str, message: str,
-                 is_retryable: bool = False, partial_results: Any = None,
-                 agent_name: str = "", attempted_action: str = ""):
-        self.error_category = error_category   # transient | validation | permission | business
-        self.message = message
-        self.is_retryable = is_retryable
-        self.partial_results = partial_results
-        self.agent_name = agent_name
-        self.attempted_action = attempted_action
-
-    def to_dict(self) -> dict:
-        return {
-            "status": "error",
-            "errorCategory": self.error_category,
-            "message": self.message,
-            "isRetryable": self.is_retryable,
-            "partialResults": self.partial_results,
-            "agentName": self.agent_name,
-            "attemptedAction": self.attempted_action,
-        }
-
-    def __str__(self) -> str:
-        retry = " (retryable)" if self.is_retryable else ""
-        return f"[{self.error_category}]{retry} {self.agent_name}: {self.message}"
 
 
 # ─── LLM INITIALISATION ─────────────────────────────────────────
@@ -167,236 +75,23 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5o-mini",
     )
 
 
-# ─── AGENTIC LOOP (Domain 1, Task 1.1) ──────────────────────────
-# Proper stop_reason handling: continue on tool_use, stop on end_turn.
-# Tool results are appended to conversation context between iterations.
-
-# Registry of tools available to agents during agentic loops
-AGENT_TOOLS = {}
-
-
-def register_agent_tool(name: str, description: str, func: callable):
-    """Register a tool that agents can invoke during agentic loops."""
-    AGENT_TOOLS[name] = {
-        "name": name,
-        "description": description,
-        "func": func,
-    }
-
-
-def run_agentic_loop(
-    system_prompt: str,
-    user_message: str,
-    tools: list[dict] | None = None,
-    temperature: float = 0.7,
-    max_iterations: int = 10,
-    model: str = "gpt-5o-mini",
-    timeout: float = 30.0,
-) -> dict:
-    """
-    Run an agentic loop with proper stop_reason handling.
-
-    Returns dict with:
-        - content: str (final text output)
-        - tool_calls_made: list[dict] (audit trail of tool invocations)
-        - iterations: int (how many loop passes)
-        - stop_reason: str (why the loop ended: "end_turn" | "max_iterations")
-
-    PATTERN (from Claude Certified Architect exam, Domain 1 Task 1.1):
-    1. Send request to LLM
-    2. Inspect stop_reason: "tool_use" → execute tools, append results, loop
-    3. stop_reason "end_turn" → return final content
-    4. Max iterations is a SAFETY VALVE, not the primary stopping mechanism
-    """
-    from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=timeout)
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message},
-    ]
-
-    # Build OpenAI-format tool definitions
-    openai_tools = None
-    tool_map = {}
-    if tools:
-        openai_tools = []
-        for t in tools:
-            openai_tools.append({
-                "type": "function",
-                "function": {
-                    "name": t["name"],
-                    "description": t["description"],
-                    "parameters": t.get("parameters", {"type": "object", "properties": {}}),
-                },
-            })
-            tool_map[t["name"]] = t["func"]
-
-    tool_calls_made = []
-    iteration = 0
-
-    while iteration < max_iterations:
-        iteration += 1
-
-        kwargs = {"model": model, "messages": messages, "temperature": temperature}
-        if openai_tools:
-            kwargs["tools"] = openai_tools
-
-        response = client.chat.completions.create(**kwargs)
-        choice = response.choices[0]
-
-        # ── Check stop_reason (finish_reason in OpenAI) ──
-        if choice.finish_reason == "tool_calls":
-            # Model wants to call tools — execute them and loop
-            assistant_msg = choice.message
-            messages.append(assistant_msg.model_dump())
-
-            for tool_call in assistant_msg.tool_calls:
-                fn_name = tool_call.function.name
-                fn_args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
-
-                logger.info("Agentic loop: tool_call %s(%s)", fn_name, list(fn_args.keys()))
-
-                # Execute the tool
-                if fn_name in tool_map:
-                    try:
-                        result = tool_map[fn_name](**fn_args)
-                        result_str = json.dumps(result) if not isinstance(result, str) else result
-                    except Exception as e:
-                        result_str = json.dumps(AgentError(
-                            error_category="transient",
-                            message=str(e),
-                            is_retryable=True,
-                            agent_name=fn_name,
-                            attempted_action=f"{fn_name}({fn_args})",
-                        ).to_dict())
-                else:
-                    result_str = json.dumps(AgentError(
-                        error_category="validation",
-                        message=f"Unknown tool: {fn_name}",
-                        is_retryable=False,
-                    ).to_dict())
-
-                tool_calls_made.append({
-                    "tool": fn_name,
-                    "args": fn_args,
-                    "result": result_str[:500],
-                    "iteration": iteration,
-                })
-
-                # Append tool result to conversation for next iteration
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result_str,
-                })
-
-        elif choice.finish_reason in ("stop", "end_turn"):
-            # Model is done — return the final content
-            return {
-                "content": choice.message.content or "",
-                "tool_calls_made": tool_calls_made,
-                "iterations": iteration,
-                "stop_reason": "end_turn",
-            }
-        else:
-            # Unexpected finish_reason (length, content_filter, etc.)
-            logger.warning("Agentic loop: unexpected finish_reason=%s", choice.finish_reason)
-            return {
-                "content": choice.message.content or "",
-                "tool_calls_made": tool_calls_made,
-                "iterations": iteration,
-                "stop_reason": choice.finish_reason or "unknown",
-            }
-
-    # Safety valve: max iterations reached
-    logger.warning("Agentic loop: max_iterations (%d) reached", max_iterations)
-    return {
-        "content": messages[-1].get("content", "") if isinstance(messages[-1], dict) else "",
-        "tool_calls_made": tool_calls_made,
-        "iterations": iteration,
-        "stop_reason": "max_iterations",
-    }
-
-
-# ─── RESEARCH NOTES COMPRESSION ─────────────────────────────────
-# Prevents context window overflow on multi-iteration runs.
-# After iteration 1, older research notes are summarised to ~500 chars
-# while the latest note is kept verbatim.
-
-MAX_RESEARCH_CHARS = 8000  # Total budget for research_notes context
-
-
-def compress_research_notes(notes: list[str]) -> list[str]:
-    """Compress older research notes if total size exceeds budget.
-
-    Strategy:
-    - Keep the latest note verbatim (most relevant)
-    - Summarise older notes into condensed bullet points
-    - Total stays under MAX_RESEARCH_CHARS
-    """
-    if not notes:
-        return notes
-
-    total_chars = sum(len(n) for n in notes)
-    if total_chars <= MAX_RESEARCH_CHARS:
-        return notes
-
-    if len(notes) <= 1:
-        # Single note exceeds budget — truncate with marker
-        return [notes[0][:MAX_RESEARCH_CHARS] + "\n\n[TRUNCATED — original was longer]"]
-
-    # Keep latest note, compress older ones
-    latest = notes[-1]
-    older = notes[:-1]
-
-    # Budget for older notes: total budget minus latest note size
-    older_budget = max(500, MAX_RESEARCH_CHARS - len(latest))
-
-    # Compress each older note to proportional share
-    per_note_budget = older_budget // len(older)
-    compressed = []
-    for note in older:
-        if len(note) <= per_note_budget:
-            compressed.append(note)
-        else:
-            # Extract key sentences (first + last paragraph)
-            paragraphs = [p.strip() for p in note.split("\n\n") if p.strip()]
-            if len(paragraphs) <= 2:
-                compressed.append(note[:per_note_budget] + "...")
-            else:
-                summary = paragraphs[0] + "\n\n[...compressed...]\n\n" + paragraphs[-1]
-                compressed.append(summary[:per_note_budget])
-
-    logger.info("Compressed research notes: %d chars → %d chars (%d notes)",
-                total_chars, sum(len(n) for n in compressed) + len(latest), len(notes))
-
-    return compressed + [latest]
-
-
 # ─── AGENT NODE: RESEARCHER ─────────────────────────────────────
 
 def researcher_node(state: AgentState) -> dict:
     """
     The Researcher agent gathers information on the topic.
-    
+
     READS: topic, review_feedback (if revision cycle)
     WRITES: research_notes (appended), agent_history (appended)
-    
-    IMPORTANT: research_notes uses Annotated[list, operator.add],
-    so returning a list APPENDS to existing notes rather than
-    replacing them. This means research accumulates across iterations.
     """
     logger.info("=" * 50)
     logger.info("RESEARCHER AGENT - Iteration %d", state.get('iteration', 0))
     logger.info("=" * 50)
-    
-    # Build the user message based on current state
+
     topic = state["topic"]
     feedback = state.get("review_feedback", "")
-    
+
     if feedback and state.get("iteration", 0) > 0:
-        # This is a REVISION cycle — we have feedback to address
         user_msg = f"""Topic: {topic}
 
 PREVIOUS REVIEW FEEDBACK (address these gaps):
@@ -405,25 +100,21 @@ PREVIOUS REVIEW FEEDBACK (address these gaps):
 Conduct ADDITIONAL research specifically targeting the gaps identified above.
 Focus on finding information that was missing from the previous research."""
     else:
-        # First pass — fresh research
         user_msg = f"""Topic: {topic}
 
-Conduct comprehensive research on this topic. Gather facts, technical 
+Conduct comprehensive research on this topic. Gather facts, technical
 details, current trends, and notable perspectives."""
-    
-    # Call the LLM
-    llm = get_llm(temperature=0.3)  # Low temp for factual accuracy
+
+    llm = get_llm(temperature=0.3)
     response = llm.invoke([
         SystemMessage(content=RESEARCHER_PROMPT),
         HumanMessage(content=user_msg)
     ])
-    
+
     research = response.content
     usage = track_llm_usage(response, "researcher")
     logger.info("Research produced: %d characters ($%.4f)", len(research), usage["cost_usd"])
 
-    # Return PARTIAL state update
-    # research_notes is Annotated[list, operator.add] → this APPENDS
     return {
         "research_notes": [research],
         "current_agent": "researcher",
@@ -437,21 +128,15 @@ details, current trends, and notable perspectives."""
 def writer_node(state: AgentState) -> dict:
     """
     The Writer agent drafts or revises the blog article.
-    
+
     READS: topic, research_notes, review_feedback (if revision), draft
     WRITES: draft (replaced), iteration (incremented), agent_history
-    
-    IMPORTANT: Unlike research_notes, 'draft' is a plain string.
-    Returning a new draft REPLACES the old one — we only keep the
-    latest version. This is intentional: we want the Writer to
-    produce a complete, standalone article each time.
     """
     logger.info("=" * 50)
     logger.info("WRITER AGENT - Iteration %d", state.get('iteration', 0))
     logger.info("=" * 50)
-    
+
     topic = state["topic"]
-    # Compress research notes to prevent context window overflow on later iterations
     raw_notes = state.get("research_notes", [])
     compressed_notes = compress_research_notes(raw_notes)
     research = "\n\n---\n\n".join(compressed_notes)
@@ -459,13 +144,11 @@ def writer_node(state: AgentState) -> dict:
     current_draft = state.get("draft", "")
     iteration = state.get("iteration", 0)
 
-    # Include fact-check revision notes if accuracy failed
     fact_notes = state.get("fact_revision_notes")
     if fact_notes:
         feedback = f"{feedback}\n\n{fact_notes}" if feedback else fact_notes
-    
+
     if feedback and current_draft:
-        # REVISION mode — improve existing draft based on feedback
         user_msg = f"""Topic: {topic}
 
 RESEARCH NOTES:
@@ -477,24 +160,22 @@ YOUR PREVIOUS DRAFT:
 REVIEWER FEEDBACK TO ADDRESS:
 {feedback}
 
-Revise the draft to address EACH piece of feedback. Maintain what was 
+Revise the draft to address EACH piece of feedback. Maintain what was
 good, fix what was flagged. Produce the COMPLETE revised article."""
     else:
-        # FIRST DRAFT mode — write from scratch
         user_msg = f"""Topic: {topic}
 
 RESEARCH NOTES:
 {research}
 
 Write a complete, polished technical blog article based on these research notes."""
-    
-    # Call the LLM
-    llm = get_llm(temperature=0.7)  # Medium temp for creative writing
+
+    llm = get_llm(temperature=0.7)
     response = llm.invoke([
         SystemMessage(content=WRITER_PROMPT),
         HumanMessage(content=user_msg)
     ])
-    
+
     draft = response.content
     usage = track_llm_usage(response, "writer")
     logger.info("Draft produced: %d characters, ~%d words ($%.4f)", len(draft), len(draft.split()), usage["cost_usd"])
@@ -513,43 +194,31 @@ Write a complete, polished technical blog article based on these research notes.
 def reviewer_node(state: AgentState) -> dict:
     """
     The Reviewer agent evaluates the draft and produces structured feedback.
-    
+
     READS: draft, topic, research_notes
     WRITES: review_feedback, review_score, review_passed, agent_history
-    
-    CRITICAL DESIGN DECISION: We use structured JSON output here.
-    The Reviewer's output needs to be MACHINE-READABLE because the
-    orchestrator (supervisor/debate/swarm) makes routing decisions
-    based on the score and pass/fail status.
-    
-    If we used free-form text, the orchestrator would need another
-    LLM call just to interpret the review. Structured output
-    eliminates that overhead and ambiguity.
     """
     logger.info("=" * 50)
     logger.info("REVIEWER AGENT - Evaluating draft")
     logger.info("=" * 50)
-    
+
     draft = state.get("draft", "")
     topic = state["topic"]
     research = "\n\n".join(state.get("research_notes", []))
-    
+
     user_msg = f"""Evaluate this blog article draft.
 
 ORIGINAL TOPIC: {topic}
 
 RESEARCH NOTES (for accuracy checking):
-{research[:2000]}  
+{research[:2000]}
 
 ARTICLE DRAFT TO REVIEW:
 {draft}
 
-Evaluate against all criteria and respond with ONLY the JSON structure 
+Evaluate against all criteria and respond with ONLY the JSON structure
 specified in your instructions."""
-    
-    # Low temperature for consistent, reliable scoring
-    # Use response_format to GUARANTEE valid JSON (Domain 4, Task 4.3)
-    # This eliminates JSON syntax errors — no more markdown stripping fallbacks
+
     llm = ChatOpenAI(
         model="gpt-5o-mini",
         temperature=0.2,
@@ -562,8 +231,6 @@ specified in your instructions."""
     ])
 
     usage = track_llm_usage(response, "reviewer")
-
-    # Parse the structured response — guaranteed valid JSON by response_format
     raw = response.content.strip()
 
     try:
@@ -578,7 +245,6 @@ specified in your instructions."""
             for imp in improvements[:3]:
                 logger.info("   -> %s", imp)
     except (json.JSONDecodeError, ValueError) as e:
-        # Structured error instead of silent fallback
         logger.warning("Could not parse review JSON: %s — raw: %s", e, raw[:200])
         score = 5.0
         passed = False
@@ -590,7 +256,7 @@ specified in your instructions."""
             "improvements_needed": ["Review JSON could not be parsed — re-review needed"],
             "summary": "Automated review failed to produce valid JSON. Manual review recommended."
         }, indent=2)
-    
+
     return {
         "review_feedback": feedback_text,
         "review_score": score,
@@ -614,20 +280,18 @@ def risk_aware_reviewer_node(state: AgentState) -> dict:
     """
     draft = state.get("draft", "")
 
-    # Check if draft contains code blocks
     code_blocks = _extract_code_blocks(draft)
     if not code_blocks:
         return reviewer_node(state)
 
     logger.info("RISK-AWARE REVIEWER - Analysing %d code blocks", len(code_blocks))
 
-    # Build temporary in-memory code graph
     try:
         from shared.code_graph import CodeGraph
-        import tempfile, os
+        import tempfile
+        import os
         graph = CodeGraph(":memory:")
 
-        # Write code blocks to temp files for parsing
         with tempfile.TemporaryDirectory() as tmpdir:
             for i, (filename, code) in enumerate(code_blocks):
                 fpath = os.path.join(tmpdir, filename or f"block_{i}.py")
@@ -645,7 +309,6 @@ def risk_aware_reviewer_node(state: AgentState) -> dict:
     if not risk_report:
         return reviewer_node(state)
 
-    # Build risk-prioritized checklist for the reviewer prompt
     risk_lines = ["HIGH-PRIORITY REVIEW TARGETS (risk-scored by code analysis):"]
     for item in risk_report:
         risk_lines.append(
@@ -654,15 +317,12 @@ def risk_aware_reviewer_node(state: AgentState) -> dict:
         )
     risk_context = "\n".join(risk_lines)
 
-    # Inject risk context into reviewer's evaluation
     logger.info("Risk report: %d high-risk functions identified", len(risk_report))
 
-    # Run standard review with risk context prepended to the draft
     augmented_state = dict(state)
     augmented_state["draft"] = f"[CODE RISK ANALYSIS]\n{risk_context}\n\n{draft}"
     result = reviewer_node(augmented_state)
 
-    # Add risk metadata to history
     result["agent_history"] = [
         f"Risk-aware review: {len(risk_report)} high-risk functions flagged"
     ] + result.get("agent_history", [])
@@ -671,11 +331,7 @@ def risk_aware_reviewer_node(state: AgentState) -> dict:
 
 
 def _extract_code_blocks(text: str) -> list[tuple]:
-    """Extract (filename, code) tuples from markdown code blocks.
-
-    Handles ```python and ```filename.py fenced blocks.
-    """
-    import re
+    """Extract (filename, code) tuples from markdown code blocks."""
     blocks = []
     pattern = re.compile(r"```(?:python|(\S+\.py))?\s*\n(.*?)```", re.DOTALL)
     for match in pattern.finditer(text):
@@ -694,9 +350,6 @@ def fact_check_node(state: AgentState) -> dict:
 
     READS: draft, topic, research_notes
     WRITES: extracted_claims, claim_verifications, accuracy_score, accuracy_passed, fact_revision_notes, agent_history
-
-    Uses the unified fact-checker from shared/fact_checker.py.
-    Runs AFTER reviewer but BEFORE convergence check.
     """
     from shared.fact_checker import (
         extract_claims, verify_claims, compute_accuracy_score, generate_revision_notes
@@ -710,20 +363,16 @@ def fact_check_node(state: AgentState) -> dict:
     topic = state["topic"]
     research = state.get("research_notes", [])
 
-    # Step 1: Extract claims
     claims = extract_claims(draft, topic)
     logger.info("Extracted %d claims from draft", len(claims))
 
-    # Step 2: Verify claims against research notes + web search
     verifications = verify_claims(claims, research, web_search=True)
     logger.info("Verified %d claims", len(verifications))
 
-    # Step 3: Compute accuracy score
     score = compute_accuracy_score(verifications)
     passed = score >= 9.5
     logger.info("Accuracy score: %.1f/10 | Passed (>=9.5): %s", score, passed)
 
-    # Step 4: Generate revision notes if needed
     revision_notes = generate_revision_notes(verifications) if not passed else None
 
     return {
@@ -740,12 +389,7 @@ def fact_check_node(state: AgentState) -> dict:
 # ─── UTILITY: STATE INITIALISER ─────────────────────────────────
 
 def create_initial_state(topic: str) -> AgentState:
-    """
-    Creates a clean initial state for any pattern.
-    
-    This ensures all fields have sensible defaults so agents
-    don't crash on missing keys during the first iteration.
-    """
+    """Creates a clean initial state for any pattern."""
     return {
         "topic": topic,
         "research_notes": [],
