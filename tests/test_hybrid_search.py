@@ -337,3 +337,33 @@ class TestSpecialCharacters:
         # No FTS matches — any results come from vector search only
         for r in results:
             assert r["fts_rank"] == 999
+
+
+# ─── EXTERNAL CONNECTION ──────────────────────────────────────────
+
+
+class TestExternalConnection:
+    def test_accepts_external_connection(self, tmp_path):
+        """HybridSearch can use a shared SQLite connection."""
+        import sqlite3
+        db_path = str(tmp_path / "shared.db")
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+        assert search.conn is conn
+        search.add("doc1", "test document")
+        assert search.count() == 1
+        search.close()
+
+    def test_default_memory_still_works(self):
+        """Default :memory: behavior is preserved."""
+        search = HybridSearch()
+        assert search.count() == 0
+        search.close()
+
+    def test_db_path_still_works(self, tmp_path):
+        """File-path constructor still works."""
+        db_path = str(tmp_path / "test.db")
+        search = HybridSearch(db_path=db_path)
+        search.close()
+        assert (tmp_path / "test.db").exists()

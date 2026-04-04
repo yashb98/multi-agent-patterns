@@ -39,10 +39,13 @@ SECURITY_KEYWORDS = frozenset({
 class CodeGraph:
     """SQLite-backed code knowledge graph with impact analysis."""
 
-    def __init__(self, db_path: str = ":memory:"):
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
+    def __init__(self, db_path: str = ":memory:", conn: sqlite3.Connection | None = None):
+        if conn is not None:
+            self.conn = conn
+        else:
+            self.conn = sqlite3.connect(db_path)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
 
     def _init_schema(self):

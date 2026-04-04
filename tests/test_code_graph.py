@@ -409,3 +409,33 @@ class TestFunctionsInFile:
     def test_empty_for_nonexistent_file(self, indexed_graph):
         funcs = indexed_graph.functions_in_file("nonexistent.py")
         assert funcs == []
+
+
+# ─── EXTERNAL CONNECTION ───────────────────────────────────────────
+
+
+class TestExternalConnection:
+    def test_accepts_external_connection(self, tmp_path):
+        """CodeGraph can use a shared SQLite connection."""
+        import sqlite3
+        db_path = str(tmp_path / "shared.db")
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        graph = CodeGraph(conn=conn)
+        assert graph.conn is conn
+        graph.close()
+
+    def test_default_memory_still_works(self):
+        """Default :memory: behavior is preserved."""
+        graph = CodeGraph()
+        assert graph.conn is not None
+        stats = graph.get_stats()
+        assert stats["nodes"] == 0
+        graph.close()
+
+    def test_db_path_still_works(self, tmp_path):
+        """File-path constructor still works."""
+        db_path = str(tmp_path / "test.db")
+        graph = CodeGraph(db_path=db_path)
+        graph.close()
+        assert (tmp_path / "test.db").exists()
