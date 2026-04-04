@@ -119,7 +119,8 @@ def run_agentic_loop(
         if openai_tools:
             kwargs["tools"] = openai_tools
 
-        response = client.chat.completions.create(**kwargs)
+        from shared.llm_retry import resilient_openai_call
+        response = resilient_openai_call(client.chat.completions.create, **kwargs)
         choice = response.choices[0]
 
         # ── Check stop_reason (finish_reason in OpenAI) ──
