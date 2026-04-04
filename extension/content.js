@@ -1,55 +1,78 @@
-// extension/content.js
-// Deep page scanner, form filler, behavior profiler, mutation observer.
+// extension/content.js — Page Scanner & Form Automation
+//
+// Runs on every page (<all_urls>, document_idle, all_frames).
+//
+// Responsibilities:
+//   1. Deep page scanning: form fields, buttons, shadow DOM, iframes
+//   2. Verification wall detection: Cloudflare, reCAPTCHA, hCaptcha
+//   3. Form filling with human-like typing (calibrated from real behavior)
+//   4. File upload via DataTransfer API
+//   5. Local AI field analysis via Gemini Nano (Chrome built-in AI)
+//   6. MutationObserver: sends snapshot updates on DOM changes
+//   7. Navigation event: sends full snapshot after page load
 
-// -- Behavior Profile (calibration from user's real patterns) --
+// ═══════════════════════════════════════════════════════════════
+// Behavior Profile — human-like interaction calibration
+// ═══════════════════════════════════════════════════════════════
+//
+// Passively observes real user keystrokes and clicks to calibrate
+// typing speed and interaction timing. After 500+ keystrokes,
+// the profile is saved to chrome.storage for future sessions.
 
 const behaviorProfile = {
-  avg_typing_speed: 80,      // ms per char (default, calibrated over time)
-  typing_variance: 0.3,       // 0-1
-  scroll_speed: 400,           // px/s
-  reading_pause: 1.0,          // seconds
-  field_to_field_gap: 500,     // ms between fields
+  avg_typing_speed: 80,    // ms per character
+  typing_variance: 0.3,    // 0-1 randomness factor
+  scroll_speed: 400,       // px/s for smooth scrolling
+  reading_pause: 1.0,      // seconds pause before clicking
+  field_to_field_gap: 500, // ms delay between form fields
   click_offset: { x: 0, y: 0 },
   calibrated: false,
   keystrokes: 0,
   clicks: 0,
 };
 
-// Load saved profile
+// Restore saved profile from previous sessions
 chrome.storage.local.get("behaviorProfile", (data) => {
   if (data.behaviorProfile) Object.assign(behaviorProfile, data.behaviorProfile);
 });
 
-// Calibration listeners (passive observation)
-document.addEventListener("keydown", (e) => {
-  if (!behaviorProfile._lastKey) behaviorProfile._lastKey = performance.now();
-  else {
-    const gap = performance.now() - behaviorProfile._lastKey;
+// Passive calibration: learn from real user typing speed
+document.addEventListener("keydown", () => {
+  const now = performance.now();
+  if (behaviorProfile._lastKey) {
+    const gap = now - behaviorProfile._lastKey;
+    // Only count plausible keystroke gaps (20-500ms)
     if (gap > 20 && gap < 500) {
       behaviorProfile.avg_typing_speed =
-        behaviorProfile.avg_typing_speed * 0.95 + gap * 0.05;
+        behaviorProfile.avg_typing_speed * 0.95 + gap * 0.05; // Exponential moving average
     }
-    behaviorProfile._lastKey = performance.now();
   }
+  behaviorProfile._lastKey = now;
   behaviorProfile.keystrokes++;
+
+  // Save after enough samples for statistical significance
   if (behaviorProfile.keystrokes > 500 && !behaviorProfile.calibrated) {
     behaviorProfile.calibrated = true;
     chrome.storage.local.set({ behaviorProfile });
   }
 }, { passive: true });
 
-document.addEventListener("click", (e) => {
-  behaviorProfile.clicks++;
-}, { passive: true });
+document.addEventListener("click", () => { behaviorProfile.clicks++; }, { passive: true });
 
-// -- Utility --
+// ═══════════════════════════════════════════════════════════════
+// Utilities
+// ═══════════════════════════════════════════════════════════════
 
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Resolve a CSS selector, including shadow DOM paths.
+ * Shadow DOM syntax: "host-selector>>inner-selector"
+ * Example: "#my-component>>input.email"
+ */
 function resolveSelector(selector) {
-  // Handle shadow DOM paths: "host>>inner"
   if (selector.includes(">>")) {
     const parts = selector.split(">>");
     let el = document.querySelector(parts[0].trim());
@@ -61,12 +84,19 @@ function resolveSelector(selector) {
   return document.querySelector(selector);
 }
 
-// -- Deep Page Scanner --
+// ═══════════════════════════════════════════════════════════════
+// Deep Page Scanner
+// ═══════════════════════════════════════════════════════════════
 
+/**
+ * Extract structured field info from a form element.
+ * Maps HTML input types + ARIA roles to our FieldInfo schema.
+ */
 function extractFieldInfo(el, iframeIndex) {
   const tag = el.tagName.toLowerCase();
-  let inputType = "text";
 
+  // Determine input type from tag, type attribute, and ARIA role
+  let inputType = "text";
   if (tag === "select") inputType = "select";
   else if (tag === "textarea") inputType = "textarea";
   else if (el.getAttribute("contenteditable") === "true") inputType = "rich_text";
@@ -76,13 +106,13 @@ function extractFieldInfo(el, iframeIndex) {
   else if (el.getAttribute("role") === "switch") inputType = "toggle";
   else inputType = (el.getAttribute("type") || "text").toLowerCase();
 
-  // Find label
+  // Find label: explicit <label for=>, wrapping <label>, aria-label, placeholder
   let label = "";
   const labelEl = el.closest("label") || (el.id && document.querySelector(`label[for="${el.id}"]`));
   if (labelEl) label = labelEl.textContent.trim();
   if (!label) label = el.getAttribute("aria-label") || el.getAttribute("placeholder") || "";
 
-  // Options for select/radio
+  // Extract <select> options (skip placeholder "Select..." options)
   const options = [];
   if (tag === "select") {
     el.querySelectorAll("option").forEach((opt) => {
@@ -91,17 +121,15 @@ function extractFieldInfo(el, iframeIndex) {
     });
   }
 
-  // Build unique selector
+  // Build a unique CSS selector for this element
   let selector = "";
   if (el.id) selector = `#${el.id}`;
   else if (el.name) selector = `${tag}[name="${el.name}"]`;
   else {
-    // Fallback: nth-of-type
     const parent = el.parentElement;
     if (parent) {
       const siblings = Array.from(parent.querySelectorAll(tag));
-      const idx = siblings.indexOf(el);
-      selector = `${tag}:nth-of-type(${idx + 1})`;
+      selector = `${tag}:nth-of-type(${siblings.indexOf(el) + 1})`;
     }
   }
 
@@ -124,24 +152,30 @@ function extractFieldInfo(el, iframeIndex) {
   };
 }
 
+/**
+ * Recursively scan for form fields across:
+ *   1. Regular DOM form elements (input, select, textarea, ARIA roles)
+ *   2. Shadow DOM roots (web components)
+ *   3. Same-origin iframes (cross-origin iframes are skipped)
+ *
+ * Max depth: 5 levels to prevent runaway recursion.
+ */
 function deepScan(root, depth, iframeIndex) {
   root = root || document;
   depth = depth || 0;
   iframeIndex = iframeIndex === undefined ? null : iframeIndex;
   const fields = [];
-  const MAX_DEPTH = 5;
-  if (depth > MAX_DEPTH) return fields;
+  if (depth > 5) return fields; // Safety limit
 
   // 1. Regular form fields
-  const inputs = root.querySelectorAll(
+  const selector =
     "input:not([type='hidden']), select, textarea, [contenteditable='true'], " +
-    "[role='listbox'], [role='combobox'], [role='radiogroup'], [role='switch'], [role='textbox']"
-  );
-  for (const el of inputs) {
+    "[role='listbox'], [role='combobox'], [role='radiogroup'], [role='switch'], [role='textbox']";
+  for (const el of root.querySelectorAll(selector)) {
     fields.push(extractFieldInfo(el, iframeIndex));
   }
 
-  // 2. Shadow roots
+  // 2. Shadow DOM roots
   root.querySelectorAll("*").forEach((el) => {
     if (el.shadowRoot) {
       fields.push(...deepScan(el.shadowRoot, depth + 1, iframeIndex));
@@ -149,30 +183,36 @@ function deepScan(root, depth, iframeIndex) {
   });
 
   // 3. Same-origin iframes
-  const iframes = root.querySelectorAll("iframe");
-  iframes.forEach((iframe, idx) => {
+  root.querySelectorAll("iframe").forEach((iframe, idx) => {
     try {
       if (iframe.contentDocument) {
         fields.push(...deepScan(iframe.contentDocument, depth + 1, idx));
       }
-    } catch (e) {
-      // Cross-origin — handled by background.js
+    } catch (_) {
+      // Cross-origin iframe — skip (would need background.js injection)
     }
   });
 
   return fields;
 }
 
+/**
+ * Detect CAPTCHA / verification walls.
+ * Checks: DOM selectors, iframe sources, and body text patterns.
+ * Returns null if no wall detected.
+ */
 function detectVerificationWall() {
-  const SELECTORS = [
+  // Check for known CAPTCHA DOM elements
+  const captchaSelectors = [
     { sel: "#challenge-running, .cf-turnstile, #cf-challenge-running", type: "cloudflare", conf: 0.95 },
     { sel: ".g-recaptcha, #recaptcha-anchor, [data-sitekey]", type: "recaptcha", conf: 0.90 },
     { sel: ".h-captcha", type: "hcaptcha", conf: 0.90 },
   ];
-  for (const { sel, type, conf } of SELECTORS) {
+  for (const { sel, type, conf } of captchaSelectors) {
     if (document.querySelector(sel)) return { wall_type: type, confidence: conf, details: sel };
   }
 
+  // Check iframe sources for CAPTCHA services
   for (const frame of document.querySelectorAll("iframe")) {
     const src = frame.src || "";
     if (src.includes("challenges.cloudflare.com")) return { wall_type: "cloudflare", confidence: 0.95, details: src };
@@ -180,6 +220,7 @@ function detectVerificationWall() {
     if (src.includes("hcaptcha.com")) return { wall_type: "hcaptcha", confidence: 0.90, details: src };
   }
 
+  // Check body text for verification/block messages
   const body = document.body?.innerText?.toLowerCase() || "";
   if (/verify you are human|are you a robot|confirm you're not a robot/.test(body))
     return { wall_type: "text_challenge", confidence: 0.85, details: "text match" };
@@ -189,8 +230,14 @@ function detectVerificationWall() {
   return null;
 }
 
+/**
+ * Build a complete PageSnapshot of the current page state.
+ * This is the primary data structure sent to the Python backend.
+ */
 function buildSnapshot() {
   const fields = deepScan();
+
+  // Extract clickable buttons and submit elements
   const buttons = [];
   document.querySelectorAll("button, input[type='submit'], a[role='button']").forEach((el) => {
     const text = el.textContent?.trim() || el.value || "";
@@ -213,29 +260,37 @@ function buildSnapshot() {
     page_text_preview: (document.body?.innerText || "").substring(0, 500),
     has_file_inputs: document.querySelector("input[type='file']") !== null,
     iframe_count: document.querySelectorAll("iframe").length,
-    page_stable: !document.querySelector('[aria-busy="true"]')
-      && !document.querySelector('.loading, .spinner, [class*="loading"]'),
+    page_stable:
+      !document.querySelector('[aria-busy="true"]') &&
+      !document.querySelector('.loading, .spinner, [class*="loading"]'),
     timestamp: Date.now(),
   };
 }
 
-// -- Form Actions --
+// ═══════════════════════════════════════════════════════════════
+// Form Actions — fill, click, upload, select, check
+// ═══════════════════════════════════════════════════════════════
 
+/**
+ * Fill a text field with human-like character-by-character typing.
+ * Dispatches proper keyboard events so React/Angular forms register the input.
+ */
 async function fillField(selector, value) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
+  // Scroll into view and pause (mimics human reading the label)
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   await delay(behaviorProfile.field_to_field_gap);
 
   el.focus();
   el.dispatchEvent(new Event("focus", { bubbles: true }));
 
-  // Clear
+  // Clear existing value
   el.value = "";
   el.dispatchEvent(new Event("input", { bubbles: true }));
 
-  // Type char by char
+  // Type each character with realistic timing variance
   for (const char of value) {
     el.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
     el.value += char;
@@ -246,12 +301,17 @@ async function fillField(selector, value) {
     await delay(Math.max(30, speed));
   }
 
+  // Finalize: blur triggers validation on most forms
   el.dispatchEvent(new Event("change", { bubbles: true }));
   el.dispatchEvent(new Event("blur", { bubbles: true }));
 
   return { success: true, value_set: el.value };
 }
 
+/**
+ * Upload a file via DataTransfer API.
+ * Receives base64 data from Python, creates a File object, assigns to input.
+ */
 async function uploadFile(selector, base64Data, fileName, mimeType) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
@@ -267,26 +327,32 @@ async function uploadFile(selector, base64Data, fileName, mimeType) {
   return { success: true, value_set: fileName };
 }
 
+/**
+ * Click an element with human-like scroll-into-view and reading pause.
+ */
 async function clickElement(selector) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   await delay(behaviorProfile.reading_pause * 500 * (0.5 + Math.random()));
-
   el.click();
+
   return { success: true };
 }
 
+/**
+ * Select a dropdown option by matching text or value (case-insensitive).
+ */
 async function selectOption(selector, value) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
-  // Find matching option
-  const options = el.querySelectorAll("option");
-  for (const opt of options) {
-    if (opt.textContent.trim().toLowerCase().includes(value.toLowerCase()) ||
-        opt.value.toLowerCase() === value.toLowerCase()) {
+  for (const opt of el.querySelectorAll("option")) {
+    if (
+      opt.textContent.trim().toLowerCase().includes(value.toLowerCase()) ||
+      opt.value.toLowerCase() === value.toLowerCase()
+    ) {
       el.value = opt.value;
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return { success: true, value_set: opt.textContent.trim() };
@@ -295,22 +361,35 @@ async function selectOption(selector, value) {
   return { success: false, error: "Option not found: " + value };
 }
 
+/**
+ * Check or uncheck a checkbox. Only clicks if state needs to change.
+ */
 async function checkBox(selector, shouldCheck) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
-  const isChecked = el.checked;
   const want = shouldCheck === "true" || shouldCheck === true;
-  if (isChecked !== want) {
-    el.click();
-  }
+  if (el.checked !== want) el.click();
+
   return { success: true, value_set: String(el.checked) };
 }
 
-// -- Gemini Nano (Chrome AI — Tier 2 local intelligence) --
+// ═══════════════════════════════════════════════════════════════
+// Gemini Nano — Tier 3 local AI (Chrome built-in, zero cost)
+// ═══════════════════════════════════════════════════════════════
+//
+// Used by the 5-tier form intelligence system:
+//   Tier 1: Pattern match (regex) — free, <1ms
+//   Tier 2: Semantic cache (embeddings) — free, ~5ms
+//   Tier 3: Gemini Nano (this) — free, ~500ms
+//   Tier 4: LLM API (GPT-4.1-mini) — $0.002, ~1s
+//   Tier 5: Vision (screenshot) — $0.01, ~3s
 
+/**
+ * Use Chrome's Prompt API (Gemini Nano) to analyze a form field locally.
+ * Returns the answer string, or null if Nano is unavailable.
+ */
 async function analyzeFieldLocally(question, inputType, options) {
-  // Check if Prompt API is available
   if (!self.ai || !self.ai.languageModel) return null;
 
   try {
@@ -336,6 +415,10 @@ async function analyzeFieldLocally(question, inputType, options) {
   }
 }
 
+/**
+ * Use Chrome's Writer API for longer-form answers (textarea fields).
+ * Falls back from Prompt API for questions needing paragraph answers.
+ */
 async function writeShortAnswer(question) {
   if (!self.ai || !self.ai.writer) return null;
 
@@ -357,16 +440,20 @@ async function writeShortAnswer(question) {
   }
 }
 
-// -- Message handler (from background.js) --
+// ═══════════════════════════════════════════════════════════════
+// Message handler — commands from background.js
+// ═══════════════════════════════════════════════════════════════
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const { action, payload } = msg;
-
   if (!action) return false;
 
   (async () => {
     let result;
     switch (action) {
+      case "get_snapshot":
+        result = buildSnapshot();
+        break;
       case "fill":
         result = await fillField(payload.selector, payload.value);
         break;
@@ -382,40 +469,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "check":
         result = await checkBox(payload.selector, payload.value);
         break;
-      case "analyze_field":
-        // Try Prompt API first, fall back to Writer API for textarea
-        let answer = await analyzeFieldLocally(
-          payload.question, payload.input_type, payload.options || []
-        );
+      case "analyze_field": {
+        // Tier 3: try Prompt API first, fall back to Writer API for textarea
+        let answer = await analyzeFieldLocally(payload.question, payload.input_type, payload.options || []);
         if (!answer && payload.input_type === "textarea") {
           answer = await writeShortAnswer(payload.question);
         }
         result = { success: !!answer, answer: answer || "" };
         break;
+      }
       default:
         result = { success: false, error: "Unknown action: " + action };
     }
     sendResponse(result);
   })();
 
-  return true;  // Keep channel open for async response
+  return true; // Keep message channel open for async sendResponse
 });
 
-// -- MutationObserver --
+// ═══════════════════════════════════════════════════════════════
+// MutationObserver — live DOM change detection
+// ═══════════════════════════════════════════════════════════════
+//
+// Debounced (500ms): DOM changes trigger a fresh snapshot sent to
+// background.js → Python. This keeps the bridge's cached snapshot
+// up-to-date without polling.
 
 function safeSendMessage(msg) {
-  if (!chrome.runtime?.id) return;  // Extension context invalidated
+  if (!chrome.runtime?.id) return; // Extension context invalidated (reload)
   try {
     chrome.runtime.sendMessage(msg).catch(() => {});
-  } catch (e) { /* service worker inactive */ }
+  } catch (_) { /* service worker inactive — message will be lost */ }
 }
 
 let scanTimeout;
 const observer = new MutationObserver(() => {
   clearTimeout(scanTimeout);
   scanTimeout = setTimeout(() => {
-    const snapshot = buildSnapshot();
-    safeSendMessage({ type: "mutation", payload: { snapshot } });
+    safeSendMessage({ type: "mutation", payload: { snapshot: buildSnapshot() } });
   }, 500);
 });
 
@@ -428,11 +519,12 @@ if (document.body) {
   });
 }
 
-// -- Initial snapshot on load --
+// ═══════════════════════════════════════════════════════════════
+// Initial snapshot — sent 1s after page load
+// ═══════════════════════════════════════════════════════════════
 
 window.addEventListener("load", () => {
   setTimeout(() => {
-    const snapshot = buildSnapshot();
-    safeSendMessage({ type: "navigation", payload: { snapshot } });
+    safeSendMessage({ type: "navigation", payload: { snapshot: buildSnapshot() } });
   }, 1000);
 });

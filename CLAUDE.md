@@ -23,8 +23,8 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 | Orchestration | 4 LangGraph patterns (hierarchical, peer debate, dynamic swarm, enhanced swarm) |
 | JobPulse | 10+ agents: Gmail, Calendar, GitHub, Notion, Budget, arXiv, Jobs — 24/7 via Telegram |
 | Job Autopilot | 5-gate pre-screen → scan → hybrid skill extract → tailor CV → ATS score → apply/queue |
-| Skill Graph | Nightly 3am GitHub sync → MindGraph skill/project graph → recruiter-grade pre-screen |
-| MindGraph | Entity extraction, GraphRAG retrieval, Three.js 3D visualization |
+| Skill Graph | Nightly 3am GitHub sync → CodeGraph skill/project graph → recruiter-grade pre-screen |
+| CodeGraph | AST-based code analysis, risk scoring, Mermaid/DOT visualization, review prioritization |
 | NLP Classifier | 3-tier: regex → embeddings (5ms) → LLM fallback. 250+ examples, 41 intents |
 | Chrome Extension Engine | MV3 extension + WebSocket bridge. Replaces Playwright when `APPLICATION_ENGINE=extension` |
 | Form Intelligence | 5-tier: Pattern (free) → Semantic Cache (free) → Gemini Nano (free) → LLM ($0.002) → Vision ($0.01) |
@@ -58,7 +58,7 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 |-----|---------|----------|
 | Main | Tasks, calendar, briefing, remote control | Default |
 | Budget | Expenses, income, savings, recurring | `TELEGRAM_BUDGET_BOT_TOKEN` |
-| Research | arXiv, trending, MindGraph | `TELEGRAM_RESEARCH_BOT_TOKEN` |
+| Research | arXiv, trending, CodeGraph | `TELEGRAM_RESEARCH_BOT_TOKEN` |
 | Jobs | Scan, apply, reject, stats | `TELEGRAM_JOBS_BOT_TOKEN` |
 | Alert | Send-only (gmail alerts, interviews) | `TELEGRAM_ALERT_BOT_TOKEN` |
 
@@ -82,7 +82,7 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 ## Stats
 
-~67,500 LOC | 293 Python files | 16 databases | 1456 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~67,000 LOC | 286 Python files | 16 databases | 1416 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
@@ -160,7 +160,7 @@ Manages the full external application lifecycle:
 ## Module Context (loaded when working in that directory)
 - `jobpulse/CLAUDE.md` — JobPulse agents, dispatch, Telegram
 - `patterns/CLAUDE.md` — 4 LangGraph orchestration patterns
-- `mindgraph_app/CLAUDE.md` — Knowledge graph, GraphRAG, 3D viz
+- `mindgraph_app/CLAUDE.md` — Code Review Graph, risk scoring, Mermaid/DOT viz
 - `shared/CLAUDE.md` — Cross-cutting utilities, NLP, fact-checker
 - `extension/` — Chrome MV3 extension (service worker, content script, side panel, state machines)
 - `jobpulse/state_machines/` — Platform state machines for extension engine

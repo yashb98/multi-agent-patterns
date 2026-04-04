@@ -1,4 +1,24 @@
-"""WebSocket server bridging Python backend and Chrome extension."""
+"""WebSocket server bridging the Python backend and Chrome extension.
+
+Architecture:
+    Python Backend  <--WebSocket-->  Chrome Extension (MV3)
+    ext_bridge.py                    background.js + content.js
+
+The bridge is a WebSocket SERVER. The extension connects as a CLIENT.
+Only one extension connection at a time — reconnections are handled
+gracefully (MV3 service workers restart during navigation).
+
+Command flow:
+    1. Python calls bridge.click(selector) / bridge.fill(selector, value) / etc.
+    2. Bridge sends JSON command {id, action, payload} to extension
+    3. Extension executes action and sends {id, type:"result", payload} back
+    4. Bridge resolves the asyncio.Future with the result
+
+Snapshot flow (passive):
+    1. Content script detects DOM mutations or page navigation
+    2. Extension sends {type:"mutation"/"navigation", payload:{snapshot}} to bridge
+    3. Bridge updates self._snapshot cache (used by get_snapshot())
+"""
 
 from __future__ import annotations
 
@@ -25,7 +45,17 @@ logger = get_logger(__name__)
 
 
 class ExtensionBridge:
-    """WebSocket server that communicates with the Chrome extension."""
+    """WebSocket server that communicates with the Chrome extension.
+
+    Usage:
+        bridge = ExtensionBridge()
+        await bridge.start()
+        await bridge.wait_for_connection()
+        snapshot = await bridge.navigate("https://example.com")
+        await bridge.fill("#email", "user@example.com")
+        await bridge.click("#submit")
+        await bridge.stop()
+    """
 
     def __init__(self, host: str = "localhost", port: int = 8765) -> None:
         self._host = host
@@ -37,21 +67,17 @@ class ExtensionBridge:
         self._snapshot: PageSnapshot | None = None
         self._connected: asyncio.Event = asyncio.Event()
 
+    # ─── Server lifecycle ────────────────────────────────────────
+
     async def start(self) -> None:
         """Start the WebSocket server."""
-        self._server = await serve(
-            self._handler,
-            self._host,
-            self._requested_port,
-        )
-        # Resolve actual port — prefer IPv4 socket (AF_INET, family=2)
-        # When port=0, OS assigns ports independently per socket family.
+        self._server = await serve(self._handler, self._host, self._requested_port)
+        # Resolve actual port (prefer IPv4 when port=0)
         for sock in self._server.sockets:
             if sock.family == socket.AF_INET:
                 self.port = sock.getsockname()[1]
                 break
         else:
-            # Fallback: use first available socket
             for sock in self._server.sockets:
                 self.port = sock.getsockname()[1]
                 break
@@ -67,7 +93,6 @@ class ExtensionBridge:
             await self._server.wait_closed()
             self._server = None
         self._connected.clear()
-        # Cancel all pending futures
         for fut in self._pending.values():
             if not fut.done():
                 fut.cancel()
@@ -87,8 +112,21 @@ class ExtensionBridge:
         """Whether the extension is currently connected."""
         return self._ws is not None and self._connected.is_set()
 
+    # ─── WebSocket handler ───────────────────────────────────────
+
     async def _handler(self, ws: ServerConnection) -> None:
-        """Handle a single WebSocket connection from the extension."""
+        """Handle a WebSocket connection from the extension.
+
+        Handles reconnection gracefully: if a new connection arrives while
+        an old one exists (MV3 service worker restart), the old connection
+        is replaced without clearing state.
+        """
+        # Replace previous connection if the extension reconnected
+        if self._ws is not None and self._ws is not ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
         self._ws = ws
         self._connected.set()
         logger.info("Extension connected from %s", ws.remote_address)
@@ -104,21 +142,19 @@ class ExtensionBridge:
                 msg_type: str = msg.get("type", "")
                 msg_id: str = msg.get("id", "")
 
-                # Ping/pong keepalive
                 if msg_type == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
                     continue
 
-                # Mutation/navigation events — update cached snapshot
+                # Content script events — update cached snapshot
                 if msg_type in ("mutation", "navigation"):
                     snap_data = msg.get("payload", {}).get("snapshot")
                     if snap_data:
                         self._snapshot = PageSnapshot(**snap_data)
                     continue
 
-                # Response to a pending command (ack or result)
+                # Response to a pending command
                 if msg_id and msg_id in self._pending:
-                    # Only resolve on "result" — "ack" is informational
                     if msg_type == "result":
                         fut = self._pending.pop(msg_id)
                         if not fut.done():
@@ -130,8 +166,12 @@ class ExtensionBridge:
         except websockets.exceptions.ConnectionClosed:
             logger.info("Extension disconnected")
         finally:
-            self._ws = None
-            self._connected.clear()
+            # Only clear state if no newer connection has replaced us
+            if self._ws is ws:
+                self._ws = None
+                self._connected.clear()
+
+    # ─── Command transport ───────────────────────────────────────
 
     async def _send_command(
         self,
@@ -139,7 +179,7 @@ class ExtensionBridge:
         payload: dict[str, Any] | None = None,
         timeout_ms: int = 30000,
     ) -> dict[str, Any]:
-        """Send a command to the extension and wait for the result payload."""
+        """Send a command and wait for the result. Raises on timeout or disconnect."""
         if not self.connected:
             raise ConnectionError("Extension not connected")
 
@@ -154,36 +194,69 @@ class ExtensionBridge:
         await self._ws.send(cmd.model_dump_json())
 
         try:
-            result = await asyncio.wait_for(fut, timeout=timeout_ms / 1000)
-            return result
+            return await asyncio.wait_for(fut, timeout=timeout_ms / 1000)
         except TimeoutError:
             self._pending.pop(cmd_id, None)
             raise
 
+    # ─── Public API ──────────────────────────────────────────────
+
     async def navigate(self, url: str, timeout_ms: int = 30000) -> PageSnapshot:
-        """Navigate to URL and return a PageSnapshot."""
-        result = await self._send_command("navigate", {"url": url}, timeout_ms=timeout_ms)
-        snap_data = result.get("snapshot")
-        if snap_data:
-            self._snapshot = PageSnapshot(**snap_data)
+        """Navigate to URL and return a PageSnapshot.
+
+        Handles MV3 service worker restarts during navigation:
+        1. Sends navigate command (may timeout if service worker restarts)
+        2. Waits for reconnection if needed
+        3. Polls for snapshot from content script events
+        4. Falls back to requesting snapshot directly
+        """
+        self._snapshot = None  # Clear cache — we want a fresh snapshot
+
+        try:
+            result = await self._send_command("navigate", {"url": url}, timeout_ms=timeout_ms)
+            snap_data = result.get("snapshot")
+            if snap_data:
+                self._snapshot = PageSnapshot(**snap_data)
+        except (TimeoutError, ConnectionError):
+            logger.info("Navigate command lost — waiting for extension reconnect")
+
+        # Wait for reconnection if service worker restarted
+        if not self.connected:
+            await self.wait_for_connection(timeout=15)
+
+        # Poll for snapshot from content script events (navigation/mutation)
+        for _ in range(10):
+            if self._snapshot is not None:
+                break
+            await asyncio.sleep(1)
+
+        # Last resort: request snapshot directly from content script
+        if self._snapshot is None and self.connected:
+            for _ in range(3):
+                try:
+                    result = await self._send_command("get_snapshot", timeout_ms=5000)
+                    if result:
+                        self._snapshot = PageSnapshot(**result)
+                        break
+                except (TimeoutError, ConnectionError):
+                    await asyncio.sleep(2)
+
         if self._snapshot is None:
             raise RuntimeError("No snapshot received after navigation")
         return self._snapshot
 
     async def fill(self, selector: str, value: str, timeout_ms: int = 10000) -> FillResult:
-        """Fill a form field and return the result."""
-        result = await self._send_command(
-            "fill", {"selector": selector, "value": value}, timeout_ms=timeout_ms
-        )
+        """Fill a form field with human-like typing."""
+        result = await self._send_command("fill", {"selector": selector, "value": value}, timeout_ms=timeout_ms)
         return FillResult(**result)
 
     async def click(self, selector: str, timeout_ms: int = 10000) -> bool:
-        """Click an element."""
+        """Click an element by CSS selector."""
         result = await self._send_command("click", {"selector": selector}, timeout_ms=timeout_ms)
         return bool(result.get("success", False))
 
     async def upload(self, selector: str, file_path: Path, timeout_ms: int = 30000) -> bool:
-        """Base64-encode a file and send it to the extension for DataTransfer upload."""
+        """Upload a file to an <input type='file'> element via base64 transfer."""
         import base64
         import mimetypes
 
@@ -193,34 +266,25 @@ class ExtensionBridge:
 
         result = await self._send_command(
             "upload",
-            {
-                "selector": selector,
-                "file_base64": b64,
-                "file_name": file_path.name,
-                "mime_type": mime,
-            },
+            {"selector": selector, "file_base64": b64, "file_name": file_path.name, "mime_type": mime},
             timeout_ms=timeout_ms,
         )
         return bool(result.get("success", False))
 
     async def select_option(self, selector: str, value: str, timeout_ms: int = 10000) -> bool:
-        """Select a dropdown option by value."""
-        result = await self._send_command(
-            "select", {"selector": selector, "value": value}, timeout_ms=timeout_ms
-        )
+        """Select a dropdown option by value or text match."""
+        result = await self._send_command("select", {"selector": selector, "value": value}, timeout_ms=timeout_ms)
         return bool(result.get("success", False))
 
     async def check(self, selector: str, should_check: bool, timeout_ms: int = 10000) -> bool:
         """Check or uncheck a checkbox."""
         result = await self._send_command(
-            "check",
-            {"selector": selector, "value": str(should_check).lower()},
-            timeout_ms=timeout_ms,
+            "check", {"selector": selector, "value": str(should_check).lower()}, timeout_ms=timeout_ms
         )
         return bool(result.get("success", False))
 
     async def screenshot(self, timeout_ms: int = 10000) -> bytes:
-        """Request a screenshot from the extension (returns PNG bytes)."""
+        """Capture a screenshot of the visible tab (returns PNG bytes)."""
         import base64
 
         result = await self._send_command("screenshot", timeout_ms=timeout_ms)
@@ -230,9 +294,10 @@ class ExtensionBridge:
     async def analyze_field_locally(
         self, question: str, input_type: str, options: list[str], timeout_ms: int = 15000
     ) -> str | None:
-        """Ask Gemini Nano (via Chrome extension) to analyze a field.
+        """Ask Gemini Nano (via Chrome extension) to analyze a form field.
 
         Returns the answer string, or None if Nano is unavailable.
+        This is Tier 3 of the 5-tier form intelligence system.
         """
         result = await self._send_command(
             "analyze_field",
@@ -242,6 +307,17 @@ class ExtensionBridge:
         answer = result.get("answer", "")
         return answer if answer else None
 
-    async def get_snapshot(self) -> PageSnapshot | None:
-        """Return the latest cached page snapshot."""
+    async def get_snapshot(self, force_refresh: bool = False) -> PageSnapshot | None:
+        """Return the latest page snapshot.
+
+        If force_refresh=True, requests a fresh scan from the content script
+        instead of returning the cached version.
+        """
+        if force_refresh and self.connected:
+            try:
+                result = await self._send_command("get_snapshot", timeout_ms=10000)
+                if result:
+                    self._snapshot = PageSnapshot(**result)
+            except (TimeoutError, Exception):
+                pass  # Fall back to cached snapshot
         return self._snapshot

@@ -351,10 +351,17 @@ class ApplicationOrchestrator:
         return {"success": False, "error": f"Exhausted {MAX_FORM_PAGES} pages", "screenshot": last_screenshot}
 
     async def _execute_action(self, action: Any):
-        atype = getattr(action, "action_type", None) or action.get("type", "")
-        selector = getattr(action, "selector", None) or action.get("selector", "")
-        value = getattr(action, "value", None) or action.get("value", "")
-        file_path = getattr(action, "file_path", None) or action.get("file_path")
+        if hasattr(action, "model_dump"):
+            # Pydantic Action model
+            atype = getattr(action, "type", "")
+            selector = getattr(action, "selector", "")
+            value = getattr(action, "value", "")
+            file_path = getattr(action, "file_path", None)
+        else:
+            atype = action.get("type", "")
+            selector = action.get("selector", "")
+            value = action.get("value", "")
+            file_path = action.get("file_path")
 
         if atype == "fill":
             await self.bridge.fill(selector, value)

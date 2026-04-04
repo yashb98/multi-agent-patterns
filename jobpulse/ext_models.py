@@ -99,6 +99,7 @@ class PageSnapshot(BaseModel):
     page_text_preview: str = ""
     has_file_inputs: bool = False
     iframe_count: int = 0
+    page_stable: bool = True
     timestamp: int = 0
 
 
@@ -118,6 +119,7 @@ class ExtCommand(BaseModel):
         "wait",
         "close_tab",
         "analyze_field",
+        "get_snapshot",
     ]
     payload: dict[str, Any] = {}
 

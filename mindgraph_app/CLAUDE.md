@@ -1,14 +1,62 @@
-# Knowledge MindGraph
+# Code Review Graph System
 
-Entity/relation extraction → SQLite knowledge graph → GraphRAG retrieval → Three.js 3D visualization.
+AST-based code analysis + risk scoring + dependency visualization. Replaces the old knowledge-only MindGraph with a production code intelligence layer.
 
-## Components
-- extraction: LLM-based entity/relation extraction (14 types each)
-- storage: SQLite knowledge graph (entities, relations, simulation events)
-- retrieval: GraphRAG — local search, multi-hop traversal, temporal, RLM deep query
-- visualization: FastAPI serving static HTML + Three.js frontend
+## Architecture
+
+```
+Source Code → AST Parser → SQLite Graph (nodes + edges)
+    → Risk Scoring → Review Prioritization → Mermaid/DOT Export
+```
+
+## Core Components
+
+| Module | Path | Purpose |
+|--------|------|---------|
+| CodeGraph | `shared/code_graph.py` | AST indexing, call graph, risk scoring |
+| Graph Visualizer | `shared/graph_visualizer.py` | Mermaid/DOT export, pattern topology diagrams |
+| Risk-Aware Reviewer | `shared/agents.py:risk_aware_reviewer_node` | Injects risk context into LLM code review |
+
+## CodeGraph Schema (SQLite)
+
+**nodes** — functions, classes, methods extracted from Python AST
+- `kind`: function, class, method
+- `qualified_name`: `file_path::ClassName::method_name`
+- `is_test`, `is_async`: flags for coverage + async detection
+
+**edges** — dependency relationships
+- `kind`: calls, imports, inherits, contains
+- `source_qname` → `target_qname`
+
+## Risk Scoring (0.0 — 1.0)
+
+| Factor | Weight | Trigger |
+|--------|--------|---------|
+| Security keyword | +0.25 | auth, password, token, crypt, sql, jwt, etc. |
+| Fan-in (callers) | +0.05/caller | High caller count = high blast radius |
+| Cross-file callers | +0.10 | Dependencies span multiple files |
+| No test coverage | +0.30 | Function has no corresponding test |
+| Large function | +0.15 | >50 lines |
+
+## Visualization Export
+
+- `export_pattern_mermaid(name)` — 4 LangGraph pattern topologies (hierarchical, peer_debate, dynamic_swarm, enhanced_swarm)
+- `export_code_graph_mermaid(graph, focus_file, max_nodes, show_risk)` — Dependency graph with risk heatmap
+- `export_code_graph_dot(graph)` — Graphviz DOT format
+
+Risk colors: Red (#ff6b6b) >= 0.7, Yellow (#ffd93d) >= 0.4, Green (#6bcb77) < 0.4
+
+## Legacy MindGraph (still used by JobPulse)
+
+The original entity/relation knowledge graph (`storage.py`, `extractor.py`, `retriever.py`) is still used by:
+- `jobpulse/skill_graph_store.py` — Skill/project graph for job pre-screening
+- `jobpulse/event_logger.py` — Agent action timeline
+- `jobpulse/auto_extract.py` — Document entity extraction
+
+These will be migrated to CodeGraph in a future phase. Do not delete `storage.py`, `extractor.py`, or `retriever.py` until migration is complete.
 
 ## Rules
-- Storage layer in mindgraph_app/storage.py — all DB access goes through here
+- CodeGraph lives in `shared/` — all systems can import it
+- Legacy storage layer in `mindgraph_app/storage.py` — jobpulse-only access
+- Tests MUST use `:memory:` or `tmp_path` for SQLite (see mistakes.md: 2026-03-25)
 - Never import from jobpulse/ or patterns/
-- Tests MUST patch DB_PATH to tmp_path (see mistakes.md: 2026-03-25 production DB wipe)
