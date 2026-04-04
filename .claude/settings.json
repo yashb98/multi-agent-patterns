@@ -1,5 +1,28 @@
 {
+  "mcp": {
+    "servers": {
+      "code-intelligence": {
+        "type": "stdio",
+        "command": "python",
+        "args": ["shared/code_intel_mcp.py"],
+        "env": {
+          "CI_DB_PATH": "data/code_intelligence.db",
+          "VOYAGE_API_KEY": "${VOYAGE_API_KEY}"
+        }
+      }
+    }
+  },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/scripts/session-primer.py"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
@@ -7,6 +30,10 @@
           {
             "type": "command",
             "command": "bash .claude/hooks/scripts/post-edit-lint.sh $TOOL_INPUT_PATH"
+          },
+          {
+            "type": "command",
+            "command": "python .claude/hooks/scripts/reindex-file.py"
           }
         ]
       }
