@@ -346,3 +346,57 @@ class TestGetPrimer:
         primer = ci.get_primer(top_risk=3)
         # Auth functions have security keywords
         assert "verify_token" in primer or "login" in primer
+
+
+class TestIntegration:
+    """End-to-end: index → query → reindex → re-query."""
+
+    def test_full_pipeline(self, ci, sample_project):
+        # Index
+        stats = ci.index_directory(str(sample_project))
+        assert stats["nodes"] > 0
+
+        # Query
+        sym = ci.find_symbol("login")
+        assert sym is not None
+        assert sym["kind"] == "function"
+
+        callers = ci.callers_of("login")
+        assert callers["total"] >= 1
+
+        search_results = ci.semantic_search("authentication")
+        assert len(search_results) > 0
+
+        summary = ci.module_summary("auth.py")
+        assert len(summary["classes"]) >= 1
+
+        risk = ci.risk_report(top_n=5)
+        assert len(risk["functions"]) >= 1
+
+        # Primer
+        primer = ci.get_primer()
+        assert len(primer) > 100
+
+        # Modify and reindex
+        (sample_project / "auth.py").write_text(textwrap.dedent("""\
+            def login(username: str, password: str) -> str:
+                return "token_" + username
+
+            def register(email: str) -> bool:
+                return True
+        """))
+        result = ci.reindex_file("auth.py", str(sample_project))
+        assert result["nodes_added"] >= 2
+
+        # Verify new function is findable
+        reg = ci.find_symbol("register")
+        assert reg is not None
+
+        # Verify old class is gone
+        auth_mgr = ci.find_symbol("AuthManager")
+        assert auth_mgr is None
+
+    def test_text_file_searchable(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        results = ci.semantic_search("Auth Project")
+        assert len(results) > 0
