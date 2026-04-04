@@ -1,4 +1,4 @@
-"""FastAPI app — serves API + static frontend."""
+"""FastAPI app — serves CodeGraph API + legacy MindGraph API + static frontend."""
 
 import uvicorn
 from pathlib import Path
@@ -10,13 +10,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mindgraph_app.api import router, process_router, rate_router
+from mindgraph_app.codegraph_api import codegraph_router
 from jobpulse.health_api import health_router
 from jobpulse.analytics_api import analytics_router
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-app = FastAPI(title="MindGraph", version="0.1.0")
+app = FastAPI(title="CodeGraph", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,9 +26,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# New CodeGraph endpoints (primary)
+app.include_router(codegraph_router)
+
+# Legacy MindGraph endpoints (still used by jobpulse)
 app.include_router(router)
 app.include_router(process_router)
 app.include_router(rate_router)
+
+# JobPulse dashboards
 app.include_router(health_router)
 app.include_router(analytics_router)
 
@@ -38,7 +45,11 @@ if static_dir.exists():
 
 
 def main():
-    logger.info("MindGraph starting at http://localhost:8000")
+    logger.info("CodeGraph starting at http://localhost:8000")
+    logger.info("  CodeGraph API: http://localhost:8000/api/codegraph/graph")
+    logger.info("  Risk Report:   http://localhost:8000/api/codegraph/risk-report")
+    logger.info("  Patterns:      http://localhost:8000/api/codegraph/patterns")
+    logger.info("  Swagger UI:    http://localhost:8000/docs")
     uvicorn.run("mindgraph_app.main:app", host="0.0.0.0", port=8000, reload=True)
 
 
