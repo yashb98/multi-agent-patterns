@@ -275,7 +275,11 @@ class CodeIntelligence:
         Optimized: 3 bulk SQL queries instead of 3 per function.
         Handles 10K+ functions in seconds instead of hours.
         """
-        from shared.code_graph import SECURITY_KEYWORDS
+        from shared.code_graph import (
+            _HIGH_CONFIDENCE_KEYWORDS,
+            _CONTEXT_DEPENDENT_KEYWORDS,
+            _SECURITY_CONTEXT_WORDS,
+        )
 
         # Fetch all functions with their metadata
         functions = self.conn.execute(
@@ -327,8 +331,11 @@ class CodeIntelligence:
 
             score = 0.0
 
-            # Security keywords
-            if any(kw in name_lower for kw in SECURITY_KEYWORDS):
+            # Security keywords — two-tier matching (matches CodeGraph.compute_risk_score)
+            has_high = any(kw in name_lower for kw in _HIGH_CONFIDENCE_KEYWORDS)
+            has_ctx_dep = any(kw in name_lower for kw in _CONTEXT_DEPENDENT_KEYWORDS)
+            has_sec_ctx = any(ctx in name_lower for ctx in _SECURITY_CONTEXT_WORDS)
+            if has_high or (has_ctx_dep and has_sec_ctx):
                 score += 0.25
 
             # Fan-in
@@ -573,16 +580,14 @@ class CodeIntelligence:
         nodes_added = max(0, nodes_after - nodes_before)
         edges_added = max(0, edges_after - edges_before)
 
-        # 9. Recompute risk scores for this file's functions + callers
+        # 9. Recompute risk scores for this file's functions + surviving callers
         new_qname_rows = self.conn.execute(
             "SELECT qualified_name FROM nodes WHERE file_path=? AND kind IN ('function', 'method')",
             (rel_path,),
         ).fetchall()
         new_qnames = {r[0] for r in new_qname_rows}
 
-        to_rescore = new_qnames | (caller_qnames - old_qnames)  # callers still exist
-        # Also include callers that still exist in DB
-        existing_callers = set()
+        existing_callers: set[str] = set()
         if caller_qnames:
             placeholders = ",".join("?" * len(caller_qnames))
             existing_rows = self.conn.execute(

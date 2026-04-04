@@ -129,6 +129,11 @@ class TestExclusionPatterns:
         from shared.code_intelligence import _is_excluded
         assert _is_excluded("README.md") is False
 
+    def test_worktree_excluded(self):
+        from shared.code_intelligence import _is_excluded
+        assert _is_excluded(".claude/worktrees/agent-abc/auth.py") is True
+        assert _is_excluded(".claude/worktrees/my-feature/src/main.py") is True
+
     def test_binary_excluded(self):
         from shared.code_intelligence import _is_excluded
         assert _is_excluded("logo.png") is True
@@ -304,6 +309,38 @@ class TestRiskReport:
         result = ci.risk_report(file="auth.py")
         for fn in result["functions"]:
             assert fn["file"] == "auth.py"
+
+
+class TestRiskScoringConsistency:
+    """Verify batch scoring matches CodeGraph.compute_risk_score two-tier logic."""
+
+    def test_security_keyword_two_tier(self, ci, tmp_path):
+        """Context-dependent keywords without security context should NOT score."""
+        src = tmp_path / "proj"
+        src.mkdir()
+        (src / "app.py").write_text(textwrap.dedent("""\
+            def count_tokens(text: str) -> int:
+                return len(text.split())
+
+            def verify_user_token(token: str) -> bool:
+                return token == "valid"
+        """))
+        ci.index_directory(str(src))
+
+        # count_tokens has "token" (context-dependent) but NO security context → low risk
+        count_node = ci.conn.execute(
+            "SELECT risk_score FROM nodes WHERE name='count_tokens'"
+        ).fetchone()
+
+        # verify_user_token has "verify" + "token" (context-dependent) AND "user" (security context) → high risk
+        verify_node = ci.conn.execute(
+            "SELECT risk_score FROM nodes WHERE name='verify_user_token'"
+        ).fetchone()
+
+        assert count_node is not None
+        assert verify_node is not None
+        # verify_user_token should score higher (has security keyword boost)
+        assert verify_node[0] > count_node[0]
 
 
 class TestSemanticSearch:
