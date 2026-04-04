@@ -54,10 +54,17 @@ from shared.agents import (
     compute_cost_summary,
 )
 from shared.prompts import WRITER_PROMPT, REVIEWER_PROMPT
+from shared.experiential_learning import ExperienceMemory, Experience
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# ─── SHARED LEARNING MEMORY ───────────────────────────────────
+# SQLite-backed — experiences survive process restarts and are
+# shared across debate runs (same DB as enhanced_swarm).
+
+_experience_memory = ExperienceMemory(max_size=50, db_path="data/experience_memory.db")
 
 
 # ─── DEBATE-SPECIFIC AGENT VARIANTS ─────────────────────────────
@@ -92,12 +99,16 @@ def debate_researcher_node(state: AgentState) -> dict:
     
     # Round 2+: Debate mode — critique the draft using research expertise
     logger.info("RESEARCHER (Debate Round %d) - Cross-critiquing", iteration)
-    
+
     draft = state.get("draft", "")
     review = state.get("review_feedback", "")
     existing_research = "\n\n".join(state.get("research_notes", []))
-    
-    debate_prompt = f"""You are the Research Analyst in a peer debate.
+
+    # Inject learned experiences from past successful research
+    experience_context = _experience_memory.format_for_prompt("research")
+    experience_block = f"\n\nLEARNED PATTERNS FROM PAST SUCCESSES:\n{experience_context}" if experience_context else ""
+
+    debate_prompt = f"""You are the Research Analyst in a peer debate.{experience_block}
 
 The Writer has produced a draft, and the Reviewer has evaluated it.
 Your job is to CRITIQUE from the research perspective:
@@ -163,13 +174,17 @@ def debate_writer_node(state: AgentState) -> dict:
     
     # Round 2+: Debate mode — revise while responding to all critiques
     logger.info("WRITER (Debate Round %d) - Responding to critiques", iteration)
-    
+
     topic = state["topic"]
     draft = state.get("draft", "")
     research = "\n\n".join(state.get("research_notes", []))
     review = state.get("review_feedback", "")
-    
-    debate_prompt = f"""You are the Technical Writer in a peer debate.
+
+    # Inject learned writing experiences
+    experience_context = _experience_memory.format_for_prompt("writing")
+    experience_block = f"\n\nLEARNED PATTERNS FROM PAST SUCCESSES:\n{experience_context}" if experience_context else ""
+
+    debate_prompt = f"""You are the Technical Writer in a peer debate.{experience_block}
 
 You've received feedback from BOTH the Researcher and the Reviewer.
 Your task:
@@ -287,6 +302,20 @@ def convergence_check(state: AgentState) -> dict:
     
     logger.info("Decision: %s", decision)
     logger.info("Reason: %s", reason)
+
+    # Extract experiential learning from high-scoring debate rounds
+    if score >= 7.0:
+        exp = Experience(
+            task_description=state.get("topic", "")[:200],
+            successful_pattern=(
+                f"Debate round {iteration} scored {score}/10. "
+                f"Strengths: {state.get('review_feedback', '')[:300]}"
+            ),
+            score=score,
+            domain="writing",
+        )
+        _experience_memory.add(exp)
+        logger.info("Stored debate experience (score: %s)", score)
 
     # Prune state between debate rounds
     from shared.state import prune_state

@@ -57,10 +57,14 @@ from shared.agents import (
     get_llm,
     compute_cost_summary,
 )
+from shared.experiential_learning import ExperienceMemory, Experience
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# ─── SHARED LEARNING MEMORY ───────────────────────────────────
+_experience_memory = ExperienceMemory(max_size=50, db_path="data/experience_memory.db")
 
 
 # ─── TASK ANALYZER NODE ─────────────────────────────────────────
@@ -83,14 +87,22 @@ logger = get_logger(__name__)
 # This is fundamentally different from the hierarchy (fixed routing rules)
 # and debate (fixed round structure).
 
-TASK_ANALYZER_PROMPT = """You are a Task Analyzer for a dynamic agent swarm.
+def _build_task_analyzer_prompt() -> str:
+    """Build task analyzer prompt with injected experiential learning."""
+    experience_context = _experience_memory.format_for_prompt("task_analysis")
+    experience_block = (
+        f"\n\nLEARNED PATTERNS FROM PAST SUCCESSFUL SWARM RUNS:\n{experience_context}"
+        if experience_context else ""
+    )
 
-Given the current state of a blog writing project, decompose what needs 
+    return f"""You are a Task Analyzer for a dynamic agent swarm.
+
+Given the current state of a blog writing project, decompose what needs
 to happen next into a prioritised task queue.
 
 AVAILABLE AGENTS:
 - "researcher": Gathers information, finds facts, identifies sources
-- "writer": Writes or revises blog article drafts  
+- "writer": Writes or revises blog article drafts
 - "reviewer": Evaluates quality and provides structured feedback
 
 RULES:
@@ -103,7 +115,7 @@ RULES:
 Consider:
 - What's missing from the current state?
 - What's the highest-impact action right now?
-- Are there tasks that could run in parallel?
+- Are there tasks that could run in parallel?{experience_block}
 
 Respond with ONLY the JSON array. No explanation."""
 
@@ -154,10 +166,10 @@ AGENT HISTORY (last 5 actions):
             "agent_history": ["Task Analyzer: Max iterations reached, stopping"]
         }
     
-    # Ask the LLM to decompose
+    # Ask the LLM to decompose (with injected experiences)
     llm = get_llm(temperature=0.2)
     response = llm.invoke([
-        SystemMessage(content=TASK_ANALYZER_PROMPT),
+        SystemMessage(content=_build_task_analyzer_prompt()),
         HumanMessage(content=state_summary)
     ])
     
@@ -379,6 +391,21 @@ def swarm_finish_node(state: AgentState) -> dict:
     logger.info("Total iterations: %d", iterations)
     logger.info("Total agent executions: %d", executions)
     logger.info("Total cost: $%.4f (%d LLM calls)", cost["total_cost_usd"], cost["calls"])
+
+    # Extract experiential learning from successful swarm runs
+    if score >= 7.0:
+        exp = Experience(
+            task_description=state.get("topic", "")[:200],
+            successful_pattern=(
+                f"Swarm scored {score}/10 in {iterations} iterations, "
+                f"{executions} agent executions. "
+                f"Review: {state.get('review_feedback', '')[:300]}"
+            ),
+            score=score,
+            domain="task_analysis",
+        )
+        _experience_memory.add(exp)
+        logger.info("Stored swarm experience (score: %s)", score)
 
     return {
         "final_output": draft,
