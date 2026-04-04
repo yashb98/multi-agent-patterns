@@ -48,6 +48,7 @@ from shared.agents import (
     reviewer_node,
     create_initial_state,
     get_llm,
+    compute_cost_summary,
 )
 from shared.dynamic_agent_factory import (
     DynamicAgentFactory,
@@ -234,7 +235,8 @@ Write a complete technical blog article."""
         from langchain_openai import ChatOpenAI
         variant = ChatOpenAI(
             model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            temperature=temp
+            temperature=temp,
+            request_timeout=30.0,
         )
         resp = variant.invoke([
             SystemMessage(content=enhanced_prompt),
@@ -350,18 +352,22 @@ def enhanced_finish(state: AgentState) -> dict:
     """Final packaging with learning summary."""
     draft = state.get("draft", "")
     score = state.get("review_score", 0)
-    
+    cost = compute_cost_summary(state.get("token_usage", []))
+
     print(f"\n{'='*60}")
     print(f"  ENHANCED SWARM COMPLETE")
     print(f"  Score: {score}/10")
     print(f"  Experiences stored: {len(_experience_memory)}")
+    print(f"  Total cost: ${cost['total_cost_usd']:.4f} ({cost['calls']} LLM calls)")
     print(f"{'='*60}")
-    
+
     return {
         "final_output": draft,
+        "total_cost_usd": cost["total_cost_usd"],
         "agent_history": [
             f"Enhanced swarm complete. Score: {score}/10, "
-            f"Experiences: {len(_experience_memory)}"
+            f"Experiences: {len(_experience_memory)}, "
+            f"Cost: ${cost['total_cost_usd']:.4f}"
         ]
     }
 

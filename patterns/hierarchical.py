@@ -52,6 +52,7 @@ from shared.agents import (
     fact_check_node,
     create_initial_state,
     get_llm,
+    compute_cost_summary,
 )
 from shared.prompts import SUPERVISOR_PROMPT
 from shared.memory_layer import MemoryManager
@@ -252,13 +253,19 @@ def finish_node(state: AgentState) -> dict:
     score = state.get("review_score", 0)
     iterations = state.get("iteration", 0)
     
+    cost = compute_cost_summary(state.get("token_usage", []))
+
     print(f"   Final score: {score}/10")
     print(f"   Total iterations: {iterations}")
     print(f"   Article length: {len(draft.split())} words")
-    
+    print(f"   Total cost: ${cost['total_cost_usd']:.4f} ({cost['calls']} LLM calls)")
+    for agent, c in cost.get("cost_per_agent", {}).items():
+        print(f"      {agent}: ${c:.4f}")
+
     return {
         "final_output": draft,
-        "agent_history": [f"System complete. Score: {score}/10, Iterations: {iterations}"]
+        "total_cost_usd": cost["total_cost_usd"],
+        "agent_history": [f"System complete. Score: {score}/10, Iterations: {iterations}, Cost: ${cost['total_cost_usd']:.4f}"]
     }
 
 

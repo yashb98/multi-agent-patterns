@@ -210,6 +210,7 @@ class TrainingFreeGRPO:
             variant_llm = ChatOpenAI(
                 model=self.llm.model_name if hasattr(self.llm, 'model_name') else "gpt-5o-mini",
                 temperature=temp,
+                request_timeout=30.0,
             )
             
             response = variant_llm.invoke([

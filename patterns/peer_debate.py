@@ -50,6 +50,7 @@ from shared.agents import (
     fact_check_node,
     create_initial_state,
     get_llm,
+    compute_cost_summary,
 )
 from shared.prompts import WRITER_PROMPT, REVIEWER_PROMPT
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -320,13 +321,17 @@ def synthesis_node(state: AgentState) -> dict:
     # Count debate rounds from history
     debate_rounds = sum(1 for h in history if "debate" in h.lower())
     
+    cost = compute_cost_summary(state.get("token_usage", []))
+
     print(f"   Final score: {score}/10")
     print(f"   Total iterations: {iterations}")
     print(f"   Debate exchanges: {debate_rounds}")
-    
+    print(f"   Total cost: ${cost['total_cost_usd']:.4f} ({cost['calls']} LLM calls)")
+
     return {
         "final_output": draft,
-        "agent_history": [f"Debate complete. Score: {score}/10 after {iterations} rounds"]
+        "total_cost_usd": cost["total_cost_usd"],
+        "agent_history": [f"Debate complete. Score: {score}/10 after {iterations} rounds, Cost: ${cost['total_cost_usd']:.4f}"]
     }
 
 

@@ -85,3 +85,10 @@ class AgentState(TypedDict):
     accuracy_passed: bool
     # Specific fix instructions for the writer
     fact_revision_notes: Optional[str]
+
+    # ─── COST TRACKING FIELDS ─────────────────────────────────
+    # Accumulated token usage and estimated cost across all LLM calls.
+    # Each entry: {"agent": str, "prompt_tokens": int, "completion_tokens": int, "cost_usd": float}
+    token_usage: Annotated[list[dict], operator.add]
+    # Running total cost in USD for the entire pipeline run
+    total_cost_usd: float

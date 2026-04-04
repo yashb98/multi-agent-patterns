@@ -43,6 +43,78 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+# ─── COST TRACKING ─────────────────────────────────────────────
+# Approximate pricing per 1M tokens (USD) for common models.
+# Updated as of 2026-04. Override via OPENAI_COST_PER_1M_INPUT env var.
+
+MODEL_COSTS = {
+    # model_prefix: (input_per_1M, output_per_1M)
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-5o-mini": (0.15, 0.60),
+    "o3-mini": (1.10, 4.40),
+}
+
+
+def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Estimate USD cost for a single LLM call based on token counts."""
+    costs = MODEL_COSTS.get(model)
+    if not costs:
+        # Try prefix match (e.g. "gpt-4o-mini-2024-07-18" → "gpt-4o-mini")
+        for prefix, c in MODEL_COSTS.items():
+            if model.startswith(prefix):
+                costs = c
+                break
+    if not costs:
+        costs = (0.15, 0.60)  # Default to cheapest tier
+
+    return (prompt_tokens * costs[0] + completion_tokens * costs[1]) / 1_000_000
+
+
+def track_llm_usage(response, agent_name: str) -> dict:
+    """Extract token usage from a LangChain response and return a tracking dict.
+
+    Works with ChatOpenAI responses that have response_metadata.
+    """
+    metadata = getattr(response, "response_metadata", {}) or {}
+    usage = metadata.get("token_usage", {}) or {}
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+    model = metadata.get("model_name", "gpt-5o-mini")
+    cost = estimate_cost(model, prompt_tokens, completion_tokens)
+
+    return {
+        "agent": agent_name,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "model": model,
+        "cost_usd": cost,
+    }
+
+
+def compute_cost_summary(token_usage: list[dict]) -> dict:
+    """Compute aggregate cost summary from accumulated token_usage entries."""
+    total_prompt = sum(u.get("prompt_tokens", 0) for u in token_usage)
+    total_completion = sum(u.get("completion_tokens", 0) for u in token_usage)
+    total_cost = sum(u.get("cost_usd", 0) for u in token_usage)
+    per_agent = {}
+    for u in token_usage:
+        agent = u.get("agent", "unknown")
+        per_agent.setdefault(agent, 0.0)
+        per_agent[agent] += u.get("cost_usd", 0)
+    return {
+        "total_prompt_tokens": total_prompt,
+        "total_completion_tokens": total_completion,
+        "total_tokens": total_prompt + total_completion,
+        "total_cost_usd": total_cost,
+        "calls": len(token_usage),
+        "cost_per_agent": per_agent,
+    }
+
+
 # ─── STRUCTURED ERROR RESPONSE ───────────────────────────────────
 
 class AgentError:
@@ -76,7 +148,8 @@ class AgentError:
 
 # ─── LLM INITIALISATION ─────────────────────────────────────────
 
-def get_llm(temperature: float = 0.7, model: str = "gpt-5o-mini"):
+def get_llm(temperature: float = 0.7, model: str = "gpt-5o-mini",
+            timeout: float = 30.0):
     """
     Factory function for LLM instances.
 
@@ -84,10 +157,13 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5o-mini"):
     - Researcher: low temperature (0.3) for factual accuracy
     - Writer: medium temperature (0.7) for creative prose
     - Reviewer: low temperature (0.2) for consistent scoring
+
+    timeout: seconds before the HTTP request is aborted (default 30s).
     """
     return ChatOpenAI(
         model=model,
         temperature=temperature,
+        request_timeout=timeout,
     )
 
 
@@ -115,6 +191,7 @@ def run_agentic_loop(
     temperature: float = 0.7,
     max_iterations: int = 10,
     model: str = "gpt-5o-mini",
+    timeout: float = 30.0,
 ) -> dict:
     """
     Run an agentic loop with proper stop_reason handling.
@@ -132,7 +209,7 @@ def run_agentic_loop(
     4. Max iterations is a SAFETY VALVE, not the primary stopping mechanism
     """
     from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=timeout)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -287,14 +364,16 @@ details, current trends, and notable perspectives."""
     ])
     
     research = response.content
-    logger.info("Research produced: %d characters", len(research))
-    
+    usage = track_llm_usage(response, "researcher")
+    logger.info("Research produced: %d characters ($%.4f)", len(research), usage["cost_usd"])
+
     # Return PARTIAL state update
     # research_notes is Annotated[list, operator.add] → this APPENDS
     return {
         "research_notes": [research],
         "current_agent": "researcher",
-        "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Researcher completed"]
+        "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Researcher completed"],
+        "token_usage": [usage],
     }
 
 
@@ -359,13 +438,15 @@ Write a complete, polished technical blog article based on these research notes.
     ])
     
     draft = response.content
-    logger.info("Draft produced: %d characters, ~%d words", len(draft), len(draft.split()))
-    
+    usage = track_llm_usage(response, "writer")
+    logger.info("Draft produced: %d characters, ~%d words ($%.4f)", len(draft), len(draft.split()), usage["cost_usd"])
+
     return {
         "draft": draft,
         "iteration": iteration + 1,
         "current_agent": "writer",
-        "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Writer completed (iteration {iteration + 1})"]
+        "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Writer completed (iteration {iteration + 1})"],
+        "token_usage": [usage],
     }
 
 
@@ -414,12 +495,15 @@ specified in your instructions."""
     llm = ChatOpenAI(
         model="gpt-5o-mini",
         temperature=0.2,
+        request_timeout=30.0,
         model_kwargs={"response_format": {"type": "json_object"}},
     )
     response = llm.invoke([
         SystemMessage(content=REVIEWER_PROMPT),
         HumanMessage(content=user_msg)
     ])
+
+    usage = track_llm_usage(response, "reviewer")
 
     # Parse the structured response — guaranteed valid JSON by response_format
     raw = response.content.strip()
@@ -454,7 +538,8 @@ specified in your instructions."""
         "review_score": score,
         "review_passed": passed,
         "current_agent": "reviewer",
-        "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Reviewer: score={score}, passed={passed}"]
+        "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Reviewer: score={score}, passed={passed}"],
+        "token_usage": [usage],
     }
 
 
@@ -535,4 +620,6 @@ def create_initial_state(topic: str) -> AgentState:
         "accuracy_score": 0.0,
         "accuracy_passed": False,
         "fact_revision_notes": None,
+        "token_usage": [],
+        "total_cost_usd": 0.0,
     }

@@ -139,7 +139,7 @@ def extract_claims(draft: str, topic: str) -> list[dict]:
     Returns list of dicts with: claim, type, source_needed
     """
     from jobpulse.config import OPENAI_API_KEY
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=30.0)
 
     prompt = f"""Extract ALL verifiable factual claims from this article about "{topic}".
 
@@ -196,7 +196,7 @@ def verify_claims(claims: list[dict], sources: list[str],
     from shared.external_verifiers import (
         semantic_scholar_lookup, verify_claim_with_s2, quality_web_verify,
     )
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=30.0)
 
     verifiable = [c for c in claims if c.get("source_needed", True) and c.get("type", "") not in SKIP_TYPES]
     if not verifiable:

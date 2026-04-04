@@ -54,6 +54,7 @@ from shared.agents import (
     reviewer_node,
     create_initial_state,
     get_llm,
+    compute_cost_summary,
 )
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
@@ -373,13 +374,17 @@ def swarm_finish_node(state: AgentState) -> dict:
     # Count total agent executions
     executions = sum(1 for h in history if "Task Executor: ran" in h)
     
+    cost = compute_cost_summary(state.get("token_usage", []))
+
     print(f"   Final score: {score}/10")
     print(f"   Total iterations: {iterations}")
     print(f"   Total agent executions: {executions}")
-    
+    print(f"   Total cost: ${cost['total_cost_usd']:.4f} ({cost['calls']} LLM calls)")
+
     return {
         "final_output": draft,
-        "agent_history": [f"Swarm complete. Score: {score}/10, {executions} agent runs across {iterations} iterations"]
+        "total_cost_usd": cost["total_cost_usd"],
+        "agent_history": [f"Swarm complete. Score: {score}/10, {executions} agent runs, Cost: ${cost['total_cost_usd']:.4f}"]
     }
 
 
