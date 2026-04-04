@@ -55,6 +55,7 @@ from shared.agentic_loop import (  # noqa: F401
     run_agentic_loop,
 )
 from shared.llm_retry import resilient_llm_call  # noqa: F401
+from shared.streaming import smart_llm_call  # noqa: F401
 
 logger = get_logger(__name__)
 
@@ -111,7 +112,7 @@ Conduct comprehensive research on this topic. Gather facts, technical
 details, current trends, and notable perspectives."""
 
     llm = get_llm(temperature=0.3)
-    response = resilient_llm_call(llm, [
+    response = smart_llm_call(llm, [
         SystemMessage(content=RESEARCHER_PROMPT),
         HumanMessage(content=user_msg)
     ])
@@ -176,7 +177,7 @@ RESEARCH NOTES:
 Write a complete, polished technical blog article based on these research notes."""
 
     llm = get_llm(temperature=0.7)
-    response = resilient_llm_call(llm, [
+    response = smart_llm_call(llm, [
         SystemMessage(content=WRITER_PROMPT),
         HumanMessage(content=user_msg)
     ])
@@ -246,7 +247,7 @@ specified in your instructions."""
         request_timeout=30.0,
         model_kwargs={"response_format": {"type": "json_object"}},
     )
-    response = resilient_llm_call(llm, [
+    response = smart_llm_call(llm, [
         SystemMessage(content=REVIEWER_PROMPT),
         HumanMessage(content=user_msg)
     ])
