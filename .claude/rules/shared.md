@@ -8,6 +8,30 @@ Dependency flows one way: systems → shared. Never the reverse.
 All LLM instantiation goes through get_llm() in shared/agents.py.
 Never call ChatOpenAI() or similar constructors directly anywhere in the codebase.
 
+## smart_llm_call()
+All new LLM calls should use smart_llm_call() from shared/streaming.py (re-exported via shared/agents.py).
+It auto-switches between streaming and non-streaming based on STREAM_LLM_OUTPUT env var.
+Do NOT use resilient_llm_call() in new code.
+
+## CodeGraph (shared/code_graph.py)
+AST-based code intelligence used by risk_aware_reviewer_node:
+- Index Python files into SQLite graph (nodes + edges)
+- Risk scoring: security keywords, fan-in, test coverage, function size
+- Impact radius: BFS blast radius for changed files
+- Tests must use `:memory:` SQLite — never file-backed in tests
+
+## Graph Visualizer (shared/graph_visualizer.py)
+Export CodeGraph and LangGraph pattern topologies:
+- Mermaid flowcharts with risk heatmap coloring
+- DOT format for Graphviz rendering
+- All 4 pattern topologies defined in PATTERN_TOPOLOGIES dict
+
+## Experiential Learning (shared/experiential_learning.py)
+SQLite-backed ExperienceMemory shared across all 4 patterns:
+- DB path: data/experience_memory.db (tests must use tmp_path)
+- LRU eviction: quality * 0.6 + recency * 0.4
+- All patterns inject learned experiences into prompts and extract from high-scoring runs
+
 ## NLP Classifier (shared/nlp_classifier.py)
 3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001).
 - When adding intents: add regex patterns first, then embedding examples, then LLM gets it for free.

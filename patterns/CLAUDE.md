@@ -19,7 +19,6 @@
 | Structured Logging | `shared/logging_config.py` | Run IDs correlate all logs per execution |
 | LLM Retry | `shared/llm_retry.py` | Exponential backoff on 429/5xx/timeout |
 | Visualization | `shared/graph_visualizer.py` | Mermaid/DOT topology diagrams for all 4 patterns |
-
 ## Convergence
 Dual gate: quality score >= 8.0/10 AND factual accuracy >= 9.5/10.
 Max 3 iterations. Fallback: accept best draft.
