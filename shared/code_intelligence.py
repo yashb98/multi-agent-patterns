@@ -245,27 +245,92 @@ class CodeIntelligence:
         self.conn.commit()
 
     def _cache_risk_scores(self) -> None:
-        """Compute and cache risk scores for all Python function/method nodes."""
-        rows = self.conn.execute(
-            "SELECT qualified_name FROM nodes WHERE kind IN ('function', 'method')"
+        """Batch-compute and cache risk scores for all Python function/method nodes.
+
+        Optimized: 3 bulk SQL queries instead of 3 per function.
+        Handles 10K+ functions in seconds instead of hours.
+        """
+        from shared.code_graph import SECURITY_KEYWORDS
+
+        # Fetch all functions with their metadata
+        functions = self.conn.execute(
+            "SELECT qualified_name, name, file_path, line_start, line_end "
+            "FROM nodes WHERE kind IN ('function', 'method')"
         ).fetchall()
 
+        if not functions:
+            return
+
+        # Bulk query 1: fan-in counts (callers per target name suffix)
+        fan_in = {}
+        for row in self.conn.execute(
+            "SELECT target_qname, COUNT(*) as cnt FROM edges "
+            "WHERE kind='calls' GROUP BY target_qname"
+        ).fetchall():
+            # Extract name suffix for matching
+            name = row[0].split("::")[-1] if "::" in row[0] else row[0]
+            fan_in[name] = fan_in.get(name, 0) + row[1]
+
+        # Bulk query 2: cross-file caller counts
+        cross_file = {}
+        for row in self.conn.execute(
+            "SELECT target_qname, COUNT(DISTINCT file_path) as cnt FROM edges "
+            "WHERE kind='calls' GROUP BY target_qname"
+        ).fetchall():
+            name = row[0].split("::")[-1] if "::" in row[0] else row[0]
+            cross_file[name] = max(cross_file.get(name, 0), row[1])
+
+        # Bulk query 3: test coverage (functions called by test_* functions)
+        tested_names: set[str] = set()
+        for row in self.conn.execute(
+            "SELECT DISTINCT target_qname FROM edges "
+            "WHERE kind='calls' AND source_qname LIKE '%test_%'"
+        ).fetchall():
+            name = row[0].split("::")[-1] if "::" in row[0] else row[0]
+            tested_names.add(name)
+
+        # Score each function in-memory
         now = time.time()
         updates: list[tuple[float, float, str]] = []
-        for row in rows:
-            qname = row[0]
-            try:
-                score = self._graph.compute_risk_score(qname)
-            except Exception as exc:
-                logger.debug("Risk score failed for %s: %s", qname, exc)
-                score = 0.0
-            updates.append((score, now, qname))
+        for fn in functions:
+            qname = fn[0]
+            name = fn[1]
+            file_path = fn[2]
+            line_start = fn[3] or 0
+            line_end = fn[4] or 0
+            name_lower = name.lower()
+
+            score = 0.0
+
+            # Security keywords
+            if any(kw in name_lower for kw in SECURITY_KEYWORDS):
+                score += 0.25
+
+            # Fan-in
+            callers = fan_in.get(name, 0)
+            score += min(callers * 0.05, 0.20)
+
+            # Cross-file callers (subtract 1 for the defining file)
+            cf = cross_file.get(name, 0)
+            if cf > 1:
+                score += 0.10
+
+            # Test coverage
+            if name not in tested_names:
+                score += 0.30
+
+            # Function size
+            if (line_end - line_start) > 50:
+                score += 0.15
+
+            updates.append((min(score, 1.0), now, qname))
 
         self.conn.executemany(
             "UPDATE nodes SET risk_score=?, last_indexed=? WHERE qualified_name=?",
             updates,
         )
         self.conn.commit()
+        logger.info("Batch risk scoring: %d functions scored", len(updates))
 
     def _populate_search_index(self) -> None:
         """Add all nodes to FTS5 search index, then trigger Voyage embeddings."""
@@ -308,6 +373,8 @@ class CodeIntelligence:
         """Batch embed all documents via Voyage-code-3 and store as packed floats.
 
         Gracefully does nothing if VOYAGE_API_KEY is not set or voyageai is not installed.
+        Uses smaller batch size (32) to stay under Voyage's 120K token/batch limit.
+        Filters empty strings to avoid API validation errors.
         """
         client = self._get_voyage_client()
         if client is None:
@@ -316,17 +383,32 @@ class CodeIntelligence:
         try:
             import struct
 
-            rows = self.conn.execute("SELECT id, text FROM documents").fetchall()
+            # Only embed documents not yet in embeddings table
+            rows = self.conn.execute(
+                "SELECT d.id, d.text FROM documents d "
+                "LEFT JOIN embeddings e ON d.id = e.doc_id "
+                "WHERE e.doc_id IS NULL"
+            ).fetchall()
 
             if not rows:
                 return
 
-            ids = [r[0] for r in rows]
-            texts = [r[1] for r in rows]
+            # Filter out empty/whitespace-only texts
+            valid = [(r[0], r[1]) for r in rows if r[1] and r[1].strip()]
 
-            for batch_start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
-                batch_ids = ids[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
-                batch_texts = texts[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
+            if not valid:
+                return
+
+            ids = [v[0] for v in valid]
+            texts = [v[1] for v in valid]
+
+            # Use smaller batch size (32) to stay under 120K token limit
+            batch_size = 32
+            embedded = 0
+
+            for batch_start in range(0, len(texts), batch_size):
+                batch_ids = ids[batch_start : batch_start + batch_size]
+                batch_texts = texts[batch_start : batch_start + batch_size]
 
                 try:
                     result = client.embed(
@@ -349,6 +431,9 @@ class CodeIntelligence:
                     rows_to_insert,
                 )
                 self.conn.commit()
+                embedded += len(rows_to_insert)
+
+            logger.info("Voyage embeddings: %d/%d documents", embedded, len(valid))
 
         except Exception as exc:
             logger.warning("Voyage embedding step failed: %s", exc)
