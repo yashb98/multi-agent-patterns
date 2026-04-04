@@ -351,3 +351,192 @@ class CodeIntelligence:
 
         except Exception as exc:
             logger.warning("Voyage embedding step failed: %s", exc)
+
+    # ─── INCREMENTAL REINDEX ───────────────────────────────────────
+
+    def reindex_file(self, rel_path: str, root: str | None = None) -> dict[str, Any]:
+        """Incrementally reindex a single file.
+
+        Deletes stale data for the file, re-parses it (AST for Python,
+        document node for text files), recomputes risk scores for changed
+        functions and their callers, and updates the search index.
+
+        Args:
+            rel_path: Path relative to the project root (e.g. "auth.py").
+            root: Absolute path to the project root.  Uses the directory
+                  of the DB file as a fallback when not supplied.
+
+        Returns:
+            dict with keys: nodes_added, edges_added, risk_updated, time_ms
+        """
+        t0 = time.monotonic()
+
+        # 1. Exclusion check — fast path
+        if _is_excluded(rel_path) or _is_excluded(Path(rel_path).name):
+            return {"nodes_added": 0, "edges_added": 0, "risk_updated": 0, "time_ms": 0}
+
+        # Resolve absolute path
+        if root is None:
+            root = str(Path(self.db_path).parent)
+        root_path = Path(root)
+        abs_path = root_path / rel_path
+
+        # 2. Collect qualified names of existing nodes for this file
+        #    (needed to find callers before we delete them)
+        old_rows = self.conn.execute(
+            "SELECT qualified_name FROM nodes WHERE file_path=?",
+            (rel_path,),
+        ).fetchall()
+        old_qnames = {r[0] for r in old_rows}
+
+        # 3. Find callers of functions defined in this file
+        caller_qnames: set[str] = set()
+        if old_qnames:
+            placeholders = ",".join("?" * len(old_qnames))
+            caller_rows = self.conn.execute(
+                f"SELECT DISTINCT source_qname FROM edges WHERE target_qname IN ({placeholders})",
+                list(old_qnames),
+            ).fetchall()
+            caller_qnames = {r[0] for r in caller_rows}
+
+        # 4. Delete stale data for this file
+        self.conn.execute("DELETE FROM nodes WHERE file_path=?", (rel_path,))
+        # Delete by the old qualified names we already captured
+        if old_qnames:
+            placeholders = ",".join("?" * len(old_qnames))
+            self.conn.execute(
+                f"DELETE FROM edges WHERE source_qname IN ({placeholders})"
+                f" OR target_qname IN ({placeholders})",
+                list(old_qnames) * 2,
+            )
+        # Remove from FTS5 + embeddings
+        if old_qnames:
+            placeholders = ",".join("?" * len(old_qnames))
+            self.conn.execute(
+                f"DELETE FROM documents WHERE id IN ({placeholders})",
+                list(old_qnames),
+            )
+            self.conn.execute(
+                f"DELETE FROM embeddings WHERE doc_id IN ({placeholders})",
+                list(old_qnames),
+            )
+        self.conn.commit()
+
+        # 5. File doesn't exist — cleanup done
+        if not abs_path.exists():
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return {"nodes_added": 0, "edges_added": 0, "risk_updated": 0, "time_ms": elapsed_ms}
+
+        nodes_before = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        edges_before = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+
+        # 6. Python file — use AST indexer
+        if abs_path.suffix == ".py":
+            try:
+                self._graph._index_file(abs_path, root_path, prefix="")
+                self.conn.commit()
+            except Exception as exc:
+                logger.warning("reindex_file AST parse failed for %s: %s", rel_path, exc)
+
+        elif not _is_binary(abs_path):
+            # 7. Non-Python text file — create a document node
+            try:
+                text = abs_path.read_text(encoding="utf-8", errors="replace")[:5000]
+                qname = f"{rel_path}::__document__"
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO nodes
+                        (kind, name, qualified_name, file_path, line_start, line_end,
+                         is_test, is_async, last_indexed)
+                    VALUES ('document', ?, ?, ?, 0, 0, 0, 0, ?)
+                    """,
+                    (abs_path.name, qname, rel_path, time.time()),
+                )
+                self.conn.commit()
+            except (OSError, PermissionError, sqlite3.Error) as exc:
+                logger.warning("reindex_file document insert failed for %s: %s", rel_path, exc)
+
+        # 8. Count new nodes/edges
+        nodes_after = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        edges_after = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        nodes_added = max(0, nodes_after - nodes_before)
+        edges_added = max(0, edges_after - edges_before)
+
+        # 9. Recompute risk scores for this file's functions + callers
+        new_qname_rows = self.conn.execute(
+            "SELECT qualified_name FROM nodes WHERE file_path=? AND kind IN ('function', 'method')",
+            (rel_path,),
+        ).fetchall()
+        new_qnames = {r[0] for r in new_qname_rows}
+
+        to_rescore = new_qnames | (caller_qnames - old_qnames)  # callers still exist
+        # Also include callers that still exist in DB
+        existing_callers = set()
+        if caller_qnames:
+            placeholders = ",".join("?" * len(caller_qnames))
+            existing_rows = self.conn.execute(
+                f"SELECT qualified_name FROM nodes WHERE qualified_name IN ({placeholders})",
+                list(caller_qnames),
+            ).fetchall()
+            existing_callers = {r[0] for r in existing_rows}
+        to_rescore = new_qnames | existing_callers
+
+        now = time.time()
+        risk_updates: list[tuple[float, float, str]] = []
+        for qname in to_rescore:
+            try:
+                score = self._graph.compute_risk_score(qname)
+            except Exception as exc:
+                logger.debug("Risk rescore failed for %s: %s", qname, exc)
+                score = 0.0
+            risk_updates.append((score, now, qname))
+
+        if risk_updates:
+            self.conn.executemany(
+                "UPDATE nodes SET risk_score=?, last_indexed=? WHERE qualified_name=?",
+                risk_updates,
+            )
+            self.conn.commit()
+
+        # 10. Update search index for new nodes
+        new_node_rows = self.conn.execute(
+            "SELECT qualified_name, kind, name, file_path, signature, docstring FROM nodes "
+            "WHERE file_path=?",
+            (rel_path,),
+        ).fetchall()
+
+        for row in new_node_rows:
+            qname = row[0]
+            kind = row[1]
+            name = row[2]
+            file_path = row[3]
+            signature = row[4] or ""
+            docstring = row[5] or ""
+
+            if kind == "document":
+                try:
+                    text = abs_path.read_text(encoding="utf-8", errors="replace")[:5000]
+                except (OSError, PermissionError):
+                    text = name
+            else:
+                parts = [name]
+                if signature:
+                    parts.append(signature)
+                if docstring:
+                    parts.append(docstring)
+                text = " ".join(parts)
+
+            metadata: dict[str, Any] = {"kind": kind, "file_path": file_path}
+            try:
+                self._search.add(qname, text, metadata)
+            except Exception as exc:
+                logger.debug("reindex_file search add failed for %s: %s", qname, exc)
+
+        # 11. Return stats
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return {
+            "nodes_added": nodes_added,
+            "edges_added": edges_added,
+            "risk_updated": len(risk_updates),
+            "time_ms": elapsed_ms,
+        }

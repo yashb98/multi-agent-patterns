@@ -189,3 +189,50 @@ class TestIndexDirectory:
         assert "edges" in result
         assert "documents" in result
         assert "time_ms" in result
+
+
+class TestReindexFile:
+    def test_reindex_updates_modified_function(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        # Add a new function
+        auth_path = sample_project / "auth.py"
+        original = auth_path.read_text()
+        auth_path.write_text(original + "\ndef logout(session_id: str) -> None:\n    pass\n")
+        result = ci.reindex_file("auth.py", str(sample_project))
+        assert result["nodes_added"] > 0
+        node = ci.conn.execute("SELECT * FROM nodes WHERE name='logout'").fetchone()
+        assert node is not None
+
+    def test_reindex_removes_deleted_function(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        (sample_project / "auth.py").write_text("def only_one() -> None:\n    pass\n")
+        ci.reindex_file("auth.py", str(sample_project))
+        login_node = ci.conn.execute(
+            "SELECT * FROM nodes WHERE name='login' AND file_path='auth.py'"
+        ).fetchone()
+        assert login_node is None
+
+    def test_reindex_text_file(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        (sample_project / "README.md").write_text("# Updated\n\nNew content.")
+        ci.reindex_file("README.md", str(sample_project))
+        doc = ci.conn.execute("SELECT * FROM nodes WHERE file_path='README.md'").fetchone()
+        assert doc is not None
+
+    def test_reindex_returns_timing(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.reindex_file("auth.py", str(sample_project))
+        assert "time_ms" in result
+        assert result["time_ms"] >= 0
+
+    def test_reindex_excluded_file_is_noop(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.reindex_file(".env", str(sample_project))
+        assert result["nodes_added"] == 0
+
+    def test_reindex_deleted_file_cleans_up(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        (sample_project / "utils.py").unlink()
+        ci.reindex_file("utils.py", str(sample_project))
+        nodes = ci.conn.execute("SELECT * FROM nodes WHERE file_path='utils.py'").fetchall()
+        assert len(nodes) == 0
