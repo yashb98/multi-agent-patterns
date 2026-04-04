@@ -62,10 +62,15 @@ EMBEDDING_ENV_VAR = "VOYAGE_API_KEY"
 def _is_excluded(path: str) -> bool:
     """Check if a path matches any exclusion pattern."""
     parts = Path(path).parts
+    path_str = path.replace("\\", "/")
     for pattern in EXCLUDE_PATTERNS:
         if pattern.endswith("/"):
             dir_name = pattern.rstrip("/")
-            if dir_name in parts:
+            # Multi-segment dir pattern (e.g. ".claude/worktrees") — check substring
+            if "/" in dir_name:
+                if dir_name + "/" in path_str or path_str.startswith(dir_name + "/"):
+                    return True
+            elif dir_name in parts:
                 return True
         elif fnmatch(Path(path).name, pattern):
             return True
@@ -179,8 +184,8 @@ class CodeIntelligence:
         t0 = time.monotonic()
         root_path = Path(root)
 
-        # Phase 1 — Python AST
-        self._graph.index_directory(str(root_path), extensions=FULL_INDEX_EXTENSIONS)
+        # Phase 1 — Python AST (with exclusion filtering)
+        self._index_python_files(root_path)
 
         # Phase 2 — risk scores
         self._cache_risk_scores()
@@ -205,6 +210,26 @@ class CodeIntelligence:
             elapsed_ms,
         )
         return {"nodes": nodes, "edges": edges, "documents": documents, "time_ms": elapsed_ms}
+
+    def _index_python_files(self, root_path: Path) -> None:
+        """Index Python files with AST, respecting exclusion patterns."""
+        py_files = [
+            f for f in root_path.rglob("*.py")
+            if f.is_file()
+            and not _is_excluded(str(f.relative_to(root_path)))
+        ]
+
+        for filepath in py_files:
+            try:
+                self._graph._index_file(filepath, root_path, prefix="")
+            except Exception as e:
+                logger.debug("Failed to parse %s: %s", filepath.name, e)
+
+        self.conn.commit()
+
+        node_count = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        edge_count = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        logger.info("Indexed %d Python files → %d nodes, %d edges", len(py_files), node_count, edge_count)
 
     def _index_text_files(self, root_path: Path) -> None:
         """Walk all files under root_path, index non-Python text files as document nodes."""
