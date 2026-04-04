@@ -75,106 +75,126 @@ class CodeGraph:
 
     # ─── INDEXING ──────────────────────────────────────────────────
 
-    def index_directory(self, root: str, extensions: tuple = (".py",)):
-        """Parse all matching files under root and build the graph."""
+    def index_directory(self, root: str, extensions: tuple = (".py",),
+                        path_prefix: str = ""):
+        """Parse all matching files under root and build the graph.
+
+        Args:
+            root: Directory to recursively scan.
+            extensions: File extensions to parse.
+            path_prefix: Prefix prepended to relative paths (e.g., "shared/"
+                         when indexing a subdirectory but wanting paths relative
+                         to the project root).
+        """
         root_path = Path(root)
         files = [f for f in root_path.rglob("*") if f.suffix in extensions
                  and "__pycache__" not in str(f)
-                 and ".venv" not in str(f)]
+                 and ".venv" not in str(f)
+                 and "node_modules" not in str(f)]
 
         for filepath in files:
             try:
-                self._index_file(filepath, root_path)
+                self._index_file(filepath, root_path, path_prefix)
             except Exception as e:
-                logger.warning("Failed to parse %s: %s", filepath, e)
+                logger.debug("Failed to parse %s: %s", filepath.name, e)
 
         self.conn.commit()
         node_count = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
         edge_count = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
         logger.info("Indexed %d files → %d nodes, %d edges", len(files), node_count, edge_count)
 
-    def _index_file(self, filepath: Path, root: Path):
+    def _index_file(self, filepath: Path, root: Path, prefix: str = ""):
         """Parse a single Python file into nodes and edges."""
         source = filepath.read_text(encoding="utf-8", errors="replace")
-        rel_path = str(filepath.relative_to(root))
+        rel_path = prefix + str(filepath.relative_to(root))
 
         try:
             tree = ast.parse(source, filename=rel_path)
         except SyntaxError:
             return
 
-        self._walk_ast(tree, rel_path, source)
+        self._walk_ast(tree, rel_path)
 
-    def _walk_ast(self, tree: ast.Module, file_path: str, source: str):
-        """Extract functions, classes, calls, imports from an AST."""
+    def _walk_ast(self, tree: ast.Module, file_path: str):
+        """Extract functions, classes, calls, imports from an AST.
 
-        # Track imports for edge creation
-        imports = {}  # alias → module
+        Uses a parent-tracking visitor instead of ast.walk to correctly
+        distinguish top-level functions from class methods.
+        """
+        # First pass: collect class bodies so we know which FunctionDefs are methods
+        class_method_ids = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    class_method_ids.add(id(item))
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    name = alias.asname or alias.name
-                    imports[name] = alias.name
-                    self._add_edge("imports", f"{file_path}::__module__",
-                                   alias.name, file_path, node.lineno)
+            try:
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        name = alias.asname or alias.name
+                        self._add_edge("imports", f"{file_path}::__module__",
+                                       name, file_path, node.lineno)
 
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                for alias in node.names:
-                    name = alias.asname or alias.name
-                    imports[name] = f"{module}.{alias.name}"
-                    self._add_edge("imports", f"{file_path}::__module__",
-                                   f"{module}.{alias.name}", file_path, node.lineno)
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    for alias in node.names:
+                        self._add_edge("imports", f"{file_path}::__module__",
+                                       f"{module}.{alias.name}", file_path, node.lineno)
 
-            elif isinstance(node, ast.ClassDef):
-                qname = f"{file_path}::{node.name}"
-                self._add_node("class", node.name, qname, file_path,
-                               node.lineno, node.end_lineno or node.lineno,
-                               is_test=node.name.startswith("Test"))
-
-                for base in node.bases:
-                    base_name = self._get_name(base)
-                    if base_name:
-                        self._add_edge("inherits", qname, base_name, file_path, node.lineno)
-
-                # Methods inside the class
-                for item in node.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        method_qname = f"{qname}::{item.name}"
-                        self._add_node(
-                            "method", item.name, method_qname, file_path,
-                            item.lineno, item.end_lineno or item.lineno,
-                            is_test=item.name.startswith("test_"),
-                            is_async=isinstance(item, ast.AsyncFunctionDef),
-                        )
-                        self._add_edge("contains", qname, method_qname, file_path, item.lineno)
-                        self._extract_calls(item, method_qname, file_path)
-
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # Top-level functions (not methods — those handled above)
-                if not any(isinstance(p, ast.ClassDef) for p in ast.walk(tree)
-                           if hasattr(p, 'body') and node in getattr(p, 'body', [])):
+                elif isinstance(node, ast.ClassDef):
                     qname = f"{file_path}::{node.name}"
-                    self._add_node(
-                        "function", node.name, qname, file_path,
-                        node.lineno, node.end_lineno or node.lineno,
-                        is_test=node.name.startswith("test_"),
-                        is_async=isinstance(node, ast.AsyncFunctionDef),
-                    )
-                    self._extract_calls(node, qname, file_path)
+                    self._add_node("class", node.name, qname, file_path,
+                                   node.lineno, node.end_lineno or node.lineno,
+                                   is_test=node.name.startswith("Test"))
+
+                    for base in node.bases:
+                        base_name = self._get_name(base)
+                        if base_name:
+                            self._add_edge("inherits", qname, base_name, file_path, node.lineno)
+
+                    # Methods inside the class
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            method_qname = f"{qname}::{item.name}"
+                            self._add_node(
+                                "method", item.name, method_qname, file_path,
+                                item.lineno, item.end_lineno or item.lineno,
+                                is_test=item.name.startswith("test_"),
+                                is_async=isinstance(item, ast.AsyncFunctionDef),
+                            )
+                            self._add_edge("contains", qname, method_qname, file_path, item.lineno)
+                            self._extract_calls(item, method_qname, file_path)
+
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # Top-level functions only — methods are handled in the ClassDef branch
+                    if id(node) not in class_method_ids:
+                        qname = f"{file_path}::{node.name}"
+                        self._add_node(
+                            "function", node.name, qname, file_path,
+                            node.lineno, node.end_lineno or node.lineno,
+                            is_test=node.name.startswith("test_"),
+                            is_async=isinstance(node, ast.AsyncFunctionDef),
+                        )
+                        self._extract_calls(node, qname, file_path)
+            except Exception:
+                # Skip nodes that fail to process — don't abort the whole file
+                continue
 
     def _extract_calls(self, func_node, caller_qname: str, file_path: str):
         """Extract function calls from a function body."""
         for node in ast.walk(func_node):
             if isinstance(node, ast.Call):
-                callee = self._get_name(node.func)
-                if callee:
-                    self._add_edge("calls", caller_qname, callee, file_path,
-                                   getattr(node, "lineno", 0))
+                try:
+                    callee = self._get_name(node.func)
+                    if callee:
+                        self._add_edge("calls", caller_qname, callee, file_path,
+                                       getattr(node, "lineno", 0))
+                except Exception:
+                    continue
 
     def _get_name(self, node) -> Optional[str]:
-        """Extract a name string from an AST node."""
+        """Extract a name string from an AST node. Returns None for complex expressions."""
         if isinstance(node, ast.Name):
             return node.id
         elif isinstance(node, ast.Attribute):
@@ -184,6 +204,9 @@ class CodeGraph:
             return node.attr
         elif isinstance(node, ast.Subscript):
             return self._get_name(node.value)
+        elif isinstance(node, ast.Call):
+            # e.g., foo()() — extract the inner function name
+            return self._get_name(node.func)
         return None
 
     def _add_node(self, kind, name, qname, file_path, line_start, line_end,
@@ -266,7 +289,6 @@ class CodeGraph:
         # BFS outward through calls and imports
         visited = set(seed_qnames)
         queue = deque((qn, 0) for qn in seed_qnames)
-        impacted = []
         depth_map = {f: 0 for f in changed_files}
 
         while queue:
@@ -285,9 +307,10 @@ class CodeGraph:
                     queue.append((target, depth + 1))
 
             # Backward: who calls this?
+            name_part = qname.split("::")[-1]
             for row in self.conn.execute(
                 "SELECT source_qname FROM edges WHERE target_qname LIKE ? AND kind='calls'",
-                (f"%{qname.split('::')[-1]}%",),
+                (f"%{name_part}",),
             ).fetchall():
                 source = row[0]
                 if source not in visited:
@@ -296,6 +319,7 @@ class CodeGraph:
 
         # Resolve visited qnames to nodes
         impacted_files = set()
+        impacted = []
         for qn in visited:
             row = self.conn.execute(
                 "SELECT * FROM nodes WHERE qualified_name=?", (qn,)
@@ -305,7 +329,7 @@ class CodeGraph:
                 fp = row["file_path"]
                 impacted_files.add(fp)
                 if fp not in depth_map:
-                    depth_map[fp] = max_depth  # Approximation
+                    depth_map[fp] = max_depth
 
         return {
             "impacted_files": impacted_files,
@@ -338,17 +362,17 @@ class CodeGraph:
         if any(kw in name_lower for kw in SECURITY_KEYWORDS):
             score += 0.25
 
-        # Fan-in (callers)
+        # Fan-in (callers) — use exact name suffix match to reduce false positives
         callers = self.conn.execute(
             "SELECT COUNT(*) FROM edges WHERE target_qname LIKE ? AND kind='calls'",
-            (f"%{node['name']}%",),
+            (f"%{node['name']}",),
         ).fetchone()[0]
         score += min(callers * 0.05, 0.20)
 
         # Cross-file callers
         cross_file = self.conn.execute(
             "SELECT COUNT(DISTINCT file_path) FROM edges WHERE target_qname LIKE ? AND kind='calls' AND file_path != ?",
-            (f"%{node['name']}%", node["file_path"]),
+            (f"%{node['name']}", node["file_path"]),
         ).fetchone()[0]
         if cross_file > 0:
             score += 0.10
@@ -356,7 +380,7 @@ class CodeGraph:
         # Test coverage
         tested = self.conn.execute(
             "SELECT COUNT(*) FROM edges WHERE target_qname LIKE ? AND kind='calls' AND source_qname LIKE '%test_%'",
-            (f"%{node['name']}%",),
+            (f"%{node['name']}",),
         ).fetchone()[0]
         if tested == 0:
             score += 0.30
