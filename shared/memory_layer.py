@@ -596,6 +596,10 @@ class PatternMemory:
     """
     Stores and retrieves successful execution patterns.
 
+    Uses hybrid search (FTS5 + vector similarity + RRF) for pattern retrieval
+    alongside the existing word-overlap scoring. The hybrid search catches
+    both exact keyword matches AND semantic similarity.
+
     OPERATIONAL PRINCIPLE #1: Memory before action.
     Before any task, call search(). If score > 0.7, reuse the pattern.
 
@@ -606,11 +610,34 @@ class PatternMemory:
     def __init__(self, storage_path: str = None):
         self.storage_path = storage_path or "/tmp/agent_memory/patterns.json"
         self.patterns: list[PatternEntry] = []
+        self._hybrid_search = None  # Lazy init
         self._load()
+        self._rebuild_search_index()
+
+    def _get_hybrid_search(self):
+        """Lazy-init hybrid search index."""
+        if self._hybrid_search is None:
+            try:
+                from shared.hybrid_search import HybridSearch
+                self._hybrid_search = HybridSearch(":memory:")
+            except ImportError:
+                logger.debug("hybrid_search not available, using word overlap only")
+        return self._hybrid_search
+
+    def _rebuild_search_index(self):
+        """Rebuild the FTS5 + vector index from current patterns."""
+        hs = self._get_hybrid_search()
+        if not hs:
+            return
+        for p in self.patterns:
+            search_text = f"{p.topic} {p.domain} {' '.join(p.strengths)} {' '.join(p.agents_used)}"
+            hs.add(p.pattern_id, search_text, {"topic": p.topic, "score": p.final_score})
 
     def search(self, topic: str, domain: str = "") -> tuple[Optional[PatternEntry], float]:
         """
-        Search for a reusable pattern. Returns (best_pattern, score).
+        Search for a reusable pattern using hybrid search (FTS5 + vector + word overlap).
+
+        Returns (best_pattern, score).
         If score > 0.7, the caller MUST reuse this pattern.
         If score <= 0.7, returns (None, score).
         """
@@ -618,11 +645,30 @@ class PatternMemory:
             logger.info("No patterns stored yet — building from scratch")
             return None, 0.0
 
+        # Primary: word-overlap scoring (existing approach)
         scored = [
             (p, p.relevance_score(topic, domain))
             for p in self.patterns
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
+
+        # Secondary: hybrid search boost (FTS5 + vector similarity via RRF)
+        hs = self._get_hybrid_search()
+        if hs and hs.count() > 0:
+            query_text = f"{topic} {domain}".strip()
+            hybrid_results = hs.query(query_text, top_k=5)
+            hybrid_ids = {r["id"]: r["score"] for r in hybrid_results}
+
+            # Boost word-overlap scores with hybrid search signal
+            boosted = []
+            for pattern, word_score in scored:
+                hybrid_boost = hybrid_ids.get(pattern.pattern_id, 0.0)
+                # Blend: 70% word overlap + 30% hybrid search
+                combined = word_score * 0.7 + hybrid_boost * 100.0 * 0.3
+                boosted.append((pattern, combined))
+            boosted.sort(key=lambda x: x[1], reverse=True)
+            scored = boosted
+
         best_pattern, best_score = scored[0]
 
         if best_score > 0.7:
@@ -667,6 +713,13 @@ class PatternMemory:
             self.patterns.sort(key=lambda p: p.final_score, reverse=True)
             self.patterns = self.patterns[:50]
         self._save()
+
+        # Index in hybrid search
+        hs = self._get_hybrid_search()
+        if hs:
+            search_text = f"{topic} {domain} {' '.join(strengths)} {' '.join(agents_used)}"
+            hs.add(pattern.pattern_id, search_text, {"topic": topic, "score": final_score})
+
         logger.info("Stored pattern: '%s' (score: %s/10)", topic, final_score)
 
     def _save(self):
