@@ -62,9 +62,14 @@ class ClaimVerification:
 def web_verify_claim(claim: str) -> dict:
     """Verify a claim using web search (DuckDuckGo).
 
+    Uses circuit breaker to fail fast when DuckDuckGo is down.
     Returns: {"source": "url or description", "supports": True/False, "snippet": "relevant text"}
     """
-    try:
+    from shared.circuit_breaker import ddg_breaker
+
+    fallback = {"source": None, "supports": False, "snippet": "Web search unavailable (circuit open)"}
+
+    def _do_search():
         from duckduckgo_search import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.text(claim, max_results=3))
@@ -72,22 +77,21 @@ def web_verify_claim(claim: str) -> dict:
         if not results:
             return {"source": None, "supports": False, "snippet": "No web results found"}
 
-        # Combine top snippets for context
         snippets = "\n".join(r.get("body", "")[:200] for r in results[:3])
         source_urls = [r.get("href", "") for r in results[:3]]
 
         return {
             "source": source_urls[0] if source_urls else None,
-            "supports": True,  # We have results — LLM will judge relevance
+            "supports": True,
             "snippet": snippets[:500],
             "all_sources": source_urls,
         }
+
+    try:
+        return ddg_breaker.call(fn=_do_search, fallback=fallback)
     except ImportError:
         logger.warning("duckduckgo-search not installed. pip install duckduckgo-search")
         return {"source": None, "supports": False, "snippet": "Web search unavailable"}
-    except Exception as e:
-        logger.warning("Web search failed for claim: %s — %s", claim[:50], e)
-        return {"source": None, "supports": False, "snippet": f"Search error: {e}"}
 
 
 def _get_cache_conn():

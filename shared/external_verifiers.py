@@ -31,19 +31,22 @@ PEER_REVIEWED_VENUES = {
 def semantic_scholar_lookup(arxiv_id: str) -> dict | None:
     """Fetch paper metadata from Semantic Scholar.
 
+    Uses circuit breaker to fail fast when S2 is down.
     Returns dict with: authors, venue, publication_date, citation_count,
     is_peer_reviewed, reference_count, doi. Returns None on failure.
     """
     import httpx
+    from shared.circuit_breaker import s2_breaker
 
     url = f"{S2_API_BASE}/paper/ArXiv:{arxiv_id}?fields={S2_FIELDS}"
 
-    try:
+    def _do_lookup():
         resp = httpx.get(url, timeout=10, follow_redirects=True)
         resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        logger.warning("Semantic Scholar lookup failed for %s: %s", arxiv_id, e)
+        return resp.json()
+
+    data = s2_breaker.call(fn=_do_lookup, fallback=None)
+    if data is None:
         return None
 
     venue = data.get("venue", "") or ""
