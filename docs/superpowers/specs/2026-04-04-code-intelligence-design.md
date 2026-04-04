@@ -144,7 +144,7 @@ END;
 
 CREATE TABLE embeddings (
     doc_id TEXT PRIMARY KEY,         -- = qualified_name
-    vector BLOB NOT NULL             -- 512 floats as bytes
+    vector BLOB NOT NULL             -- 1024 floats as bytes (Voyage-code-3, Matryoshka)
 );
 
 PRAGMA journal_mode=WAL;
@@ -183,6 +183,44 @@ EXCLUDE_PATTERNS = {
 ```
 
 Everything not matching an exclusion pattern is indexed. Python files get full AST analysis. All other text files get FTS5 + vector search.
+
+### Embedding Model: Voyage-code-3
+
+**Why this model:** Purpose-built for code retrieval (text-to-code, code-to-code, docstring-to-code). Trained on 238 datasets. 13.8% better than OpenAI `text-embedding-3-large` on code retrieval benchmarks. Anthropic's official recommendation for embeddings.
+
+```python
+# Embedding configuration
+EMBEDDING_MODEL = "voyage-code-3"
+EMBEDDING_DIMENSIONS = 1024           # Matryoshka sweet spot (256/512/1024/2048 available)
+EMBEDDING_PROVIDER = "voyageai"       # pip install voyageai
+EMBEDDING_ENV_VAR = "VOYAGE_API_KEY"  # Free tier: 200M tokens
+EMBEDDING_CONTEXT_WINDOW = 16384     # 16K tokens — handles large files without truncation
+EMBEDDING_BATCH_SIZE = 128            # Max batch per API call
+EMBEDDING_FALLBACK = "fts5_only"      # If API unavailable, keyword search still works
+```
+
+**Model comparison (why not alternatives):**
+
+| Model | Code Retrieval | Dims | Cost/1M tok | Why not |
+|-------|---------------|------|-------------|---------|
+| Bag-of-words (current) | Baseline | 512 | Free | No semantic understanding |
+| OpenAI text-embedding-3-large | Baseline +0% | 3072 | $0.13 | Generalist, not code-specific |
+| Gemini Embedding 2 | ~84 MTEB general | 3072 | $0.20 | Highest general score, but generalist — not code-specialized |
+| Qwen3-Embedding-8B | ~80.7 MTEB | 7168 | Free (local) | Needs GPU for decent latency, 8B params |
+| **Voyage-code-3** | **+13.8% over OpenAI** | **1024** | **$0.18** | **Best code-specific model. Anthropic recommended.** |
+
+**Cost for this repo:**
+
+| Operation | Tokens | Cost |
+|-----------|--------|------|
+| Full index (1,850 docs, one-time) | ~200K | $0.036 |
+| Incremental reindex (1 file) | ~100 | $0.000018 |
+| Search query embedding | ~20 | $0.0000036 |
+| Daily (3 sessions, 5 edits + 10 searches each) | ~2,100 | $0.0004 |
+| **Monthly** | ~63K | **$0.011** |
+| **Annual** | ~756K | **$0.13** |
+
+**Offline fallback:** If `VOYAGE_API_KEY` is unset or API is down, the system degrades to FTS5-only keyword search (porter stemming). No vector component — RRF merge drops the vector signal and returns FTS5 results only. Still far better than raw Grep.
 
 ### Risk Scoring Formula (Python functions only)
 
@@ -235,7 +273,7 @@ Everything not matching an exclusion pattern is indexed. Python files get full A
 - **Input:** `{ query: string, top_k?: int (default 10) }`
 - **Output:** `{ results: [{ name, file, score, snippet }], method: "fts5+vector+rrf" }`
 - **Budget:** ~350-800 tokens
-- **Method:** FTS5 BM25 + bag-of-words cosine similarity, merged via RRF (k=60)
+- **Method:** FTS5 BM25 + Voyage-code-3 cosine similarity (1024d), merged via RRF (k=60). Fallback: FTS5-only if API unavailable.
 
 ### module_summary
 - **Input:** `{ file: string }`
@@ -425,7 +463,8 @@ CodeIntelligence
         "command": "python",
         "args": ["shared/code_intel_mcp.py"],
         "env": {
-          "CI_DB_PATH": "data/code_intelligence.db"
+          "CI_DB_PATH": "data/code_intelligence.db",
+          "VOYAGE_API_KEY": "${VOYAGE_API_KEY}"
         }
       }
     }
@@ -468,9 +507,9 @@ CodeIntelligence
 | nodes (document) | ~250 | ~30 KB |
 | edges | ~5,000 | ~300 KB |
 | documents + FTS5 | ~1,850 | ~1.5 MB |
-| embeddings | ~1,850 | ~3.8 MB |
+| embeddings (Voyage-code-3, 1024d) | ~1,850 | ~7.4 MB |
 | Indexes (5) | — | ~500 KB |
-| **Total** | — | **~8 MB** |
+| **Total** | — | **~10 MB** |
 
 ### Runtime Resources
 
@@ -478,22 +517,37 @@ CodeIntelligence
 |----------|------|
 | MCP server process | ~15-25 MB RAM |
 | Watchdog thread | ~2-5 MB RAM |
-| Full index time | ~3-5 seconds |
-| Incremental reindex (1 file) | ~100-200ms |
+| Full index time | ~5-8 seconds (AST + Voyage API batch) |
+| Incremental reindex (1 file) | ~150-300ms (AST ~50ms + Voyage API ~100-200ms) |
 | Branch switch (50 files) | ~5-10s (debounced batch) |
 | MCP tool query latency | ~5-10ms |
+
+### New Dependencies
+
+```
+voyageai          # Voyage-code-3 embedding API (~2MB, lightweight SDK)
+watchdog          # File system watcher for real-time reindexing
+mcp               # MCP server SDK for Claude Code integration
+```
+
+### New Environment Variables
+
+```
+VOYAGE_API_KEY    # Required for Voyage-code-3 embeddings (free tier: 200M tokens)
+                  # Without it: system degrades to FTS5-only keyword search
+```
 
 ### New Code Estimate
 
 | Component | Lines |
 |-----------|-------|
-| `shared/code_intelligence.py` | ~300-400 |
-| `shared/code_intel_mcp.py` | ~150 |
+| `shared/code_intelligence.py` | ~350-450 |
+| `shared/code_intel_mcp.py` | ~200 |
 | `.claude/hooks/scripts/session-primer.py` | ~30 |
 | `.claude/hooks/scripts/reindex-file.py` | ~30 |
 | `.git/hooks/post-commit` (addition) | ~15 |
-| Tests | ~200-300 |
-| **Total** | **~750-900 lines** |
+| Tests | ~250-350 |
+| **Total** | **~900-1,100 lines** |
 
 ---
 
@@ -520,18 +574,20 @@ CodeIntelligence
 | Find function | O(F * L) — grep all files | O(log N) — B-tree index |
 | Callers of X | O(F * L) — grep all files | O(C) — indexed edges |
 | Impact analysis | Not feasible | O(V + E) — bounded BFS |
-| Semantic search | O(F * L) — grep exact only | O(D * 512) — FTS5 + cosine |
+| Semantic search | O(F * L) — grep exact only | O(D * 1024) — FTS5 + Voyage-code-3 cosine |
 | Incremental update | N/A | O(N_file) — single file AST |
 
 ### Quality
 
 | Dimension | Before | After |
 |-----------|--------|-------|
-| Retrieval accuracy | ~60% (Grep false positives) | ~98% (AST-indexed) |
+| Retrieval accuracy | ~60% (Grep false positives) | ~98% (AST-indexed + Voyage-code-3 semantic) |
+| Semantic quality | None (exact keyword match) | 13.8% better than OpenAI-3-large on code retrieval |
 | Capabilities | 3 (find, read, grep) | 11 (8 MCP + 3 hooks) |
 | Graph freshness | N/A | <1 second (real-time watcher) |
-| Cross-language search | Exact keyword only | Semantic across all file types |
-| Disk cost | 0 | 8 MB |
+| Cross-language search | Exact keyword only | Semantic across all file types (Voyage-code-3) |
+| Embedding cost | $0 | $0.011/month (~$0.13/year) |
+| Disk cost | 0 | 10 MB |
 | RAM cost | 0 | 25 MB |
 
 ---
@@ -547,11 +603,12 @@ CodeIntelligence
 | MCP `callers_of` / `callees_of` | Known call chains, max_results cap |
 | MCP `impact_analysis` | Single file, multiple files, depth boundary |
 | MCP `risk_report` | Top-N, per-file, verify scoring factors |
-| MCP `semantic_search` | Keyword hit, conceptual hit, cross-language |
+| MCP `semantic_search` | Keyword hit, conceptual hit (Voyage-code-3), cross-language, FTS5-only fallback when API down |
 | MCP `module_summary` | File with classes, file with functions only |
 | MCP `recent_changes` | With commits, empty repo |
 | SessionStart hook | DB exists, DB missing, DB stale |
 | PostToolUse hook | Python file edit, non-Python edit, non-file edit |
 | File watcher | Single change, rapid changes (debounce), branch switch |
 | Error cases | Corrupted DB, syntax error in file, concurrent access |
+| Voyage API | Embedding generation, batch indexing, API timeout, offline fallback to FTS5-only |
 | Existing tests | CodeGraph 101 tests still pass, HybridSearch tests still pass |
