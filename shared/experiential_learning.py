@@ -53,10 +53,17 @@ class Experience:
     score: float
     domain: str
     timestamp: str = ""
-    
+    last_accessed: str = ""  # Updated on every retrieve() hit
+
     def __post_init__(self):
         if not self.timestamp:
             self.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if not self.last_accessed:
+            self.last_accessed = self.timestamp
+
+    def touch(self):
+        """Update last_accessed to now (for LRU tracking)."""
+        self.last_accessed = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 @dataclass
@@ -73,56 +80,83 @@ class GRPOConfig:
 
 class ExperienceMemory:
     """
-    Stores and retrieves learned experiences.
-    
-    Acts as the agent's "long-term memory" of what worked.
-    Experiences are stored with scores and retrieved by relevance.
-    
+    Stores and retrieves learned experiences with LRU eviction.
+
+    Eviction strategy (when at capacity):
+    1. Score-weighted LRU: evict the experience with the lowest
+       combined score of (quality_score * 0.6 + recency * 0.4).
+       This keeps high-scoring experiences longer while still
+       removing stale ones that haven't been accessed recently.
+
     In a production system, this would be backed by a vector DB
     (like your Qdrant setup in PRISM). For now, we use a simple
     scored list with domain-based retrieval.
     """
-    
+
     def __init__(self, max_size: int = 20):
         self.experiences: list[Experience] = []
         self.max_size = max_size
-    
+
+    def _eviction_score(self, exp: Experience) -> float:
+        """Compute combined score for eviction ranking.
+
+        Higher = more worth keeping. Combines quality (60%) with recency (40%).
+        Recency is measured as hours since last access, inverted.
+        """
+        quality = exp.score / 10.0  # Normalise to 0-1
+
+        try:
+            last = datetime.strptime(exp.last_accessed, "%Y-%m-%d %H:%M:%S")
+            hours_since = (datetime.now() - last).total_seconds() / 3600.0
+        except (ValueError, TypeError):
+            hours_since = 999.0
+
+        # Recency: 1.0 if just accessed, decays toward 0 over 168h (1 week)
+        recency = max(0.0, 1.0 - hours_since / 168.0)
+
+        return quality * 0.6 + recency * 0.4
+
     def add(self, experience: Experience):
-        """Add an experience, evicting the lowest-scored if at capacity."""
+        """Add an experience, evicting the least valuable if at capacity."""
         self.experiences.append(experience)
-        
+
         if len(self.experiences) > self.max_size:
-            # Evict lowest-scoring experience
-            self.experiences.sort(key=lambda e: e.score, reverse=True)
+            # Evict the experience with the lowest combined score
+            self.experiences.sort(key=self._eviction_score, reverse=True)
             self.experiences = self.experiences[:self.max_size]
-    
+
     def retrieve(self, domain: str, n: int = 3) -> list[Experience]:
-        """Retrieve top-N experiences for a domain."""
-        # Filter by domain, then sort by score
+        """Retrieve top-N experiences for a domain. Updates last_accessed (LRU)."""
         relevant = [e for e in self.experiences if e.domain == domain]
         if not relevant:
-            relevant = self.experiences  # Fall back to all experiences
-        
+            relevant = list(self.experiences)  # Fall back to all experiences
+
         relevant.sort(key=lambda e: e.score, reverse=True)
-        return relevant[:n]
-    
+        results = relevant[:n]
+
+        # Touch retrieved experiences so they stay in cache longer
+        for exp in results:
+            exp.touch()
+
+        return results
+
     def format_for_prompt(self, domain: str, n: int = 3) -> str:
         """Format experiences as injectable prompt context."""
         experiences = self.retrieve(domain, n)
-        
+
         if not experiences:
             return ""
-        
+
         lines = ["## Learned Patterns From Previous Successes\n"]
         for i, exp in enumerate(experiences, 1):
             lines.append(f"### Pattern {i} (score: {exp.score:.1f}/10)")
             lines.append(f"Task: {exp.task_description}")
             lines.append(f"What worked: {exp.successful_pattern}")
             lines.append("")
-        
+
         lines.append("Apply these successful patterns to the current task.\n")
         return "\n".join(lines)
-    
+
     def __len__(self):
         return len(self.experiences)
 
