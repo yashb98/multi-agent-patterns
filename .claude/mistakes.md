@@ -4,6 +4,11 @@ Read this FIRST every session. Append on error. Re-check before committing.
 
 ---
 
+### [2026-04-04] Explore subagents burned ~190k tokens with Grep/Glob instead of CodeGraph MCP tools
+- **Cause**: Spawned 2 Explore agents (53 tool calls, ~190k tokens) to trace code dependencies — work that `find_symbol` + `callers_of` could answer in 2-3 MCP calls (~5k tokens).
+- **Fix**: Added CodeGraph-first rule to CLAUDE.md, rules, commands, and skills. Subagent prompts must include "Use MCP tools first."
+- **Rule**: ALWAYS use CodeGraph MCP tools (find_symbol, callers_of, callees_of, impact_analysis, semantic_search) BEFORE Grep/Glob for code exploration. Brief subagents to do the same.
+
 ### [2026-04-01] Ethnicity regex matched "city" in "ethnicity" → returned location instead
 - **Cause**: Pattern `your.*city` in COMMON_ANSWERS matched "your ethni**city**" — the word contains "city".
 - **Fix**: Changed to `what.*city.*live|which.*city` — requires full city-in-context phrasing.

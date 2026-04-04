@@ -23,6 +23,14 @@
 Dual gate: quality score >= 8.0/10 AND factual accuracy >= 9.5/10.
 Max 3 iterations. Fallback: accept best draft.
 
+## Code Exploration — Use MCP Tools First
+Before using Grep/Glob to explore code, use CodeGraph MCP tools:
+- `find_symbol` — locate any function/class definition
+- `callers_of` / `callees_of` — trace call chains
+- `impact_analysis` — blast radius of a change
+- `semantic_search` — find code by meaning
+One MCP call replaces 5-15 Grep/Glob/Read calls. Brief subagents to do the same.
+
 ## Rules
 - Agents are stateless functions — no instance variables, no side effects
 - Never return full AgentState — only fields that changed

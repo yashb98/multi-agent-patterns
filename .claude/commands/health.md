@@ -11,4 +11,6 @@
 5. **Secrets:** `grep -rn "sk-\|ghp_\|Bearer " --include="*.py" jobpulse/ shared/ patterns/ mindgraph_app/`
 6. **Dependency direction:** `grep -rn "from jobpulse\|from patterns\|from mindgraph" shared/ --include="*.py"` — should find zero results.
 
-Print summary: tests passed/failed, lint errors, DB safety, dispatch sync, secrets, dependency violations.
+7. **CodeGraph index:** Use the `risk_report` MCP tool to verify the code intelligence index is healthy (nodes > 0, edges > 0). Report node/edge counts.
+
+Print summary: tests passed/failed, lint errors, DB safety, dispatch sync, secrets, dependency violations, CodeGraph status.

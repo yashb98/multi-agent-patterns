@@ -23,7 +23,7 @@ Four LangGraph patterns for multi-agent coordination, all with mandatory fact-ch
 
 ### NLP 3-Tier Intent Classification
 
-3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 31 intents, continuous learning. Full details in [docs/agents.md](docs/agents.md#nlp-intent-classifier-nlp_classifierpy).
+3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001). 250+ examples, 41 intents, continuous learning. Full details in [docs/agents.md](docs/agents.md#nlp-intent-classifier-nlp_classifierpy).
 
 ### 2. JobPulse Daily Automation (jobpulse/)
 
@@ -61,6 +61,23 @@ Models a senior IT recruiter's 6-30 second screening process. Zero LLM cost — 
 **Result:** 96% fewer LLM calls ($0.23/month vs $5.63). Quality over quantity — only genuinely competitive jobs get applications.
 
 **Skill Gap Tracker:** Every pre-screened job records which skills you're missing. `python -m jobpulse.runner skill-gaps` shows the top gaps ranked by frequency. Export CSV for Google Drive to plan your upskilling.
+
+### Code Intelligence (shared/code_intelligence.py + MCP)
+
+AST-based code graph powering risk-aware review and developer tooling via 8 MCP tools:
+
+| MCP Tool | What It Does | Replaces |
+|----------|-------------|----------|
+| `find_symbol` | Locate any function/class definition | `grep -rn "def foo"` |
+| `callers_of` | Who calls this function | Multi-file grep walks |
+| `callees_of` | What does this function call | Manual code reading |
+| `impact_analysis` | Blast radius of a change | Recursive grep + guess |
+| `risk_report` | High-risk functions needing review | Manual triage |
+| `semantic_search` | Find code by meaning, not text | Keyword grep |
+| `module_summary` | Overview of a module's structure | Reading every file |
+| `recent_changes` | What changed recently | `git log` + manual diff |
+
+**4,297 nodes, 22,566 edges.** Risk scoring: security keywords, fan-in, test coverage, function size. One MCP call replaces 5-15 Grep/Glob/Read calls — saves 10-50k tokens per exploration.
 
 ### 3. Knowledge MindGraph (mindgraph_app/)
 
@@ -247,7 +264,7 @@ RLM_MAX_BUDGET=0.10
 
 ## Test Suite
 
-327 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (fetching, multi-criteria ranking, JSON parsing, storage, fact-check integration), external verifiers (Semantic Scholar, GitHub repo health, quality web search with source credibility), fact-checker (honest scoring, explanation generation, claim routing, multi-source verification, cache), dispatcher routing, swarm logic, GRPO sampling, experience storage, knowledge extraction, email pre-classifier (rules, confidence, evidence, audit, graduation, review flow).
+1472 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (fetching, multi-criteria ranking, JSON parsing, storage, fact-check integration), external verifiers (Semantic Scholar, GitHub repo health, quality web search with source credibility), fact-checker (honest scoring, explanation generation, claim routing, multi-source verification, cache), dispatcher routing, swarm logic, GRPO sampling, experience storage, knowledge extraction, email pre-classifier (rules, confidence, evidence, audit, graduation, review flow).
 
 ```bash
 python -m pytest tests/ -v          # Full suite

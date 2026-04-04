@@ -41,6 +41,15 @@
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.
 IMPORTANT: New intents MUST be added to BOTH dispatcher.py AND swarm_dispatcher.py.
 
+## Code Exploration — Use MCP Tools First
+Before using Grep/Glob to explore code, use CodeGraph MCP tools:
+- `find_symbol` — locate any function/class definition
+- `callers_of` / `callees_of` — trace call chains
+- `impact_analysis` — blast radius of a change
+- `semantic_search` — find code by meaning
+- `module_summary` — overview of a module's structure
+One MCP call replaces 5-15 Grep/Glob/Read calls. Brief subagents to do the same.
+
 ## Rules
 All jobpulse rules in `.claude/rules/jobpulse.md`. Job autopilot rules in `.claude/rules/jobs.md`.
 

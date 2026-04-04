@@ -37,3 +37,8 @@ while iteration < max_iterations:
 - Use `response_format={"type": "json_object"}` when expecting JSON from OpenAI
 - Define clear JSON schemas in prompts for machine-readable output
 - Never rely on markdown stripping to extract JSON from responses
+
+## Code Exploration
+
+- Use CodeGraph MCP tools (find_symbol, callers_of, callees_of, impact_analysis) BEFORE Grep/Glob
+- When briefing subagents for code exploration, include: "Use MCP tools first, fall back to Grep/Glob only if needed"

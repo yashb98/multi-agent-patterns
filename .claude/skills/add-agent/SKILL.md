@@ -8,8 +8,9 @@ Add a new agent role: $ARGUMENTS
 
 Follow these steps:
 
-1. Read `shared/prompts.py` to understand existing prompt conventions
-2. Read `shared/agents.py` to understand the agent node function pattern
+1. Use `module_summary` MCP tool on `shared/` to understand the agent infrastructure
+2. Use `find_symbol` MCP tool to find existing agent node functions and prompt constants
+3. Read `shared/prompts.py` and `shared/agents.py` to understand conventions (use callers_of to check dependencies)
 3. Add a new system prompt constant to `shared/prompts.py`:
    - Include role definition, constraints, and explicit output format
    - Follow the naming convention: `<ROLE>_PROMPT`

@@ -30,6 +30,17 @@ The code review intelligence layer:
 3. **Review** — `risk_aware_reviewer_node()` injects top-risk functions into reviewer prompt
 4. **Visualize** — `export_code_graph_mermaid()` / `export_code_graph_dot()` with risk heatmap
 
+## Code Exploration — Use MCP Tools First
+Before using Grep/Glob to explore code, use CodeGraph MCP tools:
+- `find_symbol` — locate any function/class definition
+- `callers_of` / `callees_of` — trace call chains
+- `impact_analysis` — blast radius of a change
+- `risk_report` — high-risk functions needing careful review
+- `module_summary` — overview of a module's structure
+- `semantic_search` — find code by meaning
+- `recent_changes` — what changed recently
+One MCP call replaces 5-15 Grep/Glob/Read calls. Brief subagents to do the same.
+
 ## Rules
 - NEVER import from patterns/, jobpulse/, or mindgraph_app/
 - NEVER instantiate ChatOpenAI directly — always use get_llm() from agents.py

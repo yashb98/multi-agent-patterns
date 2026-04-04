@@ -19,6 +19,8 @@ AST-based code intelligence used by risk_aware_reviewer_node:
 - Risk scoring: security keywords, fan-in, test coverage, function size
 - Impact radius: BFS blast radius for changed files
 - Tests must use `:memory:` SQLite — never file-backed in tests
+- **MCP tools available:** find_symbol, callers_of, callees_of, impact_analysis, risk_report, semantic_search, module_summary, recent_changes
+- ALWAYS use MCP tools before Grep/Glob for code exploration — one MCP call replaces 5-15 search calls
 
 ## Graph Visualizer (shared/graph_visualizer.py)
 Export CodeGraph and LangGraph pattern topologies:

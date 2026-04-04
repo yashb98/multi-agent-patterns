@@ -39,6 +39,19 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 - Log errors immediately to `.claude/mistakes.md`
 - Full constraints in `docs/rules.md`
 
+## Code Intelligence (MCP tools — use FIRST for code exploration)
+- Before spawning Explore agents or doing multi-step Grep/Glob searches, use CodeGraph MCP tools
+- `find_symbol` → find any function/class definition (replaces grep for "where is X defined?")
+- `callers_of` → who calls this function (replaces grep for "who uses X?")
+- `callees_of` → what does this function call
+- `impact_analysis` → blast radius of a change (replaces multi-file grep walks)
+- `risk_report` → high-risk functions that need careful review
+- `semantic_search` → find code by meaning, not just text
+- `module_summary` → overview of a module's structure
+- `recent_changes` → what changed recently
+- When briefing subagents, ALWAYS include: "Use MCP tools (find_symbol, callers_of, callees_of, impact_analysis, semantic_search) before falling back to Grep/Glob"
+- One MCP call replaces 5-15 Grep/Glob/Read calls and saves 10-50k tokens per exploration
+
 ## Do NOT (extracted from production incidents)
 - NEVER update only one dispatcher — always update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
 - NEVER use http:// for external APIs — always HTTPS (arXiv HTTP→HTTPS redirect burned rate limit)

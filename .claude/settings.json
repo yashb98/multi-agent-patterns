@@ -1,4 +1,9 @@
 {
+  "enabledPlugins": {
+    "postman@claude-plugins-official": false,
+    "huggingface-skills@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": false
+  },
   "mcp": {
     "servers": {
       "code-intelligence": {
