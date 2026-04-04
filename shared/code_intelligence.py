@@ -30,16 +30,26 @@ logger = get_logger(__name__)
 FULL_INDEX_EXTENSIONS = (".py",)
 
 EXCLUDE_PATTERNS = {
-    ".env", ".env.*",
-    "*.pyc", "__pycache__/",
+    ".env",
+    ".env.*",
+    "*.pyc",
+    "__pycache__/",
     ".git/",
     "node_modules/",
-    "*.db", "*.sqlite",
-    "*.png", "*.jpg", "*.ico", "*.gif", "*.svg",
-    "*.woff", "*.ttf", "*.woff2",
+    "*.db",
+    "*.sqlite",
+    "*.png",
+    "*.jpg",
+    "*.ico",
+    "*.gif",
+    "*.svg",
+    "*.woff",
+    "*.ttf",
+    "*.woff2",
     "*.pdf",
     "*.lock",
-    "venv/", ".venv/",
+    "venv/",
+    ".venv/",
     ".claude/worktrees/",
 }
 
@@ -106,8 +116,8 @@ class CodeIntelligence:
         """Create columns/tables beyond what CodeGraph + HybridSearch provide."""
         # We need CodeGraph's schema first — create it via a temp instance
         # that uses our connection
-        temp_graph = CodeGraph(conn=self.conn)
-        temp_search = HybridSearch(conn=self.conn)
+        CodeGraph(conn=self.conn)
+        HybridSearch(conn=self.conn)
 
         # Now add extended columns to nodes if they don't exist
         existing = {r[1] for r in self.conn.execute("PRAGMA table_info(nodes)").fetchall()}
@@ -130,9 +140,7 @@ class CodeIntelligence:
         """)
 
         # Risk score index
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_nodes_risk ON nodes(risk_score DESC)"
-        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_risk ON nodes(risk_score DESC)")
 
         self.conn.commit()
 
@@ -148,6 +156,7 @@ class CodeIntelligence:
 
         try:
             import voyageai
+
             self._voyage_client = voyageai.Client(api_key=api_key)
             return self._voyage_client
         except ImportError:
@@ -190,7 +199,10 @@ class CodeIntelligence:
 
         logger.info(
             "index_directory complete: %d nodes, %d edges, %d documents in %dms",
-            nodes, edges, documents, elapsed_ms,
+            nodes,
+            edges,
+            documents,
+            elapsed_ms,
         )
         return {"nodes": nodes, "edges": edges, "documents": documents, "time_ms": elapsed_ms}
 
@@ -212,11 +224,6 @@ class CodeIntelligence:
 
             # Skip binary files
             if _is_binary(filepath):
-                continue
-
-            try:
-                text = filepath.read_text(encoding="utf-8", errors="replace")[:5000]
-            except (OSError, PermissionError):
                 continue
 
             qname = f"{rel_str}::__document__"
@@ -309,9 +316,7 @@ class CodeIntelligence:
         try:
             import struct
 
-            rows = self.conn.execute(
-                "SELECT id, text FROM documents"
-            ).fetchall()
+            rows = self.conn.execute("SELECT id, text FROM documents").fetchall()
 
             if not rows:
                 return
@@ -320,8 +325,8 @@ class CodeIntelligence:
             texts = [r[1] for r in rows]
 
             for batch_start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
-                batch_ids = ids[batch_start: batch_start + EMBEDDING_BATCH_SIZE]
-                batch_texts = texts[batch_start: batch_start + EMBEDDING_BATCH_SIZE]
+                batch_ids = ids[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
+                batch_texts = texts[batch_start : batch_start + EMBEDDING_BATCH_SIZE]
 
                 try:
                     result = client.embed(
@@ -335,7 +340,7 @@ class CodeIntelligence:
                     continue
 
                 rows_to_insert = []
-                for doc_id, vector in zip(batch_ids, vectors):
+                for doc_id, vector in zip(batch_ids, vectors, strict=True):
                     packed = struct.pack(f"{len(vector)}f", *vector)
                     rows_to_insert.append((doc_id, packed))
 
@@ -633,12 +638,14 @@ class CodeIntelligence:
                 (node.get("qualified_name", ""),),
             ).fetchone()
             risk = risk_row[0] if risk_row else 0.0
-            enriched.append({
-                "name": node.get("name", ""),
-                "file": node_file,
-                "depth": depth_map.get(node_file, 0),
-                "risk": risk,
-            })
+            enriched.append(
+                {
+                    "name": node.get("name", ""),
+                    "file": node_file,
+                    "depth": depth_map.get(node_file, 0),
+                    "risk": risk,
+                }
+            )
 
         max_risk = max((e["risk"] for e in enriched), default=0.0)
 
@@ -681,12 +688,14 @@ class CodeIntelligence:
                     metadata = json.loads(metadata)
                 except (json.JSONDecodeError, TypeError):
                     metadata = {}
-            results.append({
-                "name": item.get("id", ""),
-                "file": metadata.get("file_path", ""),
-                "score": item.get("score", 0.0),
-                "snippet": (item.get("text") or "")[:200],
-            })
+            results.append(
+                {
+                    "name": item.get("id", ""),
+                    "file": metadata.get("file_path", ""),
+                    "score": item.get("score", 0.0),
+                    "snippet": (item.get("text") or "")[:200],
+                }
+            )
         return results
 
     def module_summary(self, file: str) -> dict[str, Any]:
@@ -742,8 +751,7 @@ class CodeIntelligence:
         if all_qnames:
             placeholders = ",".join("?" * len(all_qnames))
             caller_rows = self.conn.execute(
-                f"SELECT DISTINCT file_path FROM edges "
-                f"WHERE target_qname IN ({placeholders})",
+                f"SELECT DISTINCT file_path FROM edges WHERE target_qname IN ({placeholders})",
                 all_qnames,
             ).fetchall()
             imports_from = [r[0] for r in caller_rows if r[0] != file]
@@ -752,8 +760,7 @@ class CodeIntelligence:
         imported_by: list[str] = []
         if all_qnames:
             callee_rows = self.conn.execute(
-                f"SELECT DISTINCT file_path FROM edges "
-                f"WHERE source_qname IN ({placeholders})",
+                f"SELECT DISTINCT file_path FROM edges WHERE source_qname IN ({placeholders})",
                 all_qnames,
             ).fetchall()
             imported_by = [r[0] for r in callee_rows if r[0] != file]
@@ -775,7 +782,8 @@ class CodeIntelligence:
         try:
             result = subprocess.run(
                 [
-                    "git", "log",
+                    "git",
+                    "log",
                     f"--max-count={n_commits}",
                     "--name-only",
                     "--pretty=format:%H %s",
@@ -815,6 +823,7 @@ class CodeIntelligence:
 
         # Hotspots: files that appear in multiple commits
         from collections import Counter
+
         file_counts: Counter[str] = Counter()
         for commit in commits:
             for f in commit["files"]:
@@ -838,7 +847,6 @@ class CodeIntelligence:
 
     def get_primer(self, top_risk: int = 5, n_commits: int = 3) -> str:
         """Formatted codebase fingerprint for SessionStart hook."""
-        stats = self._graph.get_stats()
         total_nodes = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
         total_edges = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
 
