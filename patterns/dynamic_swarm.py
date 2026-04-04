@@ -52,6 +52,7 @@ from shared.agents import (
     researcher_node,
     writer_node,
     reviewer_node,
+    risk_aware_reviewer_node,
     create_initial_state,
     get_llm,
     compute_cost_summary,
@@ -280,7 +281,7 @@ def task_executor_node(state: AgentState) -> dict:
     agent_map = {
         "researcher": researcher_node,
         "writer": writer_node,
-        "reviewer": reviewer_node,
+        "reviewer": risk_aware_reviewer_node,
     }
     
     agent_fn = agent_map.get(agent_name)

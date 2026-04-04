@@ -47,6 +47,7 @@ from shared.agents import (
     researcher_node,
     writer_node,
     reviewer_node,
+    risk_aware_reviewer_node,
     fact_check_node,
     create_initial_state,
     get_llm,
@@ -226,7 +227,8 @@ def debate_reviewer_node(state: AgentState) -> dict:
     If it stagnates, we should stop.
     """
     # The reviewer works the same way — score and critique
-    return reviewer_node(state)
+    # Uses risk-aware review for code-containing drafts
+    return risk_aware_reviewer_node(state)
 
 
 # ─── CONVERGENCE CHECK ───────────────────────────────────────────
@@ -380,7 +382,7 @@ def build_debate_graph():
     # Round 1 nodes (initial pipeline)
     graph.add_node("researcher", researcher_node)
     graph.add_node("writer", writer_node)
-    graph.add_node("reviewer", reviewer_node)
+    graph.add_node("reviewer", risk_aware_reviewer_node)
     
     # Debate round nodes (cross-critique versions)
     graph.add_node("debate_researcher", debate_researcher_node)

@@ -49,6 +49,7 @@ from shared.agents import (
     researcher_node,
     writer_node,
     reviewer_node,
+    risk_aware_reviewer_node,
     fact_check_node,
     create_initial_state,
     get_llm,
@@ -304,7 +305,7 @@ def build_hierarchical_graph(use_llm_supervisor: bool = False):
     graph.add_node("supervisor", supervisor_fn)
     graph.add_node("researcher", researcher_node)
     graph.add_node("writer", writer_node)
-    graph.add_node("reviewer", reviewer_node)
+    graph.add_node("reviewer", risk_aware_reviewer_node)
     graph.add_node("fact_checker", fact_check_node)
     graph.add_node("finish", finish_node)
     

@@ -46,6 +46,7 @@ from shared.agents import (
     researcher_node,
     writer_node,
     reviewer_node,
+    risk_aware_reviewer_node,
     create_initial_state,
     get_llm,
     compute_cost_summary,
@@ -288,7 +289,7 @@ def enhanced_reviewer_node(state: AgentState) -> dict:
     print(f"{'='*60}")
     
     # Run standard review
-    result = reviewer_node(state)
+    result = risk_aware_reviewer_node(state)
     
     score = result.get("review_score", 0)
     
