@@ -111,6 +111,10 @@ def run_agentic_loop(
     while iteration < max_iterations:
         iteration += 1
 
+        # Proactive context truncation — prevent overflow before it crashes
+        from shared.context_compression import truncate_messages_to_fit
+        messages = truncate_messages_to_fit(messages, model=model)
+
         kwargs = {"model": model, "messages": messages, "temperature": temperature}
         if openai_tools:
             kwargs["tools"] = openai_tools

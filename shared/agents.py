@@ -43,6 +43,10 @@ from shared.cost_tracker import (  # noqa: F401
 from shared.context_compression import (  # noqa: F401
     MAX_RESEARCH_CHARS,
     compress_research_notes,
+    count_tokens,
+    truncate_messages_to_fit,
+    check_context_budget,
+    count_messages_tokens,
 )
 from shared.agentic_loop import (  # noqa: F401
     AgentError,
@@ -206,12 +210,28 @@ def reviewer_node(state: AgentState) -> dict:
     topic = state["topic"]
     research = "\n\n".join(state.get("research_notes", []))
 
+    # Token-aware truncation instead of hardcoded char limit
+    research_tokens = count_tokens(research)
+    if research_tokens > 1500:
+        # Truncate to ~1500 tokens worth of research context
+        encoder = None
+        try:
+            from shared.context_compression import get_token_encoder
+            encoder = get_token_encoder("gpt-5o-mini")
+        except Exception:
+            pass
+        if encoder:
+            tokens = encoder.encode(research)
+            research = encoder.decode(tokens[:1500]) + "\n\n[...truncated for context budget]"
+        else:
+            research = research[:6000] + "\n\n[...truncated for context budget]"
+
     user_msg = f"""Evaluate this blog article draft.
 
 ORIGINAL TOPIC: {topic}
 
 RESEARCH NOTES (for accuracy checking):
-{research[:2000]}
+{research}
 
 ARTICLE DRAFT TO REVIEW:
 {draft}
