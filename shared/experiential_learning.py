@@ -38,11 +38,17 @@ ARCHITECTURE:
 """
 
 import json
+import sqlite3
 from typing import Callable, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 from langchain_core.messages import SystemMessage, HumanMessage
+
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -80,30 +86,71 @@ class GRPOConfig:
 
 class ExperienceMemory:
     """
-    Stores and retrieves learned experiences with LRU eviction.
+    SQLite-backed experience memory with LRU eviction.
 
-    Eviction strategy (when at capacity):
-    1. Score-weighted LRU: evict the experience with the lowest
-       combined score of (quality_score * 0.6 + recency * 0.4).
-       This keeps high-scoring experiences longer while still
-       removing stale ones that haven't been accessed recently.
+    Persists learned experiences across process restarts.
+    Eviction strategy: quality * 0.6 + recency * 0.4.
 
-    In a production system, this would be backed by a vector DB
-    (like your Qdrant setup in PRISM). For now, we use a simple
-    scored list with domain-based retrieval.
+    Args:
+        max_size: Maximum experiences to store.
+        db_path: SQLite database path. Use ":memory:" for tests.
     """
 
-    def __init__(self, max_size: int = 20):
-        self.experiences: list[Experience] = []
+    def __init__(self, max_size: int = 20, db_path: str = "data/experience_memory.db"):
         self.max_size = max_size
+        self.db_path = db_path
+
+        # Ensure directory exists for file-backed DBs
+        if db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+        self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self._init_schema()
+        self._load_cache()
+
+    def _init_schema(self):
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS experiences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_description TEXT NOT NULL,
+                successful_pattern TEXT NOT NULL,
+                score REAL NOT NULL,
+                domain TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                last_accessed TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_exp_domain ON experiences(domain);
+            CREATE INDEX IF NOT EXISTS idx_exp_score ON experiences(score DESC);
+        """)
+        self.conn.commit()
+
+    def _load_cache(self):
+        """Load experiences from SQLite into in-memory cache."""
+        rows = self.conn.execute(
+            "SELECT * FROM experiences ORDER BY score DESC"
+        ).fetchall()
+        self.experiences = [
+            Experience(
+                task_description=r["task_description"],
+                successful_pattern=r["successful_pattern"],
+                score=r["score"],
+                domain=r["domain"],
+                timestamp=r["timestamp"],
+                last_accessed=r["last_accessed"],
+            )
+            for r in rows
+        ]
+        if self.experiences:
+            logger.info("Loaded %d experiences from %s", len(self.experiences), self.db_path)
 
     def _eviction_score(self, exp: Experience) -> float:
         """Compute combined score for eviction ranking.
 
         Higher = more worth keeping. Combines quality (60%) with recency (40%).
-        Recency is measured as hours since last access, inverted.
         """
-        quality = exp.score / 10.0  # Normalise to 0-1
+        quality = exp.score / 10.0
 
         try:
             last = datetime.strptime(exp.last_accessed, "%Y-%m-%d %H:%M:%S")
@@ -111,32 +158,55 @@ class ExperienceMemory:
         except (ValueError, TypeError):
             hours_since = 999.0
 
-        # Recency: 1.0 if just accessed, decays toward 0 over 168h (1 week)
         recency = max(0.0, 1.0 - hours_since / 168.0)
-
         return quality * 0.6 + recency * 0.4
 
     def add(self, experience: Experience):
         """Add an experience, evicting the least valuable if at capacity."""
         self.experiences.append(experience)
 
+        # Persist to SQLite
+        self.conn.execute(
+            "INSERT INTO experiences (task_description, successful_pattern, score, domain, timestamp, last_accessed) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (experience.task_description, experience.successful_pattern,
+             experience.score, experience.domain,
+             experience.timestamp, experience.last_accessed),
+        )
+
         if len(self.experiences) > self.max_size:
-            # Evict the experience with the lowest combined score
             self.experiences.sort(key=self._eviction_score, reverse=True)
+            evicted = self.experiences[self.max_size:]
             self.experiences = self.experiences[:self.max_size]
+
+            # Remove evicted from SQLite
+            for exp in evicted:
+                self.conn.execute(
+                    "DELETE FROM experiences WHERE task_description=? AND timestamp=?",
+                    (exp.task_description, exp.timestamp),
+                )
+
+        self.conn.commit()
+        logger.debug("Stored experience (domain=%s, score=%.1f)", experience.domain, experience.score)
 
     def retrieve(self, domain: str, n: int = 3) -> list[Experience]:
         """Retrieve top-N experiences for a domain. Updates last_accessed (LRU)."""
         relevant = [e for e in self.experiences if e.domain == domain]
         if not relevant:
-            relevant = list(self.experiences)  # Fall back to all experiences
+            relevant = list(self.experiences)
 
         relevant.sort(key=lambda e: e.score, reverse=True)
         results = relevant[:n]
 
-        # Touch retrieved experiences so they stay in cache longer
+        # Touch retrieved experiences
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for exp in results:
             exp.touch()
+            self.conn.execute(
+                "UPDATE experiences SET last_accessed=? WHERE task_description=? AND timestamp=?",
+                (now, exp.task_description, exp.timestamp),
+            )
+        self.conn.commit()
 
         return results
 
@@ -159,6 +229,10 @@ class ExperienceMemory:
 
     def __len__(self):
         return len(self.experiences)
+
+    def close(self):
+        """Close the SQLite connection."""
+        self.conn.close()
 
 
 class TrainingFreeGRPO:

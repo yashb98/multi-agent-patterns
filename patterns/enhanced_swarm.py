@@ -74,10 +74,9 @@ logger = get_logger(__name__)
 
 
 # ─── GLOBAL LEARNING SYSTEMS ────────────────────────────────────
-# These persist across runs, accumulating knowledge.
-# In production, back these with Redis/Qdrant.
+# SQLite-backed — experiences survive process restarts.
 
-_experience_memory = ExperienceMemory(max_size=50)
+_experience_memory = ExperienceMemory(max_size=50, db_path="data/experience_memory.db")
 _optimized_prompts = {}  # Cache of optimized prompts per role+domain
 
 
