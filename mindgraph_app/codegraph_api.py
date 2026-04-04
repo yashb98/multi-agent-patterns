@@ -47,7 +47,7 @@ def _get_graph(force_reindex: bool = False) -> CodeGraph:
 # ─── GRAPH DATA ENDPOINTS ──────────────────────────────────
 
 @codegraph_router.get("/graph")
-def get_codegraph(focus_file: str = None, max_nodes: int = 100):
+def get_codegraph(focus_file: str = None, max_nodes: int = 2000):
     """Get the code dependency graph as nodes + edges for 3D visualization.
 
     Returns data in the same {nodes, edges} format the frontend expects,
@@ -108,6 +108,13 @@ def get_codegraph(focus_file: str = None, max_nodes: int = 100):
 
     # Build edges between these nodes
     qname_set = {n["qualified_name"] for n in nodes}
+
+    # Build fast lookup: bare name -> set of qualified names in our node set
+    name_to_qnames: dict[str, list[str]] = {}
+    for qn in qname_set:
+        bare = qn.rsplit("::", 1)[-1] if "::" in qn else qn
+        name_to_qnames.setdefault(bare, []).append(qn)
+
     out_edges = []
     for n in nodes:
         qn = n["qualified_name"]
@@ -117,18 +124,34 @@ def get_codegraph(focus_file: str = None, max_nodes: int = 100):
         for e in edges:
             target = e["target_qname"]
             edge_kind = e["kind"]
-            # Match target to known nodes
-            for other_qn in qname_set:
-                if (other_qn.endswith(f"::{target}")
-                        or other_qn.endswith(f"::{target.split('.')[-1]}")
-                        or other_qn == target):
-                    out_edges.append({
-                        "from_id": qn,
-                        "to_id": other_qn,
-                        "type": edge_kind.upper(),
-                        "context": edge_kind,
-                    })
-                    break
+            matched = None
+
+            # 1. Exact match (resolved edges)
+            if target in qname_set:
+                matched = target
+            else:
+                # 2. Bare name lookup (unresolved edges)
+                bare = target.rsplit(".", 1)[-1] if "." in target else target
+                candidates = name_to_qnames.get(bare, [])
+                if len(candidates) == 1:
+                    matched = candidates[0]
+                elif candidates:
+                    # Prefer same file
+                    src_file = qn.split("::")[0] if "::" in qn else ""
+                    for c in candidates:
+                        if c.startswith(src_file + "::"):
+                            matched = c
+                            break
+                    if not matched:
+                        matched = candidates[0]
+
+            if matched:
+                out_edges.append({
+                    "from_id": qn,
+                    "to_id": matched,
+                    "type": edge_kind.upper(),
+                    "context": edge_kind,
+                })
 
     return {"nodes": out_nodes, "edges": out_edges}
 

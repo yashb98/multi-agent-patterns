@@ -29,11 +29,26 @@ logger = get_logger(__name__)
 # ─── SECURITY KEYWORDS ────────────────────────────────────────────
 # Functions containing these keywords in their name get a risk boost.
 
-SECURITY_KEYWORDS = frozenset({
-    "auth", "password", "token", "crypt", "secret", "sql", "socket",
-    "encrypt", "verify", "admin", "privilege", "session", "credential",
-    "login", "permission", "sanitize", "hash", "key", "oauth", "jwt",
+# Tier 1: HIGH-CONFIDENCE — almost always security-relevant, always flag.
+_HIGH_CONFIDENCE_KEYWORDS = frozenset({
+    "auth", "password", "crypt", "secret", "encrypt", "credential",
+    "oauth", "jwt", "privilege", "admin",
 })
+
+# Tier 2: CONTEXT-DEPENDENT — only flag when function name also contains a
+# security-context word (e.g. verify_user_token is risky, count_tokens is not).
+_CONTEXT_DEPENDENT_KEYWORDS = frozenset({
+    "verify", "token", "session", "sql", "hash", "key",
+    "login", "socket", "sanitize", "permission",
+})
+
+_SECURITY_CONTEXT_WORDS = frozenset({
+    "auth", "user", "password", "cred", "login", "access",
+    "perm", "secret", "account", "secure", "cert",
+})
+
+# Union kept for backward compatibility (e.g. external callers).
+SECURITY_KEYWORDS = _HIGH_CONFIDENCE_KEYWORDS | _CONTEXT_DEPENDENT_KEYWORDS
 
 
 class CodeGraph:
@@ -102,14 +117,25 @@ class CodeGraph:
                 logger.debug("Failed to parse %s: %s", filepath.name, e)
 
         self.conn.commit()
+        self._resolve_call_edges()
+        self.conn.commit()
         node_count = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
         edge_count = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-        logger.info("Indexed %d files → %d nodes, %d edges", len(files), node_count, edge_count)
+        resolved = self.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE kind='calls' AND target_qname LIKE '%::%'"
+        ).fetchone()[0]
+        total_calls = self.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE kind='calls'"
+        ).fetchone()[0]
+        logger.info(
+            "Indexed %d files → %d nodes, %d edges (%d/%d call edges resolved)",
+            len(files), node_count, edge_count, resolved, total_calls,
+        )
 
     def _index_file(self, filepath: Path, root: Path, prefix: str = ""):
         """Parse a single Python file into nodes and edges."""
         source = filepath.read_text(encoding="utf-8", errors="replace")
-        rel_path = prefix + str(filepath.relative_to(root))
+        rel_path = (prefix.rstrip("/") + "/" + str(filepath.relative_to(root))) if prefix else str(filepath.relative_to(root))
 
         try:
             tree = ast.parse(source, filename=rel_path)
@@ -228,6 +254,74 @@ class CodeGraph:
             "INSERT INTO edges (kind, source_qname, target_qname, file_path, line) VALUES (?,?,?,?,?)",
             (kind, source, target, file_path, line),
         )
+
+    # ─── POST-INDEX EDGE RESOLUTION ─────────────────────────────
+
+    def _resolve_call_edges(self):
+        """Resolve bare call-edge targets to fully qualified node names.
+
+        Call edges are stored with bare names (e.g. 'set_run_id',
+        'self._init_schema') because AST only provides the local name.
+        This pass matches them to actual node qualified_names after all
+        files are indexed, dramatically increasing graph connectivity.
+        """
+        # Build lookup: simple_name -> [qualified_name, ...]
+        name_to_qnames: dict[str, list[str]] = {}
+        for row in self.conn.execute("SELECT name, qualified_name FROM nodes"):
+            name_to_qnames.setdefault(row[0], []).append(row[1])
+
+        # Process all unresolved call edges (those without :: in target)
+        unresolved = self.conn.execute(
+            "SELECT rowid, target_qname, source_qname FROM edges "
+            "WHERE kind='calls' AND target_qname NOT LIKE '%::%'"
+        ).fetchall()
+
+        resolved_count = 0
+        updates = []
+
+        for edge in unresolved:
+            rowid, target, source_qname = edge[0], edge[1], edge[2]
+            source_file = source_qname.split("::")[0] if "::" in source_qname else ""
+
+            # Strip prefixes: self.foo -> foo, module.foo.bar -> bar
+            bare_name = target.rsplit(".", 1)[-1] if "." in target else target
+
+            candidates = name_to_qnames.get(bare_name, [])
+            if not candidates:
+                continue
+
+            if len(candidates) == 1:
+                # Unambiguous — single match
+                updates.append((candidates[0], rowid))
+                resolved_count += 1
+            else:
+                # Disambiguate: prefer same file, then same directory
+                same_file = [c for c in candidates if c.startswith(source_file + "::")]
+                if same_file:
+                    updates.append((same_file[0], rowid))
+                    resolved_count += 1
+                    continue
+
+                # Same directory
+                source_dir = source_file.rsplit("/", 1)[0] if "/" in source_file else ""
+                if source_dir:
+                    same_dir = [c for c in candidates if c.startswith(source_dir + "/")]
+                    if len(same_dir) == 1:
+                        updates.append((same_dir[0], rowid))
+                        resolved_count += 1
+                        continue
+
+                # Pick the non-test candidate if only one remains
+                non_test = [c for c in candidates if "test_" not in c.lower()]
+                if len(non_test) == 1:
+                    updates.append((non_test[0], rowid))
+                    resolved_count += 1
+
+        # Batch update
+        self.conn.executemany(
+            "UPDATE edges SET target_qname=? WHERE rowid=?", updates
+        )
+        logger.debug("Resolved %d/%d call edges", resolved_count, len(unresolved))
 
     # ─── QUERIES ──────────────────────────────────────────────────
 
@@ -361,8 +455,11 @@ class CodeGraph:
         score = 0.0
         name_lower = node["name"].lower()
 
-        # Security keywords
-        if any(kw in name_lower for kw in SECURITY_KEYWORDS):
+        # Security keywords — two-tier matching to reduce false positives
+        has_high_confidence = any(kw in name_lower for kw in _HIGH_CONFIDENCE_KEYWORDS)
+        has_context_dependent = any(kw in name_lower for kw in _CONTEXT_DEPENDENT_KEYWORDS)
+        has_security_context = any(ctx in name_lower for ctx in _SECURITY_CONTEXT_WORDS)
+        if has_high_confidence or (has_context_dependent and has_security_context):
             score += 0.25
 
         # Fan-in (callers) — use exact name suffix match to reduce false positives

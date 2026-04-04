@@ -35,7 +35,7 @@ function useGraphData() {
   const [data, setData] = useState({ nodes: [], edges: [] })
   const [source, setSource] = useState('loading')
   useEffect(() => {
-    fetch('/api/codegraph/graph?max_nodes=150')
+    fetch('/api/codegraph/graph?max_nodes=2000')
       .then(r => r.json())
       .then(d => {
         if (d.nodes && d.nodes.length > 0) {
