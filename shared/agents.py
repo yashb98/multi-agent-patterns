@@ -543,6 +543,91 @@ specified in your instructions."""
     }
 
 
+# ─── AGENT NODE: RISK-AWARE REVIEWER ───────────────────────────────
+
+def risk_aware_reviewer_node(state: AgentState) -> dict:
+    """
+    Reviewer that uses code_graph risk scoring to prioritize inspection.
+
+    If the draft contains code blocks, parses them through CodeGraph,
+    computes risk scores, and prepends a risk-prioritized checklist to
+    the standard review prompt. Falls back to standard reviewer_node
+    when no code blocks are found.
+    """
+    draft = state.get("draft", "")
+
+    # Check if draft contains code blocks
+    code_blocks = _extract_code_blocks(draft)
+    if not code_blocks:
+        return reviewer_node(state)
+
+    logger.info("RISK-AWARE REVIEWER - Analysing %d code blocks", len(code_blocks))
+
+    # Build temporary in-memory code graph
+    try:
+        from shared.code_graph import CodeGraph
+        import tempfile, os
+        graph = CodeGraph(":memory:")
+
+        # Write code blocks to temp files for parsing
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i, (filename, code) in enumerate(code_blocks):
+                fpath = os.path.join(tmpdir, filename or f"block_{i}.py")
+                os.makedirs(os.path.dirname(fpath), exist_ok=True)
+                with open(fpath, "w") as f:
+                    f.write(code)
+            graph.index_directory(tmpdir)
+
+        risk_report = graph.risk_report(top_n=10)
+        graph.close()
+    except Exception as e:
+        logger.warning("Risk analysis failed, falling back to standard review: %s", e)
+        return reviewer_node(state)
+
+    if not risk_report:
+        return reviewer_node(state)
+
+    # Build risk-prioritized checklist for the reviewer prompt
+    risk_lines = ["HIGH-PRIORITY REVIEW TARGETS (risk-scored by code analysis):"]
+    for item in risk_report:
+        risk_lines.append(
+            f"  - {item['name']} ({item['file_path']}:{item['line_start']}) "
+            f"risk={item['risk_score']:.2f}"
+        )
+    risk_context = "\n".join(risk_lines)
+
+    # Inject risk context into reviewer's evaluation
+    logger.info("Risk report: %d high-risk functions identified", len(risk_report))
+
+    # Run standard review with risk context prepended to the draft
+    augmented_state = dict(state)
+    augmented_state["draft"] = f"[CODE RISK ANALYSIS]\n{risk_context}\n\n{draft}"
+    result = reviewer_node(augmented_state)
+
+    # Add risk metadata to history
+    result["agent_history"] = [
+        f"Risk-aware review: {len(risk_report)} high-risk functions flagged"
+    ] + result.get("agent_history", [])
+
+    return result
+
+
+def _extract_code_blocks(text: str) -> list[tuple]:
+    """Extract (filename, code) tuples from markdown code blocks.
+
+    Handles ```python and ```filename.py fenced blocks.
+    """
+    import re
+    blocks = []
+    pattern = re.compile(r"```(?:python|(\S+\.py))?\s*\n(.*?)```", re.DOTALL)
+    for match in pattern.finditer(text):
+        filename = match.group(1) or "code.py"
+        code = match.group(2)
+        if code.strip():
+            blocks.append((filename, code))
+    return blocks
+
+
 # ─── AGENT NODE: FACT CHECKER ──────────────────────────────────────
 
 def fact_check_node(state: AgentState) -> dict:
