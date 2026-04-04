@@ -89,9 +89,7 @@ def enhanced_task_analysis(state: AgentState) -> dict:
     2. Spawns the right team of agents
     3. Stores team config in state for downstream use
     """
-    print(f"\n{'='*60}")
-    print(f"  ENHANCED TASK ANALYSIS")
-    print(f"{'='*60}")
+    logger.info("\n%s\n  ENHANCED TASK ANALYSIS\n%s", "=" * 60, "=" * 60)
     
     topic = state["topic"]
     
@@ -111,9 +109,9 @@ def enhanced_task_analysis(state: AgentState) -> dict:
     has_code_expert = "code_expert" in agent_names
     has_fact_checker = "fact_checker" in agent_names
     
-    print(f"\n  Team: {', '.join(agent_names)}")
-    print(f"  Code expert needed: {has_code_expert}")
-    print(f"  Fact checker needed: {has_fact_checker}")
+    logger.info("Team: %s", ", ".join(agent_names))
+    logger.info("Code expert needed: %s", has_code_expert)
+    logger.info("Fact checker needed: %s", has_fact_checker)
     
     return {
         "pending_tasks": [{"team": team_info}],
@@ -132,9 +130,7 @@ def enhanced_researcher_node(state: AgentState) -> dict:
     candidates and returns the best one. Learned patterns from
     previous successes are injected into the prompt.
     """
-    print(f"\n{'='*60}")
-    print(f"  ENHANCED RESEARCHER (with experiential learning)")
-    print(f"{'='*60}")
+    logger.info("\n%s\n  ENHANCED RESEARCHER (with experiential learning)\n%s", "=" * 60, "=" * 60)
     
     topic = state["topic"]
     
@@ -154,7 +150,7 @@ Structure output as: Key Facts, Technical Details, Trends, Expert Views, Data.""
     # Enhance with learned experiences
     if experience_context:
         enhanced_prompt = f"{base_prompt}\n\n{experience_context}"
-        print(f"  Injected {len(_experience_memory)} learned experiences")
+        logger.info("Injected %d learned experiences", len(_experience_memory))
     else:
         enhanced_prompt = base_prompt
     
@@ -173,7 +169,7 @@ Structure output as: Key Facts, Technical Details, Trends, Expert Views, Data.""
     ])
     
     research = response.content
-    print(f"  Research: {len(research)} chars")
+    logger.info("Research: %d chars", len(research))
     
     return {
         "research_notes": [research],
@@ -191,9 +187,7 @@ def enhanced_writer_node(state: AgentState) -> dict:
     quality difference between candidate drafts is large because
     writing is inherently variable.
     """
-    print(f"\n{'='*60}")
-    print(f"  ENHANCED WRITER (with GRPO group sampling)")
-    print(f"{'='*60}")
+    logger.info("\n%s\n  ENHANCED WRITER (with GRPO group sampling)\n%s", "=" * 60, "=" * 60)
     
     topic = state["topic"]
     research = "\n\n---\n\n".join(state.get("research_notes", []))
@@ -261,9 +255,9 @@ Write a complete technical blog article."""
     scored.sort(key=lambda x: x[0], reverse=True)
     best_draft = scored[0][1]
     
-    print(f"  Generated {len(candidates)} candidates")
-    print(f"  Best candidate: {len(best_draft.split())} words")
-    print(f"  Score spread: {scored[0][0]:.1f} to {scored[-1][0]:.1f}")
+    logger.info("Generated %d candidates", len(candidates))
+    logger.info("Best candidate: %d words", len(best_draft.split()))
+    logger.info("Score spread: %.1f to %.1f", scored[0][0], scored[-1][0])
     
     return {
         "draft": best_draft,
@@ -283,9 +277,7 @@ def enhanced_reviewer_node(state: AgentState) -> dict:
     After scoring, it analyses WHY the draft scored the way it did
     and stores the insight as an experience for future runs.
     """
-    print(f"\n{'='*60}")
-    print(f"  ENHANCED REVIEWER (with experience extraction)")
-    print(f"{'='*60}")
+    logger.info("\n%s\n  ENHANCED REVIEWER (with experience extraction)\n%s", "=" * 60, "=" * 60)
     
     # Run standard review
     result = risk_aware_reviewer_node(state)
@@ -306,7 +298,7 @@ def enhanced_reviewer_node(state: AgentState) -> dict:
             domain="writing",
         )
         _experience_memory.add(exp)
-        print(f"  💡 Stored positive experience (score: {score})")
+        logger.info("Stored positive experience (score: %s)", score)
     
     return result
 
@@ -339,8 +331,10 @@ def enhanced_convergence(state: AgentState) -> dict:
 
     decision = "continue" if should_continue else "finish"
 
-    print(f"\n  Convergence: quality={score:.1f}, accuracy={accuracy_score:.1f}, "
-          f"threshold={threshold:.1f}, iter={iteration} → {decision}")
+    logger.info(
+        "Convergence: quality=%.1f, accuracy=%.1f, threshold=%.1f, iter=%d -> %s",
+        score, accuracy_score, threshold, iteration, decision,
+    )
     
     return {
         "current_agent": decision,
@@ -354,12 +348,10 @@ def enhanced_finish(state: AgentState) -> dict:
     score = state.get("review_score", 0)
     cost = compute_cost_summary(state.get("token_usage", []))
 
-    print(f"\n{'='*60}")
-    print(f"  ENHANCED SWARM COMPLETE")
-    print(f"  Score: {score}/10")
-    print(f"  Experiences stored: {len(_experience_memory)}")
-    print(f"  Total cost: ${cost['total_cost_usd']:.4f} ({cost['calls']} LLM calls)")
-    print(f"{'='*60}")
+    logger.info("\n%s\n  ENHANCED SWARM COMPLETE\n%s", "=" * 60, "=" * 60)
+    logger.info("Score: %s/10", score)
+    logger.info("Experiences stored: %d", len(_experience_memory))
+    logger.info("Total cost: $%.4f (%d LLM calls)", cost["total_cost_usd"], cost["calls"])
 
     return {
         "final_output": draft,
@@ -417,25 +409,28 @@ def build_enhanced_swarm_graph():
     graph.add_edge("finish", END)
     
     compiled = graph.compile()
-    print("✅ Enhanced Adaptive Swarm compiled successfully")
+    logger.info("Enhanced Adaptive Swarm compiled successfully")
     return compiled
 
 
 def run_enhanced_swarm(topic: str):
     """Run the enhanced adaptive swarm."""
-    print("\n" + "█" * 60)
-    print("  ENHANCED ADAPTIVE SWARM")
-    print(f"  Topic: {topic}")
-    print(f"  Accumulated experiences: {len(_experience_memory)}")
-    print("█" * 60)
+    from shared.logging_config import generate_run_id, set_run_id
+    run_id = generate_run_id()
+    set_run_id(run_id)
+    logger.info("Starting enhanced swarm [%s] topic=%s", run_id, topic[:80])
+    logger.info(
+        "\n%s\n  ENHANCED ADAPTIVE SWARM\n  Topic: %s\n  Accumulated experiences: %d\n%s",
+        "=" * 60, topic, len(_experience_memory), "=" * 60,
+    )
     
     initial_state = create_initial_state(topic)
     graph = build_enhanced_swarm_graph()
     final_state = graph.invoke(initial_state)
     
-    print(f"\n📊 Execution history:")
+    logger.info("Execution history:")
     for entry in final_state.get("agent_history", []):
-        print(f"   {entry}")
+        logger.info("   %s", entry)
     
     return final_state
 

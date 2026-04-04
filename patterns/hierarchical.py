@@ -97,21 +97,21 @@ def supervisor_node_rule_based(state: AgentState) -> dict:
     4. Review failed, iter < 3?    → writer (revise)
     5. Review passed OR iter >= 3? → FINISH
     """
-    print(f"\n{'='*50}")
-    print(f"🧠 SUPERVISOR (rule-based) - Evaluating state...")
-    print(f"{'='*50}")
-    
+    logger.info("=" * 50)
+    logger.info("SUPERVISOR (rule-based) - Evaluating state...")
+    logger.info("=" * 50)
+
     research = state.get("research_notes", [])
     draft = state.get("draft", "")
     review_passed = state.get("review_passed", False)
     review_feedback = state.get("review_feedback", "")
     iteration = state.get("iteration", 0)
-    
+
     # Log current state for observability
-    print(f"   Research notes: {len(research)} entries")
-    print(f"   Draft exists: {bool(draft)}")
-    print(f"   Review passed: {review_passed}")
-    print(f"   Iteration: {iteration}")
+    logger.info("Research notes: %d entries", len(research))
+    logger.info("Draft exists: %s", bool(draft))
+    logger.info("Review passed: %s", review_passed)
+    logger.info("Iteration: %d", iteration)
     
     # ── Decision logic ──
     if not research:
@@ -142,8 +142,8 @@ def supervisor_node_rule_based(state: AgentState) -> dict:
         else:
             reason = f"Max iterations ({iteration}) reached, accepting current draft"
     
-    print(f"   → Decision: {next_agent}")
-    print(f"   → Reason: {reason}")
+    logger.info("Decision: %s", next_agent)
+    logger.info("Reason: %s", reason)
     
     return {
         "current_agent": next_agent,
@@ -164,9 +164,9 @@ def supervisor_node_llm_based(state: AgentState) -> dict:
     a whitelist of valid agent names. LLMs can hallucinate invalid
     names ("editor", "fact_checker"), so we MUST validate.
     """
-    print(f"\n{'='*50}")
-    print(f"🧠 SUPERVISOR (LLM-based) - Evaluating state...")
-    print(f"{'='*50}")
+    logger.info("=" * 50)
+    logger.info("SUPERVISOR (LLM-based) - Evaluating state...")
+    logger.info("=" * 50)
     
     # Build a state summary for the LLM
     state_summary = f"""Current state:
@@ -198,8 +198,8 @@ def supervisor_node_llm_based(state: AgentState) -> dict:
             next_agent = valid if valid != "finish" else "FINISH"
             break
     
-    print(f"   LLM raw output: '{raw_decision}'")
-    print(f"   → Validated decision: {next_agent}")
+    logger.info("LLM raw output: '%s'", raw_decision)
+    logger.info("Validated decision: %s", next_agent)
     
     return {
         "current_agent": next_agent,
@@ -246,22 +246,22 @@ def finish_node(state: AgentState) -> dict:
     This node runs when the supervisor decides we're done.
     It takes the current draft and marks it as the final output.
     """
-    print(f"\n{'='*50}")
-    print(f"✅ FINISH - Packaging final output")
-    print(f"{'='*50}")
-    
+    logger.info("=" * 50)
+    logger.info("FINISH - Packaging final output")
+    logger.info("=" * 50)
+
     draft = state.get("draft", "No draft produced")
     score = state.get("review_score", 0)
     iterations = state.get("iteration", 0)
-    
+
     cost = compute_cost_summary(state.get("token_usage", []))
 
-    print(f"   Final score: {score}/10")
-    print(f"   Total iterations: {iterations}")
-    print(f"   Article length: {len(draft.split())} words")
-    print(f"   Total cost: ${cost['total_cost_usd']:.4f} ({cost['calls']} LLM calls)")
+    logger.info("Final score: %s/10", score)
+    logger.info("Total iterations: %d", iterations)
+    logger.info("Article length: %d words", len(draft.split()))
+    logger.info("Total cost: $%.4f (%d LLM calls)", cost['total_cost_usd'], cost['calls'])
     for agent, c in cost.get("cost_per_agent", {}).items():
-        print(f"      {agent}: ${c:.4f}")
+        logger.info("  %s: $%.4f", agent, c)
 
     return {
         "final_output": draft,
@@ -351,9 +351,9 @@ def build_hierarchical_graph(use_llm_supervisor: bool = False):
     #    - The graph is reachable from START to END
     compiled = graph.compile()
     
-    print("✅ Hierarchical graph compiled successfully")
-    print(f"   Nodes: supervisor, researcher, writer, reviewer, finish")
-    print(f"   Supervisor type: {'LLM-based' if use_llm_supervisor else 'Rule-based'}")
+    logger.info("Hierarchical graph compiled successfully")
+    logger.info("Nodes: supervisor, researcher, writer, reviewer, finish")
+    logger.info("Supervisor type: %s", "LLM-based" if use_llm_supervisor else "Rule-based")
     
     return compiled
 
@@ -369,21 +369,25 @@ def run_hierarchical(topic: str, use_llm_supervisor: bool = False, domain: str =
     2. 3-tier routing — check cache/booster before each agent
     3. Learn after success — store pattern if score >= 7.0
     """
-    print("\n" + "═" * 60)
-    print("  HIERARCHICAL SUPERVISOR PATTERN")
-    print(f"  Topic: {topic}")
-    print("═" * 60)
+    from shared.logging_config import generate_run_id, set_run_id
+    run_id = generate_run_id()
+    set_run_id(run_id)
+    logger.info("Starting hierarchical pattern [%s] topic=%s", run_id, topic[:80])
+
+    logger.info("=" * 60)
+    logger.info("HIERARCHICAL SUPERVISOR PATTERN")
+    logger.info("Topic: %s", topic)
+    logger.info("=" * 60)
 
     # ── Operational Principle #1: Memory before action ──
     memory = MemoryManager()
     pattern, pattern_score = memory.search_patterns(topic, domain)
 
     if pattern and pattern_score > 0.7:
-        print(f"\n  [REUSE] Found pattern from '{pattern.topic}' "
-              f"(score: {pattern_score:.2f})")
-        print(f"  [REUSE] Original agents: {pattern.agents_used}")
-        print(f"  [REUSE] Original routing: {pattern.routing_decisions}")
-        print(f"  [REUSE] Applying learned strengths: {pattern.strengths}")
+        logger.info("[REUSE] Found pattern from '%s' (score: %.2f)", pattern.topic, pattern_score)
+        logger.info("[REUSE] Original agents: %s", pattern.agents_used)
+        logger.info("[REUSE] Original routing: %s", pattern.routing_decisions)
+        logger.info("[REUSE] Applying learned strengths: %s", pattern.strengths)
 
     # Create initial state
     initial_state = create_initial_state(topic)
@@ -421,19 +425,19 @@ def run_hierarchical(topic: str, use_llm_supervisor: bool = False, domain: str =
         domain=domain,
     )
 
-    # Print summary
-    print("\n" + "═" * 60)
-    print("  EXECUTION COMPLETE")
-    print("═" * 60)
-    print(f"\n  Agent execution history:")
+    # Log summary
+    logger.info("=" * 60)
+    logger.info("EXECUTION COMPLETE")
+    logger.info("=" * 60)
+    logger.info("Agent execution history:")
     for entry in final_state.get("agent_history", []):
-        print(f"   {entry}")
+        logger.info("  %s", entry)
 
-    print(f"\n  Final article: {len(final_state.get('final_output', '').split())} words")
-    print(f"  Final score: {final_score}/10")
-    print(f"  Iterations: {final_state.get('iteration', 0)}")
+    logger.info("Final article: %d words", len(final_state.get('final_output', '').split()))
+    logger.info("Final score: %s/10", final_score)
+    logger.info("Iterations: %d", final_state.get('iteration', 0))
     if final_score >= 7.0:
-        print(f"  Pattern STORED for future reuse")
+        logger.info("Pattern STORED for future reuse")
 
     return final_state
 
@@ -479,4 +483,4 @@ if __name__ == "__main__":
     with open(os.path.join(_output_dir, "hierarchical_output.md"), "w") as f:
         f.write(result.get("final_output", "No output"))
 
-    print("\n💾 Output saved to outputs/hierarchical_output.md")
+    logger.info("Output saved to outputs/hierarchical_output.md")

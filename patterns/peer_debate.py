@@ -91,9 +91,7 @@ def debate_researcher_node(state: AgentState) -> dict:
         return researcher_node(state)
     
     # Round 2+: Debate mode — critique the draft using research expertise
-    print(f"\n{'='*50}")
-    print(f"🔍 RESEARCHER (Debate Round {iteration}) - Cross-critiquing")
-    print(f"{'='*50}")
+    logger.info("RESEARCHER (Debate Round %d) - Cross-critiquing", iteration)
     
     draft = state.get("draft", "")
     review = state.get("review_feedback", "")
@@ -133,7 +131,7 @@ Respond with:
     ])
     
     critique = response.content
-    print(f"📝 Research critique: {len(critique)} characters")
+    logger.info("Research critique: %d characters", len(critique))
     
     return {
         "research_notes": [f"\n[DEBATE ROUND {iteration} - Researcher Critique]\n{critique}"],
@@ -164,9 +162,7 @@ def debate_writer_node(state: AgentState) -> dict:
         return writer_node(state)
     
     # Round 2+: Debate mode — revise while responding to all critiques
-    print(f"\n{'='*50}")
-    print(f"✍️  WRITER (Debate Round {iteration}) - Responding to critiques")
-    print(f"{'='*50}")
+    logger.info("WRITER (Debate Round %d) - Responding to critiques", iteration)
     
     topic = state["topic"]
     draft = state.get("draft", "")
@@ -204,7 +200,7 @@ to feedback. The article should be better than the previous draft."""
     ])
     
     new_draft = response.content
-    print(f"📄 Revised draft: {len(new_draft.split())} words")
+    logger.info("Revised draft: %d words", len(new_draft.split()))
     
     return {
         "draft": new_draft,
@@ -252,17 +248,15 @@ def convergence_check(state: AgentState) -> dict:
     
     Returns updated state with the decision.
     """
-    print(f"\n{'='*50}")
-    print(f"⚖️  CONVERGENCE CHECK")
-    print(f"{'='*50}")
-    
+    logger.info("CONVERGENCE CHECK")
+
     score = state.get("review_score", 0)
     passed = state.get("review_passed", False)
     iteration = state.get("iteration", 0)
-    
-    print(f"   Current score: {score}/10")
-    print(f"   Passed threshold: {passed}")
-    print(f"   Debate round: {iteration}")
+
+    logger.info("Current score: %s/10", score)
+    logger.info("Passed threshold: %s", passed)
+    logger.info("Debate round: %d", iteration)
     
     accuracy_passed = state.get("accuracy_passed", False)
     accuracy_score = state.get("accuracy_score", 0)
@@ -291,8 +285,8 @@ def convergence_check(state: AgentState) -> dict:
         decision = "finish"
         reason = f"Max rounds reached. Final score: {score}/10, accuracy: {accuracy_score:.1f}/10"
     
-    print(f"   → Decision: {decision}")
-    print(f"   → Reason: {reason}")
+    logger.info("Decision: %s", decision)
+    logger.info("Reason: %s", reason)
     
     return {
         "current_agent": decision,
@@ -311,24 +305,22 @@ def synthesis_node(state: AgentState) -> dict:
     Takes the last Writer draft (which has been refined through
     multiple rounds of cross-critique) and packages it as output.
     """
-    print(f"\n{'='*50}")
-    print(f"🔗 SYNTHESIS - Packaging debate result")
-    print(f"{'='*50}")
-    
+    logger.info("SYNTHESIS - Packaging debate result")
+
     draft = state.get("draft", "")
     score = state.get("review_score", 0)
     iterations = state.get("iteration", 0)
     history = state.get("agent_history", [])
-    
+
     # Count debate rounds from history
     debate_rounds = sum(1 for h in history if "debate" in h.lower())
-    
+
     cost = compute_cost_summary(state.get("token_usage", []))
 
-    print(f"   Final score: {score}/10")
-    print(f"   Total iterations: {iterations}")
-    print(f"   Debate exchanges: {debate_rounds}")
-    print(f"   Total cost: ${cost['total_cost_usd']:.4f} ({cost['calls']} LLM calls)")
+    logger.info("Final score: %s/10", score)
+    logger.info("Total iterations: %d", iterations)
+    logger.info("Debate exchanges: %d", debate_rounds)
+    logger.info("Total cost: $%.4f (%d LLM calls)", cost["total_cost_usd"], cost["calls"])
 
     return {
         "final_output": draft,
@@ -430,9 +422,9 @@ def build_debate_graph():
     
     compiled = graph.compile()
     
-    print("✅ Peer Debate graph compiled successfully")
-    print(f"   Nodes: researcher, writer, reviewer, debate_researcher, debate_writer, convergence, synthesis")
-    print(f"   Loop: debate_researcher → debate_writer → reviewer → convergence → (loop or finish)")
+    logger.info("Peer Debate graph compiled successfully")
+    logger.info("Nodes: researcher, writer, reviewer, debate_researcher, debate_writer, convergence, synthesis")
+    logger.info("Loop: debate_researcher -> debate_writer -> reviewer -> convergence -> (loop or finish)")
     
     return compiled
 
@@ -443,26 +435,23 @@ def run_debate(topic: str):
     """
     End-to-end execution of the peer debate pattern.
     """
-    print("\n" + "═" * 60)
-    print("  PEER DEBATE PATTERN")
-    print(f"  Topic: {topic}")
-    print("═" * 60)
+    from shared.logging_config import generate_run_id, set_run_id
+    run_id = generate_run_id()
+    set_run_id(run_id)
+    logger.info("Starting peer debate [%s] topic=%s", run_id, topic[:80])
     
     initial_state = create_initial_state(topic)
     graph = build_debate_graph()
     final_state = graph.invoke(initial_state)
     
-    # Print summary
-    print("\n" + "═" * 60)
-    print("  DEBATE COMPLETE")
-    print("═" * 60)
-    print(f"\n📊 Debate history:")
+    # Log summary
+    logger.info("DEBATE COMPLETE")
     for entry in final_state.get("agent_history", []):
-        print(f"   {entry}")
-    
-    print(f"\n📝 Final article: {len(final_state.get('final_output', '').split())} words")
-    print(f"⭐ Final score: {final_state.get('review_score', 0)}/10")
-    print(f"🔄 Debate rounds: {final_state.get('iteration', 0)}")
+        logger.info("History: %s", entry)
+
+    logger.info("Final article: %d words", len(final_state.get("final_output", "").split()))
+    logger.info("Final score: %s/10", final_state.get("review_score", 0))
+    logger.info("Debate rounds: %d", final_state.get("iteration", 0))
     
     return final_state
 
@@ -477,4 +466,4 @@ if __name__ == "__main__":
     with open(os.path.join(_output_dir, "debate_output.md"), "w") as f:
         f.write(result.get("final_output", "No output"))
 
-    print("\n💾 Output saved to outputs/debate_output.md")
+    logger.info("Output saved to outputs/debate_output.md")

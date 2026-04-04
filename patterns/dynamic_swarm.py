@@ -120,9 +120,7 @@ def task_analyzer_node(state: AgentState) -> dict:
     
     Then it generates the MINIMUM set of tasks needed to make progress.
     """
-    print(f"\n{'='*50}")
-    print(f"🧠 TASK ANALYZER - Decomposing work...")
-    print(f"{'='*50}")
+    logger.info("TASK ANALYZER - Decomposing work...")
     
     iteration = state.get("iteration", 0)
     
@@ -143,14 +141,14 @@ AGENT HISTORY (last 5 actions):
     
     # Check for obvious terminal condition first (saves an LLM call)
     if state.get("review_passed", False) and state.get("accuracy_passed", True):
-        print("   ✅ Review and accuracy passed — no tasks needed")
+        logger.info("Review and accuracy passed -- no tasks needed")
         return {
             "pending_tasks": [],
             "agent_history": ["Task Analyzer: No tasks needed, review and accuracy passed"]
         }
     
     if iteration >= 3:
-        print("   ⚠️  Max iterations reached — no more tasks")
+        logger.info("Max iterations reached -- no more tasks")
         return {
             "pending_tasks": [],
             "agent_history": ["Task Analyzer: Max iterations reached, stopping"]
@@ -173,16 +171,16 @@ AGENT HISTORY (last 5 actions):
         if not isinstance(tasks, list):
             tasks = []
     except json.JSONDecodeError:
-        print(f"   ⚠️  Could not parse tasks, using fallback")
+        logger.info("Could not parse tasks, using fallback")
         # Fallback: determine tasks from state programmatically
         tasks = _fallback_task_decomposition(state)
     
     # Sort by priority
     tasks.sort(key=lambda t: t.get("priority", 99))
     
-    print(f"   📋 Generated {len(tasks)} tasks:")
+    logger.info("Generated %d tasks:", len(tasks))
     for t in tasks:
-        print(f"      [{t.get('priority', '?')}] {t.get('agent', '?')}: {t.get('description', '?')}")
+        logger.info("  [%s] %s: %s", t.get("priority", "?"), t.get("agent", "?"), t.get("description", "?"))
     
     return {
         "pending_tasks": tasks,
@@ -253,14 +251,12 @@ def task_executor_node(state: AgentState) -> dict:
     This is a key architectural decision: the swarm trades LangGraph's
     built-in routing for runtime flexibility.
     """
-    print(f"\n{'='*50}")
-    print(f"⚡ TASK EXECUTOR - Processing queue...")
-    print(f"{'='*50}")
+    logger.info("TASK EXECUTOR - Processing queue...")
     
     tasks = state.get("pending_tasks", [])
     
     if not tasks:
-        print("   📭 No tasks in queue")
+        logger.info("No tasks in queue")
         return {
             "current_agent": "FINISH",
             "agent_history": ["Task Executor: empty queue, finishing"]
@@ -273,7 +269,7 @@ def task_executor_node(state: AgentState) -> dict:
     agent_name = task.get("agent", "")
     description = task.get("description", "No description")
     
-    print(f"   🎯 Executing: [{agent_name}] {description}")
+    logger.info("Executing: [%s] %s", agent_name, description)
     
     # Dispatch to the appropriate agent
     # We call the agent functions DIRECTLY here.
@@ -287,7 +283,7 @@ def task_executor_node(state: AgentState) -> dict:
     agent_fn = agent_map.get(agent_name)
     
     if agent_fn is None:
-        print(f"   ⚠️  Unknown agent '{agent_name}', skipping")
+        logger.info("Unknown agent '%s', skipping", agent_name)
         return {
             "pending_tasks": remaining,
             "agent_history": [f"Task Executor: unknown agent '{agent_name}', skipped"]
@@ -363,9 +359,7 @@ def swarm_finish_node(state: AgentState) -> dict:
     """
     Terminal node for the swarm.
     """
-    print(f"\n{'='*50}")
-    print(f"✅ SWARM FINISH - Packaging output")
-    print(f"{'='*50}")
+    logger.info("SWARM FINISH - Packaging output")
     
     draft = state.get("draft", "No draft produced")
     score = state.get("review_score", 0)
@@ -377,10 +371,10 @@ def swarm_finish_node(state: AgentState) -> dict:
     
     cost = compute_cost_summary(state.get("token_usage", []))
 
-    print(f"   Final score: {score}/10")
-    print(f"   Total iterations: {iterations}")
-    print(f"   Total agent executions: {executions}")
-    print(f"   Total cost: ${cost['total_cost_usd']:.4f} ({cost['calls']} LLM calls)")
+    logger.info("Final score: %s/10", score)
+    logger.info("Total iterations: %d", iterations)
+    logger.info("Total agent executions: %d", executions)
+    logger.info("Total cost: $%.4f (%d LLM calls)", cost["total_cost_usd"], cost["calls"])
 
     return {
         "final_output": draft,
@@ -458,9 +452,9 @@ def build_swarm_graph():
     
     compiled = graph.compile()
     
-    print("✅ Dynamic Swarm graph compiled successfully")
-    print(f"   Nodes: analyzer, executor, finish")
-    print(f"   Loop: analyzer → executor → (executor | analyzer | finish)")
+    logger.info("Dynamic Swarm graph compiled successfully")
+    logger.info("Nodes: analyzer, executor, finish")
+    logger.info("Loop: analyzer -> executor -> (executor | analyzer | finish)")
     
     return compiled
 
@@ -471,26 +465,24 @@ def run_swarm(topic: str):
     """
     End-to-end execution of the dynamic swarm pattern.
     """
-    print("\n" + "═" * 60)
-    print("  DYNAMIC SWARM PATTERN")
-    print(f"  Topic: {topic}")
-    print("═" * 60)
+    from shared.logging_config import generate_run_id, set_run_id
+    run_id = generate_run_id()
+    set_run_id(run_id)
+    logger.info("Starting dynamic swarm [%s] topic=%s", run_id, topic[:80])
     
     initial_state = create_initial_state(topic)
     graph = build_swarm_graph()
     final_state = graph.invoke(initial_state)
     
-    # Print summary
-    print("\n" + "═" * 60)
-    print("  SWARM COMPLETE")
-    print("═" * 60)
-    print(f"\n📊 Swarm execution history:")
+    # Log summary
+    logger.info("SWARM COMPLETE")
+    logger.info("Swarm execution history:")
     for entry in final_state.get("agent_history", []):
-        print(f"   {entry}")
-    
-    print(f"\n📝 Final article: {len(final_state.get('final_output', '').split())} words")
-    print(f"⭐ Final score: {final_state.get('review_score', 0)}/10")
-    print(f"🔄 Iterations: {final_state.get('iteration', 0)}")
+        logger.info("  %s", entry)
+
+    logger.info("Final article: %d words", len(final_state.get("final_output", "").split()))
+    logger.info("Final score: %s/10", final_state.get("review_score", 0))
+    logger.info("Iterations: %d", final_state.get("iteration", 0))
     
     return final_state
 
@@ -505,4 +497,4 @@ if __name__ == "__main__":
     with open(os.path.join(_output_dir, "swarm_output.md"), "w") as f:
         f.write(result.get("final_output", "No output"))
 
-    print("\n💾 Output saved to outputs/swarm_output.md")
+    logger.info("Output saved to outputs/swarm_output.md")
