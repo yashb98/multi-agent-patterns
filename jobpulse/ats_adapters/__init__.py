@@ -6,7 +6,11 @@ that uses the Chrome extension via WebSocket instead of Playwright.
 
 from __future__ import annotations
 
+from shared.logging_config import get_logger
+
 from jobpulse.ats_adapters.base import BaseATSAdapter
+
+logger = get_logger(__name__)
 from jobpulse.ats_adapters.generic import GenericAdapter
 from jobpulse.ats_adapters.greenhouse import GreenhouseAdapter
 from jobpulse.ats_adapters.indeed import IndeedAdapter
@@ -28,13 +32,57 @@ _ext_adapter: BaseATSAdapter | None = None
 
 
 def _get_extension_adapter() -> BaseATSAdapter:
-    """Lazily create and return the shared ExtensionAdapter."""
+    """Lazily create, start the bridge server, and return the shared ExtensionAdapter.
+
+    Starts the WebSocket bridge on a background thread using asyncio.run() (not
+    manual loop creation) so all event loop internals are properly initialized.
+    Stores the loop reference on the bridge so cross-thread async calls can use
+    asyncio.run_coroutine_threadsafe() to dispatch work to the bridge loop.
+    """
     global _ext_adapter
     if _ext_adapter is None:
+        import asyncio
+        import threading
+
         from jobpulse.ext_adapter import ExtensionAdapter
         from jobpulse.ext_bridge import ExtensionBridge
 
         bridge = ExtensionBridge()
+
+        # Start the bridge server on a background thread via asyncio.run()
+        # Using asyncio.run() (not new_event_loop+run_forever) ensures the loop
+        # is fully initialized — fixes websockets handler not firing on threads.
+        _bridge_ready = threading.Event()
+
+        async def _run_bridge_async() -> None:
+            # Store loop reference for cross-thread dispatch
+            bridge._loop = asyncio.get_running_loop()  # type: ignore[attr-defined]
+            try:
+                await bridge.start()
+            except OSError as exc:
+                logger.warning("Bridge start failed (port in use?): %s", exc)
+                _bridge_ready.set()
+                return
+            _bridge_ready.set()
+            # Block forever — keeps the event loop alive for WebSocket handling
+            await asyncio.Event().wait()
+
+        def _run_bridge() -> None:
+            try:
+                asyncio.run(_run_bridge_async())
+            except Exception as exc:
+                logger.warning("Bridge thread exited: %s", exc)
+                _bridge_ready.set()
+
+        t = threading.Thread(target=_run_bridge, daemon=True, name="ext-bridge")
+        t.start()
+        _bridge_ready.wait(timeout=5)
+
+        if bridge.connected:
+            logger.info("Extension already connected to bridge")
+        else:
+            logger.info("Bridge started on ws://%s:%d — waiting for extension...", bridge._host, bridge.port)
+
         _ext_adapter = ExtensionAdapter(bridge)
     return _ext_adapter
 

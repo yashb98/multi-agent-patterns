@@ -363,9 +363,8 @@ def generate_cover_letter_pdf(
         out = DATA_DIR / "applications" / safe_company
     out.mkdir(parents=True, exist_ok=True)
 
-    safe_name = IDENTITY["name"].replace(' ', '_')
     safe_co = company.replace(' ', '_')
-    cl_path = out / f"{safe_name}_{safe_co}_CoverLetter.pdf"
+    cl_path = out / f"Cover_Letter_{safe_co}.pdf"
 
     doc = SimpleDocTemplate(str(cl_path), pagesize=A4,
                             leftMargin=10 * mm, rightMargin=14 * mm, topMargin=20 * mm, bottomMargin=15 * mm)

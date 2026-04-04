@@ -186,7 +186,7 @@ class TestUploadCvAndCoverLetter:
         call_args = mock_upload.call_args
         assert call_args[1]["folder_id"] == "cl_folder_id"
         assert "Meta" in call_args[1]["filename"]
-        assert "CoverLetter" in call_args[1]["filename"]
+        assert call_args[1]["filename"] == "Cover_Letter_Meta.pdf"
 
     @patch("jobpulse.drive_uploader.upload_to_drive")
     @patch("jobpulse.drive_uploader.GOOGLE_DRIVE_RESUMES_FOLDER_ID", "")

@@ -70,23 +70,33 @@ def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
     """Call adapter.fill_and_submit(), handling both sync and async adapters.
 
     ExtensionAdapter.fill_and_submit() is async; Playwright adapters are sync.
-    This bridges the gap by detecting coroutines and running them via asyncio.
+    For the extension adapter, we dispatch the coroutine to the bridge's event loop
+    (running on a background thread) so WebSocket calls stay on the correct loop.
     """
     result = adapter.fill_and_submit(**kwargs)
     if inspect.isawaitable(result):
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop and loop.is_running():
-            # Already in an async context — create a task
-            # This shouldn't happen in normal flow, but handle gracefully
+        # Check if the adapter has a bridge with its own event loop (extension mode)
+        bridge = getattr(adapter, "bridge", None)
+        bridge_loop = getattr(bridge, "_loop", None) if bridge else None
+
+        if bridge_loop and bridge_loop.is_running():
+            # Dispatch to the bridge's event loop thread
             import concurrent.futures
 
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                result = pool.submit(asyncio.run, result).result()
+            future = asyncio.run_coroutine_threadsafe(result, bridge_loop)
+            result = future.result(timeout=300)  # 5min timeout for long applications
         else:
-            result = asyncio.run(result)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop and loop.is_running():
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(asyncio.run, result).result()
+            else:
+                result = asyncio.run(result)
     return result
 
 
@@ -199,6 +209,24 @@ def apply_job(
                     logger.info("applicator: generated cover letter on demand for %s", ats_platform)
             except Exception as exc:
                 logger.warning("applicator: on-demand CL generation failed: %s", exc)
+
+    # Infer platform from URL when ats_platform is not set
+    if not ats_platform:
+        if "linkedin.com" in url:
+            ats_platform = "linkedin"
+            platform_key = "linkedin"
+        elif "indeed.com" in url:
+            ats_platform = "indeed"
+            platform_key = "indeed"
+        elif "greenhouse.io" in url or "boards.greenhouse" in url:
+            ats_platform = "greenhouse"
+            platform_key = "greenhouse"
+        elif "lever.co" in url or "jobs.lever" in url:
+            ats_platform = "lever"
+            platform_key = "lever"
+        elif "myworkdayjobs.com" in url:
+            ats_platform = "workday"
+            platform_key = "workday"
 
     # Submit
     adapter = select_adapter(ats_platform)

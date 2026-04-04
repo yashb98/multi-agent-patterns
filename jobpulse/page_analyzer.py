@@ -52,8 +52,10 @@ _APPLICATION_LABELS = re.compile(
 )
 
 
-def _dom_detect(snapshot: dict) -> tuple[PageType, float]:
+def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     """Classify page type from DOM snapshot. Returns (PageType, confidence 0.0-1.0)."""
+    if hasattr(snapshot, "model_dump"):
+        snapshot = snapshot.model_dump()
     buttons = snapshot.get("buttons", [])
     fields = snapshot.get("fields", [])
     page_text = snapshot.get("page_text_preview", "")

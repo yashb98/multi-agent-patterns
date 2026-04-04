@@ -323,8 +323,13 @@ def main():
 
         bridge = ExtensionBridge(host=EXT_BRIDGE_HOST, port=EXT_BRIDGE_PORT)
         logger.info("Starting extension bridge on ws://%s:%d", EXT_BRIDGE_HOST, EXT_BRIDGE_PORT)
+
+        async def _run_bridge():
+            await bridge.start()
+            await asyncio.Future()  # block forever until cancelled
+
         try:
-            asyncio.run(bridge.start())
+            asyncio.run(_run_bridge())
         except KeyboardInterrupt:
             logger.info("Extension bridge stopped")
 

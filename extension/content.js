@@ -403,12 +403,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // -- MutationObserver --
 
+function safeSendMessage(msg) {
+  if (!chrome.runtime?.id) return;  // Extension context invalidated
+  try {
+    chrome.runtime.sendMessage(msg).catch(() => {});
+  } catch (e) { /* service worker inactive */ }
+}
+
 let scanTimeout;
 const observer = new MutationObserver(() => {
   clearTimeout(scanTimeout);
   scanTimeout = setTimeout(() => {
     const snapshot = buildSnapshot();
-    chrome.runtime.sendMessage({ type: "mutation", payload: { snapshot } }).catch(() => {});
+    safeSendMessage({ type: "mutation", payload: { snapshot } });
   }, 500);
 });
 
@@ -426,6 +433,6 @@ if (document.body) {
 window.addEventListener("load", () => {
   setTimeout(() => {
     const snapshot = buildSnapshot();
-    chrome.runtime.sendMessage({ type: "navigation", payload: { snapshot } }).catch(() => {});
+    safeSendMessage({ type: "navigation", payload: { snapshot } });
   }, 1000);
 });

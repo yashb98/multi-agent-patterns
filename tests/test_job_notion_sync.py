@@ -47,7 +47,7 @@ def test_build_create_payload(sample_job: JobListing) -> None:
     assert props["Company"]["title"][0]["text"]["content"] == "Barclays"
     assert props["Role"]["rich_text"][0]["text"]["content"] == "Data Scientist"
     assert props["Platform"]["select"]["name"] == "LinkedIn"
-    assert props["Status"]["select"]["name"] == "Found"
+    assert props["Status"]["status"]["name"] == "Found"
     assert props["Seniority"]["select"]["name"] == "Junior"
     assert props["Remote"]["checkbox"] is False
     assert props["JD URL"]["url"] == "https://linkedin.com/jobs/123"
@@ -65,7 +65,7 @@ def test_build_update_payload_applied() -> None:
     )
     props = payload["properties"]
 
-    assert props["Status"]["select"]["name"] == "Applied"
+    assert props["Status"]["status"]["name"] == "Applied"
     assert props["ATS Score"]["number"] == 94.5
     assert props["Applied Date"]["date"]["start"] == "2026-03-28"
     assert props["Follow Up Date"]["date"]["start"] == "2026-04-04"

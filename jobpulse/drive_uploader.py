@@ -195,7 +195,7 @@ def upload_cover_letter(cl_path: Path, company: str) -> str | None:
         return None
 
     safe_company = company.replace("/", "_").replace(" ", "_")
-    filename = f"Yash_Bishnoi_{safe_company}_CoverLetter.pdf"
+    filename = f"Cover_Letter_{safe_company}.pdf"
 
     return upload_to_drive(
         cl_path,

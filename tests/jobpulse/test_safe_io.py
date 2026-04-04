@@ -82,7 +82,8 @@ def test_managed_persistent_browser_closes_on_success():
     mock_context = MagicMock()
     mock_page = MagicMock()
     mock_pw.chromium.launch_persistent_context.return_value = mock_context
-    mock_context.new_page.return_value = mock_page
+    # Code uses context.pages[0] when pages is truthy, so mock it correctly
+    mock_context.pages = [mock_page]
 
     mock_sp_instance = MagicMock()
     mock_sp_instance.__enter__ = MagicMock(return_value=mock_pw)
@@ -105,7 +106,7 @@ def test_managed_persistent_browser_closes_on_exception():
     mock_context = MagicMock()
     mock_page = MagicMock()
     mock_pw.chromium.launch_persistent_context.return_value = mock_context
-    mock_context.new_page.return_value = mock_page
+    mock_context.pages = [mock_page]
 
     mock_sp_instance = MagicMock()
     mock_sp_instance.__enter__ = MagicMock(return_value=mock_pw)

@@ -41,8 +41,10 @@ class CookieBannerDismisser:
     def __init__(self, bridge: Any):
         self.bridge = bridge
 
-    async def dismiss(self, snapshot: dict) -> bool:
+    async def dismiss(self, snapshot: Any) -> bool:
         """Try to dismiss a cookie banner. Returns True if a banner was found and clicked."""
+        if hasattr(snapshot, "model_dump"):
+            snapshot = snapshot.model_dump()
         buttons = snapshot.get("buttons", [])
         page_text = snapshot.get("page_text_preview", "")
 

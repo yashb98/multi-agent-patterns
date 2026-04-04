@@ -51,6 +51,13 @@ class ApplicationOrchestrator:
         self.cookie_dismisser = CookieBannerDismisser(bridge)
         self.sso = SSOHandler(bridge)
 
+    @staticmethod
+    def _as_dict(snapshot: Any) -> dict:
+        """Ensure snapshot is a plain dict (handles both dicts and Pydantic models)."""
+        if hasattr(snapshot, "model_dump"):
+            return snapshot.model_dump()
+        return snapshot
+
     async def apply(
         self,
         url: str,
@@ -106,7 +113,7 @@ class ApplicationOrchestrator:
     ) -> dict:
         """Navigate through redirect chain to reach application form."""
         await self.bridge.navigate(url)
-        snapshot = await self.bridge.get_snapshot()
+        snapshot = self._as_dict(await self.bridge.get_snapshot())
 
         # Try learned sequence first
         domain = self._extract_domain(url)
@@ -117,7 +124,7 @@ class ApplicationOrchestrator:
 
         # Dismiss cookie banner
         await self.cookie_dismisser.dismiss(snapshot)
-        snapshot = await self.bridge.get_snapshot()
+        snapshot = self._as_dict(await self.bridge.get_snapshot())
 
         for step in range(MAX_NAVIGATION_STEPS):
             page_type = await self.analyzer.detect(snapshot)
@@ -134,7 +141,7 @@ class ApplicationOrchestrator:
                 sso = self.sso.detect_sso(snapshot)
                 if sso:
                     await self.sso.click_sso(sso)
-                    snapshot = await self.bridge.get_snapshot()
+                    snapshot = self._as_dict(await self.bridge.get_snapshot())
                     steps.append({"page_type": "login_form", "action": f"sso_{sso['provider']}"})
                 else:
                     snapshot = await self._handle_login(snapshot, platform)
@@ -152,14 +159,14 @@ class ApplicationOrchestrator:
                 apply_btn = self._find_apply_button(snapshot)
                 if apply_btn:
                     await self.bridge.click(apply_btn["selector"])
-                    snapshot = await self.bridge.get_snapshot()
+                    snapshot = self._as_dict(await self.bridge.get_snapshot())
                     steps.append({"page_type": "unknown", "action": "click_apply_guess"})
                 else:
                     return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
             # Dismiss any new cookie banners after navigation
             await self.cookie_dismisser.dismiss(snapshot)
-            snapshot = await self.bridge.get_snapshot()
+            snapshot = self._as_dict(await self.bridge.get_snapshot())
 
         return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
@@ -173,7 +180,7 @@ class ApplicationOrchestrator:
             if btn.get("enabled") and apply_pattern.search(btn.get("text", "")):
                 logger.info("Clicking: %s", btn["text"])
                 await self.bridge.click(btn["selector"])
-                return await self.bridge.get_snapshot()
+                return self._as_dict(await self.bridge.get_snapshot())
         return snapshot
 
     async def _handle_login(self, snapshot: dict, platform: str) -> dict:
@@ -183,7 +190,7 @@ class ApplicationOrchestrator:
             signup_btn = self._find_signup_link(snapshot)
             if signup_btn:
                 await self.bridge.click(signup_btn["selector"])
-                return await self.bridge.get_snapshot()
+                return self._as_dict(await self.bridge.get_snapshot())
             return snapshot
 
         email, password = self.accounts.get_credentials(domain)
@@ -204,7 +211,7 @@ class ApplicationOrchestrator:
                 break
 
         self.accounts.mark_login_success(domain)
-        return await self.bridge.get_snapshot()
+        return self._as_dict(await self.bridge.get_snapshot())
 
     async def _handle_signup(self, snapshot: dict, platform: str) -> dict:
         from jobpulse.applicator import PROFILE
@@ -237,7 +244,7 @@ class ApplicationOrchestrator:
                 await self.bridge.click(btn["selector"])
                 break
 
-        return await self.bridge.get_snapshot()
+        return self._as_dict(await self.bridge.get_snapshot())
 
     async def _handle_email_verification(self, snapshot: dict, platform: str, return_url: str) -> dict:
         domain = self._extract_domain(snapshot.get("url", ""))
@@ -249,12 +256,12 @@ class ApplicationOrchestrator:
             return snapshot
 
         await self.bridge.navigate(link)
-        await self.bridge.get_snapshot()
+        self._as_dict(await self.bridge.get_snapshot())
         self.accounts.mark_verified(domain)
 
         logger.info("Returning to application: %s", return_url[:80])
         await self.bridge.navigate(return_url)
-        return await self.bridge.get_snapshot()
+        return self._as_dict(await self.bridge.get_snapshot())
 
     @staticmethod
     def _to_page_snapshot(snapshot: dict) -> PageSnapshot:
@@ -339,7 +346,7 @@ class ApplicationOrchestrator:
                     await self.bridge.click(next_btn["selector"])
 
             prev_snapshot = snapshot
-            snapshot = await self.bridge.get_snapshot()
+            snapshot = self._as_dict(await self.bridge.get_snapshot())
 
         return {"success": False, "error": f"Exhausted {MAX_FORM_PAGES} pages", "screenshot": last_screenshot}
 

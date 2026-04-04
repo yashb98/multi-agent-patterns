@@ -28,6 +28,7 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 | NLP Classifier | 3-tier: regex → embeddings (5ms) → LLM fallback. 250+ examples, 41 intents |
 | Chrome Extension Engine | MV3 extension + WebSocket bridge. Replaces Playwright when `APPLICATION_ENGINE=extension` |
 | Form Intelligence | 5-tier: Pattern (free) → Semantic Cache (free) → Gemini Nano (free) → LLM ($0.002) → Vision ($0.01) |
+| Application Orchestrator | Cookie dismiss → hybrid page detect → SSO/login/signup → Gmail verify → multi-page fill → submit |
 | Ralph Loop | Self-healing retry: try → screenshot → diagnose → fix → retry. Learned fixes persist to SQLite |
 
 **Dispatch mode:** Enhanced Swarm (`JOBPULSE_SWARM=false` to revert to flat)
@@ -49,6 +50,7 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 - NEVER assume Whisper output is lowercase — strip trailing punctuation before regex matching
 - NEVER call adapter.fill_and_submit() directly — use _call_fill_and_submit() to handle sync/async bridging
 - NEVER patch APPLICATION_ENGINE on the ats_adapters module — patch on jobpulse.config (it's imported inside the function)
+- NEVER patch ATS_ACCOUNT_PASSWORD on jobpulse.account_manager — patch on jobpulse.config (local import inside create_account())
 
 ## 5 Telegram Bots
 
@@ -80,7 +82,7 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 ## Stats
 
-~61,000 LOC | 273 Python files | 12 databases | 1196 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~61,500 LOC | 273 Python files | 15 databases | 1196 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
@@ -126,6 +128,13 @@ Python Backend ←— WebSocket (ws://localhost:8765) —→ Chrome Extension
 - `jobpulse/semantic_cache.py` — Embedding-based answer cache (sentence-transformers + SQLite)
 - `jobpulse/vision_tier.py` — Screenshot-based field analysis via GPT-4o-mini
 - `jobpulse/state_machines/` — Platform state machines (greenhouse, lever, linkedin, etc.)
+- `jobpulse/application_orchestrator.py` — Full application lifecycle orchestrator
+- `jobpulse/page_analyzer.py` — Hybrid DOM+Vision page type detection
+- `jobpulse/cookie_dismisser.py` — Cookie banner detection and dismissal
+- `jobpulse/account_manager.py` — SQLite credential store per ATS domain
+- `jobpulse/gmail_verify.py` — Gmail verification email polling + link extraction
+- `jobpulse/navigation_learner.py` — Per-domain navigation sequence learning (SQLite)
+- `jobpulse/sso_handler.py` — SSO button detection and click (Google/LinkedIn/Microsoft/Apple)
 
 **Application Orchestrator** (`application_orchestrator.py`):
 Manages the full external application lifecycle:

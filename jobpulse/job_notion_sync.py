@@ -173,6 +173,7 @@ def build_update_payload(
     cv_drive_link: str | None = None,
     cl_drive_link: str | None = None,
     recruiter_email: str | None = None,
+    company: str | None = None,
 ) -> dict:
     """Build Notion update-page payload with only the provided (non-None) fields.
 
@@ -211,14 +212,18 @@ def build_update_payload(
         ats_name = ATS_PLATFORM_NAMES.get(ats_key, ats_platform.title())
         properties["ATS Platform"] = {"select": {"name": ats_name}}
 
+    safe_company = company.replace("/", "_").replace(" ", "_") if company else None
+
     if cv_drive_link is not None:
+        cv_name = f"Yash_Bishnoi_{safe_company}.pdf" if safe_company else "CV.pdf"
         properties["CV Version"] = {
-            "files": [{"type": "external", "name": "CV.pdf", "external": {"url": cv_drive_link}}]
+            "files": [{"type": "external", "name": cv_name, "external": {"url": cv_drive_link}}]
         }
 
     if cl_drive_link is not None:
+        cl_name = f"Cover_Letter_{safe_company}.pdf" if safe_company else "Cover_Letter.pdf"
         properties["Cover Letter"] = {
-            "files": [{"type": "external", "name": "CoverLetter.pdf", "external": {"url": cl_drive_link}}]
+            "files": [{"type": "external", "name": cl_name, "external": {"url": cl_drive_link}}]
         }
 
     if recruiter_email is not None:
@@ -279,3 +284,142 @@ def update_application_page(page_id: str, **kwargs) -> bool:
         result.get("message", "unknown error"),
     )
     return False
+
+
+# ---------------------------------------------------------------------------
+# Page content (OakNorth-style rich body)
+# ---------------------------------------------------------------------------
+
+
+def build_page_content(
+    job: JobListing,
+    ats_score: float | None = None,
+    match_tier: str | None = None,
+    matched_projects: list[str] | None = None,
+    cv_drive_link: str | None = None,
+    cl_drive_link: str | None = None,
+    cv_path: str | None = None,
+    cover_letter_path: str | None = None,
+    gate4_notes: str | None = None,
+) -> list[dict]:
+    """Build Notion block children for a job page (OakNorth reference format).
+
+    Sections: Application Details, Documents, JD Match Analysis, GitHub Repos.
+    """
+    safe_company = job.company.replace("/", "_").replace(" ", "_")
+    cv_filename = f"Yash_Bishnoi_{safe_company}.pdf"
+    cl_filename = f"Cover_Letter_{safe_company}.pdf"
+
+    blocks: list[dict] = []
+
+    # --- Application Details ---
+    blocks.append(_heading2("Application Details"))
+    blocks.append(_bulleted(f"Company: {job.company}"))
+    blocks.append(_bulleted(f"Role: {job.title}"))
+    blocks.append(_bulleted(f"Platform: {platform_display(job.platform)}"))
+    blocks.append(_bulleted(f"Location: {job.location}"))
+    if job.salary_min or job.salary_max:
+        if job.salary_min and job.salary_max:
+            sal = f"£{int(job.salary_min):,}-£{int(job.salary_max):,}"
+        elif job.salary_min:
+            sal = f"£{int(job.salary_min):,}+"
+        else:
+            sal = f"up to £{int(job.salary_max):,}"
+        blocks.append(_bulleted(f"Salary: {sal}"))
+    if ats_score is not None:
+        tier_display = MATCH_TIER_NAMES.get(match_tier or "", match_tier or "N/A")
+        blocks.append(_bulleted(f"ATS Score: {ats_score:.1f}% ({tier_display})"))
+    if job.ats_platform:
+        ats_name = ATS_PLATFORM_NAMES.get(job.ats_platform.lower(), job.ats_platform.title())
+        blocks.append(_bulleted(f"ATS Platform: {ats_name}"))
+    if job.url:
+        blocks.append(_bulleted(f"JD URL: {job.url}"))
+    blocks.append(_divider())
+
+    # --- Documents ---
+    blocks.append(_heading2("Documents"))
+    cv_line = f"CV: {cv_filename}"
+    if cv_drive_link:
+        cv_line += f" (Drive: {cv_drive_link})"
+    blocks.append(_bulleted(cv_line))
+    cl_line = f"Cover Letter: {cl_filename}"
+    if cl_drive_link:
+        cl_line += f" (Drive: {cl_drive_link})"
+    blocks.append(_bulleted(cl_line))
+    if cv_path:
+        blocks.append(_bulleted(f"Local CV: {cv_path}"))
+    if cover_letter_path:
+        blocks.append(_bulleted(f"Local CL: {cover_letter_path}"))
+    blocks.append(_divider())
+
+    # --- JD Match Analysis ---
+    blocks.append(_heading2("JD Match Analysis"))
+    if matched_projects:
+        blocks.append(_bulleted(f"Matched Projects: {', '.join(matched_projects)}"))
+    if job.required_skills:
+        skills_str = ", ".join(job.required_skills[:15])
+        blocks.append(_bulleted(f"Required Skills: {skills_str}"))
+    if job.preferred_skills:
+        pref_str = ", ".join(job.preferred_skills[:10])
+        blocks.append(_bulleted(f"Preferred Skills: {pref_str}"))
+    if gate4_notes:
+        blocks.append(_bulleted(f"Gate 4 Notes: {gate4_notes}"))
+    blocks.append(_divider())
+
+    # --- GitHub Repos ---
+    if matched_projects:
+        blocks.append(_heading2("GitHub Repos"))
+        for proj in matched_projects:
+            repo_url = f"https://github.com/yashb98/{proj}"
+            blocks.append(_bulleted(f"{proj}: {repo_url}"))
+
+    return blocks
+
+
+def set_page_content(page_id: str, blocks: list[dict]) -> bool:
+    """Replace page body with the given blocks via Notion API.
+
+    Deletes existing children first, then appends new blocks.
+    """
+    # Get existing children to delete
+    existing = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
+    for child in existing.get("results", []):
+        child_id = child.get("id")
+        if child_id:
+            _notion_api("DELETE", f"/blocks/{child_id}")
+
+    # Append new blocks (max 100 per request)
+    for i in range(0, len(blocks), 100):
+        batch = blocks[i : i + 100]
+        result = _notion_api("PATCH", f"/blocks/{page_id}/children", {"children": batch})
+        if not result.get("results"):
+            logger.error("Failed to set page content for %s: %s", page_id, result)
+            return False
+
+    logger.info("Set page content for Notion page %s (%d blocks)", page_id, len(blocks))
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Block builder helpers
+# ---------------------------------------------------------------------------
+
+
+def _heading2(text: str) -> dict:
+    return {
+        "object": "block",
+        "type": "heading_2",
+        "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+    }
+
+
+def _bulleted(text: str) -> dict:
+    return {
+        "object": "block",
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+    }
+
+
+def _divider() -> dict:
+    return {"object": "block", "type": "divider", "divider": {}}

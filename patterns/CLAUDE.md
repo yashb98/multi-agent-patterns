@@ -18,3 +18,4 @@ Max 3 iterations. Fallback: accept best draft.
 - Never mutate `topic` after initialization
 - Review scores are floats 0-10, threshold 8.0
 - Output files go to outputs/ as markdown
+

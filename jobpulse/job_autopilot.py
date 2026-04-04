@@ -46,7 +46,12 @@ from jobpulse.github_matcher import fetch_and_cache_repos, pick_top_projects
 from jobpulse.jd_analyzer import analyze_jd
 from jobpulse.job_db import JobDB
 from jobpulse.job_deduplicator import deduplicate
-from jobpulse.job_notion_sync import create_application_page, update_application_page
+from jobpulse.job_notion_sync import (
+    build_page_content,
+    create_application_page,
+    set_page_content,
+    update_application_page,
+)
 from jobpulse.job_scanner import load_search_config, save_search_config, scan_platforms
 from jobpulse.process_logger import ProcessTrail
 from jobpulse.telegram_bots import send_jobs
@@ -367,7 +372,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                 continue
 
         # A1: JD quality check
-        jd_quality = check_jd_quality(listing.description, listing.required_skills + listing.preferred_skills)
+        jd_quality = check_jd_quality(listing.description_raw or "", listing.required_skills + listing.preferred_skills)
         if not jd_quality.passed:
             gate4_blocked += 1
             logger.info("job_autopilot: Gate 4 BLOCKED (JD quality) %s @ %s — %s", listing.title, listing.company, jd_quality.reason)
@@ -525,7 +530,9 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                         try:
                             cl_link = upload_cover_letter(cl_path, lst.company)
                             if cl_link and notion_page_id:
-                                update_application_page(notion_page_id, cl_drive_link=cl_link)
+                                update_application_page(
+                                    notion_page_id, cl_drive_link=cl_link, company=lst.company,
+                                )
                         except Exception:
                             pass
                     return cl_path
@@ -598,7 +605,21 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                         cv_drive_link=cv_drive_link,
                         cl_drive_link=cl_drive_link,
                         notes=gate4b_notes if gate4b_notes else None,
+                        company=listing.company,
                     )
+                    # Set OakNorth-style page content
+                    page_blocks = build_page_content(
+                        job=listing,
+                        ats_score=ats_score,
+                        match_tier=tier,
+                        matched_projects=matched_project_names,
+                        cv_drive_link=cv_drive_link,
+                        cl_drive_link=cl_drive_link,
+                        cv_path=str(cv_path) if cv_path else None,
+                        cover_letter_path=str(cover_letter_path) if cover_letter_path else None,
+                        gate4_notes=gate4b_notes,
+                    )
+                    set_page_content(notion_page_id, page_blocks)
                 except Exception as exc:
                     logger.warning(
                         "job_autopilot: Notion update failed for %s: %s",
@@ -607,10 +628,10 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                     )
                     notion_failures.append(f"{listing.title}: {exc}")
 
-            # --- Route by tier ---
+            # --- Route by action (not tier — tier is for display, action is for routing) ---
             action = classify_action(ats_score, listing.easy_apply)
 
-            if tier == "auto" and action in ("auto_submit", "auto_submit_with_preview"):
+            if action in ("auto_submit", "auto_submit_with_preview"):
                 # Auto-apply
                 if cv_path is None:
                     logger.warning(
@@ -679,7 +700,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                         )
                         _queue_for_review(listing, ats_score, review_batch)
 
-            elif tier == "review":
+            elif action == "send_for_review":
                 _queue_for_review(listing, ats_score, review_batch)
 
             else:

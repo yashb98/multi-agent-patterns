@@ -133,6 +133,8 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - Multi-page: `find_next_button()` priority: Submit > Review > Save & Continue > Continue > Next > Proceed
 - Stuck detection: chars 200-700 comparison, abort after 2 identical pages
 - Max 10 navigation steps, max 20 form pages
+- Screening questions: pattern-based (work auth, salary, availability, experience years) → LLM fallback → SQLite cache
+- All 6 ATS adapters wire screening via `answer_screening_questions()` in the form-fill loop
 
 ## Dynamic Cover Letter
 - Cover letter NOT generated upfront — lazy generation via cl_generator callback

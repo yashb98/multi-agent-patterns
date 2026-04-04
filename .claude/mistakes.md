@@ -76,3 +76,8 @@ Read this FIRST every session. Append on error. Re-check before committing.
 ### [2026-03-24] sync_expense_to_notion missing after rewrite
 - **Cause**: Full rewrite of budget_agent.py dropped two functions callers depended on.
 - **Rule**: Before rewriting a file, grep old version for all function names used by other modules.
+
+### [2026-04-03] Jobs scoring 90-94 ATS silently skipped — tier/action routing mismatch
+- **Cause**: `determine_match_tier()` returns "auto" at >=90, but `classify_action()` requires >=95 for auto_submit. Routing checked `tier == "auto" AND action in (auto_submit, ...)` — always false for 90-94. Then `tier == "review"` also false (tier is "auto"), so it fell to the else:Skip branch.
+- **Fix**: Route by `action` (from `classify_action()`), not by `tier`. Tier is for display/DB only, action is for routing.
+- **Rule**: NEVER mix tier and action in routing conditions. Use `classify_action()` for routing decisions, `determine_match_tier()` for display/storage only.
