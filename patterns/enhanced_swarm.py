@@ -219,24 +219,17 @@ Produce the COMPLETE revised article."""
 Research: {research}
 Write a complete technical blog article."""
     
-    # GRPO: Generate multiple candidates at different temperatures
-    llm = get_llm(temperature=0.7)
-    
-    candidates = []
+    # GRPO: Generate multiple candidates at different temperatures — IN PARALLEL
+    from shared.parallel_executor import parallel_grpo_candidates
+
     temps = [0.5, 0.7, 0.9]
-    
-    for temp in temps:
+    model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+    def make_llm(temp):
         from langchain_openai import ChatOpenAI
-        variant = ChatOpenAI(
-            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            temperature=temp,
-            request_timeout=30.0,
-        )
-        resp = variant.invoke([
-            SystemMessage(content=enhanced_prompt),
-            HumanMessage(content=user_msg)
-        ])
-        candidates.append(resp.content)
+        return ChatOpenAI(model=model_name, temperature=temp, request_timeout=30.0)
+
+    candidates = parallel_grpo_candidates(make_llm, enhanced_prompt, user_msg, temps)
     
     # Quick scoring: use length + structure as proxy
     # (In production, use the actual reviewer for scoring)

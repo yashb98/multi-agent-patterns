@@ -296,52 +296,47 @@ class TrainingFreeGRPO:
         4. This "why" becomes an Experience stored in memory
         5. Future prompts are enhanced with these experiences
         """
-        print(f"\n  🎲 GRPO: Generating {self.config.group_size} candidates...")
-        
+        logger.info("GRPO: Generating %d candidates...", self.config.group_size)
+
         # Inject existing experiences into the prompt
         experience_context = self.memory.format_for_prompt(
             domain, self.config.experiences_per_prompt
         )
-        
+
         enhanced_system = system_prompt
         if experience_context:
             enhanced_system = f"{system_prompt}\n\n{experience_context}"
-        
-        # STEP 1: Group sampling — generate multiple completions
-        candidates = []
-        for i in range(self.config.group_size):
-            temp = self.config.temperature_spread[
-                i % len(self.config.temperature_spread)
-            ]
-            
+
+        # STEP 1: Group sampling — generate multiple completions IN PARALLEL
+        from shared.parallel_executor import parallel_grpo_candidates
+
+        model_name = self.llm.model_name if hasattr(self.llm, 'model_name') else "gpt-5o-mini"
+        temps = [
+            self.config.temperature_spread[i % len(self.config.temperature_spread)]
+            for i in range(self.config.group_size)
+        ]
+
+        def make_variant(temp):
             from langchain_openai import ChatOpenAI
-            variant_llm = ChatOpenAI(
-                model=self.llm.model_name if hasattr(self.llm, 'model_name') else "gpt-5o-mini",
-                temperature=temp,
-                request_timeout=30.0,
-            )
-            
-            response = variant_llm.invoke([
-                SystemMessage(content=enhanced_system),
-                HumanMessage(content=user_message)
-            ])
-            candidates.append(response.content)
+            return ChatOpenAI(model=model_name, temperature=temp, request_timeout=30.0)
+
+        candidates = parallel_grpo_candidates(make_variant, enhanced_system, user_message, temps)
         
         # STEP 2: Score each candidate
         scored = []
         for i, candidate in enumerate(candidates):
             score = evaluator_fn(candidate)
             scored.append((score, candidate, i))
-            print(f"    Candidate {i+1}: score={score:.1f}, "
-                  f"length={len(candidate.split())} words")
+            logger.info("Candidate %d: score=%.1f, length=%d words",
+                       i + 1, score, len(candidate.split()))
         
         # STEP 3: Rank and select
         scored.sort(key=lambda x: x[0], reverse=True)
         best_score, best_output, best_idx = scored[0]
         worst_score, worst_output, _ = scored[-1]
         
-        print(f"  📊 Best: candidate {best_idx+1} ({best_score:.1f}), "
-              f"Worst: {worst_score:.1f}")
+        logger.info("Best: candidate %d (%.1f), Worst: %.1f",
+                    best_idx + 1, best_score, worst_score)
         
         # STEP 4: Extract semantic advantage
         # This is the key innovation — we ask the LLM WHY the best
@@ -351,10 +346,10 @@ class TrainingFreeGRPO:
                 best_output, worst_output, best_score, domain, user_message
             )
             self.memory.add(experience)
-            print(f"  💡 Learned new pattern: {experience.successful_pattern[:80]}...")
+            logger.info("Learned new pattern: %s...", experience.successful_pattern[:80])
         else:
             experience = None
-            print(f"  ℹ️  Scores too close — no clear pattern to extract")
+            logger.info("Scores too close — no clear pattern to extract")
         
         return best_output, experience
     
