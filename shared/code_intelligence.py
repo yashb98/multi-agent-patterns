@@ -157,3 +157,197 @@ class CodeIntelligence:
     def close(self):
         """Close the database connection."""
         self.conn.close()
+
+    # ─── INDEXING ──────────────────────────────────────────────────
+
+    def index_directory(self, root: str) -> dict[str, Any]:
+        """Full repo index across all tiers.
+
+        Phase 1: Python AST via CodeGraph (nodes + edges).
+        Phase 2: Cache risk scores for all functions/methods.
+        Phase 3: Index non-Python text files as document nodes.
+        Phase 4: Populate FTS5 + vector search index.
+
+        Returns:
+            dict with keys: nodes, edges, documents, time_ms
+        """
+        t0 = time.monotonic()
+        root_path = Path(root)
+
+        # Phase 1 — Python AST
+        self._graph.index_directory(str(root_path), extensions=FULL_INDEX_EXTENSIONS)
+
+        # Phase 2 — risk scores
+        self._cache_risk_scores()
+
+        # Phase 3 — text files
+        self._index_text_files(root_path)
+
+        # Phase 4 — search index
+        self._populate_search_index()
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        nodes = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        edges = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        documents = self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+        logger.info(
+            "index_directory complete: %d nodes, %d edges, %d documents in %dms",
+            nodes, edges, documents, elapsed_ms,
+        )
+        return {"nodes": nodes, "edges": edges, "documents": documents, "time_ms": elapsed_ms}
+
+    def _index_text_files(self, root_path: Path) -> None:
+        """Walk all files under root_path, index non-Python text files as document nodes."""
+        for filepath in root_path.rglob("*"):
+            if not filepath.is_file():
+                continue
+
+            rel_str = str(filepath.relative_to(root_path))
+
+            # Skip excluded paths
+            if _is_excluded(rel_str) or _is_excluded(filepath.name):
+                continue
+
+            # Skip Python files (handled by CodeGraph)
+            if filepath.suffix in FULL_INDEX_EXTENSIONS:
+                continue
+
+            # Skip binary files
+            if _is_binary(filepath):
+                continue
+
+            try:
+                text = filepath.read_text(encoding="utf-8", errors="replace")[:5000]
+            except (OSError, PermissionError):
+                continue
+
+            qname = f"{rel_str}::__document__"
+            file_path_str = str(filepath)
+
+            try:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO nodes
+                        (kind, name, qualified_name, file_path, line_start, line_end,
+                         is_test, is_async, last_indexed)
+                    VALUES ('document', ?, ?, ?, 0, 0, 0, 0, ?)
+                    """,
+                    (filepath.name, qname, file_path_str, time.time()),
+                )
+            except sqlite3.Error as exc:
+                logger.debug("Failed to insert document node %s: %s", qname, exc)
+
+        self.conn.commit()
+
+    def _cache_risk_scores(self) -> None:
+        """Compute and cache risk scores for all Python function/method nodes."""
+        rows = self.conn.execute(
+            "SELECT qualified_name FROM nodes WHERE kind IN ('function', 'method')"
+        ).fetchall()
+
+        now = time.time()
+        updates: list[tuple[float, float, str]] = []
+        for row in rows:
+            qname = row[0]
+            try:
+                score = self._graph.compute_risk_score(qname)
+            except Exception as exc:
+                logger.debug("Risk score failed for %s: %s", qname, exc)
+                score = 0.0
+            updates.append((score, now, qname))
+
+        self.conn.executemany(
+            "UPDATE nodes SET risk_score=?, last_indexed=? WHERE qualified_name=?",
+            updates,
+        )
+        self.conn.commit()
+
+    def _populate_search_index(self) -> None:
+        """Add all nodes to FTS5 search index, then trigger Voyage embeddings."""
+        rows = self.conn.execute(
+            "SELECT qualified_name, kind, name, file_path, signature, docstring FROM nodes"
+        ).fetchall()
+
+        for row in rows:
+            qname = row[0]
+            kind = row[1]
+            name = row[2]
+            file_path = row[3]
+            signature = row[4] or ""
+            docstring = row[5] or ""
+
+            if kind == "document":
+                # Read file text for document nodes
+                try:
+                    text = Path(file_path).read_text(encoding="utf-8", errors="replace")[:5000]
+                except (OSError, PermissionError):
+                    text = name
+            else:
+                parts = [name]
+                if signature:
+                    parts.append(signature)
+                if docstring:
+                    parts.append(docstring)
+                text = " ".join(parts)
+
+            metadata: dict[str, Any] = {"kind": kind, "file_path": file_path}
+
+            try:
+                self._search.add(qname, text, metadata)
+            except Exception as exc:
+                logger.debug("Failed to add %s to search index: %s", qname, exc)
+
+        self._compute_voyage_embeddings()
+
+    def _compute_voyage_embeddings(self) -> None:
+        """Batch embed all documents via Voyage-code-3 and store as packed floats.
+
+        Gracefully does nothing if VOYAGE_API_KEY is not set or voyageai is not installed.
+        """
+        client = self._get_voyage_client()
+        if client is None:
+            return
+
+        try:
+            import struct
+
+            rows = self.conn.execute(
+                "SELECT id, text FROM documents"
+            ).fetchall()
+
+            if not rows:
+                return
+
+            ids = [r[0] for r in rows]
+            texts = [r[1] for r in rows]
+
+            for batch_start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+                batch_ids = ids[batch_start: batch_start + EMBEDDING_BATCH_SIZE]
+                batch_texts = texts[batch_start: batch_start + EMBEDDING_BATCH_SIZE]
+
+                try:
+                    result = client.embed(
+                        batch_texts,
+                        model=EMBEDDING_MODEL,
+                        input_type="document",
+                    )
+                    vectors = result.embeddings
+                except Exception as exc:
+                    logger.warning("Voyage embedding batch failed: %s", exc)
+                    continue
+
+                rows_to_insert = []
+                for doc_id, vector in zip(batch_ids, vectors):
+                    packed = struct.pack(f"{len(vector)}f", *vector)
+                    rows_to_insert.append((doc_id, packed))
+
+                self.conn.executemany(
+                    "INSERT OR REPLACE INTO embeddings (doc_id, vector) VALUES (?, ?)",
+                    rows_to_insert,
+                )
+                self.conn.commit()
+
+        except Exception as exc:
+            logger.warning("Voyage embedding step failed: %s", exc)

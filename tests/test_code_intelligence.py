@@ -133,3 +133,59 @@ class TestExclusionPatterns:
         from shared.code_intelligence import _is_excluded
         assert _is_excluded("logo.png") is True
         assert _is_excluded("font.woff2") is True
+
+
+class TestIndexDirectory:
+    def test_indexes_python_files_with_ast(self, ci, sample_project):
+        result = ci.index_directory(str(sample_project))
+        assert result["nodes"] > 0
+        assert result["edges"] > 0
+        assert result["time_ms"] >= 0
+
+    def test_indexes_text_files_as_documents(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        docs = ci.conn.execute(
+            "SELECT * FROM nodes WHERE kind='document' AND file_path LIKE '%README.md'"
+        ).fetchall()
+        assert len(docs) == 1
+
+    def test_indexes_yaml_files(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        docs = ci.conn.execute(
+            "SELECT * FROM nodes WHERE kind='document' AND file_path LIKE '%config.yaml'"
+        ).fetchall()
+        assert len(docs) == 1
+
+    def test_excludes_env_files(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        env_docs = ci.conn.execute(
+            "SELECT * FROM nodes WHERE file_path LIKE '%.env%'"
+        ).fetchall()
+        assert len(env_docs) == 0
+
+    def test_excludes_binary_files(self, ci, sample_project):
+        (sample_project / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
+        ci.index_directory(str(sample_project))
+        bins = ci.conn.execute(
+            "SELECT * FROM nodes WHERE file_path LIKE '%.png'"
+        ).fetchall()
+        assert len(bins) == 0
+
+    def test_populates_fts5(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        fts_count = ci.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        assert fts_count > 0
+
+    def test_caches_risk_scores(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        risky = ci.conn.execute(
+            "SELECT * FROM nodes WHERE risk_score > 0 AND kind IN ('function', 'method')"
+        ).fetchall()
+        assert len(risky) >= 1
+
+    def test_returns_stats_dict(self, ci, sample_project):
+        result = ci.index_directory(str(sample_project))
+        assert "nodes" in result
+        assert "edges" in result
+        assert "documents" in result
+        assert "time_ms" in result
