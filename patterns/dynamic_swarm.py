@@ -182,10 +182,14 @@ AGENT HISTORY (last 5 actions):
     for t in tasks:
         logger.info("  [%s] %s: %s", t.get("priority", "?"), t.get("agent", "?"), t.get("description", "?"))
     
-    return {
+    # Prune state between analysis rounds
+    from shared.state import prune_state
+    result = {
         "pending_tasks": tasks,
         "agent_history": [f"Task Analyzer: generated {len(tasks)} tasks"]
     }
+    result.update(prune_state(state))
+    return result
 
 
 def _fallback_task_decomposition(state: AgentState) -> list:

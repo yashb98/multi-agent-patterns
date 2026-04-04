@@ -23,6 +23,10 @@ This lets multiple agents contribute to the same list without overwriting.
 from typing import TypedDict, Annotated, Optional
 import operator
 
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class AgentState(TypedDict):
     # ─── INPUT ───────────────────────────────────────────────
@@ -92,3 +96,55 @@ class AgentState(TypedDict):
     token_usage: Annotated[list[dict], operator.add]
     # Running total cost in USD for the entire pipeline run
     total_cost_usd: float
+
+
+# ─── STATE PRUNING ─────────────────────────────────────────────
+# Unbounded Annotated[list, operator.add] fields grow every iteration.
+# Pruning keeps the latest entries and summarizes older ones.
+
+# Limits per field (keep last N entries)
+PRUNE_LIMITS = {
+    "research_notes": 3,       # Keep last 3 research notes
+    "agent_history": 20,       # Keep last 20 history entries
+    "token_usage": 30,         # Keep last 30 usage records
+    "extracted_claims": 50,    # Keep last 50 claims
+    "claim_verifications": 50, # Keep last 50 verifications
+}
+
+
+def prune_state(state: dict) -> dict:
+    """Prune unbounded list fields to prevent context bloat.
+
+    Called between iterations by convergence/supervisor nodes.
+    Returns a dict of pruned fields to merge back into state.
+
+    Strategy:
+    - research_notes: keep latest 3, compress older to summary
+    - agent_history: keep latest 20 entries
+    - token_usage: keep all (needed for cost summary) but cap at 30
+    - extracted_claims/claim_verifications: keep latest iteration's
+    """
+    updates = {}
+    pruned_any = False
+
+    for field, limit in PRUNE_LIMITS.items():
+        items = state.get(field, [])
+        if isinstance(items, list) and len(items) > limit:
+            old_len = len(items)
+            # For research_notes, compress old ones instead of dropping
+            if field == "research_notes" and len(items) > limit:
+                from shared.context_compression import compress_research_notes
+                updates[field] = compress_research_notes(items)
+            else:
+                # Keep the last N entries
+                updates[field] = items[-limit:]
+
+            pruned_any = True
+            logger.debug("Pruned %s: %d -> %d entries", field, old_len,
+                         len(updates.get(field, items)))
+
+    if pruned_any:
+        logger.info("State pruned: %s",
+                     ", ".join(f"{k}={len(v)}" for k, v in updates.items()))
+
+    return updates

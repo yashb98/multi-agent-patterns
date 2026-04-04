@@ -287,11 +287,15 @@ def convergence_check(state: AgentState) -> dict:
     
     logger.info("Decision: %s", decision)
     logger.info("Reason: %s", reason)
-    
-    return {
+
+    # Prune state between debate rounds
+    from shared.state import prune_state
+    result = {
         "current_agent": decision,
         "agent_history": [f"Convergence: {decision} ({reason})"]
     }
+    result.update(prune_state(state))
+    return result
 
 
 # ─── SYNTHESIS NODE ──────────────────────────────────────────────

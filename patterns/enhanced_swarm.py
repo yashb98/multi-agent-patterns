@@ -328,11 +328,15 @@ def enhanced_convergence(state: AgentState) -> dict:
         "Convergence: quality=%.1f, accuracy=%.1f, threshold=%.1f, iter=%d -> %s",
         score, accuracy_score, threshold, iteration, decision,
     )
-    
-    return {
+
+    # Prune state between iterations
+    from shared.state import prune_state
+    result = {
         "current_agent": decision,
         "agent_history": [f"Convergence: {decision} (threshold: {threshold:.1f})"]
     }
+    result.update(prune_state(state))
+    return result
 
 
 def enhanced_finish(state: AgentState) -> dict:

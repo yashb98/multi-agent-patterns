@@ -144,11 +144,15 @@ def supervisor_node_rule_based(state: AgentState) -> dict:
     
     logger.info("Decision: %s", next_agent)
     logger.info("Reason: %s", reason)
-    
-    return {
+
+    # Prune state between iterations to prevent context bloat
+    from shared.state import prune_state
+    result = {
         "current_agent": next_agent,
         "agent_history": [f"Supervisor → {next_agent} ({reason})"]
     }
+    result.update(prune_state(state))
+    return result
 
 
 def supervisor_node_llm_based(state: AgentState) -> dict:
