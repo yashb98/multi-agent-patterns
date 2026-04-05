@@ -12,7 +12,7 @@ def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
         logger.info(
-            "Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, ralph-test, ext-bridge, test"
+            "Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, ralph-test, api-server, install-native-host, test"
         )
         sys.exit(1)
 
@@ -350,32 +350,51 @@ def main():
     elif command == "ext-bridge":
         import asyncio
         import threading
-
-        from jobpulse.config import EXT_BRIDGE_HOST, EXT_BRIDGE_PORT
         from jobpulse.ext_bridge import ExtensionBridge
 
-        bridge = ExtensionBridge(host=EXT_BRIDGE_HOST, port=EXT_BRIDGE_PORT)
-        logger.info("Starting extension bridge on ws://%s:%d", EXT_BRIDGE_HOST, EXT_BRIDGE_PORT)
+        bridge = ExtensionBridge()
+        logger.info("Starting extension bridge on ws://localhost:%d", bridge.port)
+        asyncio.run(bridge.start())
 
-        # Start FastAPI on port 8000 in a background thread so the extension
-        # can reach /api/job/* endpoints while the WebSocket bridge runs.
-        def _run_http():
-            import uvicorn
-            from mindgraph_app.main import app
-            logger.info("Starting HTTP API on http://0.0.0.0:8000 (alongside ext-bridge)")
-            uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    elif command == "api-server":
+        import uvicorn
 
-        http_thread = threading.Thread(target=_run_http, daemon=True)
-        http_thread.start()
+        logger.info("Starting JobPulse API server on http://0.0.0.0:8000")
+        uvicorn.run("mindgraph_app.main:app", host="0.0.0.0", port=8000, reload=True)
 
-        async def _run_bridge():
-            await bridge.start()
-            await asyncio.Future()  # block forever until cancelled
+    elif command == "install-native-host":
+        import json
+        import os
+        import stat
 
-        try:
-            asyncio.run(_run_bridge())
-        except KeyboardInterrupt:
-            logger.info("Extension bridge stopped")
+        host_manifest = {
+            "name": "com.jobpulse.brain",
+            "description": "JobPulse Python backend bootstrap",
+            "path": os.path.abspath("jobpulse/native_host.py"),
+            "type": "stdio",
+            "allowed_origins": [],
+        }
+        # Prompt for extension ID
+        ext_id = input("Enter your Chrome extension ID (from chrome://extensions): ").strip()
+        if ext_id:
+            host_manifest["allowed_origins"] = [f"chrome-extension://{ext_id}/"]
+
+        # Save manifest
+        nm_dir = os.path.expanduser(
+            "~/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+        )
+        os.makedirs(nm_dir, exist_ok=True)
+        manifest_path = os.path.join(nm_dir, "com.jobpulse.brain.json")
+        with open(manifest_path, "w") as f:
+            json.dump(host_manifest, f, indent=2)
+        logger.info("Native Messaging host manifest written to %s", manifest_path)
+
+        # Make native_host.py executable
+        host_script = os.path.abspath("jobpulse/native_host.py")
+        st = os.stat(host_script)
+        os.chmod(host_script, st.st_mode | stat.S_IEXEC)
+        logger.info("Made %s executable", host_script)
+        print("Done. Restart Chrome to pick up the native host.")
 
     else:
         logger.error("Unknown command: %s", command)
