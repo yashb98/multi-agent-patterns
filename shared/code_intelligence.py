@@ -117,6 +117,11 @@ class CodeIntelligence:
         # Voyage-code-3 client (lazy init)
         self._voyage_client = None
 
+        # Wire Voyage query embedding into HybridSearch
+        self._query_embedding_cache: dict[str, list[float]] = {}
+        if os.environ.get(EMBEDDING_ENV_VAR):
+            self._search._query_embedding_fn = self._embed_query
+
     def _init_extended_schema(self):
         """Create columns/tables beyond what CodeGraph + HybridSearch provide."""
         # We need CodeGraph's schema first — create it via a temp instance
@@ -166,6 +171,28 @@ class CodeIntelligence:
             return self._voyage_client
         except ImportError:
             logger.warning("voyageai package not installed — using FTS5-only search")
+            return None
+
+    def _embed_query(self, query: str) -> list[float] | None:
+        """Embed a search query via Voyage Code 3. LRU cache (max 100)."""
+        if query in self._query_embedding_cache:
+            return self._query_embedding_cache[query]
+
+        client = self._get_voyage_client()
+        if client is None:
+            return None
+
+        try:
+            result = client.embed([query], model=EMBEDDING_MODEL, input_type="query")
+            vector = result.embeddings[0]
+            # LRU eviction
+            if len(self._query_embedding_cache) >= 100:
+                oldest_key = next(iter(self._query_embedding_cache))
+                del self._query_embedding_cache[oldest_key]
+            self._query_embedding_cache[query] = vector
+            return vector
+        except Exception as exc:
+            logger.warning("Voyage query embedding failed: %s", exc)
             return None
 
     # ─── INDEXING ──────────────────────────────────────────────────

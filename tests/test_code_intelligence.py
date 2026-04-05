@@ -437,3 +437,22 @@ class TestIntegration:
         ci.index_directory(str(sample_project))
         results = ci.semantic_search("Auth Project")
         assert len(results) > 0
+
+
+class TestVoyageSearchIntegration:
+    def test_query_embedding_fn_set_when_voyage_available(self, tmp_path, monkeypatch):
+        """CodeIntelligence sets _query_embedding_fn on HybridSearch when Voyage key exists."""
+        monkeypatch.setenv("VOYAGE_API_KEY", "test-key-fake")
+        db_path = str(tmp_path / "ci_test.db")
+        ci = CodeIntelligence(db_path)
+        # The fn should be set (even though it won't work with a fake key)
+        assert ci._search._query_embedding_fn is not None
+        ci.close()
+
+    def test_query_embedding_fn_none_without_key(self, tmp_path, monkeypatch):
+        """Without VOYAGE_API_KEY, _query_embedding_fn stays None."""
+        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+        db_path = str(tmp_path / "ci_test.db")
+        ci = CodeIntelligence(db_path)
+        assert ci._search._query_embedding_fn is None
+        ci.close()
