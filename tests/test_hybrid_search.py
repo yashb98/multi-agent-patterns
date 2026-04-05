@@ -367,3 +367,115 @@ class TestExternalConnection:
         search = HybridSearch(db_path=db_path)
         search.close()
         assert (tmp_path / "test.db").exists()
+
+
+# ─── VOYAGE VECTOR SEARCH ─────────────────────────────────────────
+
+
+class TestVoyageVectorSearch:
+    """Tests for Voyage Code 3 vector search integration."""
+
+    def test_voyage_vector_search_uses_embeddings_table(self):
+        """When embeddings table has vectors, _vector_search uses them."""
+        import struct
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+
+        # Add documents
+        search.add("doc_auth", "JWT authentication token verification")
+        search.add("doc_api", "REST API endpoint design patterns")
+
+        # Manually insert Voyage-style packed embeddings into embeddings table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                doc_id TEXT PRIMARY KEY,
+                vector BLOB NOT NULL
+            )
+        """)
+        # Create simple 4d vectors for testing (real ones are 1024d)
+        vec_auth = struct.pack("4f", 0.9, 0.1, 0.0, 0.0)  # auth-like
+        vec_api = struct.pack("4f", 0.0, 0.0, 0.9, 0.1)   # api-like
+        conn.execute("INSERT INTO embeddings (doc_id, vector) VALUES (?, ?)", ("doc_auth", vec_auth))
+        conn.execute("INSERT INTO embeddings (doc_id, vector) VALUES (?, ?)", ("doc_api", vec_api))
+        conn.commit()
+
+        # Query with a vector similar to auth
+        query_vec = [0.8, 0.2, 0.0, 0.0]
+        results = search._voyage_vector_search(query_vec, limit=5)
+
+        assert len(results) >= 1
+        # doc_auth should rank higher (more similar to query)
+        ids = [doc_id for doc_id, _ in results]
+        assert ids[0] == "doc_auth"
+        search.close()
+
+    def test_voyage_vector_search_falls_back_to_bow(self):
+        """When no embeddings table, falls back to bag-of-words."""
+        search = HybridSearch(":memory:")
+        search.add("doc1", "test document about authentication")
+        # No embeddings table exists — should use bag-of-words
+        results = search._vector_search("authentication", limit=5)
+        assert len(results) >= 1
+        search.close()
+
+    def test_query_embedding_fn_default_is_none(self):
+        """_query_embedding_fn should default to None."""
+        search = HybridSearch(":memory:")
+        assert search._query_embedding_fn is None
+        search.close()
+
+    def test_voyage_vector_search_empty_embeddings_table(self):
+        """When embeddings table exists but is empty, returns empty list."""
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                doc_id TEXT PRIMARY KEY,
+                vector BLOB NOT NULL
+            )
+        """)
+        conn.commit()
+
+        results = search._voyage_vector_search([0.5, 0.5], limit=5)
+        assert results == []
+        search.close()
+
+    def test_vector_search_uses_voyage_when_fn_set_and_embeddings_present(self):
+        """When _query_embedding_fn is set and embeddings table is populated, uses Voyage path."""
+        import struct
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+
+        search.add("doc_auth", "JWT authentication token verification")
+        search.add("doc_api", "REST API endpoint design patterns")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                doc_id TEXT PRIMARY KEY,
+                vector BLOB NOT NULL
+            )
+        """)
+        vec_auth = struct.pack("4f", 0.9, 0.1, 0.0, 0.0)
+        vec_api = struct.pack("4f", 0.0, 0.0, 0.9, 0.1)
+        conn.execute("INSERT INTO embeddings (doc_id, vector) VALUES (?, ?)", ("doc_auth", vec_auth))
+        conn.execute("INSERT INTO embeddings (doc_id, vector) VALUES (?, ?)", ("doc_api", vec_api))
+        conn.commit()
+
+        # Set the query embedding function to return auth-like vector
+        search._query_embedding_fn = lambda q: [0.8, 0.2, 0.0, 0.0]
+
+        results = search._vector_search("authentication query", limit=5)
+        assert len(results) >= 1
+        ids = [doc_id for doc_id, _ in results]
+        assert ids[0] == "doc_auth"
+        search.close()
