@@ -12,7 +12,8 @@ python -m jobpulse.runner briefing     # Morning digest
 python -m jobpulse.runner export       # Full data backup
 python -m jobpulse.runner profile-sync # Refresh skill/project graph (3am cron)
 python -m jobpulse.runner skill-gaps   # Show top missing skills + export CSV
-python -m jobpulse.runner ext-bridge   # Start Chrome extension WebSocket bridge (ws://localhost:8765)
+python -m jobpulse.runner api-server    # Start HTTP API server for extension backend
+python -m jobpulse.runner install-native-host  # Install Native Messaging host manifest for Chrome
 python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 ```
 
@@ -24,9 +25,9 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 | JobPulse | 10+ agents: Gmail, Calendar, GitHub, Notion, Budget, arXiv, Jobs — 24/7 via Telegram |
 | Job Autopilot | 5-gate pre-screen → scan → hybrid skill extract → tailor CV → ATS score → apply/queue |
 | Skill Graph | Nightly 3am GitHub sync → CodeGraph skill/project graph → recruiter-grade pre-screen |
-| CodeGraph | AST-based code analysis, risk scoring, Mermaid/DOT visualization, review prioritization |
+| CodeGraph | AST-based code analysis, semantic search, fast retrieval, risk scoring, Mermaid/DOT visualization, review prioritization |
 | NLP Classifier | 3-tier: regex → embeddings (5ms) → LLM fallback. 250+ examples, 41 intents |
-| Chrome Extension Engine | MV3 extension + WebSocket bridge. Replaces Playwright when `APPLICATION_ENGINE=extension` |
+| Chrome Extension Engine | MV3 extension — autonomous scanning + applying via Alarms API + HTTP API to Python backend |
 | Form Intelligence | 5-tier: Pattern (free) → Semantic Cache (free) → Gemini Nano (free) → LLM ($0.002) → Vision ($0.01) |
 | Application Orchestrator | Cookie dismiss → hybrid page detect → SSO/login/signup → Gmail verify → multi-page fill → submit |
 | Ralph Loop | Self-healing retry: try → screenshot → diagnose → fix → retry. Learned fixes persist to SQLite |
@@ -61,8 +62,8 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 - NEVER rewrite a file without first grepping for all function names used by other modules
 - NEVER use == for date filtering on pushed_at — use >= or < comparisons
 - NEVER assume Whisper output is lowercase — strip trailing punctuation before regex matching
+- NEVER add Playwright back — all browser automation goes through the Chrome extension
 - NEVER call adapter.fill_and_submit() directly — use _call_fill_and_submit() to handle sync/async bridging
-- NEVER patch APPLICATION_ENGINE on the ats_adapters module — patch on jobpulse.config (it's imported inside the function)
 - NEVER patch ATS_ACCOUNT_PASSWORD on jobpulse.account_manager — patch on jobpulse.config (local import inside create_account())
 
 ## 5 Telegram Bots
@@ -91,7 +92,7 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 **AI:** `JOBPULSE_SWARM=true` `CONVERSATION_MODEL=gpt-5o-mini` `RLM_BACKEND=openai` `RLM_ROOT_MODEL=gpt-5o-mini` `RLM_MAX_BUDGET=0.10`
 
-**Extension Engine:** `APPLICATION_ENGINE=extension` (default: `playwright`) `EXT_BRIDGE_HOST=localhost` `EXT_BRIDGE_PORT=8765` `ATS_ACCOUNT_PASSWORD` (required for account creation) `GMAIL_VERIFY_TIMEOUT=120` `PAGE_STABLE_TIMEOUT_MS=3000`
+**Extension Engine:** `ATS_ACCOUNT_PASSWORD` (required for account creation) `GMAIL_VERIFY_TIMEOUT=120` `PAGE_STABLE_TIMEOUT_MS=3000` `API_SERVER_PORT=8790` (HTTP API for extension backend)
 
 ## Stats
 
@@ -101,12 +102,12 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 ## Chrome Extension Engine
 
-Replaces Playwright-based automation with a Chrome MV3 extension communicating via WebSocket.
+Extension-only architecture. No Playwright. Chrome MV3 extension communicates via Native Messaging (bootstrap) + HTTP API (runtime).
 
 **Architecture:**
 ```
-Python Backend ←— WebSocket (ws://localhost:8765) —→ Chrome Extension
-  ext_bridge.py        service_worker.js
+Python Backend ←— Native Messaging (bootstrap) + HTTP API —→ Chrome Extension
+  api_server.py        service_worker.js (Alarms API scheduler)
   ext_adapter.py       content.js (page scanner + form filler)
   ext_models.py        sidepanel.js (real-time dashboard)
   form_intelligence.py
@@ -115,10 +116,10 @@ Python Backend ←— WebSocket (ws://localhost:8765) —→ Chrome Extension
 ```
 
 **How to use:**
-1. `python -m jobpulse.runner ext-bridge` — start WebSocket bridge
+1. `python -m jobpulse.runner install-native-host` — install Native Messaging host manifest
 2. Load `extension/` as unpacked Chrome extension
-3. `export APPLICATION_ENGINE=extension` — route applications through extension
-4. All existing commands (job-scan, ralph-test) now use the extension adapter
+3. `python -m jobpulse.runner api-server` — start HTTP API backend
+4. Extension autonomously scans and applies via Alarms API scheduler
 
 **5-Tier Form Intelligence** (`form_intelligence.py`):
 | Tier | Source | Cost | Latency |
@@ -131,10 +132,10 @@ Python Backend ←— WebSocket (ws://localhost:8765) —→ Chrome Extension
 
 **Key files:**
 - `extension/manifest.json` — MV3 manifest (permissions, service worker, content scripts)
-- `extension/service_worker.js` — WebSocket client, state machine executor, 20s heartbeat
+- `extension/service_worker.js` — Alarms API scheduler, Native Messaging bootstrap, HTTP API client
 - `extension/content.js` — DOM scanner, form filler, Gemini Nano local inference
 - `extension/sidepanel.html` — Real-time application dashboard
-- `jobpulse/ext_bridge.py` — WebSocket server, command dispatch, connection lifecycle
+- `jobpulse/api_server.py` — HTTP API server for extension backend
 - `jobpulse/ext_adapter.py` — BaseATSAdapter implementation routing through extension
 - `jobpulse/ext_models.py` — Pydantic models (ExtCommand, PageSnapshot, FieldAnswer)
 - `jobpulse/form_intelligence.py` — 5-tier answer resolver
@@ -159,7 +160,7 @@ Manages the full external application lifecycle:
 6. Navigation learning: saves successful sequences per domain, replays on repeat visits (zero cost)
 7. Multi-page form filling: state machine with Next button detection, progress tracking, stuck detection
 
-**Ralph Loop** (`ralph_loop/`): Self-healing retry wrapper. On failure: screenshot → diagnose (vision or heuristic) → save fix to SQLite → retry. Max 5 iterations. Works with both Playwright and extension adapters.
+**Ralph Loop** (`ralph_loop/`): Self-healing retry wrapper. On failure: screenshot → diagnose (vision or heuristic) → save fix to SQLite → retry. Max 5 iterations. Works with extension adapter.
 
 ## Docs
 

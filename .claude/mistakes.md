@@ -4,6 +4,11 @@ Read this FIRST every session. Append on error. Re-check before committing.
 
 ---
 
+### [2026-04-05] Playwright pipeline abandoned — extension-only architecture
+- **Cause**: Playwright adapters stopped working, detection risk too high.
+- **Fix**: Full migration to Chrome extension-driven pipeline with Native Messaging bootstrap + HTTP API.
+- **Rule**: NEVER add Playwright back. All browser automation goes through the Chrome extension.
+
 ### [2026-04-04] Explore subagents burned ~190k tokens with Grep/Glob instead of CodeGraph MCP tools
 - **Cause**: Spawned 2 Explore agents (53 tool calls, ~190k tokens) to trace code dependencies — work that `find_symbol` + `callers_of` could answer in 2-3 MCP calls (~5k tokens).
 - **Fix**: Added CodeGraph-first rule to CLAUDE.md, rules, commands, and skills. Subagent prompts must include "Use MCP tools first."
