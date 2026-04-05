@@ -1,19 +1,22 @@
 {
   "manifest_version": 3,
   "name": "JobPulse Application Engine",
-  "version": "1.0.0",
-  "description": "Automated job application engine — fills forms inside your real browser.",
+  "version": "2.0.0",
+  "description": "Autonomous job scanning, evaluation, and application engine.",
   "permissions": [
     "activeTab",
     "scripting",
     "sidePanel",
-    "nativeMessaging",
     "storage",
-    "tabs"
+    "tabs",
+    "nativeMessaging",
+    "alarms",
+    "offscreen"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "content_scripts": [{
     "matches": ["<all_urls>"],
@@ -21,9 +24,7 @@
     "run_at": "document_idle",
     "all_frames": true
   }],
-  "side_panel": {
-    "default_path": "sidepanel.html"
-  },
+  "side_panel": { "default_path": "sidepanel.html" },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -31,5 +32,6 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
-  }
+  },
+  "web_accessible_resources": []
 }
