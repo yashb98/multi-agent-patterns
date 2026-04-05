@@ -567,3 +567,33 @@ class TestGraphBoost:
         boost_prod = compute_graph_boost(conn, "prod_fn")
         boost_test = compute_graph_boost(conn, "test_fn")
         assert boost_test < boost_prod
+
+
+class TestIdentifierFastPath:
+    def test_single_snake_case_is_identifier(self):
+        s = HybridSearch(":memory:")
+        assert s._is_code_identifier("log_transaction") is True
+        assert s._is_code_identifier("_private_method") is True
+        s.close()
+
+    def test_camel_case_is_identifier(self):
+        s = HybridSearch(":memory:")
+        assert s._is_code_identifier("HybridSearch") is True
+        assert s._is_code_identifier("computeGraphBoost") is True
+        s.close()
+
+    def test_natural_language_is_not_identifier(self):
+        s = HybridSearch(":memory:")
+        assert s._is_code_identifier("budget logging") is False
+        assert s._is_code_identifier("find the auth function") is False
+        s.close()
+
+    def test_dotted_path_is_identifier(self):
+        s = HybridSearch(":memory:")
+        assert s._is_code_identifier("shared.hybrid_search") is True
+        s.close()
+
+    def test_empty_string(self):
+        s = HybridSearch(":memory:")
+        assert s._is_code_identifier("") is False
+        s.close()

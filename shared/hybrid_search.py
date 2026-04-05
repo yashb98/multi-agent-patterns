@@ -106,7 +106,11 @@ class HybridSearch:
         fts_results = self._fts_search(query_text, limit=top_k * 3)
 
         # ── Signal 2: Vector cosine similarity ──
-        vec_results = self._vector_search(query_text, limit=top_k * 3)
+        # Fast path: skip Voyage API for single code identifiers (snake_case/camelCase)
+        if self._is_code_identifier(query_text):
+            vec_results = []  # FTS handles exact identifiers better
+        else:
+            vec_results = self._vector_search(query_text, limit=top_k * 3)
 
         # ── Merge via Reciprocal Rank Fusion ──
         merged = self._rrf_merge(fts_results, vec_results, top_k,
@@ -260,6 +264,15 @@ class HybridSearch:
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:top_k]
 
+    @staticmethod
+    def _is_code_identifier(query: str) -> bool:
+        """Check if query is a single code identifier (skip Voyage, use FTS only)."""
+        stripped = query.strip()
+        if " " in stripped:
+            return False
+        # snake_case, camelCase, PascalCase, UPPER_CASE — all single-token identifiers
+        return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", stripped))
+
     # ─── LIGHTWEIGHT EMBEDDINGS ─────────────────────────────────────
     # Simple bag-of-words TF-IDF-like embedding. No external dependencies.
     # For production, swap with sentence-transformers or OpenAI embeddings.
@@ -345,8 +358,16 @@ def compute_graph_boost(
     # PageRank boost (continuous)
     boost *= 1.0 + (pagerank * 0.5)
 
-    # Fan-in boost (top 10% heuristic: fan_in >= 5)
-    if fan_in >= 5:
+    # Fan-in boost (dynamic p90 threshold)
+    try:
+        p90 = conn.execute(
+            "SELECT fan_in FROM nodes ORDER BY fan_in DESC "
+            "LIMIT 1 OFFSET (SELECT COUNT(*)/10 FROM nodes)"
+        ).fetchone()
+        fan_in_threshold = max(p90[0] if p90 else 5, 2)
+    except Exception:
+        fan_in_threshold = 5
+    if fan_in >= fan_in_threshold:
         boost *= 1.25
 
     # Context-based proximity
