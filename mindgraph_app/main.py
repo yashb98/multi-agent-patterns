@@ -38,6 +38,7 @@ app.include_router(rate_router)
 # JobPulse dashboards
 app.include_router(health_router)
 app.include_router(analytics_router)
+app.include_router(job_api_router)
 
 # Chrome extension HTTP API
 app.include_router(job_api_router)
