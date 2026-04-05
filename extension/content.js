@@ -1417,6 +1417,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         clearFormProgress(payload.url || location.href);
         result = { success: true };
         break;
+      case "scan_jd": {
+        // Extract full job description text from the current page.
+        // Uses platform-specific selectors, falls back to body text.
+        const selectors = [
+          // LinkedIn
+          ".description__text", ".show-more-less-html__markup",
+          "[class*='description']", ".jobs-description__content",
+          // Indeed
+          "#jobDescriptionText", ".jobsearch-jobDescriptionText",
+          // Greenhouse
+          "#content", ".content-intro", "[data-mapped='true']",
+          // Lever
+          ".posting-page .content", "[data-qa='job-description']",
+          // Generic
+          "[class*='job-description']", "[class*='jobDescription']",
+          "[id*='job-description']", "[id*='jobDescription']",
+          "article", "main", "[role='main']",
+        ];
+
+        let jdText = "";
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (el && el.innerText.trim().length > 200) {
+            jdText = el.innerText.trim();
+            break;
+          }
+        }
+
+        // Fallback: full body text (truncated to 10,000 chars)
+        if (!jdText) {
+          jdText = (document.body.innerText || "").substring(0, 10000).trim();
+        }
+
+        sendResponse({
+          success: true,
+          jd_text: jdText,
+          url: window.location.href,
+          title: document.title,
+        });
+        break;
+      }
       default:
         result = { success: false, error: "Unknown action: " + action };
     }
