@@ -223,6 +223,9 @@ class CodeIntelligence:
         # Phase 4 — search index
         self._populate_search_index()
 
+        # Phase 5 — graph signals (PageRank, communities, fan-in/fan-out)
+        self._compute_graph_signals()
+
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         nodes = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
@@ -497,6 +500,16 @@ class CodeIntelligence:
         except Exception as exc:
             logger.warning("Voyage embedding step failed: %s", exc)
 
+    def _compute_graph_signals(self) -> None:
+        """Compute graph-global signals: fan-in/fan-out, PageRank, communities."""
+        try:
+            self._graph.compute_fan_in_out()
+            self._graph.compute_pagerank()
+            self._graph.compute_communities()
+            logger.info("Graph signals computed (fan-in, PageRank, communities)")
+        except Exception as exc:
+            logger.warning("Graph signal computation failed: %s", exc)
+
     # ─── INCREMENTAL REINDEX ───────────────────────────────────────
 
     def reindex_file(self, rel_path: str, root: str | None = None) -> dict[str, Any]:
@@ -675,7 +688,10 @@ class CodeIntelligence:
             except Exception as exc:
                 logger.debug("reindex_file search add failed for %s: %s", qname, exc)
 
-        # 11. Return stats
+        # 11. Recompute graph-global signals (PageRank, communities affected by edge changes)
+        self._compute_graph_signals()
+
+        # 12. Return stats
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         return {
             "nodes_added": nodes_added,
