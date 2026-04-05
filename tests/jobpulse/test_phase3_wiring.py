@@ -65,6 +65,7 @@ def test_call_fill_and_submit_async():
         return {"success": True, "async": True}
 
     mock_adapter = MagicMock()
+    mock_adapter.bridge = None  # prevent MagicMock auto-attr from triggering bridge-loop path
     mock_adapter.fill_and_submit.return_value = async_fill()
     # Prevent MagicMock auto-creating a truthy .bridge attribute,
     # which would route into the bridge event-loop path and hang.
