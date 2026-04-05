@@ -1,83 +1,167 @@
-// extension/sidepanel.js
+// extension/sidepanel.js — Control center UI
 
-const connStatus = document.getElementById("conn-status");
-const logEntries = document.getElementById("log-entries");
-const appCompany = document.getElementById("app-company");
-const appRole = document.getElementById("app-role");
-const appState = document.getElementById("app-state");
-const progressFill = document.getElementById("progress-fill");
-const intelBody = document.getElementById("intel-body");
+import { PLATFORM_MAX_PHASE } from "./config.js";
 
-function setConnectionStatus(state) {
-  connStatus.className = "badge " + state;
-  connStatus.textContent = state === "connected" ? "Connected" :
-                           state === "connecting" ? "Connecting..." : "Disconnected";
+// ─── State ────────────────────────────────────────────
+
+let currentStatus = {};
+
+// ─── Init ─────────────────────────────────────────────
+
+async function init() {
+  await refreshStatus();
+  await refreshQueue();
+  setInterval(refreshStatus, 30000); // refresh every 30s
 }
 
-function addLogEntry(label, value, tier, confident) {
-  const entry = document.createElement("div");
-  entry.className = "log-entry" + (confident ? "" : " uncertain");
-  const tierLabels = { 1: "Pattern", 2: "Nano", 3: "LLM", 4: "Vision" };
-  entry.innerHTML = `
-    <span class="entry-icon">${confident ? "+" : "?"}</span>
-    <span class="entry-label">${escapeHtml(label)}</span>
-    <span class="entry-value">${escapeHtml(value.substring(0, 60))}</span>
-    <span class="entry-tier">${tierLabels[tier] || "?"}</span>
-  `;
-  logEntries.prepend(entry);
-}
+// ─── Status ───────────────────────────────────────────
 
-function showCompanyIntel(research) {
-  document.getElementById("company-intel").classList.remove("hidden");
-  const tech = (research.tech_stack || []).join(", ") || "N/A";
-  const flags = (research.red_flags || []).join(", ") || "None";
-  intelBody.innerHTML = `
-    <p><strong>${escapeHtml(research.company)}</strong></p>
-    <p>${escapeHtml(research.description || "")}</p>
-    <p><em>${escapeHtml(research.industry || "")} | ${escapeHtml(research.size || "")}</em></p>
-    <p>Tech: ${escapeHtml(tech)}</p>
-    <p>Red flags: ${escapeHtml(flags)}</p>
-  `;
-}
-
-function setApplicationState(state, progress) {
-  document.getElementById("current-app").classList.remove("hidden");
-  appState.textContent = state;
-  if (progress !== undefined) {
-    progressFill.style.width = progress + "%";
+async function refreshStatus() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "get_status" });
+    currentStatus = resp;
+    renderStats(resp.daily_stats);
+    renderPhases(resp.phases);
+    document.getElementById("queue-count").textContent = resp.queue_count;
+    document.getElementById("backend-status").textContent = "connected";
+    document.getElementById("backend-status").className = "badge badge-green";
+  } catch (e) {
+    document.getElementById("backend-status").textContent = "offline";
+    document.getElementById("backend-status").className = "badge badge-red";
   }
 }
+
+function renderStats(daily) {
+  let scanned = 0, applied = 0;
+  for (const p of Object.values(daily || {})) {
+    scanned += p.scanned || 0;
+    applied += p.applied || 0;
+  }
+  document.getElementById("stat-scanned").textContent = scanned;
+  document.getElementById("stat-applied").textContent = applied;
+  // "passed" is queue count
+  document.getElementById("stat-passed").textContent = currentStatus.queue_count || 0;
+}
+
+function renderPhases(phases) {
+  const el = document.getElementById("phase-list");
+  const platforms = ["linkedin", "indeed", "reed", "greenhouse", "lever", "workday"];
+  el.innerHTML = platforms.map(p => {
+    const ps = phases?.[p] || {};
+    const phase = ps.current || "observation";
+    const max = PLATFORM_MAX_PHASE[p] || "supervised";
+    const badgeClass = {
+      observation: "badge-gray", dry_run: "badge-yellow",
+      supervised: "badge-blue", auto: "badge-green",
+    }[phase] || "badge-gray";
+    return `<div class="phase-row">
+      <span>${p}</span>
+      <span class="badge ${badgeClass}">${phase}</span>
+      <span style="font-size:10px;color:#999">max: ${max}</span>
+    </div>`;
+  }).join("");
+}
+
+// ─── Queue ────────────────────────────────────────────
+
+async function refreshQueue() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "get_queue", status: "pending" });
+    renderQueue(resp.jobs || []);
+  } catch (e) {
+    document.getElementById("queue-list").innerHTML = `<div class="empty">Error loading queue</div>`;
+  }
+}
+
+function renderQueue(jobs) {
+  const el = document.getElementById("queue-list");
+  if (!jobs.length) {
+    el.innerHTML = `<div class="empty">No jobs in queue</div>`;
+    return;
+  }
+  el.innerHTML = jobs.slice(0, 50).map(j => `
+    <div class="job-card" data-id="${j.id}">
+      <div class="job-title">${escapeHtml(j.title)}</div>
+      <div class="job-meta">${escapeHtml(j.company)} · ${j.platform} · ATS: ${j.gate_results?.score || "?"}</div>
+      <div class="controls" style="margin-top:4px">
+        <button class="btn btn-success btn-sm btn-approve" data-id="${j.id}">Approve</button>
+        <button class="btn btn-danger btn-sm btn-reject" data-id="${j.id}">Reject</button>
+      </div>
+    </div>
+  `).join("");
+
+  // Bind approve/reject buttons
+  el.querySelectorAll(".btn-approve").forEach(btn => {
+    btn.addEventListener("click", () => approveJob(btn.dataset.id));
+  });
+  el.querySelectorAll(".btn-reject").forEach(btn => {
+    btn.addEventListener("click", () => rejectJob(btn.dataset.id));
+  });
+}
+
+async function approveJob(id) {
+  // TODO: wire to apply phase based on current platform phase
+  console.log("Approve:", id);
+  await refreshQueue();
+}
+
+async function rejectJob(id) {
+  // TODO: update job status to rejected
+  console.log("Reject:", id);
+  await refreshQueue();
+}
+
+// ─── Scan Controls ────────────────────────────────────
+
+document.getElementById("btn-scan-all").addEventListener("click", async () => {
+  const platform = document.getElementById("scan-platform").value;
+  const statusEl = document.getElementById("scan-status");
+  statusEl.textContent = `Scanning ${platform}...`;
+  document.getElementById("btn-scan-all").disabled = true;
+
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "scan_now", platform });
+    if (resp.success) {
+      const results = Array.isArray(resp.result) ? resp.result : [resp.result];
+      const total = results.reduce((s, r) => s + (r.scanned || 0), 0);
+      const passed = results.reduce((s, r) => s + (r.passed || 0), 0);
+      statusEl.textContent = `Done: ${total} scanned, ${passed} passed gates`;
+    } else {
+      statusEl.textContent = `Error: ${resp.error}`;
+    }
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+  }
+
+  document.getElementById("btn-scan-all").disabled = false;
+  await refreshStatus();
+  await refreshQueue();
+});
+
+// ─── Live Updates ─────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === "scan_complete") {
+    refreshStatus();
+    refreshQueue();
+  }
+  if (msg.type === "phase_change") {
+    refreshStatus();
+  }
+  if (msg.type === "job_applied") {
+    refreshStatus();
+    refreshQueue();
+  }
+});
+
+// ─── Helpers ──────────────────────────────────────────
 
 function escapeHtml(str) {
   const div = document.createElement("div");
-  div.textContent = str;
+  div.textContent = str || "";
   return div.innerHTML;
 }
 
-// Listen for updates from background
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "status") {
-    setConnectionStatus(msg.state);
-  }
-  if (msg.type === "snapshot_update") {
-    // Could update field count, etc.
-  }
-  if (msg.type === "field_filled") {
-    addLogEntry(msg.label, msg.value, msg.tier, msg.confident);
-  }
-  if (msg.type === "application_start") {
-    appCompany.textContent = msg.company || "";
-    appRole.textContent = msg.role || "";
-    logEntries.innerHTML = "";
-    if (msg.company_research) showCompanyIntel(msg.company_research);
-    setApplicationState("Starting", 0);
-  }
-  if (msg.type === "application_complete") {
-    setApplicationState(msg.success ? "Complete" : "Failed", 100);
-  }
-});
+// ─── Start ────────────────────────────────────────────
 
-// Get initial status
-chrome.runtime.sendMessage({ type: "status" }, (resp) => {
-  if (resp && resp.state) setConnectionStatus(resp.state);
-});
+init();

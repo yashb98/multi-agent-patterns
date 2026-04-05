@@ -1,51 +1,80 @@
-<!-- extension/sidepanel.html -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <link rel="stylesheet" href="styles/sidepanel.css">
+  <meta charset="UTF-8">
+  <title>JobPulse</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, system-ui, sans-serif; font-size: 13px; background: #f8f9fa; color: #333; padding: 12px; }
+    h2 { font-size: 15px; margin-bottom: 8px; }
+    h3 { font-size: 13px; margin-bottom: 6px; color: #555; }
+    .section { background: #fff; border-radius: 8px; padding: 12px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-green { background: #d4edda; color: #155724; }
+    .badge-yellow { background: #fff3cd; color: #856404; }
+    .badge-red { background: #f8d7da; color: #721c24; }
+    .badge-blue { background: #d1ecf1; color: #0c5460; }
+    .badge-gray { background: #e2e3e5; color: #383d41; }
+    .btn { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .btn-primary { background: #1a5276; color: #fff; }
+    .btn-success { background: #28a745; color: #fff; }
+    .btn-danger { background: #dc3545; color: #fff; }
+    .btn-sm { padding: 3px 8px; font-size: 11px; }
+    .btn:hover { opacity: 0.85; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; text-align: center; }
+    .stat-box { background: #f1f3f5; border-radius: 6px; padding: 8px; }
+    .stat-box .num { font-size: 20px; font-weight: 700; }
+    .stat-box .label { font-size: 10px; color: #777; }
+    .job-card { padding: 8px; border-bottom: 1px solid #eee; }
+    .job-card:last-child { border-bottom: none; }
+    .job-title { font-weight: 600; }
+    .job-meta { font-size: 11px; color: #777; margin-top: 2px; }
+    .phase-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
+    .controls { display: flex; gap: 6px; margin-top: 8px; }
+    #queue-list { max-height: 300px; overflow-y: auto; }
+    .empty { text-align: center; color: #999; padding: 20px; font-style: italic; }
+  </style>
 </head>
 <body>
-  <div class="panel">
-    <header>
-      <h1>JobPulse</h1>
-      <span id="conn-status" class="badge disconnected">Disconnected</span>
-    </header>
+  <h2>JobPulse <span id="backend-status" class="badge badge-gray">checking...</span></h2>
 
-    <section id="current-app" class="section hidden">
-      <h2>Current Application</h2>
-      <div id="app-company" class="company-name"></div>
-      <div id="app-role" class="role-name"></div>
-      <div class="progress-bar"><div id="progress-fill"></div></div>
-      <div id="app-state" class="state-label"></div>
-    </section>
-
-    <section id="company-intel" class="section hidden">
-      <h2>Company Intel</h2>
-      <div id="intel-body"></div>
-    </section>
-
-    <section id="field-log" class="section">
-      <h2>Field Log</h2>
-      <div id="log-entries"></div>
-    </section>
-
-    <section id="controls" class="section">
-      <h2>Controls</h2>
-      <div class="btn-row">
-        <button id="btn-pause">Pause</button>
-        <button id="btn-skip">Skip Field</button>
-        <button id="btn-abort">Abort</button>
-      </div>
-    </section>
-
-    <section id="queue" class="section">
-      <h2>Queue</h2>
-      <div id="queue-list"><em>No pending applications.</em></div>
-    </section>
+  <!-- Daily Stats -->
+  <div class="section">
+    <h3>Today</h3>
+    <div class="stats">
+      <div class="stat-box"><div class="num" id="stat-scanned">0</div><div class="label">Scanned</div></div>
+      <div class="stat-box"><div class="num" id="stat-passed">0</div><div class="label">Passed</div></div>
+      <div class="stat-box"><div class="num" id="stat-applied">0</div><div class="label">Applied</div></div>
+    </div>
   </div>
 
-  <script src="protocol.js"></script>
-  <script src="sidepanel.js"></script>
+  <!-- Phase Status -->
+  <div class="section">
+    <h3>Trust Phases</h3>
+    <div id="phase-list"></div>
+  </div>
+
+  <!-- Scan Controls -->
+  <div class="section">
+    <h3>Scanning</h3>
+    <div class="controls">
+      <button class="btn btn-primary" id="btn-scan-all">Scan All Now</button>
+      <select id="scan-platform">
+        <option value="all">All Platforms</option>
+        <option value="reed">Reed</option>
+        <option value="linkedin">LinkedIn</option>
+        <option value="indeed">Indeed</option>
+      </select>
+    </div>
+    <div id="scan-status" style="margin-top:6px; font-size:11px; color:#777;"></div>
+  </div>
+
+  <!-- Job Queue -->
+  <div class="section">
+    <h3>Queue <span id="queue-count" class="badge badge-blue">0</span></h3>
+    <div id="queue-list"><div class="empty">No jobs in queue</div></div>
+  </div>
+
+  <script src="sidepanel.js" type="module"></script>
 </body>
 </html>
