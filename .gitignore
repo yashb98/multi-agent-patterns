@@ -4,6 +4,7 @@
 
 # Claude Code worktrees
 .claude/worktrees/
+.worktrees/
 
 # Python
 __pycache__/
