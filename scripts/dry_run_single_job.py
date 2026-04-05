@@ -245,7 +245,7 @@ def run_full_pipeline(url: str) -> None:
     print("=" * 60)
 
     from jobpulse.config import DATA_DIR
-    from jobpulse.cv_templates.generate_cv import generate_cv_pdf, BASE_SKILLS, EDUCATION, EXPERIENCE
+    from jobpulse.cv_templates.generate_cv import generate_cv_pdf, build_extra_skills, get_role_profile, BASE_SKILLS, EDUCATION, EXPERIENCE
 
     # Sync Notion Skill Tracker
     try:
@@ -262,14 +262,14 @@ def run_full_pipeline(url: str) -> None:
     )
     print(f"  Matched projects: {[p['title'] for p in matched_projects[:4]]}")
 
-    extra_skills = {}
-    jd_skills = listing.required_skills + listing.preferred_skills
-    if jd_skills:
-        extra_skills["JD Match:"] = " | ".join(jd_skills[:10])
+    extra_skills = build_extra_skills(listing.required_skills, listing.preferred_skills)
 
+    role_profile = get_role_profile(listing.title)
     cv_path = generate_cv_pdf(
         company=listing.company,
         location=listing.location or "United Kingdom",
+        tagline=role_profile.get("tagline"),
+        summary=role_profile.get("summary"),
         projects=matched_projects,
         extra_skills=extra_skills if extra_skills else None,
         output_dir=str(DATA_DIR / "applications" / listing.job_id),

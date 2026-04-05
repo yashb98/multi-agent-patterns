@@ -37,7 +37,7 @@ from jobpulse.ralph_loop import ralph_apply_sync
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
 from jobpulse.cover_letter_agent import generate_cover_letter
 from jobpulse.cv_tailor import determine_match_tier, generate_tailored_cv
-from jobpulse.cv_templates.generate_cv import generate_cv_pdf
+from jobpulse.cv_templates.generate_cv import generate_cv_pdf, build_extra_skills, get_role_profile
 from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
 from jobpulse.drive_uploader import upload_cv, upload_cover_letter
 from jobpulse.gate4_quality import check_jd_quality, check_company_background, scrutinize_cv_deterministic, scrutinize_cv_llm
@@ -453,10 +453,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
             cv_path = None
             ats_score = 0.0
             try:
-                extra_skills = {}
-                jd_skills = listing.required_skills + listing.preferred_skills
-                if jd_skills:
-                    extra_skills["JD Match:"] = " | ".join(jd_skills[:10])
+                extra_skills = build_extra_skills(listing.required_skills, listing.preferred_skills)
 
                 # Pre-generation: sync Notion Skill Tracker (user may have approved new skills)
                 try:
@@ -471,9 +468,12 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                     listing.required_skills, listing.preferred_skills,
                 )
 
+                role_profile = get_role_profile(listing.title)
                 cv_path = generate_cv_pdf(
                     company=listing.company,
                     location=listing.location or "United Kingdom",
+                    tagline=role_profile.get("tagline"),
+                    summary=role_profile.get("summary"),
                     projects=matched_projects,
                     extra_skills=extra_skills if extra_skills else None,
                     output_dir=str(DATA_DIR / "applications" / listing.job_id),
