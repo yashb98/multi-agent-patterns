@@ -790,15 +790,7 @@ class TieredRouter:
             logger.info("TIER 1 HIT: Returning cached result for %s", agent_name)
             return self._cache[task_hash]
 
-        # ── Tier 2: LIGHTWEIGHT / BOOSTER ──
-        if self.AGENT_BOOSTER_AVAILABLE:
-            lightweight_result = self._try_lightweight(agent_name, state)
-            if lightweight_result is not None:
-                logger.info("TIER 2 HIT: Lightweight resolve for %s", agent_name)
-                self._cache[task_hash] = lightweight_result
-                return lightweight_result
-
-        # ── Tier 3: FULL AGENT ──
+        # ── Tier 2: FULL AGENT ──
         logger.info("TIER 3: Full agent needed for %s", agent_name)
         return None
 
@@ -806,41 +798,6 @@ class TieredRouter:
         """Cache a full agent result for future tier-1 hits."""
         task_hash = self._hash_task(agent_name, state)
         self._cache[task_hash] = result
-
-    @classmethod
-    def enable_booster(cls):
-        """Enable tier-2 lightweight routing."""
-        cls.AGENT_BOOSTER_AVAILABLE = True
-        logger.info("[AGENT_BOOSTER_AVAILABLE] = True")
-
-    @classmethod
-    def disable_booster(cls):
-        """Disable tier-2 lightweight routing."""
-        cls.AGENT_BOOSTER_AVAILABLE = False
-
-    def _try_lightweight(self, agent_name: str, state: dict) -> Optional[dict]:
-        """
-        Attempt lightweight resolution using episodic memory.
-        For reviewers: reuse past review structure if same domain.
-        For researchers: reuse past research if topic overlap > 80%.
-        """
-        topic = state.get("topic", "")
-        episodes = self.episodic.recall(topic, n=1)
-        if not episodes:
-            return None
-
-        best_ep = episodes[0]
-        relevance = best_ep.relevance_score(topic, "")
-
-        # Only use lightweight if very high relevance
-        if relevance < 8.0:
-            return None
-
-        # For researcher: reuse research notes structure (agent still enriches)
-        if agent_name == "researcher" and best_ep.strengths:
-            return None  # Research always needs fresh data
-
-        return None  # Conservative: only cache hits for now
 
     def _hash_task(self, agent_name: str, state: dict) -> str:
         """Create a cache key from agent name + relevant state fields."""
@@ -989,20 +946,6 @@ class MemoryManager:
             iterations=iterations, strengths=strengths,
             output_summary=output_summary,
         )
-
-    # ── Operational Principle #5: 3-tier routing ──
-
-    def route_agent(self, agent_name: str, state: dict) -> Optional[dict]:
-        """
-        Try to resolve an agent task without a full LLM call.
-        Returns partial state dict if resolved, None if full agent needed.
-        Check [AGENT_BOOSTER_AVAILABLE] before spawning expensive agents.
-        """
-        return self.router.route(agent_name, state)
-
-    def cache_agent_result(self, agent_name: str, state: dict, result: dict):
-        """Cache a full agent result for future 3-tier routing hits."""
-        self.router.cache_result(agent_name, state, result)
 
     def record_step(
         self, agent: str, summary: str, score: float = None

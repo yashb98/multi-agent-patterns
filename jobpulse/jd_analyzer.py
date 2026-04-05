@@ -13,7 +13,6 @@ detect_remote(text)           -> bool
 detect_seniority(text)        -> str | None
 detect_ats_platform(url)      -> str | None
 detect_easy_apply(url, text)  -> bool
-extract_skills_llm(jd_text)   -> dict
 analyze_jd(...)               -> JobListing
 """
 
@@ -274,72 +273,6 @@ def detect_easy_apply(url: str, text: str) -> bool:
     return bool(linkedin_match or indeed_match)
 
 
-# ---------------------------------------------------------------------------
-# LLM-based skill extraction
-# ---------------------------------------------------------------------------
-
-
-def extract_skills_llm(jd_text: str) -> dict:  # type: ignore[return]
-    """Use gpt-4.1-mini to extract structured skill data from a JD.
-
-    Returns:
-        {
-            "required_skills": list[str],
-            "preferred_skills": list[str],
-            "industry": str,
-            "sub_context": str,
-            "error": None | str,  # None on success, error description or "empty_jd" otherwise
-        }
-
-    Falls back to empty lists + empty strings on any error.
-    """
-    if not jd_text or not jd_text.strip():
-        logger.warning("extract_skills_llm: received empty JD text, skipping LLM call")
-        return {"required_skills": [], "preferred_skills": [], "industry": "", "sub_context": "", "error": "empty_jd"}
-
-    try:
-        import openai  # local import to keep module importable without openai installed
-
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-
-        system = (
-            "You are a job description parser. Extract skill and context data as JSON. "
-            "Return ONLY valid JSON with these keys: "
-            "required_skills (list of strings), preferred_skills (list of strings), "
-            "industry (string), sub_context (string — 1 sentence describing the domain)."
-        )
-
-        user = f"Parse this job description:\n\n{jd_text[:4000]}"
-
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0.0,
-            response_format={"type": "json_object"},
-        )
-
-        raw = response.choices[0].message.content or "{}"
-        data = json.loads(raw)
-        return {
-            "required_skills": data.get("required_skills", []),
-            "preferred_skills": data.get("preferred_skills", []),
-            "industry": data.get("industry", ""),
-            "sub_context": data.get("sub_context", ""),
-            "error": None,
-        }
-
-    except Exception as exc:
-        logger.warning("extract_skills_llm failed: %s", exc)
-        return {
-            "required_skills": [],
-            "preferred_skills": [],
-            "industry": "",
-            "sub_context": "",
-            "error": str(exc),
-        }
 
 
 # ---------------------------------------------------------------------------

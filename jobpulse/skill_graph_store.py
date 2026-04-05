@@ -236,9 +236,6 @@ class SkillGraphStore:
         results.sort(key=lambda m: m.skill_overlap, reverse=True)
         return results
 
-    def get_skill_recency(self) -> dict[str, date]:
-        """Placeholder -- returns empty dict for now."""
-        return {}
 
     def get_profile_stats(self) -> dict:
         """Returns counts of skills, projects, and demonstrates relations."""

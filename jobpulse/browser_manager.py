@@ -125,26 +125,9 @@ async def human_type(page, selector: str, text: str) -> None:
         await asyncio.sleep(random.uniform(0.05, 0.15))
 
 
-async def human_click(page, selector: str) -> None:
-    """Wait for *selector*, scroll it into view, pause, then click."""
-    element = await page.wait_for_selector(selector)
-    if element is not None:
-        await element.scroll_into_view_if_needed()
-    await asyncio.sleep(random.uniform(0.5, 1.5))
-    await page.click(selector)
-
 
 async def random_delay(min_s: float = 2.0, max_s: float = 8.0) -> None:
     """Async sleep for a random duration between *min_s* and *max_s* seconds."""
     duration = random.uniform(min_s, max_s)
     await asyncio.sleep(duration)
 
-
-async def human_scroll(page, direction: str = "down") -> None:
-    """Scroll the page by a random 200-500 px with smooth behavior."""
-    pixels = random.randint(200, 500)
-    delta = pixels if direction == "down" else -pixels
-    await page.evaluate(
-        f"window.scrollBy({{top: {delta}, behavior: 'smooth'}})"
-    )
-    await asyncio.sleep(random.uniform(0.3, 0.8))

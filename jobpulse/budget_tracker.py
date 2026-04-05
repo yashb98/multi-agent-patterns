@@ -278,51 +278,6 @@ def get_or_create_category_page(category: str, week_start: str) -> str:
     return page_id
 
 
-def _add_category_link_to_budget_page(budget_page_id: str, category: str, sub_page_id: str):
-    """Add a clickable link_to_page block on the main budget page.
-
-    First checks if a 'Category Details' heading exists. If not, creates it.
-    Then appends a link_to_page block pointing to the category sub-page.
-    """
-    # Check if we already have the heading + this link
-    blocks = _notion_api("GET", f"/blocks/{budget_page_id}/children?page_size=100")
-    has_heading = False
-    has_this_link = False
-
-    for block in blocks.get("results", []):
-        if block.get("type") == "heading_3":
-            text = "".join(t.get("plain_text", "") for t in block.get("heading_3", {}).get("rich_text", []))
-            if "Category Details" in text:
-                has_heading = True
-        if block.get("type") == "link_to_page":
-            linked_id = block.get("link_to_page", {}).get("page_id", "")
-            if linked_id == sub_page_id:
-                has_this_link = True
-
-    if has_this_link:
-        return  # Already linked
-
-    children = []
-
-    if not has_heading:
-        children.append({
-            "object": "block", "type": "divider", "divider": {}
-        })
-        children.append({
-            "object": "block", "type": "heading_3", "heading_3": {
-                "rich_text": [{"text": {"content": "📂 Category Details (click to view transactions)"}}]
-            }
-        })
-
-    # Add link_to_page block — this is clickable, not editable
-    children.append({
-        "object": "block", "type": "link_to_page",
-        "link_to_page": {"type": "page_id", "page_id": sub_page_id}
-    })
-
-    if children:
-        _notion_api("PATCH", f"/blocks/{budget_page_id}/children", {"children": children})
-        logger.info("Added %s link to budget page", category)
 
 
 def add_transaction_row(category: str, week_start: str, amount: float,

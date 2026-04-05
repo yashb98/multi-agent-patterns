@@ -225,21 +225,6 @@ to feedback. The article should be better than the previous draft."""
     }
 
 
-def debate_reviewer_node(state: AgentState) -> dict:
-    """
-    Reviewer in debate mode.
-    
-    Behaves the same in all rounds — always produces structured 
-    feedback. But in debate mode, the Reviewer also considers
-    the Researcher's critique when evaluating.
-    
-    The Reviewer's score is the CONVERGENCE SIGNAL.
-    If the score improves across rounds, the debate is working.
-    If it stagnates, we should stop.
-    """
-    # The reviewer works the same way — score and critique
-    # Uses risk-aware review for code-containing drafts
-    return risk_aware_reviewer_node(state)
 
 
 # ─── CONVERGENCE CHECK ───────────────────────────────────────────
