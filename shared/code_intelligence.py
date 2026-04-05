@@ -10,6 +10,7 @@ Usage:
     ci.close()
 """
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -117,17 +118,14 @@ class CodeIntelligence:
         # Voyage-code-3 client (lazy init)
         self._voyage_client = None
 
-        # Wire Voyage query embedding into HybridSearch
+        # Wire Voyage query embedding into HybridSearch (with disk cache)
         self._query_embedding_cache: dict[str, list[float]] = {}
+        self._init_query_cache_table()
         if os.environ.get(EMBEDDING_ENV_VAR):
             self._search._query_embedding_fn = self._embed_query
 
-        # Wire reranker (optional — graceful fallback if sentence-transformers not installed)
-        try:
-            from shared.reranker import Reranker
-            self._search._reranker = Reranker()
-        except Exception:
-            pass  # Reranking disabled
+        # Pre-load Voyage embeddings into numpy matrix for fast search
+        self._search.load_embeddings_to_memory()
 
     def _init_extended_schema(self):
         """Create columns/tables beyond what CodeGraph + HybridSearch provide."""
@@ -180,11 +178,46 @@ class CodeIntelligence:
             logger.warning("voyageai package not installed — using FTS5-only search")
             return None
 
+    def _init_query_cache_table(self):
+        """Create disk cache table for Voyage query embeddings."""
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS query_embedding_cache (
+                query_hash TEXT PRIMARY KEY,
+                query_text TEXT NOT NULL,
+                vector BLOB NOT NULL,
+                created_at REAL DEFAULT (strftime('%s', 'now'))
+            )
+        """)
+        self.conn.commit()
+
     def _embed_query(self, query: str) -> list[float] | None:
-        """Embed a search query via Voyage Code 3. LRU cache (max 100)."""
+        """Embed a search query via Voyage Code 3.
+
+        3-tier cache: in-memory dict → SQLite disk cache → Voyage API.
+        """
+        import struct as _struct
+
+        # Tier 1: in-memory cache
         if query in self._query_embedding_cache:
             return self._query_embedding_cache[query]
 
+        # Tier 2: disk cache
+        query_hash = hashlib.md5(query.encode()).hexdigest()
+        try:
+            row = self.conn.execute(
+                "SELECT vector FROM query_embedding_cache WHERE query_hash = ?",
+                (query_hash,),
+            ).fetchone()
+            if row:
+                blob = row[0]
+                n_floats = len(blob) // 4
+                vector = list(_struct.unpack(f"{n_floats}f", blob))
+                self._query_embedding_cache[query] = vector
+                return vector
+        except Exception:
+            pass  # Table may not exist yet
+
+        # Tier 3: Voyage API
         client = self._get_voyage_client()
         if client is None:
             return None
@@ -192,11 +225,24 @@ class CodeIntelligence:
         try:
             result = client.embed([query], model=EMBEDDING_MODEL, input_type="query")
             vector = result.embeddings[0]
-            # LRU eviction
+
+            # Save to in-memory cache (LRU eviction)
             if len(self._query_embedding_cache) >= 100:
                 oldest_key = next(iter(self._query_embedding_cache))
                 del self._query_embedding_cache[oldest_key]
             self._query_embedding_cache[query] = vector
+
+            # Save to disk cache
+            try:
+                blob = _struct.pack(f"{len(vector)}f", *vector)
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO query_embedding_cache (query_hash, query_text, vector) VALUES (?,?,?)",
+                    (query_hash, query, blob),
+                )
+                self.conn.commit()
+            except Exception:
+                pass  # Non-critical
+
             return vector
         except Exception as exc:
             logger.warning("Voyage query embedding failed: %s", exc)
@@ -866,10 +912,13 @@ class CodeIntelligence:
         search_context: str = "general",
     ) -> list[dict[str, Any]]:
         """Hybrid FTS5 + vector semantic search with graph boosting."""
-        from shared.hybrid_search import compute_graph_boost
+        from shared.hybrid_search import compute_graph_boost_batch
 
         raw = self._search.query(query, top_k=top_k * 2)  # Over-fetch for graph boost reranking
-        results: list[dict[str, Any]] = []
+
+        # Collect all qnames for batch graph boost
+        items_with_meta = []
+        qnames = []
         for item in raw:
             metadata = item.get("metadata") or {}
             if isinstance(metadata, str):
@@ -877,16 +926,21 @@ class CodeIntelligence:
                     metadata = json.loads(metadata)
                 except (json.JSONDecodeError, TypeError):
                     metadata = {}
-
             qname = item.get("id", "")
-            base_score = item.get("score", 0.0)
+            qnames.append(qname)
+            items_with_meta.append((item, metadata, qname))
 
-            # Apply graph boost
-            boost = compute_graph_boost(
-                self.conn, qname,
-                context_qname=context_symbol,
-                search_context=search_context,
-            )
+        # Single batch boost computation
+        boosts = compute_graph_boost_batch(
+            self.conn, qnames,
+            context_qname=context_symbol,
+            search_context=search_context,
+        )
+
+        results: list[dict[str, Any]] = []
+        for item, metadata, qname in items_with_meta:
+            base_score = item.get("score", 0.0)
+            boost = boosts.get(qname, 1.0)
 
             results.append(
                 {
@@ -1077,10 +1131,236 @@ class CodeIntelligence:
         lines.append(
             "\nMCP tools: find_symbol · callers_of · callees_of · "
             "impact_analysis · risk_report · semantic_search · "
-            "module_summary · recent_changes"
+            "module_summary · recent_changes · dead_code_report · "
+            "complexity_hotspots · dependency_cycles · similar_functions"
         )
 
         return "\n".join(lines)
+
+    # ─── NEW TOOLS ─────────────────────────────────────────────────
+
+    def dead_code_report(self, top_n: int = 20, file: str | None = None) -> dict[str, Any]:
+        """Find functions with zero callers — potential dead code.
+
+        Cross-checks both resolved and unresolved edges to reduce false positives.
+        Entry points (main, dispatch, CLI handlers) may appear as false positives.
+        """
+        where_clause = """
+            WHERE n.fan_in = 0
+              AND n.is_test = 0
+              AND n.kind IN ('function', 'method')
+              AND n.qualified_name NOT LIKE '%__init__%'
+              AND n.qualified_name NOT LIKE '%__main__%'
+              AND n.qualified_name NOT LIKE '%test_%'
+              AND n.file_path NOT LIKE '%test_%'
+              AND n.file_path NOT LIKE '%conftest%'
+        """
+        if file:
+            where_clause += f" AND n.file_path LIKE '%{file}%'"
+
+        candidates = self.conn.execute(f"""
+            SELECT n.qualified_name, n.file_path, n.kind, n.line_start, n.line_end,
+                   n.fan_in, n.pagerank, n.risk_score
+            FROM nodes n
+            {where_clause}
+            ORDER BY (n.line_end - n.line_start) DESC
+            LIMIT ?
+        """, (top_n * 2,)).fetchall()
+
+        # Cross-check against unresolved edges
+        confirmed = []
+        for row in candidates:
+            qname = row[0]
+            func_name = qname.split("::")[-1]
+            called = self.conn.execute(
+                "SELECT COUNT(*) FROM edges WHERE target_qname LIKE ? OR target_qname = ?",
+                (f"%::{func_name}", func_name),
+            ).fetchone()[0]
+            if called == 0:
+                lines = (row[4] or 0) - (row[3] or 0)
+                confirmed.append({
+                    "name": qname,
+                    "file": row[1],
+                    "kind": row[2],
+                    "lines": lines,
+                    "pagerank": row[6] or 0.0,
+                    "risk_score": row[7] or 0.0,
+                })
+            if len(confirmed) >= top_n:
+                break
+
+        # Summary stats
+        total_dead = self.conn.execute(f"""
+            SELECT COUNT(*) FROM nodes n {where_clause}
+        """).fetchone()[0]
+        total_dead_lines = self.conn.execute(f"""
+            SELECT COALESCE(SUM(n.line_end - n.line_start), 0) FROM nodes n {where_clause}
+        """).fetchone()[0]
+        total_functions = self.conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE kind IN ('function', 'method')"
+        ).fetchone()[0]
+
+        return {
+            "total_candidates": total_dead,
+            "total_functions": total_functions,
+            "dead_code_pct": round(total_dead / total_functions * 100, 1) if total_functions else 0,
+            "removable_lines": total_dead_lines,
+            "confirmed_dead": confirmed,
+        }
+
+    def complexity_hotspots(self, top_n: int = 15) -> list[dict[str, Any]]:
+        """Find functions that are high-risk AND high fan-in — complexity hotspots.
+
+        These are the most dangerous functions: lots of callers + high risk score.
+        Changes here have maximum blast radius.
+        """
+        rows = self.conn.execute("""
+            SELECT qualified_name, file_path, fan_in, pagerank, risk_score,
+                   (line_end - line_start) as size,
+                   community_id
+            FROM nodes
+            WHERE kind IN ('function', 'method')
+              AND fan_in > 0
+              AND risk_score > 0
+            ORDER BY (risk_score * fan_in) DESC
+            LIMIT ?
+        """, (top_n,)).fetchall()
+
+        results = []
+        for row in rows:
+            # Count callers for context
+            callers = self.conn.execute(
+                "SELECT COUNT(DISTINCT source_qname) FROM edges WHERE target_qname = ?",
+                (row[0],)
+            ).fetchone()[0]
+
+            results.append({
+                "name": row[0],
+                "file": row[1],
+                "fan_in": row[2],
+                "callers": callers,
+                "pagerank": round(row[3] or 0, 6),
+                "risk_score": round(row[4] or 0, 3),
+                "lines": row[5] or 0,
+                "danger_score": round((row[4] or 0) * (row[2] or 0), 3),
+                "community_id": row[6],
+            })
+
+        return results
+
+    def dependency_cycles(self, max_depth: int = 4) -> list[dict[str, Any]]:
+        """Detect circular dependencies between modules (file-level cycles).
+
+        Finds A→B→C→A cycles that make the codebase hard to refactor.
+        """
+        # Build file-level adjacency from edges
+        file_edges = self.conn.execute("""
+            SELECT DISTINCT
+                (SELECT file_path FROM nodes WHERE qualified_name = e.source_qname) as src_file,
+                (SELECT file_path FROM nodes WHERE qualified_name = e.target_qname) as tgt_file
+            FROM edges e
+            WHERE e.kind = 'calls'
+        """).fetchall()
+
+        adjacency: dict[str, set[str]] = {}
+        for row in file_edges:
+            src, tgt = row[0], row[1]
+            if src and tgt and src != tgt:
+                adjacency.setdefault(src, set()).add(tgt)
+
+        # DFS cycle detection
+        cycles: list[list[str]] = []
+        visited: set[str] = set()
+
+        def dfs(node: str, path: list[str], seen: set[str]):
+            if len(path) > max_depth:
+                return
+            for neighbor in adjacency.get(node, []):
+                if neighbor == path[0] and len(path) >= 2:
+                    cycle = path + [neighbor]
+                    # Normalize: start from alphabetically smallest
+                    min_idx = cycle.index(min(cycle[:-1]))
+                    normalized = cycle[min_idx:] + cycle[1:min_idx + 1]
+                    if normalized not in cycles:
+                        cycles.append(normalized)
+                elif neighbor not in seen and neighbor not in visited:
+                    dfs(neighbor, path + [neighbor], seen | {neighbor})
+
+        for node in adjacency:
+            if node not in visited:
+                dfs(node, [node], {node})
+            visited.add(node)
+            if len(cycles) >= 20:
+                break
+
+        results = []
+        for cycle in cycles[:20]:
+            results.append({
+                "cycle": cycle,
+                "length": len(cycle) - 1,
+                "files": [f.split("/")[-1] for f in cycle],
+            })
+
+        return results
+
+    def similar_functions(self, name: str, top_k: int = 5) -> list[dict[str, Any]]:
+        """Find functions semantically similar to the given function.
+
+        Uses Voyage embeddings to find code with similar purpose/implementation.
+        Useful for deduplication, refactoring, and understanding patterns.
+        """
+        import struct as _struct
+
+        # Find the source function's embedding
+        row = self.conn.execute(
+            "SELECT qualified_name, file_path FROM nodes WHERE name = ? OR qualified_name LIKE ?",
+            (name, f"%::{name}"),
+        ).fetchone()
+
+        if not row:
+            return []
+
+        source_qname = row[0]
+        source_file = row[1]
+
+        # Get its Voyage embedding
+        emb_row = self.conn.execute(
+            "SELECT vector FROM embeddings WHERE doc_id = ?", (source_qname,)
+        ).fetchone()
+
+        if not emb_row:
+            # Fallback: use semantic search with the function name
+            results = self.semantic_search(name, top_k=top_k + 1)
+            return [r for r in results if r["name"] != source_qname][:top_k]
+
+        blob = emb_row[0]
+        n_floats = len(blob) // 4
+        source_vec = list(_struct.unpack(f"{n_floats}f", blob))
+
+        # Find similar via vector search
+        similar = self._search._voyage_vector_search(source_vec, limit=top_k + 5)
+
+        results = []
+        for doc_id, rank in similar:
+            if doc_id == source_qname:
+                continue
+            node = self.conn.execute(
+                "SELECT file_path, kind, line_start, line_end, risk_score FROM nodes WHERE qualified_name = ?",
+                (doc_id,)
+            ).fetchone()
+            if node:
+                results.append({
+                    "name": doc_id,
+                    "file": node[0],
+                    "kind": node[1],
+                    "lines": (node[3] or 0) - (node[2] or 0),
+                    "risk_score": round(node[4] or 0, 3),
+                    "similarity_rank": rank,
+                })
+            if len(results) >= top_k:
+                break
+
+        return results
 
     def close(self) -> None:
         """Close the database connection."""

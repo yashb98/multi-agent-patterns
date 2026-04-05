@@ -28,6 +28,10 @@ TOOL_NAMES = [
     "semantic_search",
     "module_summary",
     "recent_changes",
+    "dead_code_report",
+    "complexity_hotspots",
+    "dependency_cycles",
+    "similar_functions",
 ]
 
 # ─── FILE WATCHER ─────────────────────────────────────────────────
@@ -280,6 +284,88 @@ _TOOL_DEFS: list[dict] = [
             "required": [],
         },
     },
+    {
+        "name": "dead_code_report",
+        "description": (
+            "Find functions with zero callers — potential dead code. "
+            "Cross-checks resolved and unresolved edges to reduce false positives. "
+            "Returns confirmed dead functions, removable lines, and dead code percentage."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "top_n": {
+                    "type": "integer",
+                    "description": "Number of dead code candidates to return (default 20)",
+                    "default": 20,
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Filter to a specific file (optional)",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "complexity_hotspots",
+        "description": (
+            "Find functions that are high-risk AND high fan-in — complexity hotspots. "
+            "These have maximum blast radius: many callers + high risk. "
+            "Sorted by danger_score = risk_score × fan_in."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "top_n": {
+                    "type": "integer",
+                    "description": "Number of hotspots to return (default 15)",
+                    "default": 15,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "dependency_cycles",
+        "description": (
+            "Detect circular dependencies between modules (file-level A→B→C→A cycles). "
+            "These make the codebase hard to refactor and indicate tight coupling."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "max_depth": {
+                    "type": "integer",
+                    "description": "Maximum cycle length to detect (default 4)",
+                    "default": 4,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "similar_functions",
+        "description": (
+            "Find functions semantically similar to a given function using Voyage embeddings. "
+            "Useful for finding duplicate code, refactoring opportunities, and understanding patterns."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Function or method name to find similar code for",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of similar functions to return (default 5)",
+                    "default": 5,
+                },
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -366,6 +452,14 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
         return ci.module_summary(args["file"])
     elif name == "recent_changes":
         return ci.recent_changes(n_commits=args.get("n_commits", 3))
+    elif name == "dead_code_report":
+        return ci.dead_code_report(top_n=args.get("top_n", 20), file=args.get("file"))
+    elif name == "complexity_hotspots":
+        return ci.complexity_hotspots(top_n=args.get("top_n", 15))
+    elif name == "dependency_cycles":
+        return ci.dependency_cycles(max_depth=args.get("max_depth", 4))
+    elif name == "similar_functions":
+        return ci.similar_functions(args["name"], top_k=args.get("top_k", 5))
     else:
         raise ValueError(f"Unknown tool: {name}")
 

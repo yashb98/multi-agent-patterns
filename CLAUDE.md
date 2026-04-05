@@ -46,11 +46,16 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 - `callees_of` → what does this function call
 - `impact_analysis` → blast radius of a change (replaces multi-file grep walks)
 - `risk_report` → high-risk functions that need careful review
-- `semantic_search` → find code by meaning, not just text
+- `semantic_search` → find code by meaning, not just text (~4ms, 60x fewer tokens than grep)
 - `module_summary` → overview of a module's structure
 - `recent_changes` → what changed recently
+- `dead_code_report` → find functions with zero callers (potential dead code, ~9k removable lines)
+- `complexity_hotspots` → high-risk + high fan-in functions (max blast radius)
+- `dependency_cycles` → circular module dependencies (hard-to-refactor coupling)
+- `similar_functions` → find semantically similar code (dedup, refactoring)
 - When briefing subagents, ALWAYS include: "Use MCP tools (find_symbol, callers_of, callees_of, impact_analysis, semantic_search) before falling back to Grep/Glob"
 - One MCP call replaces 5-15 Grep/Glob/Read calls and saves 10-50k tokens per exploration
+- Search pipeline: Voyage Code 3 embeddings (1024d) + FTS5 BM25 + weighted RRF + graph boost (PageRank, fan-in, community). ~4ms per query, 60x fewer tokens than grep
 
 ## Do NOT (extracted from production incidents)
 - NEVER update only one dispatcher — always update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
@@ -95,7 +100,7 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 
 ## Stats
 
-~0 LOC | 0 Python files | 11 databases | 1500 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~0 LOC | 0 Python files | 12 databases | 1500 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 

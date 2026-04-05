@@ -20,7 +20,14 @@ import sqlite3
 import hashlib
 import math
 import re
+import struct
 from typing import Optional
+
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
 
 from shared.logging_config import get_logger
 
@@ -42,9 +49,11 @@ class HybridSearch:
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA journal_mode=WAL")
         self._query_embedding_fn = None  # Set by CodeIntelligence to use Voyage
-        self._reranker = None  # Set externally to enable reranking
         self.fts_weight = 1.3  # Exact identifiers matter more in code search
         self.vec_weight = 1.0
+        # In-memory embedding matrix (loaded once, used for all queries)
+        self._embedding_matrix = None  # numpy ndarray (N x D) or None
+        self._embedding_ids: list[str] = []  # doc_id at each row index
         self._init_schema()
 
     def _init_schema(self):
@@ -132,14 +141,6 @@ class HybridSearch:
                     "vec_rank": vec_rank,
                 })
 
-        # Rerank if reranker is configured
-        if self._reranker is not None and len(results) > 1:
-            try:
-                results = self._reranker.rerank(query_text, results, top_k=top_k)
-            except Exception as exc:
-                import logging
-                logging.getLogger(__name__).debug("Reranking failed: %s", exc)
-
         return results
 
     def _fts_search(self, query: str, limit: int = 30) -> list[tuple]:
@@ -199,21 +200,73 @@ class HybridSearch:
         scored.sort(key=lambda x: x[1], reverse=True)
         return [(doc_id, i + 1) for i, (doc_id, _) in enumerate(scored[:limit])]
 
+    def load_embeddings_to_memory(self):
+        """Pre-load all Voyage embeddings into a numpy matrix for fast cosine search.
+
+        Call once after init or after reindexing. Converts 3000+ SQLite BLOB reads
+        into a single in-memory matrix multiply (~0.1ms vs ~460ms).
+        """
+        try:
+            rows = self.conn.execute("SELECT doc_id, vector FROM embeddings").fetchall()
+        except Exception:
+            return
+
+        if not rows:
+            return
+
+        ids = []
+        vectors = []
+        for row in rows:
+            doc_id = row["doc_id"] if isinstance(row, sqlite3.Row) else row[0]
+            blob = row["vector"] if isinstance(row, sqlite3.Row) else row[1]
+            n_floats = len(blob) // 4
+            vec = struct.unpack(f"{n_floats}f", blob)
+            ids.append(doc_id)
+            vectors.append(vec)
+
+        if _HAS_NUMPY:
+            mat = np.array(vectors, dtype=np.float32)
+            # L2 normalize rows for cosine similarity via dot product
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            self._embedding_matrix = mat / norms
+        else:
+            self._embedding_matrix = vectors  # fallback: list of tuples
+
+        self._embedding_ids = ids
+        logger.info("Loaded %d embeddings into memory (%s)",
+                     len(ids), "numpy" if _HAS_NUMPY else "list")
+
     def _voyage_vector_search(self, query_vector: list[float], limit: int = 30) -> list[tuple]:
         """Cosine similarity against pre-computed Voyage embeddings.
 
-        Args:
-            query_vector: Pre-embedded query vector (1024d from Voyage API).
-            limit: Max results to return.
+        Uses in-memory numpy matrix if available (0.1ms), falls back to
+        SQLite BLOB reads (~460ms).
 
         Returns: [(doc_id, rank), ...] sorted by similarity descending.
         """
-        import struct
+        # Fast path: numpy matrix in memory
+        if self._embedding_matrix is not None and _HAS_NUMPY and isinstance(self._embedding_matrix, np.ndarray):
+            qvec = np.array(query_vector, dtype=np.float32)
+            norm = np.linalg.norm(qvec)
+            if norm > 0:
+                qvec = qvec / norm
+            # Single matrix multiply → all cosine similarities at once
+            sims = self._embedding_matrix @ qvec
+            top_indices = np.argsort(sims)[::-1][:limit]
+            return [(self._embedding_ids[i], rank + 1) for rank, i in enumerate(top_indices)]
 
-        rows = self.conn.execute(
-            "SELECT doc_id, vector FROM embeddings"
-        ).fetchall()
+        # Fallback: in-memory list (no numpy)
+        if self._embedding_matrix is not None and isinstance(self._embedding_matrix, list):
+            scored = []
+            for i, doc_vec in enumerate(self._embedding_matrix):
+                sim = self._cosine_similarity(query_vector, list(doc_vec))
+                scored.append((self._embedding_ids[i], sim))
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return [(doc_id, rank + 1) for rank, (doc_id, _) in enumerate(scored[:limit])]
 
+        # Last resort: read from SQLite
+        rows = self.conn.execute("SELECT doc_id, vector FROM embeddings").fetchall()
         if not rows:
             return []
 
@@ -323,42 +376,58 @@ def compute_graph_boost(
     context_qname: str | None = None,
     search_context: str = "general",
 ) -> float:
-    """Compute graph-based boost multiplier for a search result.
+    """Compute graph-based boost multiplier for a single search result.
+
+    For batch operations, prefer compute_graph_boost_batch().
+    """
+    results = compute_graph_boost_batch(
+        conn, [qualified_name],
+        context_qname=context_qname,
+        search_context=search_context,
+    )
+    return results.get(qualified_name, 1.0)
+
+
+def compute_graph_boost_batch(
+    conn: sqlite3.Connection,
+    qualified_names: list[str],
+    context_qname: str | None = None,
+    search_context: str = "general",
+) -> dict[str, float]:
+    """Batch compute graph-based boost multipliers — single SQL round-trip.
 
     Args:
         conn: SQLite connection with nodes/edges tables.
-        qualified_name: The node's qualified name.
+        qualified_names: List of node qualified names.
         context_qname: Optional symbol being worked on (enables proximity boost).
         search_context: "general", "review", "security", or "impact".
 
     Returns:
-        Multiplicative boost factor (1.0 = no change).
+        Dict mapping qualified_name → multiplicative boost factor (1.0 = no change).
     """
-    row = conn.execute(
-        "SELECT fan_in, pagerank, is_test, risk_score, community_id "
-        "FROM nodes WHERE qualified_name = ?",
-        (qualified_name,),
-    ).fetchone()
+    if not qualified_names:
+        return {}
 
-    if row is None:
-        return 1.0
+    placeholders = ",".join("?" * len(qualified_names))
 
-    fan_in = row[0] or 0
-    pagerank = row[1] or 0.0
-    is_test = row[2] or 0
-    risk_score = row[3] or 0.0
-    community_id = row[4]
+    # Single batch fetch for all nodes
+    rows = conn.execute(
+        f"SELECT qualified_name, fan_in, pagerank, is_test, risk_score, community_id "
+        f"FROM nodes WHERE qualified_name IN ({placeholders})",
+        qualified_names,
+    ).fetchall()
 
-    boost = 1.0
+    node_data = {}
+    for row in rows:
+        node_data[row[0]] = {
+            "fan_in": row[1] or 0,
+            "pagerank": row[2] or 0.0,
+            "is_test": row[3] or 0,
+            "risk_score": row[4] or 0.0,
+            "community_id": row[5],
+        }
 
-    # Test file dampening
-    if is_test:
-        boost *= 0.7
-
-    # PageRank boost (continuous)
-    boost *= 1.0 + (pagerank * 0.5)
-
-    # Fan-in boost (dynamic p90 threshold)
+    # Single p90 query (cached for all results)
     try:
         p90 = conn.execute(
             "SELECT fan_in FROM nodes ORDER BY fan_in DESC "
@@ -367,31 +436,57 @@ def compute_graph_boost(
         fan_in_threshold = max(p90[0] if p90 else 5, 2)
     except Exception:
         fan_in_threshold = 5
-    if fan_in >= fan_in_threshold:
-        boost *= 1.25
 
-    # Context-based proximity
-    if context_qname and context_qname != qualified_name:
-        # Check same community
+    # Context community (single lookup)
+    ctx_community = None
+    if context_qname:
         ctx_row = conn.execute(
             "SELECT community_id FROM nodes WHERE qualified_name = ?",
             (context_qname,),
         ).fetchone()
-        if ctx_row and ctx_row[0] is not None and ctx_row[0] == community_id:
-            boost *= 1.2
+        if ctx_row:
+            ctx_community = ctx_row[0]
 
-        # Check direct caller/callee (1-hop)
-        direct = conn.execute(
-            "SELECT COUNT(*) FROM edges WHERE "
-            "(source_qname = ? AND target_qname = ?) OR "
-            "(source_qname = ? AND target_qname = ?)",
-            (context_qname, qualified_name, qualified_name, context_qname),
-        ).fetchone()[0]
-        if direct > 0:
-            boost *= 1.5
+    # Batch edge check for context proximity
+    direct_edges: set[str] = set()
+    if context_qname:
+        edge_rows = conn.execute(
+            f"SELECT source_qname, target_qname FROM edges WHERE "
+            f"(source_qname = ? AND target_qname IN ({placeholders})) OR "
+            f"(target_qname = ? AND source_qname IN ({placeholders}))",
+            [context_qname] + qualified_names + [context_qname] + qualified_names,
+        ).fetchall()
+        for erow in edge_rows:
+            direct_edges.add(erow[0])
+            direct_edges.add(erow[1])
 
-    # Risk boost (contextual)
-    if search_context in ("review", "security", "impact"):
-        boost *= 1.0 + (risk_score * 0.5)
+    # Compute boosts
+    boosts: dict[str, float] = {}
+    for qname in qualified_names:
+        data = node_data.get(qname)
+        if data is None:
+            boosts[qname] = 1.0
+            continue
 
-    return boost
+        boost = 1.0
+
+        if data["is_test"]:
+            boost *= 0.7
+
+        boost *= 1.0 + (data["pagerank"] * 0.5)
+
+        if data["fan_in"] >= fan_in_threshold:
+            boost *= 1.25
+
+        if context_qname and context_qname != qname:
+            if ctx_community is not None and data["community_id"] == ctx_community:
+                boost *= 1.2
+            if qname in direct_edges:
+                boost *= 1.5
+
+        if search_context in ("review", "security", "impact"):
+            boost *= 1.0 + (data["risk_score"] * 0.5)
+
+        boosts[qname] = boost
+
+    return boosts
