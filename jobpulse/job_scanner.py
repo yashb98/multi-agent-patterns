@@ -24,7 +24,6 @@ from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR, REED_API_KEY
 from jobpulse.models.application_models import SearchConfig
-# managed_persistent_browser removed — Indeed scanning now via Chrome extension
 from jobpulse.verification_detector import detect_verification_wall, simulate_human_interaction
 from jobpulse.scan_learning import ScanLearningEngine
 

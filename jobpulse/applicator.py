@@ -67,9 +67,9 @@ def select_adapter(ats_platform: str | None) -> BaseATSAdapter:
 
 
 def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
-    """Call adapter.fill_and_submit(), handling the async ExtensionAdapter.
+    """Call adapter.fill_and_submit(), handling async adapters.
 
-    ExtensionAdapter.fill_and_submit() is async — we dispatch the coroutine
+    ExtensionAdapter.fill_and_submit() is async. We dispatch the coroutine
     to the bridge's event loop (running on a background thread) so WebSocket
     calls stay on the correct loop.
     """

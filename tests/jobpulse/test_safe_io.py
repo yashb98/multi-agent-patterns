@@ -16,10 +16,6 @@ os.environ.setdefault("JOBPULSE_TEST_MODE", "1")
 import jobpulse.utils.safe_io as _safe_io_module  # noqa: E402, F401
 
 
-# managed_browser / managed_persistent_browser tests removed —
-# Playwright functions deleted in extension-only migration.
-
-
 # ---------------------------------------------------------------------------
 # Tests for safe_openai_call
 # ---------------------------------------------------------------------------

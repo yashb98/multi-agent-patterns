@@ -59,7 +59,7 @@ def safe_openai_call(
 
 
 # ---------------------------------------------------------------------------
-# 3. locked_json_file — atomic read-modify-write with file locking
+# 2. locked_json_file — atomic read-modify-write with file locking
 # ---------------------------------------------------------------------------
 
 
@@ -103,7 +103,7 @@ def locked_json_file(
 
 
 # ---------------------------------------------------------------------------
-# 4. atomic_sqlite — exclusive transaction with auto-commit/rollback
+# 3. atomic_sqlite — exclusive transaction with auto-commit/rollback
 # ---------------------------------------------------------------------------
 
 

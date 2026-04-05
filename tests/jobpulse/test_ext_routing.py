@@ -5,24 +5,18 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 
-def test_get_adapter_returns_extension_adapter():
-    """get_adapter() always returns ExtensionAdapter regardless of platform."""
-    with patch("jobpulse.ats_adapters._get_extension_adapter") as mock:
-        mock.return_value = MagicMock()
-        mock.return_value.name = "extension"
-        from jobpulse.ats_adapters import get_adapter
-        adapter = get_adapter("greenhouse")
-        assert adapter.name == "extension"
+def test_select_adapter_returns_extension():
+    """select_adapter returns ExtensionAdapter in extension-only mode."""
+    from jobpulse.applicator import select_adapter
+    from jobpulse.ext_adapter import ExtensionAdapter
+    from jobpulse.ats_adapters import get_adapter
 
-
-def test_get_adapter_works_without_platform():
-    """get_adapter(None) still returns ExtensionAdapter."""
-    with patch("jobpulse.ats_adapters._get_extension_adapter") as mock:
-        mock.return_value = MagicMock()
-        mock.return_value.name = "extension"
-        from jobpulse.ats_adapters import get_adapter
-        adapter = get_adapter(None)
-        assert adapter.name == "extension"
+    if hasattr(get_adapter, "_instance"):
+        del get_adapter._instance
+    adapter = select_adapter("greenhouse")
+    assert isinstance(adapter, ExtensionAdapter)
+    if hasattr(get_adapter, "_instance"):
+        del get_adapter._instance
 
 
 def test_config_application_engine_default():
