@@ -36,9 +36,8 @@ class TestGate0:
         from jobpulse.recruiter_screen import gate0_title_relevance
         assert gate0_title_relevance("Marketing Manager", "", search_config) is False
 
-    def test_exclude_keyword_in_jd_body_not_checked(self, search_config):
-        """JD body exclude keywords are no longer checked at Gate 0 — too aggressive.
-        Gate 1 (K1 seniority) handles 'X+ years' in JD body instead."""
+    def test_exclude_keyword_in_jd_body_passes(self, search_config):
+        """gate0 only checks title, not JD body — body keywords handled by Gate 1."""
         from jobpulse.recruiter_screen import gate0_title_relevance
         # "7+ years" in JD body should NOT kill at Gate 0 anymore
         assert gate0_title_relevance(
