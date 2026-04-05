@@ -1,208 +1,167 @@
-// extension/sidepanel.js — Dashboard control center
-//
-// Renders: phase status, scan controls, job queue, daily stats, rate limits.
-// Communicates with background.js via chrome.runtime.sendMessage.
+// extension/sidepanel.js — Control center UI
 
-import { DAILY_APPLY_LIMITS } from './config.js';
+import { PLATFORM_MAX_PHASE } from "./config.js";
 
-const PLATFORMS = ["linkedin", "reed", "indeed", "greenhouse", "lever", "workday"];
+// ─── State ────────────────────────────────────────────
 
-// ═══════════════════════════════════════════════════════════════
-// DOM references
-// ═══════════════════════════════════════════════════════════════
+let currentStatus = {};
 
-const $ = (id) => document.getElementById(id);
-const backendDot = $("backend-status");
-const wsStatus = $("ws-status");
-const phaseGrid = $("phase-grid");
-const scanControls = $("scan-controls");
-const jobList = $("job-list");
-const statsEl = $("stats");
-const limitsEl = $("limits");
+// ─── Init ─────────────────────────────────────────────
 
-// ═══════════════════════════════════════════════════════════════
-// Render functions
-// ═══════════════════════════════════════════════════════════════
+async function init() {
+  await refreshStatus();
+  await refreshQueue();
+  setInterval(refreshStatus, 30000); // refresh every 30s
+}
 
-function renderPhaseStatus(phases) {
-  if (!phases) { phaseGrid.innerHTML = '<div class="empty">Loading...</div>'; return; }
-  phaseGrid.innerHTML = PLATFORMS.map(p => {
-    const info = phases[p] || { current: "observation" };
-    const phase = info.current || "observation";
-    return `<div class="phase-badge">
-      <div class="platform">${p}</div>
-      <span class="phase ${phase}">${phase.replace("_", " ")}</span>
+// ─── Status ───────────────────────────────────────────
+
+async function refreshStatus() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "get_status" });
+    currentStatus = resp;
+    renderStats(resp.daily_stats);
+    renderPhases(resp.phases);
+    document.getElementById("queue-count").textContent = resp.queue_count;
+    document.getElementById("backend-status").textContent = "connected";
+    document.getElementById("backend-status").className = "badge badge-green";
+  } catch (e) {
+    document.getElementById("backend-status").textContent = "offline";
+    document.getElementById("backend-status").className = "badge badge-red";
+  }
+}
+
+function renderStats(daily) {
+  let scanned = 0, applied = 0;
+  for (const p of Object.values(daily || {})) {
+    scanned += p.scanned || 0;
+    applied += p.applied || 0;
+  }
+  document.getElementById("stat-scanned").textContent = scanned;
+  document.getElementById("stat-applied").textContent = applied;
+  // "passed" is queue count
+  document.getElementById("stat-passed").textContent = currentStatus.queue_count || 0;
+}
+
+function renderPhases(phases) {
+  const el = document.getElementById("phase-list");
+  const platforms = ["linkedin", "indeed", "reed", "greenhouse", "lever", "workday"];
+  el.innerHTML = platforms.map(p => {
+    const ps = phases?.[p] || {};
+    const phase = ps.current || "observation";
+    const max = PLATFORM_MAX_PHASE[p] || "supervised";
+    const badgeClass = {
+      observation: "badge-gray", dry_run: "badge-yellow",
+      supervised: "badge-blue", auto: "badge-green",
+    }[phase] || "badge-gray";
+    return `<div class="phase-row">
+      <span>${p}</span>
+      <span class="badge ${badgeClass}">${phase}</span>
+      <span style="font-size:10px;color:#999">max: ${max}</span>
     </div>`;
   }).join("");
 }
 
-function renderScanControls() {
-  scanControls.innerHTML = PLATFORMS.map(p =>
-    `<button class="scan-btn" data-platform="${p}">Scan ${p}</button>`
-  ).join("");
-  scanControls.querySelectorAll(".scan-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      btn.disabled = true;
-      btn.textContent = "Scanning...";
-      chrome.runtime.sendMessage({ type: "scan_now", platform: btn.dataset.platform }, (resp) => {
-        btn.disabled = false;
-        btn.textContent = `Scan ${btn.dataset.platform}`;
-        if (resp?.error) console.error("[JobPulse] Scan error:", resp.error);
-        refresh();
-      });
-    });
-  });
+// ─── Queue ────────────────────────────────────────────
+
+async function refreshQueue() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "get_queue", status: "pending" });
+    renderQueue(resp.jobs || []);
+  } catch (e) {
+    document.getElementById("queue-list").innerHTML = `<div class="empty">Error loading queue</div>`;
+  }
 }
 
-function renderJobQueue(jobs) {
-  if (!jobs || jobs.length === 0) {
-    jobList.innerHTML = '<div class="empty">No jobs in queue</div>';
+function renderQueue(jobs) {
+  const el = document.getElementById("queue-list");
+  if (!jobs.length) {
+    el.innerHTML = `<div class="empty">No jobs in queue</div>`;
     return;
   }
-  jobList.innerHTML = jobs.map(j => {
-    const score = j.gate_results?.score?.toFixed(0) || "--";
-    const tier = j.gate_results?.tier || "--";
-    const actions = getActionsForJob(j);
-    return `<div class="job-card" data-id="${j.id}">
-      <div class="title">${esc(j.title || "Untitled")}</div>
-      <div class="company">${esc(j.company || "Unknown")}</div>
-      <div class="meta">
-        <span class="platform-tag">${j.platform || "?"}</span>
-        <span class="score">Score: ${score}</span>
-        <span>${tier}</span>
-        <span>${j.apply_status || "pending"}</span>
+  el.innerHTML = jobs.slice(0, 50).map(j => `
+    <div class="job-card" data-id="${j.id}">
+      <div class="job-title">${escapeHtml(j.title)}</div>
+      <div class="job-meta">${escapeHtml(j.company)} · ${j.platform} · ATS: ${j.gate_results?.score || "?"}</div>
+      <div class="controls" style="margin-top:4px">
+        <button class="btn btn-success btn-sm btn-approve" data-id="${j.id}">Approve</button>
+        <button class="btn btn-danger btn-sm btn-reject" data-id="${j.id}">Reject</button>
       </div>
-      ${actions ? `<div class="actions">${actions}</div>` : ""}
-    </div>`;
-  }).join("");
+    </div>
+  `).join("");
 
-  // Wire action buttons
-  jobList.querySelectorAll("[data-action]").forEach(btn => {
-    btn.addEventListener("click", () => handleJobAction(btn.dataset.action, parseInt(btn.dataset.jobId)));
+  // Bind approve/reject buttons
+  el.querySelectorAll(".btn-approve").forEach(btn => {
+    btn.addEventListener("click", () => approveJob(btn.dataset.id));
+  });
+  el.querySelectorAll(".btn-reject").forEach(btn => {
+    btn.addEventListener("click", () => rejectJob(btn.dataset.id));
   });
 }
 
-function getActionsForJob(job) {
-  const id = job.id;
-  switch (job.apply_status) {
-    case "pending":
-    case "ready":
-      return `<button class="btn-approve" data-action="approve" data-job-id="${id}">Approve</button>
-              <button class="btn-reject" data-action="reject" data-job-id="${id}">Reject</button>`;
-    case "observing":
-      return `<button class="btn-review" data-action="review" data-job-id="${id}">Review Mapping</button>`;
-    case "dry_ran":
-      return `<button class="btn-review" data-action="review" data-job-id="${id}">View Results</button>`;
-    default:
-      return "";
-  }
+async function approveJob(id) {
+  // TODO: wire to apply phase based on current platform phase
+  console.log("Approve:", id);
+  await refreshQueue();
 }
 
-function renderStats(stats) {
-  if (!stats) {
-    statsEl.innerHTML = ["Scanned", "Passed", "Applied", "Errors"].map(l =>
-      `<div class="stat-box"><div class="value">0</div><div class="label">${l}</div></div>`
-    ).join("");
-    return;
-  }
-  const items = [
-    { value: stats.total || 0, label: "Scanned" },
-    { value: stats.by_status?.ready || 0, label: "Passed" },
-    { value: stats.by_status?.applied || 0, label: "Applied" },
-    { value: stats.by_status?.error || 0, label: "Errors" },
-  ];
-  statsEl.innerHTML = items.map(i =>
-    `<div class="stat-box"><div class="value">${i.value}</div><div class="label">${i.label}</div></div>`
-  ).join("");
+async function rejectJob(id) {
+  // TODO: update job status to rejected
+  console.log("Reject:", id);
+  await refreshQueue();
 }
 
-function renderDailyLimits(stats) {
-  limitsEl.innerHTML = PLATFORMS.map(p => {
-    const max = DAILY_APPLY_LIMITS[p] || 5;
-    const applied = stats?.by_platform?.[p]?.applied || 0;
-    const pct = Math.min((applied / max) * 100, 100);
-    const cls = pct > 80 ? "high" : pct > 50 ? "mid" : "low";
-    return `<div class="limit-bar">
-      <div class="bar-label"><span>${p}</span><span>${applied}/${max}</span></div>
-      <div class="bar"><div class="fill ${cls}" style="width:${pct}%"></div></div>
-    </div>`;
-  }).join("");
-}
+// ─── Scan Controls ────────────────────────────────────
 
-// ═══════════════════════════════════════════════════════════════
-// Actions
-// ═══════════════════════════════════════════════════════════════
+document.getElementById("btn-scan-all").addEventListener("click", async () => {
+  const platform = document.getElementById("scan-platform").value;
+  const statusEl = document.getElementById("scan-status");
+  statusEl.textContent = `Scanning ${platform}...`;
+  document.getElementById("btn-scan-all").disabled = true;
 
-function handleJobAction(action, jobId) {
-  if (action === "approve") {
-    chrome.runtime.sendMessage({ type: "approve_job", jobId }, () => refresh());
-  } else if (action === "reject") {
-    chrome.runtime.sendMessage({ type: "reject_job", jobId }, () => refresh());
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Data loading
-// ═══════════════════════════════════════════════════════════════
-
-async function refresh() {
-  // Backend health
-  chrome.runtime.sendMessage({ type: "status" }, (resp) => {
-    if (resp?.state === "connected") {
-      backendDot.className = "status-dot online";
-      wsStatus.textContent = "Connected";
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "scan_now", platform });
+    if (resp.success) {
+      const results = Array.isArray(resp.result) ? resp.result : [resp.result];
+      const total = results.reduce((s, r) => s + (r.scanned || 0), 0);
+      const passed = results.reduce((s, r) => s + (r.passed || 0), 0);
+      statusEl.textContent = `Done: ${total} scanned, ${passed} passed gates`;
     } else {
-      backendDot.className = "status-dot offline";
-      wsStatus.textContent = resp?.state || "Offline";
+      statusEl.textContent = `Error: ${resp.error}`;
     }
-  });
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+  }
 
-  // Phase status
-  chrome.runtime.sendMessage({ type: "get_phases" }, (resp) => {
-    renderPhaseStatus(resp?.phases);
-  });
+  document.getElementById("btn-scan-all").disabled = false;
+  await refreshStatus();
+  await refreshQueue();
+});
 
-  // Job stats
-  chrome.runtime.sendMessage({ type: "get_job_stats" }, (resp) => {
-    renderStats(resp?.stats);
-    renderDailyLimits(resp?.stats);
-  });
-
-  // Job queue — load from IndexedDB via background
-  // For now render stats-based view; full queue needs direct IndexedDB access
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════
-
-function esc(str) {
-  const d = document.createElement("div");
-  d.textContent = str || "";
-  return d.innerHTML;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Listen for live updates from background
-// ═══════════════════════════════════════════════════════════════
+// ─── Live Updates ─────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "status") {
-    const connected = msg.state === "connected";
-    backendDot.className = `status-dot ${connected ? "online" : "offline"}`;
-    wsStatus.textContent = msg.state;
+  if (msg.type === "scan_complete") {
+    refreshStatus();
+    refreshQueue();
   }
-  if (msg.type === "scan_complete" || msg.type === "job_applied") {
-    refresh();
+  if (msg.type === "phase_change") {
+    refreshStatus();
+  }
+  if (msg.type === "job_applied") {
+    refreshStatus();
+    refreshQueue();
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
-// Init
-// ═══════════════════════════════════════════════════════════════
+// ─── Helpers ──────────────────────────────────────────
 
-document.addEventListener("DOMContentLoaded", () => {
-  renderScanControls();
-  refresh();
-  setInterval(refresh, 10000); // Refresh every 10s
-});
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str || "";
+  return div.innerHTML;
+}
+
+// ─── Start ────────────────────────────────────────────
+
+init();
