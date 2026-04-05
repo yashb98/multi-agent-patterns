@@ -264,9 +264,22 @@ class CodeIntelligence:
 
         self.conn.commit()
 
+        # Resolve call edges (bare names → qualified names)
+        self._graph._resolve_call_edges()
+        self.conn.commit()
+
         node_count = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
         edge_count = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-        logger.info("Indexed %d Python files → %d nodes, %d edges", len(py_files), node_count, edge_count)
+        resolved = self.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE kind='calls' AND target_qname LIKE '%::%'"
+        ).fetchone()[0]
+        total_calls = self.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE kind='calls'"
+        ).fetchone()[0]
+        logger.info(
+            "Indexed %d Python files → %d nodes, %d edges (%d/%d call edges resolved)",
+            len(py_files), node_count, edge_count, resolved, total_calls,
+        )
 
     def _index_text_files(self, root_path: Path) -> None:
         """Walk all files under root_path, index non-Python text files as document nodes."""
@@ -599,6 +612,9 @@ class CodeIntelligence:
         if abs_path.suffix == ".py":
             try:
                 self._graph._index_file(abs_path, root_path, prefix="")
+                self.conn.commit()
+                # Resolve new call edges (bare names → qualified names)
+                self._graph._resolve_call_edges()
                 self.conn.commit()
             except Exception as exc:
                 logger.warning("reindex_file AST parse failed for %s: %s", rel_path, exc)
