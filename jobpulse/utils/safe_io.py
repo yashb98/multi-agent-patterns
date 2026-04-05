@@ -1,4 +1,4 @@
-"""Shared I/O utilities — browser lifecycle, OpenAI calls, file locking, SQLite atomicity."""
+"""Shared I/O utilities — OpenAI calls, file locking, SQLite atomicity."""
 
 from __future__ import annotations
 
@@ -15,73 +15,7 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# 1. managed_browser — guaranteed browser cleanup
-# ---------------------------------------------------------------------------
-
-def _import_playwright() -> Any:
-    """Lazy import to avoid hard dependency."""
-    from playwright.sync_api import sync_playwright  # type: ignore[import]
-    return sync_playwright
-
-
-@contextlib.contextmanager
-def managed_browser(
-    headless: bool = True,
-    **launch_args: Any,
-) -> Generator[tuple[Any, Any], None, None]:
-    """Context manager that guarantees browser.close() even on exception.
-
-    Yields (browser, page) tuple.
-    """
-    sync_playwright = _import_playwright()
-    browser = None
-    with sync_playwright() as pw:
-        try:
-            browser = pw.chromium.launch(headless=headless, **launch_args)
-            page = browser.new_page()
-            yield browser, page
-        finally:
-            if browser:
-                with contextlib.suppress(Exception):
-                    browser.close()
-                logger.debug("managed_browser: browser closed")
-
-
-@contextlib.contextmanager
-def managed_persistent_browser(
-    user_data_dir: str,
-    **launch_args: Any,
-) -> Generator[tuple[Any, Any], None, None]:
-    """Context manager for persistent browser contexts (e.g. LinkedIn with saved cookies).
-
-    Yields (context, page) — context IS the browser for persistent contexts.
-
-    If a storage_state JSON file exists alongside the user_data_dir
-    (at ``<parent>/linkedin_storage.json``), cookies from it are injected
-    after launch so that sessions survive across process restarts.
-    """
-    sync_playwright = _import_playwright()
-    context = None
-    with sync_playwright() as pw:
-        try:
-            context = pw.chromium.launch_persistent_context(user_data_dir, **launch_args)
-            # Re-use the default page if one exists; otherwise create one
-            page = context.pages[0] if context.pages else context.new_page()
-            yield context, page
-        finally:
-            if context:
-                with contextlib.suppress(Exception):
-                    # Save storage state before closing so next launch has fresh cookies
-                    storage_out = str(Path(user_data_dir).parent / "linkedin_storage.json")
-                    context.storage_state(path=storage_out)
-                    logger.debug("managed_persistent_browser: storage state saved to %s", storage_out)
-                with contextlib.suppress(Exception):
-                    context.close()
-                logger.debug("managed_persistent_browser: context closed")
-
-
-# ---------------------------------------------------------------------------
-# 2. safe_openai_call — timeout + None-safe wrapper
+# 1. safe_openai_call — timeout + None-safe wrapper
 # ---------------------------------------------------------------------------
 
 
@@ -125,7 +59,7 @@ def safe_openai_call(
 
 
 # ---------------------------------------------------------------------------
-# 3. locked_json_file — atomic read-modify-write with file locking
+# 2. locked_json_file — atomic read-modify-write with file locking
 # ---------------------------------------------------------------------------
 
 
@@ -169,7 +103,7 @@ def locked_json_file(
 
 
 # ---------------------------------------------------------------------------
-# 4. atomic_sqlite — exclusive transaction with auto-commit/rollback
+# 3. atomic_sqlite — exclusive transaction with auto-commit/rollback
 # ---------------------------------------------------------------------------
 
 

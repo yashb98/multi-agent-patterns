@@ -24,7 +24,6 @@ from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR, REED_API_KEY
 from jobpulse.models.application_models import SearchConfig
-from jobpulse.utils.safe_io import managed_persistent_browser
 from jobpulse.verification_detector import detect_verification_wall, simulate_human_interaction
 from jobpulse.scan_learning import ScanLearningEngine
 
@@ -355,20 +354,15 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
 
 
 def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
-    """Indeed.co.uk job search via Playwright (public search, no login required).
+    """Indeed.co.uk job search — stub pending extension-based scanner.
 
-    Scrapes job cards from uk.indeed.com and clicks into each to extract the
-    full job description text.  Integrates verification wall detection and
-    adaptive scan parameters via ScanLearningEngine.
+    Playwright-based scanning has been removed. This function returns an
+    empty list until the extension-based scanner (Task 9) is implemented.
     """
-    try:
-        from playwright.sync_api import sync_playwright as _  # noqa: F401
-    except ImportError:
-        logger.warning(
-            "scan_indeed: playwright not installed. "
-            "Install with: pip install playwright && playwright install chromium"
-        )
-        return []
+    logger.info("scan_indeed: Playwright scanning removed — extension scanner pending")
+    return []
+
+    # ---------- dead code below preserved for reference during migration ----------
 
     # --- Adaptive pre-scan gate ---
     engine = ScanLearningEngine()
@@ -788,35 +782,12 @@ def scan_totaljobs(config: SearchConfig) -> list[dict[str, Any]]:
 
 
 def scan_glassdoor(config: SearchConfig) -> list[dict[str, Any]]:
-    """Glassdoor job search via Playwright — stub pending session setup.
+    """Glassdoor job search — stub pending extension-based scanner.
 
-    Returns an empty list if no session or Playwright is unavailable.
+    Playwright-based scanning has been removed. Returns an empty list
+    until the extension-based scanner is implemented.
     """
-    try:
-        from playwright.sync_api import sync_playwright  # noqa: F401  # type: ignore[import]
-    except ImportError:
-        logger.warning(
-            "scan_glassdoor: playwright not installed. "
-            "Install with: pip install playwright && playwright install chromium"
-        )
-        return []
-
-    glassdoor_session = DATA_DIR / "glassdoor_session"
-    if not glassdoor_session.exists():
-        logger.warning(
-            "scan_glassdoor: no saved session at %s — returning []. "
-            "Run: playwright codegen --save-storage=%s https://www.glassdoor.co.uk",
-            glassdoor_session,
-            glassdoor_session,
-        )
-        return []
-
-    # Session exists — stub the actual scraping logic
-    for title in config.titles:
-        logger.info("scan_glassdoor: [stub] would scrape '%s' via Playwright", title)
-        _anti_detection_sleep()
-
-    logger.warning("scan_glassdoor: stub — returning []. Full scraper not yet implemented.")
+    logger.info("scan_glassdoor: Playwright scanning removed — extension scanner pending")
     return []
 
 

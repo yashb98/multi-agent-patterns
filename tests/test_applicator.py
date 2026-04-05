@@ -20,11 +20,17 @@ def test_classify_tier_skip():
 
 
 def test_select_adapter():
-    assert select_adapter("greenhouse").name == "greenhouse"
-    assert select_adapter("lever").name == "lever"
-    assert select_adapter("workday").name == "workday"
-    assert select_adapter(None).name == "generic"
-    assert select_adapter("unknown_ats").name == "generic"
+    """All platforms route through ExtensionAdapter in extension-only mode."""
+    from jobpulse.ext_adapter import ExtensionAdapter
+    from jobpulse.ats_adapters import get_adapter
+
+    if hasattr(get_adapter, "_instance"):
+        del get_adapter._instance
+    for platform in ["greenhouse", "lever", "workday", None, "unknown_ats"]:
+        adapter = select_adapter(platform)
+        assert isinstance(adapter, ExtensionAdapter), f"Expected ExtensionAdapter for {platform}"
+    if hasattr(get_adapter, "_instance"):
+        del get_adapter._instance
 
 
 def test_work_auth_answers():

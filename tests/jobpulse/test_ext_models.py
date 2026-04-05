@@ -131,4 +131,4 @@ def test_config_extension_vars():
     assert hasattr(config, "APPLICATION_ENGINE")
     assert config.EXT_BRIDGE_HOST == "localhost"
     assert config.EXT_BRIDGE_PORT == 8765
-    assert config.APPLICATION_ENGINE in ("extension", "playwright")
+    assert config.APPLICATION_ENGINE == "extension"
