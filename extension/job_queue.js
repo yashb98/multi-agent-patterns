@@ -1,539 +1,190 @@
-/**
- * Job Queue Module - IndexedDB CRUD for job automation
- * Manages persistent storage of jobs, patterns, checkpoints, and metrics
- * Database: jobpulse_db v1
- */
+// extension/job_queue.js — IndexedDB CRUD for job queue
 
-const DB_NAME = 'jobpulse_db';
+const DB_NAME = "jobpulse";
 const DB_VERSION = 1;
+const STORE_JOBS = "jobs";
+const STORE_PATTERNS = "ralph_patterns";
+const STORE_CHECKPOINTS = "scan_checkpoints";
 
-// Object store configurations
-const STORES = {
-  job_queue: {
-    keyPath: 'id',
-    autoIncrement: true,
-    indexes: [
-      { name: 'url', keyPath: 'url', unique: true },
-      { name: 'platform', keyPath: 'platform', unique: false },
-      { name: 'apply_status', keyPath: 'apply_status', unique: false },
-      { name: 'scraped_at', keyPath: 'scraped_at', unique: false },
-    ],
-  },
-  ralph_patterns: {
-    keyPath: 'id',
-    autoIncrement: true,
-    indexes: [
-      { name: 'platform', keyPath: 'platform', unique: false },
-      { name: 'fix_type', keyPath: 'fix_type', unique: false },
-    ],
-  },
-  scan_checkpoints: {
-    keyPath: 'platform',
-    autoIncrement: false,
-  },
-  psi_history: {
-    keyPath: 'id',
-    autoIncrement: true,
-    indexes: [
-      { name: 'platform', keyPath: 'platform', unique: false },
-      { name: 'week', keyPath: 'week', unique: false },
-    ],
-  },
-};
-
-let dbInstance = null;
-
-/**
- * Initialize IndexedDB and create object stores if needed
- * @returns {Promise<IDBDatabase>} Open database instance
- */
-export async function initDB() {
+function openDB() {
   return new Promise((resolve, reject) => {
-    // Return cached instance if already open
-    if (dbInstance) {
-      resolve(dbInstance);
-      return;
-    }
-
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onerror = () => {
-      console.error('IndexedDB open failed:', request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      dbInstance = request.result;
-      resolve(dbInstance);
-    };
-
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-
-      // Create object stores
-      Object.entries(STORES).forEach(([storeName, config]) => {
-        if (!db.objectStoreNames.contains(storeName)) {
-          const store = db.createObjectStore(storeName, {
-            keyPath: config.keyPath,
-            autoIncrement: config.autoIncrement,
-          });
-
-          // Create indexes
-          if (config.indexes) {
-            config.indexes.forEach((indexConfig) => {
-              store.createIndex(
-                indexConfig.name,
-                indexConfig.keyPath,
-                { unique: indexConfig.unique || false }
-              );
-            });
-          }
-        }
-      });
-
-      console.log('IndexedDB initialized:', DB_NAME);
-    };
-  });
-}
-
-/**
- * Add a new job to the queue, deduplicating by URL
- * @param {Object} job - Job object with url, title, company, platform, etc.
- * @returns {Promise<number>} Job ID (auto-incremented)
- */
-export async function addJob(job) {
-  const db = await initDB();
-
-  // Check for duplicate URL
-  const exists = await getJobByUrl(job.url);
-  if (exists) {
-    console.warn(`Job with URL already exists: ${job.url}`);
-    return exists.id;
-  }
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readwrite');
-    const store = transaction.objectStore('job_queue');
-
-    // Ensure required fields
-    const jobData = {
-      scraped_at: job.scraped_at || Date.now(),
-      apply_status: job.apply_status || 'pending',
-      ...job,
-    };
-
-    const request = store.add(jobData);
-
-    request.onerror = () => {
-      console.error('Failed to add job:', request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      const jobId = request.result;
-      console.log(`Job added with ID: ${jobId}`);
-      resolve(jobId);
-    };
-  });
-}
-
-/**
- * Get a single job by ID
- * @param {number} id - Job ID
- * @returns {Promise<Object|null>} Job object or null if not found
- */
-export async function getJob(id) {
-  const db = await initDB();
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readonly');
-    const store = transaction.objectStore('job_queue');
-    const request = store.get(id);
-
-    request.onerror = () => {
-      console.error(`Failed to get job ${id}:`, request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      resolve(request.result || null);
-    };
-  });
-}
-
-/**
- * Get a job by URL (unique index lookup)
- * @param {string} url - Job URL
- * @returns {Promise<Object|null>} Job object or null if not found
- */
-export async function getJobByUrl(url) {
-  const db = await initDB();
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readonly');
-    const store = transaction.objectStore('job_queue');
-    const index = store.index('url');
-    const request = index.get(url);
-
-    request.onerror = () => {
-      console.error(`Failed to get job by URL ${url}:`, request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      resolve(request.result || null);
-    };
-  });
-}
-
-/**
- * Update a job with partial updates
- * @param {number} id - Job ID
- * @param {Object} updates - Fields to update
- * @returns {Promise<void>}
- */
-export async function updateJob(id, updates) {
-  const db = await initDB();
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readwrite');
-    const store = transaction.objectStore('job_queue');
-    const getRequest = store.get(id);
-
-    getRequest.onerror = () => {
-      console.error(`Failed to update job ${id}:`, getRequest.error);
-      reject(getRequest.error);
-    };
-
-    getRequest.onsuccess = () => {
-      const job = getRequest.result;
-      if (!job) {
-        reject(new Error(`Job ${id} not found`));
-        return;
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_JOBS)) {
+        const store = db.createObjectStore(STORE_JOBS, { keyPath: "id" });
+        store.createIndex("platform", "platform", { unique: false });
+        store.createIndex("apply_status", "apply_status", { unique: false });
+        store.createIndex("scraped_at", "scraped_at", { unique: false });
       }
-
-      const updatedJob = { ...job, ...updates };
-      const putRequest = store.put(updatedJob);
-
-      putRequest.onerror = () => {
-        console.error(`Failed to save updated job ${id}:`, putRequest.error);
-        reject(putRequest.error);
-      };
-
-      putRequest.onsuccess = () => {
-        console.log(`Job ${id} updated`);
-        resolve();
-      };
+      if (!db.objectStoreNames.contains(STORE_PATTERNS)) {
+        db.createObjectStore(STORE_PATTERNS, { keyPath: "id", autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains(STORE_CHECKPOINTS)) {
+        db.createObjectStore(STORE_CHECKPOINTS, { keyPath: "platform" });
+      }
     };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
 }
 
-/**
- * Get all jobs with a specific apply_status
- * @param {string} status - apply_status value (pending, ready, applied, etc.)
- * @returns {Promise<Array>} Array of matching jobs
- */
+// ─── Job CRUD ─────────────────────────────────────────
+
+export async function addJob(job) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_JOBS, "readwrite");
+    tx.objectStore(STORE_JOBS).put(job);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+export async function getJob(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_JOBS, "readonly");
+    const req = tx.objectStore(STORE_JOBS).get(id);
+    req.onsuccess = () => { db.close(); resolve(req.result); };
+    req.onerror = () => { db.close(); reject(req.error); };
+  });
+}
+
+export async function updateJob(id, updates) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_JOBS, "readwrite");
+    const store = tx.objectStore(STORE_JOBS);
+    const req = store.get(id);
+    req.onsuccess = () => {
+      const job = req.result;
+      if (!job) { db.close(); reject(new Error(`Job ${id} not found`)); return; }
+      Object.assign(job, updates);
+      store.put(job);
+    };
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
 export async function getJobsByStatus(status) {
-  const db = await initDB();
-
+  const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readonly');
-    const store = transaction.objectStore('job_queue');
-    const index = store.index('apply_status');
-    const request = index.getAll(status);
-
-    request.onerror = () => {
-      console.error(`Failed to get jobs with status ${status}:`, request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      resolve(request.result || []);
-    };
+    const tx = db.transaction(STORE_JOBS, "readonly");
+    const idx = tx.objectStore(STORE_JOBS).index("apply_status");
+    const req = idx.getAll(status);
+    req.onsuccess = () => { db.close(); resolve(req.result); };
+    req.onerror = () => { db.close(); reject(req.error); };
   });
 }
 
-/**
- * Get all jobs for a specific platform
- * @param {string} platform - Platform name (linkedin, indeed, greenhouse, etc.)
- * @returns {Promise<Array>} Array of matching jobs
- */
 export async function getJobsByPlatform(platform) {
-  const db = await initDB();
-
+  const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readonly');
-    const store = transaction.objectStore('job_queue');
-    const index = store.index('platform');
-    const request = index.getAll(platform);
-
-    request.onerror = () => {
-      console.error(`Failed to get jobs for platform ${platform}:`, request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      resolve(request.result || []);
-    };
+    const tx = db.transaction(STORE_JOBS, "readonly");
+    const idx = tx.objectStore(STORE_JOBS).index("platform");
+    const req = idx.getAll(platform);
+    req.onsuccess = () => { db.close(); resolve(req.result); };
+    req.onerror = () => { db.close(); reject(req.error); };
   });
 }
 
-/**
- * Get all pending jobs (apply_status "pending" or "ready")
- * @returns {Promise<Array>} Array of pending jobs
- */
-export async function getPendingJobs() {
-  const db = await initDB();
-
+export async function getAllJobs() {
+  const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readonly');
-    const store = transaction.objectStore('job_queue');
-    const allRequest = store.getAll();
-
-    allRequest.onerror = () => {
-      console.error('Failed to get pending jobs:', allRequest.error);
-      reject(allRequest.error);
-    };
-
-    allRequest.onsuccess = () => {
-      const jobs = allRequest.result || [];
-      const pending = jobs.filter(
-        (job) => job.apply_status === 'pending' || job.apply_status === 'ready'
-      );
-      resolve(pending);
-    };
+    const tx = db.transaction(STORE_JOBS, "readonly");
+    const req = tx.objectStore(STORE_JOBS).getAll();
+    req.onsuccess = () => { db.close(); resolve(req.result); };
+    req.onerror = () => { db.close(); reject(req.error); };
   });
 }
 
-/**
- * Get all approved jobs (apply_status "approved")
- * @returns {Promise<Array>} Array of approved jobs
- */
-export async function getApprovedJobs() {
-  const db = await initDB();
-
+export async function deleteJob(id) {
+  const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readonly');
-    const store = transaction.objectStore('job_queue');
-    const allRequest = store.getAll();
-
-    allRequest.onerror = () => {
-      console.error('Failed to get approved jobs:', allRequest.error);
-      reject(allRequest.error);
-    };
-
-    allRequest.onsuccess = () => {
-      const jobs = allRequest.result || [];
-      const approved = jobs.filter((job) => job.apply_status === 'approved');
-      resolve(approved);
-    };
+    const tx = db.transaction(STORE_JOBS, "readwrite");
+    tx.objectStore(STORE_JOBS).delete(id);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
-/**
- * Mark a job as applied
- * @param {number} id - Job ID
- * @returns {Promise<void>}
- */
-export async function markApplied(id) {
-  return updateJob(id, {
-    apply_status: 'applied',
-    applied_at: Date.now(),
+// ─── Deduplication ────────────────────────────────────
+
+export async function isDuplicate(url, company, title) {
+  const id = await makeJobId(url);
+  const existing = await getJob(id);
+  if (existing) return true;
+
+  // Also check company+title combo for cross-platform dedup
+  const all = await getAllJobs();
+  const normalTitle = title.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  const normalCompany = company.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  return all.some(j => {
+    const jTitle = j.title.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    const jCompany = j.company.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    return jTitle === normalTitle && jCompany === normalCompany;
   });
 }
 
-/**
- * Mark a job as error and store error message
- * @param {number} id - Job ID
- * @param {string|Error} error - Error message or Error object
- * @returns {Promise<void>}
- */
-export async function markError(id, error) {
-  const errorMessage = error instanceof Error ? error.message : String(error);
-  return updateJob(id, {
-    apply_status: 'error',
-    error: errorMessage,
-    error_at: Date.now(),
-  });
+// ─── Helpers ──────────────────────────────────────────
+
+export async function makeJobId(url) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(url.toLowerCase().replace(/\/$/, ""));
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * Delete jobs older than specified days
- * @param {number} daysOld - Number of days in the past
- * @returns {Promise<number>} Count of deleted jobs
- */
-export async function cleanupOldJobs(daysOld) {
-  const db = await initDB();
-  const cutoffTime = Date.now() - daysOld * 24 * 60 * 60 * 1000;
+export function createJobEntry(raw) {
+  return {
+    id: raw.id,
+    url: raw.url,
+    title: raw.title,
+    company: raw.company,
+    platform: raw.platform,
+    jd_text: raw.jd_text || "",
+    scraped_at: new Date().toISOString(),
+    gate_results: raw.gate_results || null,
+    phase: raw.phase || "observation",
+    apply_status: raw.apply_status || "pending",
+    field_mapping: null,
+    dry_run_result: null,
+    applied_at: null,
+    screenshots: [],
+    error_log: [],
+  };
+}
 
+// ─── Scan Checkpoints ─────────────────────────────────
+
+export async function saveCheckpoint(platform, data) {
+  const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readwrite');
-    const store = transaction.objectStore('job_queue');
-    const allRequest = store.getAll();
-
-    allRequest.onerror = () => {
-      console.error('Failed to cleanup old jobs:', allRequest.error);
-      reject(allRequest.error);
-    };
-
-    allRequest.onsuccess = () => {
-      const jobs = allRequest.result || [];
-      let deletedCount = 0;
-
-      jobs.forEach((job) => {
-        if (job.scraped_at < cutoffTime) {
-          const deleteRequest = store.delete(job.id);
-          deleteRequest.onerror = () => {
-            console.error(`Failed to delete job ${job.id}:`, deleteRequest.error);
-          };
-          deleteRequest.onsuccess = () => {
-            deletedCount++;
-          };
-        }
-      });
-
-      transaction.oncomplete = () => {
-        console.log(`Cleaned up ${deletedCount} jobs older than ${daysOld} days`);
-        resolve(deletedCount);
-      };
-
-      transaction.onerror = () => {
-        console.error('Cleanup transaction failed:', transaction.error);
-        reject(transaction.error);
-      };
-    };
+    const tx = db.transaction(STORE_CHECKPOINTS, "readwrite");
+    tx.objectStore(STORE_CHECKPOINTS).put({ platform, ...data, saved_at: Date.now() });
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
-/**
- * Get total count of jobs in queue
- * @returns {Promise<number>} Total job count
- */
-export async function getJobCount() {
-  const db = await initDB();
-
+export async function getCheckpoint(platform) {
+  const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readonly');
-    const store = transaction.objectStore('job_queue');
-    const request = store.count();
-
-    request.onerror = () => {
-      console.error('Failed to get job count:', request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      resolve(request.result);
-    };
+    const tx = db.transaction(STORE_CHECKPOINTS, "readonly");
+    const req = tx.objectStore(STORE_CHECKPOINTS).get(platform);
+    req.onsuccess = () => { db.close(); resolve(req.result); };
+    req.onerror = () => { db.close(); reject(req.error); };
   });
 }
 
-/**
- * Get statistics on jobs: counts by status and platform
- * @returns {Promise<Object>} Stats object { statusCounts, platformCounts, total }
- */
-export async function getStats() {
-  const db = await initDB();
-
+export async function clearCheckpoint(platform) {
+  const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['job_queue'], 'readonly');
-    const store = transaction.objectStore('job_queue');
-    const allRequest = store.getAll();
-
-    allRequest.onerror = () => {
-      console.error('Failed to get stats:', allRequest.error);
-      reject(allRequest.error);
-    };
-
-    allRequest.onsuccess = () => {
-      const jobs = allRequest.result || [];
-      const statusCounts = {};
-      const platformCounts = {};
-
-      jobs.forEach((job) => {
-        // Count by status
-        statusCounts[job.apply_status] = (statusCounts[job.apply_status] || 0) + 1;
-        // Count by platform
-        platformCounts[job.platform] = (platformCounts[job.platform] || 0) + 1;
-      });
-
-      resolve({
-        total: jobs.length,
-        statusCounts,
-        platformCounts,
-      });
-    };
+    const tx = db.transaction(STORE_CHECKPOINTS, "readwrite");
+    tx.objectStore(STORE_CHECKPOINTS).delete(platform);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
-}
-
-/**
- * Save a scan checkpoint for resume capability
- * @param {string} platform - Platform name
- * @param {Object} checkpoint - Checkpoint data { lastUrl, lastPage, timestamp, state }
- * @returns {Promise<void>}
- */
-export async function saveScanCheckpoint(platform, checkpoint) {
-  const db = await initDB();
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['scan_checkpoints'], 'readwrite');
-    const store = transaction.objectStore('scan_checkpoints');
-
-    const data = {
-      platform,
-      ...checkpoint,
-      updated_at: Date.now(),
-    };
-
-    const request = store.put(data);
-
-    request.onerror = () => {
-      console.error(`Failed to save checkpoint for ${platform}:`, request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      console.log(`Checkpoint saved for ${platform}`);
-      resolve();
-    };
-  });
-}
-
-/**
- * Get a scan checkpoint for a platform
- * @param {string} platform - Platform name
- * @returns {Promise<Object|null>} Checkpoint data or null if not found
- */
-export async function getScanCheckpoint(platform) {
-  const db = await initDB();
-
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['scan_checkpoints'], 'readonly');
-    const store = transaction.objectStore('scan_checkpoints');
-    const request = store.get(platform);
-
-    request.onerror = () => {
-      console.error(`Failed to get checkpoint for ${platform}:`, request.error);
-      reject(request.error);
-    };
-
-    request.onsuccess = () => {
-      resolve(request.result || null);
-    };
-  });
-}
-
-/**
- * Check if a job URL already exists in the queue
- * @param {string} url - Job URL
- * @returns {Promise<boolean>} True if URL exists, false otherwise
- */
-export async function isDuplicate(url) {
-  try {
-    const job = await getJobByUrl(url);
-    return !!job;
-  } catch (error) {
-    console.error(`Error checking duplicate for ${url}:`, error);
-    return false;
-  }
 }
