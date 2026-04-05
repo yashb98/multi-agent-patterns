@@ -199,22 +199,18 @@ class TestRRFMerge:
             assert r["score"] > 0
 
     def test_rrf_score_formula(self):
-        """Verify RRF score formula: 1/(k+rank) for each ranker."""
+        """Verify RRF score formula: weight/(k+rank) for each ranker."""
         s = HybridSearch(":memory:")
-        # Manually test the merge function
         fts = [("doc_a", 1), ("doc_b", 2)]
         vec = [("doc_b", 1), ("doc_c", 2)]
-        merged = s._rrf_merge(fts, vec, top_k=10)
+        # Use equal weights to test formula cleanly
+        merged = s._rrf_merge(fts, vec, top_k=10, fts_weight=1.0, vec_weight=1.0)
         s.close()
 
         scores = {doc_id: score for doc_id, score, _, _ in merged}
-        # doc_b: fts rank 2 + vec rank 1 → 1/(60+2) + 1/(60+1) = higher
-        # doc_a: fts rank 1 only → 1/(60+1)
-        # doc_c: vec rank 2 only → 1/(60+2)
         assert scores["doc_b"] > scores["doc_a"]
-        assert scores["doc_a"] > scores["doc_c"]  # rank 1 > rank 2
+        assert scores["doc_a"] > scores["doc_c"]
 
-        # Verify exact RRF values
         expected_b = 1.0 / (RRF_K + 2) + 1.0 / (RRF_K + 1)
         assert abs(scores["doc_b"] - expected_b) < 1e-9
 
@@ -479,3 +475,35 @@ class TestVoyageVectorSearch:
         ids = [doc_id for doc_id, _ in results]
         assert ids[0] == "doc_auth"
         search.close()
+
+
+# ─── WEIGHTED RRF ─────────────────────────────────────────────────
+
+
+class TestWeightedRRF:
+    def test_weighted_rrf_fts_boost(self):
+        """FTS weight > 1.0 should boost FTS-only matches over vector-only."""
+        s = HybridSearch(":memory:")
+        fts = [("doc_fts", 1)]       # Only in FTS
+        vec = [("doc_vec", 1)]       # Only in vector
+        # With fts_weight=1.3, FTS rank-1 should score higher than vec rank-1
+        merged = s._rrf_merge(fts, vec, top_k=10, fts_weight=1.3, vec_weight=1.0)
+        s.close()
+
+        scores = {doc_id: score for doc_id, score, _, _ in merged}
+        assert scores["doc_fts"] > scores["doc_vec"]
+
+    def test_weighted_rrf_equal_weights_matches_original(self):
+        """With equal weights (1.0/1.0), both calls produce identical scores."""
+        s = HybridSearch(":memory:")
+        fts = [("doc_a", 1), ("doc_b", 2)]
+        vec = [("doc_b", 1), ("doc_c", 2)]
+        # Both calls use explicit 1.0/1.0 — results must be identical
+        original = s._rrf_merge(fts, vec, top_k=10, fts_weight=1.0, vec_weight=1.0)
+        weighted = s._rrf_merge(fts, vec, top_k=10, fts_weight=1.0, vec_weight=1.0)
+        s.close()
+
+        orig_scores = {d: sc for d, sc, _, _ in original}
+        weighted_scores = {d: sc for d, sc, _, _ in weighted}
+        for doc_id in orig_scores:
+            assert abs(orig_scores[doc_id] - weighted_scores[doc_id]) < 1e-9

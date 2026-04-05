@@ -42,6 +42,8 @@ class HybridSearch:
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA journal_mode=WAL")
         self._query_embedding_fn = None  # Set by CodeIntelligence to use Voyage
+        self.fts_weight = 1.3  # Exact identifiers matter more in code search
+        self.vec_weight = 1.0
         self._init_schema()
 
     def _init_schema(self):
@@ -106,7 +108,8 @@ class HybridSearch:
         vec_results = self._vector_search(query_text, limit=top_k * 3)
 
         # ── Merge via Reciprocal Rank Fusion ──
-        merged = self._rrf_merge(fts_results, vec_results, top_k)
+        merged = self._rrf_merge(fts_results, vec_results, top_k,
+                                  fts_weight=self.fts_weight, vec_weight=self.vec_weight)
 
         # Enrich with metadata
         results = []
@@ -218,10 +221,12 @@ class HybridSearch:
         fts_results: list[tuple],
         vec_results: list[tuple],
         top_k: int,
+        fts_weight: float = 1.0,
+        vec_weight: float = 1.0,
     ) -> list[tuple]:
-        """Reciprocal Rank Fusion: merge two ranked lists.
+        """Reciprocal Rank Fusion with per-signal weights.
 
-        RRF_score(d) = sum(1 / (k + rank_i)) for each ranker i
+        RRF_score(d) = sum(weight_i / (k + rank_i)) for each ranker i
 
         Returns: [(doc_id, rrf_score, fts_rank, vec_rank), ...]
         """
@@ -237,9 +242,9 @@ class HybridSearch:
 
             rrf_score = 0.0
             if fts_rank < 999:
-                rrf_score += 1.0 / (RRF_K + fts_rank)
+                rrf_score += fts_weight / (RRF_K + fts_rank)
             if vec_rank < 999:
-                rrf_score += 1.0 / (RRF_K + vec_rank)
+                rrf_score += vec_weight / (RRF_K + vec_rank)
 
             scored.append((doc_id, rrf_score, fts_rank, vec_rank))
 
