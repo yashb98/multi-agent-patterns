@@ -1,28 +1,38 @@
 # Rules: Job Autopilot (jobpulse/job_**/*)
 
 ## Daily Rate Limits (updated 2026-03-31)
-- LinkedIn: 15/day, scanning via guest API (httpx + BeautifulSoup, no browser), Playwright only for Easy Apply submission
+- LinkedIn: 15/day, scanning via guest API (httpx + BeautifulSoup, no browser), extension for Easy Apply submission
 - Greenhouse/Lever: 7/day, headed mode (not headless)
 - Indeed/Workday/Generic: 8/day, conservative — aggressive detection
 - Reed: 7/day, official API with 429 retry
 - Total: 30/day across all platforms
 
-## Application Engine Modes
-- `APPLICATION_ENGINE=playwright` (default) — Playwright browser automation, headed mode
-- `APPLICATION_ENGINE=extension` — Chrome MV3 extension via WebSocket bridge (ws://localhost:8765)
-- Extension mode: start bridge first (`python -m jobpulse.runner ext-bridge`), load `extension/` in Chrome
+## Browser Automation
+- All browser automation goes through the Chrome extension. No Playwright.
+- Extension uses real Chrome profile — no automation flags, no stealth patches needed
+- 4-phase trust system: Phase 1 (scan only) → Phase 2 (scan + save) → Phase 3 (scan + save + apply with approval) → Phase 4 (fully autonomous)
 - Extension adapter is a singleton — all platforms route through one ExtensionAdapter instance
 - `_call_fill_and_submit()` in applicator.py handles sync/async bridging (extension adapter is async)
 - Ralph Loop also uses `_call_fill_and_submit()` for retry iterations
 
 ## Anti-Detection
-- Playwright adapters: headed mode + --disable-blink-features=AutomationControlled
-- Extension mode: uses real Chrome profile — no automation flags, no stealth patches needed
+- All browser automation goes through the Chrome extension. No Playwright.
 - LinkedIn: human-like typing (50-150ms/char), persistent browser profile
 - Thread mutex on apply_job() — no concurrent applications
 - Pipeline lock on run_scan_window() — no cron vs Telegram races
 - Application recorded BEFORE submission (prevents silent limit bypass on error)
 - UTC timezone for daily cap tracking (prevents midnight drift)
+
+## 4-Phase Trust System
+- Phases: observation → dry_run → supervised → auto
+- observation: extension watches user apply, learns patterns (no actions taken)
+- dry_run: extension fills forms but does NOT submit (user reviews + submits manually)
+- supervised: extension fills and submits, but requires Telegram approval first
+- auto: fully autonomous fill + submit (within daily rate limits)
+- Auto-graduation thresholds: 20 successful observations, 15 dry runs, 10 approved submissions
+- Auto-demotion: any submission error or rejection demotes platform back one phase
+- Per-platform caps: LinkedIn and Indeed capped at supervised (never auto — detection risk too high)
+- Trust state stored per-platform in SQLite
 
 ## Pre-Generation Checklist (MANDATORY before every CV/Cover Letter)
 1. Run `sync_verified_to_profile()` — pull latest "I Know" skills from Notion Skill Tracker
