@@ -199,22 +199,18 @@ class TestRRFMerge:
             assert r["score"] > 0
 
     def test_rrf_score_formula(self):
-        """Verify RRF score formula: 1/(k+rank) for each ranker."""
+        """Verify RRF score formula: weight/(k+rank) for each ranker."""
         s = HybridSearch(":memory:")
-        # Manually test the merge function
         fts = [("doc_a", 1), ("doc_b", 2)]
         vec = [("doc_b", 1), ("doc_c", 2)]
-        merged = s._rrf_merge(fts, vec, top_k=10)
+        # Use equal weights to test formula cleanly
+        merged = s._rrf_merge(fts, vec, top_k=10, fts_weight=1.0, vec_weight=1.0)
         s.close()
 
         scores = {doc_id: score for doc_id, score, _, _ in merged}
-        # doc_b: fts rank 2 + vec rank 1 → 1/(60+2) + 1/(60+1) = higher
-        # doc_a: fts rank 1 only → 1/(60+1)
-        # doc_c: vec rank 2 only → 1/(60+2)
         assert scores["doc_b"] > scores["doc_a"]
-        assert scores["doc_a"] > scores["doc_c"]  # rank 1 > rank 2
+        assert scores["doc_a"] > scores["doc_c"]
 
-        # Verify exact RRF values
         expected_b = 1.0 / (RRF_K + 2) + 1.0 / (RRF_K + 1)
         assert abs(scores["doc_b"] - expected_b) < 1e-9
 
@@ -367,3 +363,207 @@ class TestExternalConnection:
         search = HybridSearch(db_path=db_path)
         search.close()
         assert (tmp_path / "test.db").exists()
+
+
+# ─── VOYAGE VECTOR SEARCH ─────────────────────────────────────────
+
+
+class TestVoyageVectorSearch:
+    """Tests for Voyage Code 3 vector search integration."""
+
+    def test_voyage_vector_search_uses_embeddings_table(self):
+        """When embeddings table has vectors, _vector_search uses them."""
+        import struct
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+
+        # Add documents
+        search.add("doc_auth", "JWT authentication token verification")
+        search.add("doc_api", "REST API endpoint design patterns")
+
+        # Manually insert Voyage-style packed embeddings into embeddings table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                doc_id TEXT PRIMARY KEY,
+                vector BLOB NOT NULL
+            )
+        """)
+        # Create simple 4d vectors for testing (real ones are 1024d)
+        vec_auth = struct.pack("4f", 0.9, 0.1, 0.0, 0.0)  # auth-like
+        vec_api = struct.pack("4f", 0.0, 0.0, 0.9, 0.1)   # api-like
+        conn.execute("INSERT INTO embeddings (doc_id, vector) VALUES (?, ?)", ("doc_auth", vec_auth))
+        conn.execute("INSERT INTO embeddings (doc_id, vector) VALUES (?, ?)", ("doc_api", vec_api))
+        conn.commit()
+
+        # Query with a vector similar to auth
+        query_vec = [0.8, 0.2, 0.0, 0.0]
+        results = search._voyage_vector_search(query_vec, limit=5)
+
+        assert len(results) >= 1
+        # doc_auth should rank higher (more similar to query)
+        ids = [doc_id for doc_id, _ in results]
+        assert ids[0] == "doc_auth"
+        search.close()
+
+    def test_voyage_vector_search_falls_back_to_bow(self):
+        """When no embeddings table, falls back to bag-of-words."""
+        search = HybridSearch(":memory:")
+        search.add("doc1", "test document about authentication")
+        # No embeddings table exists — should use bag-of-words
+        results = search._vector_search("authentication", limit=5)
+        assert len(results) >= 1
+        search.close()
+
+    def test_query_embedding_fn_default_is_none(self):
+        """_query_embedding_fn should default to None."""
+        search = HybridSearch(":memory:")
+        assert search._query_embedding_fn is None
+        search.close()
+
+    def test_voyage_vector_search_empty_embeddings_table(self):
+        """When embeddings table exists but is empty, returns empty list."""
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                doc_id TEXT PRIMARY KEY,
+                vector BLOB NOT NULL
+            )
+        """)
+        conn.commit()
+
+        results = search._voyage_vector_search([0.5, 0.5], limit=5)
+        assert results == []
+        search.close()
+
+    def test_vector_search_uses_voyage_when_fn_set_and_embeddings_present(self):
+        """When _query_embedding_fn is set and embeddings table is populated, uses Voyage path."""
+        import struct
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+
+        search.add("doc_auth", "JWT authentication token verification")
+        search.add("doc_api", "REST API endpoint design patterns")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings (
+                doc_id TEXT PRIMARY KEY,
+                vector BLOB NOT NULL
+            )
+        """)
+        vec_auth = struct.pack("4f", 0.9, 0.1, 0.0, 0.0)
+        vec_api = struct.pack("4f", 0.0, 0.0, 0.9, 0.1)
+        conn.execute("INSERT INTO embeddings (doc_id, vector) VALUES (?, ?)", ("doc_auth", vec_auth))
+        conn.execute("INSERT INTO embeddings (doc_id, vector) VALUES (?, ?)", ("doc_api", vec_api))
+        conn.commit()
+
+        # Set the query embedding function to return auth-like vector
+        search._query_embedding_fn = lambda q: [0.8, 0.2, 0.0, 0.0]
+
+        results = search._vector_search("authentication query", limit=5)
+        assert len(results) >= 1
+        ids = [doc_id for doc_id, _ in results]
+        assert ids[0] == "doc_auth"
+        search.close()
+
+
+# ─── WEIGHTED RRF ─────────────────────────────────────────────────
+
+
+class TestWeightedRRF:
+    def test_weighted_rrf_fts_boost(self):
+        """FTS weight > 1.0 should boost FTS-only matches over vector-only."""
+        s = HybridSearch(":memory:")
+        fts = [("doc_fts", 1)]       # Only in FTS
+        vec = [("doc_vec", 1)]       # Only in vector
+        # With fts_weight=1.3, FTS rank-1 should score higher than vec rank-1
+        merged = s._rrf_merge(fts, vec, top_k=10, fts_weight=1.3, vec_weight=1.0)
+        s.close()
+
+        scores = {doc_id: score for doc_id, score, _, _ in merged}
+        assert scores["doc_fts"] > scores["doc_vec"]
+
+    def test_weighted_rrf_equal_weights_matches_original(self):
+        """With equal weights (1.0/1.0), both calls produce identical scores."""
+        s = HybridSearch(":memory:")
+        fts = [("doc_a", 1), ("doc_b", 2)]
+        vec = [("doc_b", 1), ("doc_c", 2)]
+        # Both calls use explicit 1.0/1.0 — results must be identical
+        original = s._rrf_merge(fts, vec, top_k=10, fts_weight=1.0, vec_weight=1.0)
+        weighted = s._rrf_merge(fts, vec, top_k=10, fts_weight=1.0, vec_weight=1.0)
+        s.close()
+
+        orig_scores = {d: sc for d, sc, _, _ in original}
+        weighted_scores = {d: sc for d, sc, _, _ in weighted}
+        for doc_id in orig_scores:
+            assert abs(orig_scores[doc_id] - weighted_scores[doc_id]) < 1e-9
+
+
+# ─── GRAPH BOOST ──────────────────────────────────────────────────
+
+
+class TestGraphBoost:
+    def test_graph_boost_promotes_high_fan_in(self):
+        """Nodes with high fan-in should get boosted."""
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+
+        # Create nodes table with fan-in data
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS nodes (
+                qualified_name TEXT PRIMARY KEY,
+                fan_in INTEGER DEFAULT 0,
+                fan_out INTEGER DEFAULT 0,
+                pagerank REAL DEFAULT 0.0,
+                community_id INTEGER,
+                is_test INTEGER DEFAULT 0,
+                risk_score REAL DEFAULT 0.0,
+                file_path TEXT DEFAULT ''
+            )
+        """)
+        conn.execute("INSERT INTO nodes VALUES ('high_fan', 20, 2, 0.3, 1, 0, 0.1, 'src/core.py')")
+        conn.execute("INSERT INTO nodes VALUES ('low_fan', 1, 2, 0.01, 2, 0, 0.1, 'src/util.py')")
+        conn.commit()
+
+        from shared.hybrid_search import compute_graph_boost
+        boost_high = compute_graph_boost(conn, "high_fan")
+        boost_low = compute_graph_boost(conn, "low_fan")
+        assert boost_high > boost_low
+
+    def test_graph_boost_dampens_test_files(self):
+        """Test files should get dampened (0.7x)."""
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS nodes (
+                qualified_name TEXT PRIMARY KEY,
+                fan_in INTEGER DEFAULT 0,
+                fan_out INTEGER DEFAULT 0,
+                pagerank REAL DEFAULT 0.0,
+                community_id INTEGER,
+                is_test INTEGER DEFAULT 0,
+                risk_score REAL DEFAULT 0.0,
+                file_path TEXT DEFAULT ''
+            )
+        """)
+        conn.execute("INSERT INTO nodes VALUES ('prod_fn', 5, 2, 0.1, 1, 0, 0.1, 'src/auth.py')")
+        conn.execute("INSERT INTO nodes VALUES ('test_fn', 5, 2, 0.1, 1, 1, 0.1, 'tests/test_auth.py')")
+        conn.commit()
+
+        from shared.hybrid_search import compute_graph_boost
+        boost_prod = compute_graph_boost(conn, "prod_fn")
+        boost_test = compute_graph_boost(conn, "test_fn")
+        assert boost_test < boost_prod

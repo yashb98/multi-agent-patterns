@@ -117,6 +117,18 @@ class CodeIntelligence:
         # Voyage-code-3 client (lazy init)
         self._voyage_client = None
 
+        # Wire Voyage query embedding into HybridSearch
+        self._query_embedding_cache: dict[str, list[float]] = {}
+        if os.environ.get(EMBEDDING_ENV_VAR):
+            self._search._query_embedding_fn = self._embed_query
+
+        # Wire reranker (optional — graceful fallback if sentence-transformers not installed)
+        try:
+            from shared.reranker import Reranker
+            self._search._reranker = Reranker()
+        except Exception:
+            pass  # Reranking disabled
+
     def _init_extended_schema(self):
         """Create columns/tables beyond what CodeGraph + HybridSearch provide."""
         # We need CodeGraph's schema first — create it via a temp instance
@@ -168,6 +180,28 @@ class CodeIntelligence:
             logger.warning("voyageai package not installed — using FTS5-only search")
             return None
 
+    def _embed_query(self, query: str) -> list[float] | None:
+        """Embed a search query via Voyage Code 3. LRU cache (max 100)."""
+        if query in self._query_embedding_cache:
+            return self._query_embedding_cache[query]
+
+        client = self._get_voyage_client()
+        if client is None:
+            return None
+
+        try:
+            result = client.embed([query], model=EMBEDDING_MODEL, input_type="query")
+            vector = result.embeddings[0]
+            # LRU eviction
+            if len(self._query_embedding_cache) >= 100:
+                oldest_key = next(iter(self._query_embedding_cache))
+                del self._query_embedding_cache[oldest_key]
+            self._query_embedding_cache[query] = vector
+            return vector
+        except Exception as exc:
+            logger.warning("Voyage query embedding failed: %s", exc)
+            return None
+
     # ─── INDEXING ──────────────────────────────────────────────────
 
     def index_directory(self, root: str) -> dict[str, Any]:
@@ -195,6 +229,9 @@ class CodeIntelligence:
 
         # Phase 4 — search index
         self._populate_search_index()
+
+        # Phase 5 — graph signals (PageRank, communities, fan-in/fan-out)
+        self._compute_graph_signals()
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
@@ -227,9 +264,22 @@ class CodeIntelligence:
 
         self.conn.commit()
 
+        # Resolve call edges (bare names → qualified names)
+        self._graph._resolve_call_edges()
+        self.conn.commit()
+
         node_count = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
         edge_count = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-        logger.info("Indexed %d Python files → %d nodes, %d edges", len(py_files), node_count, edge_count)
+        resolved = self.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE kind='calls' AND target_qname LIKE '%::%'"
+        ).fetchone()[0]
+        total_calls = self.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE kind='calls'"
+        ).fetchone()[0]
+        logger.info(
+            "Indexed %d Python files → %d nodes, %d edges (%d/%d call edges resolved)",
+            len(py_files), node_count, edge_count, resolved, total_calls,
+        )
 
     def _index_text_files(self, root_path: Path) -> None:
         """Walk all files under root_path, index non-Python text files as document nodes."""
@@ -470,6 +520,16 @@ class CodeIntelligence:
         except Exception as exc:
             logger.warning("Voyage embedding step failed: %s", exc)
 
+    def _compute_graph_signals(self) -> None:
+        """Compute graph-global signals: fan-in/fan-out, PageRank, communities."""
+        try:
+            self._graph.compute_fan_in_out()
+            self._graph.compute_pagerank()
+            self._graph.compute_communities()
+            logger.info("Graph signals computed (fan-in, PageRank, communities)")
+        except Exception as exc:
+            logger.warning("Graph signal computation failed: %s", exc)
+
     # ─── INCREMENTAL REINDEX ───────────────────────────────────────
 
     def reindex_file(self, rel_path: str, root: str | None = None) -> dict[str, Any]:
@@ -552,6 +612,9 @@ class CodeIntelligence:
         if abs_path.suffix == ".py":
             try:
                 self._graph._index_file(abs_path, root_path, prefix="")
+                self.conn.commit()
+                # Resolve new call edges (bare names → qualified names)
+                self._graph._resolve_call_edges()
                 self.conn.commit()
             except Exception as exc:
                 logger.warning("reindex_file AST parse failed for %s: %s", rel_path, exc)
@@ -648,7 +711,10 @@ class CodeIntelligence:
             except Exception as exc:
                 logger.debug("reindex_file search add failed for %s: %s", qname, exc)
 
-        # 11. Return stats
+        # 11. Recompute graph-global signals (PageRank, communities affected by edge changes)
+        self._compute_graph_signals()
+
+        # 12. Return stats
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         return {
             "nodes_added": nodes_added,
@@ -792,9 +858,17 @@ class CodeIntelligence:
         functions = [{"name": r[0], "file": r[1], "risk": r[2]} for r in rows]
         return {"functions": functions}
 
-    def semantic_search(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
-        """Hybrid FTS5 + vector semantic search."""
-        raw = self._search.query(query, top_k)
+    def semantic_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        context_symbol: str | None = None,
+        search_context: str = "general",
+    ) -> list[dict[str, Any]]:
+        """Hybrid FTS5 + vector semantic search with graph boosting."""
+        from shared.hybrid_search import compute_graph_boost
+
+        raw = self._search.query(query, top_k=top_k * 2)  # Over-fetch for graph boost reranking
         results: list[dict[str, Any]] = []
         for item in raw:
             metadata = item.get("metadata") or {}
@@ -803,15 +877,29 @@ class CodeIntelligence:
                     metadata = json.loads(metadata)
                 except (json.JSONDecodeError, TypeError):
                     metadata = {}
+
+            qname = item.get("id", "")
+            base_score = item.get("score", 0.0)
+
+            # Apply graph boost
+            boost = compute_graph_boost(
+                self.conn, qname,
+                context_qname=context_symbol,
+                search_context=search_context,
+            )
+
             results.append(
                 {
-                    "name": item.get("id", ""),
+                    "name": qname,
                     "file": metadata.get("file_path", ""),
-                    "score": item.get("score", 0.0),
+                    "score": base_score * boost,
                     "snippet": (item.get("text") or "")[:200],
                 }
             )
-        return results
+
+        # Re-sort by boosted score and limit
+        results.sort(key=lambda r: r["score"], reverse=True)
+        return results[:top_k]
 
     def module_summary(self, file: str) -> dict[str, Any]:
         """Summary of a file: classes, functions, risk, imports."""

@@ -41,6 +41,10 @@ class HybridSearch:
             self.conn = sqlite3.connect(db_path)
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA journal_mode=WAL")
+        self._query_embedding_fn = None  # Set by CodeIntelligence to use Voyage
+        self._reranker = None  # Set externally to enable reranking
+        self.fts_weight = 1.3  # Exact identifiers matter more in code search
+        self.vec_weight = 1.0
         self._init_schema()
 
     def _init_schema(self):
@@ -105,7 +109,8 @@ class HybridSearch:
         vec_results = self._vector_search(query_text, limit=top_k * 3)
 
         # ── Merge via Reciprocal Rank Fusion ──
-        merged = self._rrf_merge(fts_results, vec_results, top_k)
+        merged = self._rrf_merge(fts_results, vec_results, top_k,
+                                  fts_weight=self.fts_weight, vec_weight=self.vec_weight)
 
         # Enrich with metadata
         results = []
@@ -122,6 +127,14 @@ class HybridSearch:
                     "fts_rank": fts_rank,
                     "vec_rank": vec_rank,
                 })
+
+        # Rerank if reranker is configured
+        if self._reranker is not None and len(results) > 1:
+            try:
+                results = self._reranker.rerank(query_text, results, top_k=top_k)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).debug("Reranking failed: %s", exc)
 
         return results
 
@@ -147,7 +160,26 @@ class HybridSearch:
             return []
 
     def _vector_search(self, query: str, limit: int = 30) -> list[tuple]:
-        """Cosine similarity search. Returns [(doc_id, rank), ...]."""
+        """Cosine similarity search. Tries Voyage embeddings first, falls back to bag-of-words.
+
+        Returns [(doc_id, rank), ...]
+        """
+        # Check if embeddings table exists and has data
+        try:
+            count = self.conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        except Exception:
+            count = 0
+
+        if count > 0 and self._query_embedding_fn is not None:
+            # Use Voyage embeddings
+            try:
+                query_vec = self._query_embedding_fn(query)
+            except Exception:
+                query_vec = None
+            if query_vec:
+                return self._voyage_vector_search(query_vec, limit)
+
+        # Fallback: bag-of-words
         query_emb = self._compute_embedding(query)
 
         rows = self.conn.execute(
@@ -163,15 +195,47 @@ class HybridSearch:
         scored.sort(key=lambda x: x[1], reverse=True)
         return [(doc_id, i + 1) for i, (doc_id, _) in enumerate(scored[:limit])]
 
+    def _voyage_vector_search(self, query_vector: list[float], limit: int = 30) -> list[tuple]:
+        """Cosine similarity against pre-computed Voyage embeddings.
+
+        Args:
+            query_vector: Pre-embedded query vector (1024d from Voyage API).
+            limit: Max results to return.
+
+        Returns: [(doc_id, rank), ...] sorted by similarity descending.
+        """
+        import struct
+
+        rows = self.conn.execute(
+            "SELECT doc_id, vector FROM embeddings"
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        scored = []
+        for row in rows:
+            doc_id = row["doc_id"] if isinstance(row, sqlite3.Row) else row[0]
+            blob = row["vector"] if isinstance(row, sqlite3.Row) else row[1]
+            n_floats = len(blob) // 4
+            doc_vec = list(struct.unpack(f"{n_floats}f", blob))
+            sim = self._cosine_similarity(query_vector, doc_vec)
+            scored.append((doc_id, sim))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [(doc_id, i + 1) for i, (doc_id, _) in enumerate(scored[:limit])]
+
     def _rrf_merge(
         self,
         fts_results: list[tuple],
         vec_results: list[tuple],
         top_k: int,
+        fts_weight: float = 1.0,
+        vec_weight: float = 1.0,
     ) -> list[tuple]:
-        """Reciprocal Rank Fusion: merge two ranked lists.
+        """Reciprocal Rank Fusion with per-signal weights.
 
-        RRF_score(d) = sum(1 / (k + rank_i)) for each ranker i
+        RRF_score(d) = sum(weight_i / (k + rank_i)) for each ranker i
 
         Returns: [(doc_id, rrf_score, fts_rank, vec_rank), ...]
         """
@@ -187,9 +251,9 @@ class HybridSearch:
 
             rrf_score = 0.0
             if fts_rank < 999:
-                rrf_score += 1.0 / (RRF_K + fts_rank)
+                rrf_score += fts_weight / (RRF_K + fts_rank)
             if vec_rank < 999:
-                rrf_score += 1.0 / (RRF_K + vec_rank)
+                rrf_score += vec_weight / (RRF_K + vec_rank)
 
             scored.append((doc_id, rrf_score, fts_rank, vec_rank))
 
@@ -238,3 +302,75 @@ class HybridSearch:
 
     def close(self):
         self.conn.close()
+
+
+def compute_graph_boost(
+    conn: sqlite3.Connection,
+    qualified_name: str,
+    context_qname: str | None = None,
+    search_context: str = "general",
+) -> float:
+    """Compute graph-based boost multiplier for a search result.
+
+    Args:
+        conn: SQLite connection with nodes/edges tables.
+        qualified_name: The node's qualified name.
+        context_qname: Optional symbol being worked on (enables proximity boost).
+        search_context: "general", "review", "security", or "impact".
+
+    Returns:
+        Multiplicative boost factor (1.0 = no change).
+    """
+    row = conn.execute(
+        "SELECT fan_in, pagerank, is_test, risk_score, community_id "
+        "FROM nodes WHERE qualified_name = ?",
+        (qualified_name,),
+    ).fetchone()
+
+    if row is None:
+        return 1.0
+
+    fan_in = row[0] or 0
+    pagerank = row[1] or 0.0
+    is_test = row[2] or 0
+    risk_score = row[3] or 0.0
+    community_id = row[4]
+
+    boost = 1.0
+
+    # Test file dampening
+    if is_test:
+        boost *= 0.7
+
+    # PageRank boost (continuous)
+    boost *= 1.0 + (pagerank * 0.5)
+
+    # Fan-in boost (top 10% heuristic: fan_in >= 5)
+    if fan_in >= 5:
+        boost *= 1.25
+
+    # Context-based proximity
+    if context_qname and context_qname != qualified_name:
+        # Check same community
+        ctx_row = conn.execute(
+            "SELECT community_id FROM nodes WHERE qualified_name = ?",
+            (context_qname,),
+        ).fetchone()
+        if ctx_row and ctx_row[0] is not None and ctx_row[0] == community_id:
+            boost *= 1.2
+
+        # Check direct caller/callee (1-hop)
+        direct = conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE "
+            "(source_qname = ? AND target_qname = ?) OR "
+            "(source_qname = ? AND target_qname = ?)",
+            (context_qname, qualified_name, qualified_name, context_qname),
+        ).fetchone()[0]
+        if direct > 0:
+            boost *= 1.5
+
+    # Risk boost (contextual)
+    if search_context in ("review", "security", "impact"):
+        boost *= 1.0 + (risk_score * 0.5)
+
+    return boost
