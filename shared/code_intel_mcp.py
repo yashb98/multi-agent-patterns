@@ -218,8 +218,9 @@ _TOOL_DEFS: list[dict] = [
     {
         "name": "semantic_search",
         "description": (
-            "Hybrid FTS5 + vector semantic search over the codebase. "
-            "Returns matching nodes with name, file path, score, and snippet."
+            "Hybrid FTS5 + Voyage Code 3 semantic search with graph-boosted scoring. "
+            "Returns matching nodes with name, file path, score, and snippet. "
+            "Optionally provide context_symbol for proximity-aware ranking."
         ),
         "inputSchema": {
             "type": "object",
@@ -229,6 +230,16 @@ _TOOL_DEFS: list[dict] = [
                     "type": "integer",
                     "description": "Number of results to return (default 10)",
                     "default": 10,
+                },
+                "context_symbol": {
+                    "type": "string",
+                    "description": "Qualified name of the symbol being worked on (enables proximity boost)",
+                },
+                "search_context": {
+                    "type": "string",
+                    "enum": ["general", "review", "security", "impact"],
+                    "description": "Search context for risk boosting (default: general)",
+                    "default": "general",
                 },
             },
             "required": ["query"],
@@ -345,7 +356,12 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
     elif name == "risk_report":
         return ci.risk_report(top_n=args.get("top_n", 10), file=args.get("file"))
     elif name == "semantic_search":
-        return ci.semantic_search(args["query"], top_k=args.get("top_k", 10))
+        return ci.semantic_search(
+            args["query"],
+            top_k=args.get("top_k", 10),
+            context_symbol=args.get("context_symbol"),
+            search_context=args.get("search_context", "general"),
+        )
     elif name == "module_summary":
         return ci.module_summary(args["file"])
     elif name == "recent_changes":
