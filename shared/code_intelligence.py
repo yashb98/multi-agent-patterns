@@ -122,6 +122,13 @@ class CodeIntelligence:
         if os.environ.get(EMBEDDING_ENV_VAR):
             self._search._query_embedding_fn = self._embed_query
 
+        # Wire reranker (optional — graceful fallback if sentence-transformers not installed)
+        try:
+            from shared.reranker import Reranker
+            self._search._reranker = Reranker()
+        except Exception:
+            pass  # Reranking disabled
+
     def _init_extended_schema(self):
         """Create columns/tables beyond what CodeGraph + HybridSearch provide."""
         # We need CodeGraph's schema first — create it via a temp instance
