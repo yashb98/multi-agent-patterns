@@ -835,9 +835,17 @@ class CodeIntelligence:
         functions = [{"name": r[0], "file": r[1], "risk": r[2]} for r in rows]
         return {"functions": functions}
 
-    def semantic_search(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
-        """Hybrid FTS5 + vector semantic search."""
-        raw = self._search.query(query, top_k)
+    def semantic_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        context_symbol: str | None = None,
+        search_context: str = "general",
+    ) -> list[dict[str, Any]]:
+        """Hybrid FTS5 + vector semantic search with graph boosting."""
+        from shared.hybrid_search import compute_graph_boost
+
+        raw = self._search.query(query, top_k=top_k * 2)  # Over-fetch for graph boost reranking
         results: list[dict[str, Any]] = []
         for item in raw:
             metadata = item.get("metadata") or {}
@@ -846,15 +854,29 @@ class CodeIntelligence:
                     metadata = json.loads(metadata)
                 except (json.JSONDecodeError, TypeError):
                     metadata = {}
+
+            qname = item.get("id", "")
+            base_score = item.get("score", 0.0)
+
+            # Apply graph boost
+            boost = compute_graph_boost(
+                self.conn, qname,
+                context_qname=context_symbol,
+                search_context=search_context,
+            )
+
             results.append(
                 {
-                    "name": item.get("id", ""),
+                    "name": qname,
                     "file": metadata.get("file_path", ""),
-                    "score": item.get("score", 0.0),
+                    "score": base_score * boost,
                     "snippet": (item.get("text") or "")[:200],
                 }
             )
-        return results
+
+        # Re-sort by boosted score and limit
+        results.sort(key=lambda r: r["score"], reverse=True)
+        return results[:top_k]
 
     def module_summary(self, file: str) -> dict[str, Any]:
         """Summary of a file: classes, functions, risk, imports."""

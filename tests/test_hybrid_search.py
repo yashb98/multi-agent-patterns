@@ -507,3 +507,63 @@ class TestWeightedRRF:
         weighted_scores = {d: sc for d, sc, _, _ in weighted}
         for doc_id in orig_scores:
             assert abs(orig_scores[doc_id] - weighted_scores[doc_id]) < 1e-9
+
+
+# ─── GRAPH BOOST ──────────────────────────────────────────────────
+
+
+class TestGraphBoost:
+    def test_graph_boost_promotes_high_fan_in(self):
+        """Nodes with high fan-in should get boosted."""
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        search = HybridSearch(conn=conn)
+
+        # Create nodes table with fan-in data
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS nodes (
+                qualified_name TEXT PRIMARY KEY,
+                fan_in INTEGER DEFAULT 0,
+                fan_out INTEGER DEFAULT 0,
+                pagerank REAL DEFAULT 0.0,
+                community_id INTEGER,
+                is_test INTEGER DEFAULT 0,
+                risk_score REAL DEFAULT 0.0,
+                file_path TEXT DEFAULT ''
+            )
+        """)
+        conn.execute("INSERT INTO nodes VALUES ('high_fan', 20, 2, 0.3, 1, 0, 0.1, 'src/core.py')")
+        conn.execute("INSERT INTO nodes VALUES ('low_fan', 1, 2, 0.01, 2, 0, 0.1, 'src/util.py')")
+        conn.commit()
+
+        from shared.hybrid_search import compute_graph_boost
+        boost_high = compute_graph_boost(conn, "high_fan")
+        boost_low = compute_graph_boost(conn, "low_fan")
+        assert boost_high > boost_low
+
+    def test_graph_boost_dampens_test_files(self):
+        """Test files should get dampened (0.7x)."""
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS nodes (
+                qualified_name TEXT PRIMARY KEY,
+                fan_in INTEGER DEFAULT 0,
+                fan_out INTEGER DEFAULT 0,
+                pagerank REAL DEFAULT 0.0,
+                community_id INTEGER,
+                is_test INTEGER DEFAULT 0,
+                risk_score REAL DEFAULT 0.0,
+                file_path TEXT DEFAULT ''
+            )
+        """)
+        conn.execute("INSERT INTO nodes VALUES ('prod_fn', 5, 2, 0.1, 1, 0, 0.1, 'src/auth.py')")
+        conn.execute("INSERT INTO nodes VALUES ('test_fn', 5, 2, 0.1, 1, 1, 0.1, 'tests/test_auth.py')")
+        conn.commit()
+
+        from shared.hybrid_search import compute_graph_boost
+        boost_prod = compute_graph_boost(conn, "prod_fn")
+        boost_test = compute_graph_boost(conn, "test_fn")
+        assert boost_test < boost_prod

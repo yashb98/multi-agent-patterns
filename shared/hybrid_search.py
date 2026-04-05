@@ -302,3 +302,75 @@ class HybridSearch:
 
     def close(self):
         self.conn.close()
+
+
+def compute_graph_boost(
+    conn: sqlite3.Connection,
+    qualified_name: str,
+    context_qname: str | None = None,
+    search_context: str = "general",
+) -> float:
+    """Compute graph-based boost multiplier for a search result.
+
+    Args:
+        conn: SQLite connection with nodes/edges tables.
+        qualified_name: The node's qualified name.
+        context_qname: Optional symbol being worked on (enables proximity boost).
+        search_context: "general", "review", "security", or "impact".
+
+    Returns:
+        Multiplicative boost factor (1.0 = no change).
+    """
+    row = conn.execute(
+        "SELECT fan_in, pagerank, is_test, risk_score, community_id "
+        "FROM nodes WHERE qualified_name = ?",
+        (qualified_name,),
+    ).fetchone()
+
+    if row is None:
+        return 1.0
+
+    fan_in = row[0] or 0
+    pagerank = row[1] or 0.0
+    is_test = row[2] or 0
+    risk_score = row[3] or 0.0
+    community_id = row[4]
+
+    boost = 1.0
+
+    # Test file dampening
+    if is_test:
+        boost *= 0.7
+
+    # PageRank boost (continuous)
+    boost *= 1.0 + (pagerank * 0.5)
+
+    # Fan-in boost (top 10% heuristic: fan_in >= 5)
+    if fan_in >= 5:
+        boost *= 1.25
+
+    # Context-based proximity
+    if context_qname and context_qname != qualified_name:
+        # Check same community
+        ctx_row = conn.execute(
+            "SELECT community_id FROM nodes WHERE qualified_name = ?",
+            (context_qname,),
+        ).fetchone()
+        if ctx_row and ctx_row[0] is not None and ctx_row[0] == community_id:
+            boost *= 1.2
+
+        # Check direct caller/callee (1-hop)
+        direct = conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE "
+            "(source_qname = ? AND target_qname = ?) OR "
+            "(source_qname = ? AND target_qname = ?)",
+            (context_qname, qualified_name, qualified_name, context_qname),
+        ).fetchone()[0]
+        if direct > 0:
+            boost *= 1.5
+
+    # Risk boost (contextual)
+    if search_context in ("review", "security", "impact"):
+        boost *= 1.0 + (risk_score * 0.5)
+
+    return boost
