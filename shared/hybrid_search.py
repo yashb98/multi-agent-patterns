@@ -42,6 +42,7 @@ class HybridSearch:
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA journal_mode=WAL")
         self._query_embedding_fn = None  # Set by CodeIntelligence to use Voyage
+        self._reranker = None  # Set externally to enable reranking
         self.fts_weight = 1.3  # Exact identifiers matter more in code search
         self.vec_weight = 1.0
         self._init_schema()
@@ -126,6 +127,14 @@ class HybridSearch:
                     "fts_rank": fts_rank,
                     "vec_rank": vec_rank,
                 })
+
+        # Rerank if reranker is configured
+        if self._reranker is not None and len(results) > 1:
+            try:
+                results = self._reranker.rerank(query_text, results, top_k=top_k)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).debug("Reranking failed: %s", exc)
 
         return results
 
