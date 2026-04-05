@@ -310,8 +310,8 @@ class TestRiskScoring:
         ).fetchone()
         score = indexed_graph.compute_risk_score(row["qualified_name"])
         # fan-in (3 callers * 0.05 = 0.15) + cross-file (0.10) = 0.25
-        # No security keyword: "verify_token" passes context-dependent check but
-        # lacks security context word in the name itself (two-tier matching)
+        # No security keyword bonus: "verify_token" matches context-dependent
+        # keywords but lacks a security context word in the name (two-tier matching)
         assert score >= 0.25
 
 
