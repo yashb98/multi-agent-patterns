@@ -50,6 +50,7 @@ TOOL_NAMES = [
     "similar_functions",
     "grep_search",
     "diff_impact",
+    "test_coverage_map",
 ]
 
 # ─── FILE WATCHER ─────────────────────────────────────────────────
@@ -460,6 +461,21 @@ _TOOL_DEFS: list[dict] = [
             "required": ["pattern"],
         },
     },
+    {
+        "name": "test_coverage_map",
+        "description": (
+            "Map which functions have test coverage and which tests cover them. "
+            "Shows covered/uncovered functions and coverage percentage."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Filter to a specific file (optional)"},
+                "top_n": {"type": "integer", "description": "Max results per category (default 50)", "default": 50},
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -596,6 +612,8 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
             fixed_string=args.get("fixed_string", False),
             sort_by=args.get("sort_by", "risk"),
         )
+    elif name == "test_coverage_map":
+        return ci.test_coverage_map(file=args.get("file"), top_n=args.get("top_n", 50))
     else:
         raise ValueError(f"Unknown tool: {name}")
 

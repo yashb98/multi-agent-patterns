@@ -43,10 +43,14 @@ def sample_project(tmp_path):
             return login("admin", token)
     """))
     (src / "test_auth.py").write_text(textwrap.dedent("""\
-        from auth import login
+        from auth import login, AuthManager
 
         def test_login_valid():
             assert login("user", "pass123")
+
+        def test_verify_token():
+            mgr = AuthManager()
+            mgr.verify_token("abc")
     """))
     (src / "README.md").write_text("# Auth Project\\n\\nA sample auth system.")
     (src / "config.yaml").write_text("debug: true\\nport: 8080\\n")
@@ -577,3 +581,33 @@ class TestVoyageSearchIntegration:
         ci = CodeIntelligence(db_path)
         assert ci._search._query_embedding_fn is None
         ci.close()
+
+
+class TestTestCoverageMap:
+    def test_finds_tested_functions(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.test_coverage_map()
+        assert "covered" in result
+        assert "uncovered" in result
+        assert "coverage_pct" in result
+        covered_names = [f["name"] for f in result["covered"]]
+        assert any("login" in n for n in covered_names)
+
+    def test_finds_uncovered_functions(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.test_coverage_map()
+        uncovered_names = [f["name"] for f in result["uncovered"]]
+        assert any("check_access" in n for n in uncovered_names)
+
+    def test_filter_by_file(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.test_coverage_map(file="auth.py")
+        all_files = {f["file"] for f in result["covered"] + result["uncovered"]}
+        assert all("auth.py" in f for f in all_files)
+
+    def test_shows_which_tests_cover(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.test_coverage_map()
+        for fn in result["covered"]:
+            assert "tested_by" in fn
+            assert len(fn["tested_by"]) > 0

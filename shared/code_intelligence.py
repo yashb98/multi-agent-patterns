@@ -927,6 +927,64 @@ class CodeIntelligence:
         ia_result["changed_files"] = changed_files
         return ia_result
 
+    def test_coverage_map(self, file: str | None = None, top_n: int = 50) -> dict[str, Any]:
+        """Map which functions are tested and which tests cover them."""
+        file_filter = ""
+        params: list[Any] = []
+        if file:
+            file_filter = "AND n.file_path LIKE ?"
+            params.append(f"%{file}%")
+
+        prod_functions = self.conn.execute(
+            f"""SELECT n.qualified_name, n.name, n.file_path, n.risk_score
+                FROM nodes n
+                WHERE n.kind IN ('function', 'method')
+                  AND n.is_test = 0
+                  AND n.file_path NOT LIKE '%test_%'
+                  AND n.file_path NOT LIKE '%conftest%'
+                  {file_filter}
+                ORDER BY n.risk_score DESC LIMIT ?""",
+            params + [top_n * 3],
+        ).fetchall()
+
+        test_functions = self.conn.execute(
+            "SELECT qualified_name, name, file_path FROM nodes "
+            "WHERE is_test = 1 AND kind IN ('function', 'method')"
+        ).fetchall()
+
+        coverage: dict[str, list[dict[str, str]]] = {}
+        for test in test_functions:
+            test_qname, test_name, test_file = test[0], test[1], test[2]
+            callees = self.conn.execute(
+                "SELECT target_qname FROM edges WHERE kind='calls' AND source_qname=?",
+                (test_qname,),
+            ).fetchall()
+            for callee in callees:
+                coverage.setdefault(callee[0], []).append({"test": test_name, "file": test_file})
+
+        covered, uncovered = [], []
+        for fn in prod_functions:
+            qname, name, fpath, risk = fn[0], fn[1], fn[2], fn[3]
+            tests_hitting = coverage.get(qname, [])
+            if not tests_hitting:
+                for key, val in coverage.items():
+                    if key.endswith(f"::{name}") or key == name:
+                        tests_hitting = val
+                        break
+            entry = {"name": qname, "file": fpath, "risk_score": round(risk or 0, 3)}
+            if tests_hitting:
+                entry["tested_by"] = tests_hitting[:10]
+                covered.append(entry)
+            else:
+                uncovered.append(entry)
+
+        total = len(covered) + len(uncovered)
+        return {
+            "covered": covered[:top_n], "uncovered": uncovered[:top_n],
+            "total_functions": total,
+            "coverage_pct": round(len(covered) / total * 100, 1) if total else 0,
+        }
+
     def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
         """Top-N highest-risk functions, optionally filtered by file."""
         if file is not None:
