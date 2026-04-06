@@ -139,59 +139,6 @@ Use the following template structure exactly:
     return prompt
 
 
-def generate_cover_letter(
-    job: JobListing,
-    matched_skills: list[str],
-    matched_projects: list[str],
-) -> Path | None:
-    """Generate a cover letter via gpt-4.1-mini and save as a text file.
 
-    Saves to data/applications/{job.job_id}/cover_letter.txt
-    Returns the file path on success, None on failure.
-    """
-    # Lazy imports to avoid hard dependency when not calling LLM
-    import openai  # type: ignore[import-untyped]
-    from shared.logging_config import get_logger
-
-    from jobpulse.config import DATA_DIR, OPENAI_API_KEY
-    from jobpulse.utils.safe_io import safe_openai_call
-
-    logger = get_logger(__name__)
-
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
-
-    app_dir = DATA_DIR / "applications" / job.job_id
-    app_dir.mkdir(parents=True, exist_ok=True)
-    output_path = app_dir / "cover_letter.txt"
-
-    prompt = build_cover_letter_prompt(
-        company=job.company,
-        role=job.title,
-        jd_text=job.description_raw,
-        matched_skills=matched_skills,
-        matched_projects=matched_projects,
-    )
-
-    cover_letter_text = safe_openai_call(
-        client,
-        model="gpt-4.1-mini",
-        temperature=0.5,
-        messages=[{"role": "user", "content": prompt}],
-        caller="cover_letter_agent",
-    )
-    if cover_letter_text is None:
-        logger.warning("cover_letter_agent: LLM returned None for job %s", job.job_id)
-        return None
-
-    if not cover_letter_text.strip():
-        logger.warning("cover_letter_agent: LLM returned empty content for job %s", job.job_id)
-        return None
-
-    output_path.write_text(cover_letter_text, encoding="utf-8")
-    logger.info(
-        "cover_letter_agent: saved cover letter for %s @ %s → %s",
-        job.title,
-        job.company,
-        output_path,
-    )
-    return output_path
+# generate_cover_letter() removed — superseded by generate_cover_letter_pdf()
+# in jobpulse/cv_templates/generate_cover_letter.py (ReportLab PDF output).
