@@ -191,3 +191,25 @@ class TestRalphLiveTest:
                 base_dir=tmp_path / "ralph_tests",
             )
         assert results == []
+
+
+class TestFormatLiveSummary:
+    def test_formats_multiple_results(self):
+        from jobpulse.ralph_loop.cli_output import format_live_summary
+
+        results = [
+            TestRunResult(platform="linkedin", url="https://linkedin.com/jobs/view/1", verdict="success", iterations=1, fields_filled=12, duration_ms=5000),
+            TestRunResult(platform="indeed", url="https://indeed.com/viewjob?jk=x", verdict="blocked", iterations=2, error_summary="Cloudflare", duration_ms=3000),
+        ]
+        output = format_live_summary(results)
+        assert "linkedin" in output.lower()
+        assert "indeed" in output.lower()
+        assert "SUCCESS" in output
+        assert "BLOCKED" in output
+        assert "2 jobs tested" in output.lower()
+
+    def test_empty_results(self):
+        from jobpulse.ralph_loop.cli_output import format_live_summary
+
+        output = format_live_summary([])
+        assert "no jobs" in output.lower()
