@@ -228,6 +228,30 @@ def apply_job(
             ats_platform = "workday"
             platform_key = "workday"
 
+    # Load known form-filling gotchas for this ATS domain before starting
+    # so the adapter can avoid known failure patterns
+    try:
+        from urllib.parse import urlparse
+        from jobpulse.form_engine.gotchas import GotchasDB
+        _parsed_domain = urlparse(url).netloc.lower().removeprefix("www.")
+        if _parsed_domain:
+            _gotchas_db = GotchasDB()
+            _gotchas = _gotchas_db.lookup_domain(_parsed_domain)
+            if _gotchas:
+                logger.info("gotchas: loaded %d known gotchas for %s", len(_gotchas), _parsed_domain)
+                merged_answers["_gotchas"] = _gotchas
+    except Exception as _gotcha_exc:
+        logger.debug("GotchasDB lookup failed: %s", _gotcha_exc)
+
+    # Attach Telegram progress stream so the orchestrator can call stream_field()
+    # per field during form filling. The stream is async but fire-and-forget from sync code.
+    try:
+        from jobpulse.telegram_stream import TelegramApplicationStream
+        tg_stream = TelegramApplicationStream()
+        merged_answers["_stream"] = tg_stream
+    except Exception as _stream_exc:
+        logger.debug("TelegramApplicationStream unavailable: %s", _stream_exc)
+
     # Submit
     adapter = select_adapter(ats_platform)
     logger.info("Applying via %s adapter to %s", adapter.name, url)

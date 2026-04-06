@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from jobpulse.perplexity import CompanyResearch
 
 from shared.logging_config import get_logger
 
@@ -69,6 +70,8 @@ class ApplicationOrchestrator:
         overrides: dict | None = None,
         dry_run: bool = False,
         form_intelligence: Any | None = None,
+        jd_keywords: list[str] | None = None,
+        company_research: "CompanyResearch | None" = None,
     ) -> dict:
         """Full application flow: navigate → account → verify → fill → submit."""
         profile = profile or {}
@@ -101,12 +104,63 @@ class ApplicationOrchestrator:
             form_intelligence=form_intelligence,
         )
 
+        # Phase 3: Pre-submit quality gate — review filled answers before submitting
+        if result.get("success") and not dry_run and company_research is not None:
+            gate_result = self._run_pre_submit_gate(
+                custom_answers=custom_answers,
+                jd_keywords=jd_keywords or [],
+                company_research=company_research,
+            )
+            if not gate_result.passed:
+                logger.warning(
+                    "PreSubmitGate blocked submission (score=%.1f): %s",
+                    gate_result.score,
+                    gate_result.weaknesses,
+                )
+                return {
+                    "success": False,
+                    "needs_human_review": True,
+                    "gate_score": gate_result.score,
+                    "gate_weaknesses": gate_result.weaknesses,
+                    "gate_suggestions": gate_result.suggestions,
+                    "screenshot": result.get("screenshot"),
+                    "pages_filled": result.get("pages_filled"),
+                }
+            result["gate_score"] = gate_result.score
+
         # Save successful navigation for future replay
         if result.get("success"):
             domain = self._extract_domain(url)
             self.learner.save_sequence(domain, navigation_steps, success=True)
 
         return result
+
+    @staticmethod
+    def _run_pre_submit_gate(
+        custom_answers: dict,
+        jd_keywords: list[str],
+        company_research: "CompanyResearch",
+    ):
+        """Run PreSubmitGate on the filled answers. Returns GateResult (pass-open on error)."""
+        try:
+            from jobpulse.pre_submit_gate import PreSubmitGate, GateResult
+
+            # Build filled_answers: strip internal _-prefixed keys
+            filled = {
+                k: str(v)
+                for k, v in custom_answers.items()
+                if not k.startswith("_") and isinstance(v, (str, int, float, bool))
+            }
+            gate = PreSubmitGate()
+            return gate.review(
+                filled_answers=filled,
+                jd_keywords=jd_keywords,
+                company_research=company_research,
+            )
+        except Exception as exc:
+            logger.warning("PreSubmitGate error — passing by default: %s", exc)
+            from jobpulse.pre_submit_gate import GateResult
+            return GateResult(passed=True, score=0.0)
 
     async def _navigate_to_form(
         self, url: str, platform: str, steps: list[dict]
@@ -301,6 +355,9 @@ class ApplicationOrchestrator:
         stuck_count = 0
         last_screenshot = None
 
+        # Extract Telegram progress stream if provided (injected by applicator.py)
+        tg_stream = custom_answers.pop("_stream", None) if custom_answers else None
+
         for page_num in range(1, MAX_FORM_PAGES + 1):
             page_snapshot = self._to_page_snapshot(snapshot) if isinstance(snapshot, dict) else snapshot
             state = machine.detect_state(page_snapshot)
@@ -328,7 +385,7 @@ class ApplicationOrchestrator:
             )
 
             for action in actions:
-                await self._execute_action(action)
+                await self._execute_action(action, tg_stream=tg_stream)
 
             screenshot_bytes = await self.bridge.screenshot()
             if screenshot_bytes:
@@ -350,21 +407,38 @@ class ApplicationOrchestrator:
 
         return {"success": False, "error": f"Exhausted {MAX_FORM_PAGES} pages", "screenshot": last_screenshot}
 
-    async def _execute_action(self, action: Any):
+    async def _execute_action(self, action: Any, tg_stream: Any = None):
         if hasattr(action, "model_dump"):
             # Pydantic Action model
             atype = getattr(action, "type", "")
             selector = getattr(action, "selector", "")
             value = getattr(action, "value", "")
             file_path = getattr(action, "file_path", None)
+            label = getattr(action, "label", selector)
+            tier = getattr(action, "tier", 1)
+            confidence = getattr(action, "confidence", 1.0)
         else:
             atype = action.get("type", "")
             selector = action.get("selector", "")
             value = action.get("value", "")
             file_path = action.get("file_path")
+            label = action.get("label", selector)
+            tier = action.get("tier", 1)
+            confidence = action.get("confidence", 1.0)
 
         if atype == "fill":
             await self.bridge.fill(selector, value)
+            # Stream field progress to Telegram in real-time
+            if tg_stream is not None:
+                try:
+                    await tg_stream.stream_field(
+                        label=str(label),
+                        value=str(value),
+                        tier=int(tier),
+                        confident=float(confidence) >= 0.7,
+                    )
+                except Exception as _se:
+                    logger.debug("stream_field failed: %s", _se)
         elif atype == "upload":
             await self.bridge.upload(selector, str(file_path))
         elif atype == "click":

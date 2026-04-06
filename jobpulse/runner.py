@@ -225,7 +225,13 @@ def main():
         print(f"Avg ATS: {stats['avg_ats']}%")
 
     elif command == "skill-gaps":
-        from jobpulse.skill_gap_tracker import export_gap_report, get_top_gaps
+        from jobpulse.skill_gap_tracker import export_gap_report, get_top_gaps, get_gap_stats
+
+        stats = get_gap_stats()
+        print(f"\nSkill Gap Summary: {stats['unique_gap_skills']} unique gaps across {stats['jobs_tracked']} jobs")
+        if stats["top5_gaps"]:
+            top5_str = ", ".join(f"{g['skill']} ({g['count']})" for g in stats["top5_gaps"])
+            print(f"Top 5: {top5_str}")
 
         gaps = get_top_gaps(min_count=3)
         if not gaps:
