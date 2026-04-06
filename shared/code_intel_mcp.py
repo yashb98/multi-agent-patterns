@@ -1,21 +1,37 @@
-"""MCP stdio server for Code Intelligence — 8 tools + file watcher.
+"""MCP stdio server for Code Intelligence — 13 tools + file watcher.
 
 Exposes CodeIntelligence query methods as MCP tools for Claude Code.
 Auto-started via .claude/settings.json MCP configuration.
 
+IMPORTANT: All heavy imports (code_intelligence, numpy, voyageai, langchain)
+are deferred to first tool call so the MCP server can respond to `initialize`
+in <100ms. This prevents Claude Code from timing out the connection.
+
+The key insight: `import shared.code_intel_mcp` triggers shared/__init__.py
+which imports agents.py → langchain_openai → numpy → 2961 modules (3.6s).
+We avoid this by using direct file-level imports instead of package imports.
+
 Run directly: python shared/code_intel_mcp.py
 """
 
+from __future__ import annotations
+
 import json
+import logging
 import os
 import threading
 import time
 from pathlib import Path
 
-from shared.code_intelligence import CodeIntelligence, _is_excluded
-from shared.logging_config import get_logger
+# Use stdlib logging directly — avoids importing shared.logging_config
+# which triggers shared/__init__.py → 2961 modules → 3.6s delay.
+_logger = logging.getLogger("code_intel_mcp")
 
-logger = get_logger(__name__)
+def _get_logger() -> logging.Logger:
+    return _logger
+
+# Lazy-loaded on first tool call — set by _ensure_loaded()
+_is_excluded = None  # populated when CodeIntelligence is imported
 
 # ─── TOOL NAMES ───────────────────────────────────────────────────
 
@@ -32,13 +48,15 @@ TOOL_NAMES = [
     "complexity_hotspots",
     "dependency_cycles",
     "similar_functions",
+    "grep_search",
+    "diff_impact",
 ]
 
 # ─── FILE WATCHER ─────────────────────────────────────────────────
 
 
 def _start_file_watcher(
-    ci: CodeIntelligence,
+    ci,  # type: CodeIntelligence
     root: str,
     debounce_ms: int = 500,
 ) -> None:
@@ -52,7 +70,7 @@ def _start_file_watcher(
         from watchdog.events import FileSystemEventHandler  # type: ignore[import]
         from watchdog.observers import Observer  # type: ignore[import]
     except ImportError:
-        logger.info("watchdog not installed — file watcher disabled")
+        _get_logger().info("watchdog not installed — file watcher disabled")
         return
 
     debounce_sec = debounce_ms / 1000.0
@@ -96,17 +114,17 @@ def _start_file_watcher(
             for abs_path in to_process:
                 try:
                     rel = str(Path(abs_path).relative_to(root_path))
-                    logger.debug("reindexing %s", rel)
+                    _get_logger().debug("reindexing %s", rel)
                     ci.reindex_file(rel, root)
                 except Exception as exc:
-                    logger.warning("reindex_file failed for %s: %s", abs_path, exc)
+                    _get_logger().warning("reindex_file failed for %s: %s", abs_path, exc)
 
     handler = ReindexHandler()
     observer = Observer()
     observer.schedule(handler, root, recursive=True)
     observer.daemon = True
     observer.start()
-    logger.info("file watcher started on %s", root)
+    _get_logger().info("file watcher started on %s", root)
 
     def flush_loop() -> None:
         while True:
@@ -193,8 +211,41 @@ _TOOL_DEFS: list[dict] = [
                     "description": "BFS depth limit for impact traversal (default 2)",
                     "default": 2,
                 },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum impacted nodes to return (default 100)",
+                    "default": 100,
+                },
             },
             "required": ["files"],
+        },
+    },
+    {
+        "name": "diff_impact",
+        "description": (
+            "Compute blast radius from a git diff or branch ref. "
+            "Pass raw diff text OR a git ref (e.g. 'HEAD~3', 'main..feature'). "
+            "Returns changed files, changed functions, impacted nodes, and max risk."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "diff_text": {
+                    "type": "string",
+                    "description": "Raw unified diff text (from clipboard or PR)",
+                    "default": "",
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "Git ref to diff against (e.g. 'HEAD~3', 'main..feature-branch')",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "BFS depth limit for impact traversal (default 2)",
+                    "default": 2,
+                },
+            },
+            "required": [],
         },
     },
     {
@@ -366,23 +417,72 @@ _TOOL_DEFS: list[dict] = [
             "required": ["name"],
         },
     },
+    {
+        "name": "grep_search",
+        "description": (
+            "Search the codebase via regex or literal string, enriched with code graph context. "
+            "Each match in a .py file includes enclosing function, risk score, fan-in, and caller count. "
+            "Results sorted by risk score (high-risk matches first) by default."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to search for (or literal if fixed_string=true)",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "File glob filter (e.g. '*.py', '*.md'). Defaults to all files.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum matches to return (default 50)",
+                    "default": 50,
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "Lines of context before/after each match (default 0)",
+                    "default": 0,
+                },
+                "fixed_string": {
+                    "type": "boolean",
+                    "description": "Treat pattern as a literal string (default false)",
+                    "default": False,
+                },
+                "sort_by": {
+                    "type": "string",
+                    "enum": ["risk", "file"],
+                    "description": "Sort order: 'risk' (high-risk first) or 'file' (file order)",
+                    "default": "risk",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
 ]
 
 
 # ─── SERVER FACTORY ───────────────────────────────────────────────
 
 
-def create_mcp_server():  # type: ignore[return]
-    """Create and configure the MCP Server with 8 Code Intelligence tools.
+def _ensure_loaded():
+    """Lazy-load CodeIntelligence on first tool call.
 
-    Reads CI_DB_PATH and CI_PROJECT_ROOT from environment variables,
-    creates a CodeIntelligence instance, runs a full index if the DB is
-    empty, starts the file watcher, and registers all tool handlers.
+    This keeps the MCP server responsive to initialize in <100ms while
+    deferring the import chain until actually needed.
 
-    Returns the configured mcp.server.Server instance.
+    Note: shared/__init__.py is bypassed at startup (see __main__ block)
+    so `from shared.code_intelligence import ...` only pulls in
+    code_graph + hybrid_search + logging_config (~157ms, 259 modules)
+    instead of the full shared package (~3600ms, 2961 modules).
     """
-    from mcp.server import Server
-    from mcp.types import TextContent, Tool
+    global _ci_instance, _is_excluded
+
+    if _ci_instance is not None:
+        return _ci_instance
+
+    from shared.code_intelligence import CodeIntelligence, _is_excluded  # noqa: F811
 
     db_path = os.environ.get("CI_DB_PATH", "data/code_intelligence.db")
     project_root = os.environ.get("CI_PROJECT_ROOT", str(Path.cwd()))
@@ -392,12 +492,28 @@ def create_mcp_server():  # type: ignore[return]
     # Bootstrap: run full index if DB is empty
     node_count: int = ci.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
     if node_count == 0:
-        logger.info("DB is empty — running full index of %s", project_root)
+        _get_logger().info("DB is empty — running full index of %s", project_root)
         stats = ci.index_directory(project_root)
-        logger.info("initial index complete: %s", stats)
+        _get_logger().info("initial index complete: %s", stats)
 
-    # Start file watcher
+    # Start file watcher (in background, non-blocking)
     _start_file_watcher(ci, project_root)
+
+    _ci_instance = ci
+    return ci
+
+
+_ci_instance = None
+
+
+def create_mcp_server():  # type: ignore[return]
+    """Create and configure the MCP Server with 13 Code Intelligence tools.
+
+    The server responds to `initialize` immediately (<100ms). Heavy imports
+    (numpy, voyageai, code_intelligence) are deferred to the first tool call.
+    """
+    from mcp.server import Server
+    from mcp.types import TextContent, Tool
 
     server = Server("code-intelligence")
 
@@ -415,9 +531,10 @@ def create_mcp_server():  # type: ignore[return]
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         try:
+            ci = _ensure_loaded()
             result = _dispatch(ci, name, arguments)
         except Exception as exc:
-            logger.exception("tool %s raised: %s", name, exc)
+            _get_logger().exception("tool %s raised: %s", name, exc)
             result = {
                 "status": "error",
                 "errorCategory": "transient",
@@ -438,7 +555,17 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
     elif name == "callees_of":
         return ci.callees_of(args["name"], max_results=args.get("max_results", 20))
     elif name == "impact_analysis":
-        return ci.impact_analysis(args["files"], max_depth=args.get("max_depth", 2))
+        return ci.impact_analysis(
+            args["files"],
+            max_depth=args.get("max_depth", 2),
+            max_results=args.get("max_results", 100),
+        )
+    elif name == "diff_impact":
+        return ci.diff_impact(
+            diff_text=args.get("diff_text", ""),
+            ref=args.get("ref"),
+            max_depth=args.get("max_depth", 2),
+        )
     elif name == "risk_report":
         return ci.risk_report(top_n=args.get("top_n", 10), file=args.get("file"))
     elif name == "semantic_search":
@@ -460,6 +587,15 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
         return ci.dependency_cycles(max_depth=args.get("max_depth", 4))
     elif name == "similar_functions":
         return ci.similar_functions(args["name"], top_k=args.get("top_k", 5))
+    elif name == "grep_search":
+        return ci.grep_search(
+            args["pattern"],
+            glob=args.get("glob"),
+            max_results=args.get("max_results", 50),
+            context_lines=args.get("context_lines", 0),
+            fixed_string=args.get("fixed_string", False),
+            sort_by=args.get("sort_by", "risk"),
+        )
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -481,5 +617,52 @@ async def main() -> None:
 
 if __name__ == "__main__":
     import asyncio
+    import sys
+    import types
 
-    asyncio.run(main())
+    # ── Resolve paths ──
+    # Claude Code runs: python shared/code_intel_mcp.py (cwd = project root)
+    # Python sets sys.path[0] = "shared/" but we need project root on path
+    # for transitive imports (code_intelligence → code_graph, hybrid_search, etc.)
+    _script_dir = Path(__file__).resolve().parent  # .../shared/
+    _project_root = str(_script_dir.parent)  # .../multi_agent_patterns/
+    if _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
+
+    # ── CRITICAL: MCP stdio servers must NEVER write non-JSON to stdout ──
+    # shared/logging_config.py attaches StreamHandler(sys.stdout) to root logger.
+    # Any log message to stdout corrupts the MCP JSON-RPC protocol and causes
+    # Claude Code to drop the connection (this was the root cause of tools not loading).
+    #
+    # The MCP SDK uses sys.stdout.buffer (the raw binary fd), so we:
+    # 1. Save a reference to the real stdout buffer for the SDK
+    # 2. Replace sys.stdout with stderr so all print()/logging goes to stderr
+    _real_stdout_buffer = sys.stdout.buffer
+    sys.stdout = sys.stderr  # All Python-level stdout → stderr
+
+    # ── Bypass shared/__init__.py ──
+    # Pre-register 'shared' as an empty namespace package so that
+    # `from shared.code_intelligence import ...` loads only the files it needs
+    # (~157ms, 259 modules) instead of the full package (~3600ms, 2961 modules).
+    if "shared" not in sys.modules:
+        pkg = types.ModuleType("shared")
+        pkg.__path__ = [str(_script_dir)]
+        pkg.__package__ = "shared"
+        sys.modules["shared"] = pkg
+
+    # Patch main() to pass the real stdout buffer to stdio_server
+    async def _main_patched() -> None:
+        from mcp.server.stdio import stdio_server
+        from io import TextIOWrapper
+        import anyio
+
+        real_stdout = anyio.wrap_file(TextIOWrapper(_real_stdout_buffer, encoding="utf-8"))
+        server = create_mcp_server()
+        async with stdio_server(stdout=real_stdout) as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+
+    asyncio.run(_main_patched())

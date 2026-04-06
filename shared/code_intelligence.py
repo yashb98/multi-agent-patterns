@@ -52,6 +52,8 @@ EXCLUDE_PATTERNS = {
     "venv/",
     ".venv/",
     ".claude/worktrees/",
+    ".worktrees/",
+    ".coverage",
 }
 
 EMBEDDING_MODEL = "voyage-code-3"
@@ -114,6 +116,9 @@ class CodeIntelligence:
         # Compose existing classes with shared connection
         self._graph = CodeGraph(conn=self.conn)
         self._search = HybridSearch(conn=self.conn)
+
+        # Project root for grep_search (set by index_directory or env)
+        self._project_root = os.environ.get("CI_PROJECT_ROOT", str(Path.cwd()))
 
         # Voyage-code-3 client (lazy init)
         self._voyage_client = None
@@ -263,6 +268,7 @@ class CodeIntelligence:
         """
         t0 = time.monotonic()
         root_path = Path(root)
+        self._project_root = root
 
         # Phase 1 — Python AST (with exclusion filtering)
         self._index_python_files(root_path)
@@ -841,9 +847,10 @@ class CodeIntelligence:
         ]
         return {"source": name, "callees": callees, "total": len(raw)}
 
-    def impact_analysis(self, files: list[str], max_depth: int = 2) -> dict[str, Any]:
+    def impact_analysis(self, files: list[str], max_depth: int = 2,
+                         max_results: int = 100) -> dict[str, Any]:
         """Compute blast radius from changed files."""
-        radius = self._graph.impact_radius(files, max_depth)
+        radius = self._graph.impact_radius(files, max_depth, max_results=max_results)
         impacted_files: set[str] = radius.get("impacted_files", set())
         impacted_nodes: list[dict[str, Any]] = radius.get("impacted_nodes", [])
         depth_map: dict[str, int] = radius.get("depth_map", {})
@@ -860,16 +867,13 @@ class CodeIntelligence:
         enriched: list[dict[str, Any]] = []
         for node in impacted_nodes:
             node_file = node.get("file_path", "")
-            risk_row = self.conn.execute(
-                "SELECT risk_score FROM nodes WHERE qualified_name=?",
-                (node.get("qualified_name", ""),),
-            ).fetchone()
-            risk = risk_row[0] if risk_row else 0.0
+            risk = node.get("risk_score", 0.0) or 0.0
             enriched.append(
                 {
                     "name": node.get("name", ""),
+                    "qualified_name": node.get("qualified_name", ""),
                     "file": node_file,
-                    "depth": depth_map.get(node_file, 0),
+                    "depth": node.get("impact_depth", depth_map.get(node_file, 0)),
                     "risk": risk,
                 }
             )
@@ -880,9 +884,40 @@ class CodeIntelligence:
             "changed_functions": changed_functions,
             "impacted": enriched,
             "impacted_files": list(impacted_files),
-            "total_functions": len(enriched),
+            "total_impacted": len(enriched),
             "max_risk": max_risk,
         }
+
+    def diff_impact(
+        self, diff_text: str = "", *, ref: str | None = None,
+        root: str | None = None, max_depth: int = 2, max_results: int = 100,
+    ) -> dict[str, Any]:
+        """Blast radius from a git diff or ref."""
+        import re as _re
+
+        if ref and not diff_text:
+            _root = root or self._project_root
+            try:
+                result = subprocess.run(
+                    ["git", "diff", ref, "--name-only"],
+                    capture_output=True, text=True, timeout=5, cwd=_root,
+                )
+                changed_files = [f.strip() for f in result.stdout.strip().splitlines() if f.strip()] if result.returncode == 0 else []
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                changed_files = []
+        elif diff_text:
+            changed_files = list(dict.fromkeys(
+                m.group(1) for m in _re.finditer(r"^(?:---|\+\+\+) [ab]/(.+)$", diff_text, _re.MULTILINE)
+            ))
+        else:
+            return {"changed_files": [], "changed_functions": [], "impacted": [], "impacted_files": [], "total_impacted": 0, "max_risk": 0.0}
+
+        if not changed_files:
+            return {"changed_files": [], "changed_functions": [], "impacted": [], "impacted_files": [], "total_impacted": 0, "max_risk": 0.0}
+
+        result = self.impact_analysis(changed_files, max_depth=max_depth, max_results=max_results)
+        result["changed_files"] = changed_files
+        return result
 
     def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
         """Top-N highest-risk functions, optionally filtered by file."""
@@ -1132,7 +1167,8 @@ class CodeIntelligence:
             "\nMCP tools: find_symbol · callers_of · callees_of · "
             "impact_analysis · risk_report · semantic_search · "
             "module_summary · recent_changes · dead_code_report · "
-            "complexity_hotspots · dependency_cycles · similar_functions"
+            "complexity_hotspots · dependency_cycles · similar_functions · "
+            "grep_search"
         )
 
         return "\n".join(lines)
@@ -1361,6 +1397,125 @@ class CodeIntelligence:
                 break
 
         return results
+
+    # ─── GREP SEARCH ─────────────────────────────────────────────────
+
+    def grep_search(
+        self,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        max_results: int = 50,
+        context_lines: int = 0,
+        fixed_string: bool = False,
+        sort_by: str = "risk",
+    ) -> dict[str, Any]:
+        """Search codebase via regex/literal grep, enriched with code graph context.
+
+        Uses Python re + pathlib for portability. Each match in a .py file is
+        enriched with enclosing function, risk score, fan-in, and caller count.
+
+        Args:
+            pattern: Regex pattern (or literal if fixed_string=True).
+            glob: File glob filter (e.g. "*.py", "*.md"). Defaults to all files.
+            max_results: Maximum matches to return.
+            context_lines: Lines of context before/after each match (0 = match only).
+            fixed_string: If True, treat pattern as a literal string.
+            sort_by: "risk" (high-risk matches first) or "file" (file order).
+
+        Returns:
+            Dict with matches list, total_matches count, and enrichment stats.
+        """
+        import re
+
+        project_root = Path(self._project_root) if hasattr(self, "_project_root") else Path.cwd()
+
+        if fixed_string:
+            regex = re.compile(re.escape(pattern))
+        else:
+            try:
+                regex = re.compile(pattern)
+            except re.error as e:
+                return {"status": "error", "message": f"Invalid regex: {e}", "matches": []}
+
+        # Determine file pattern
+        file_glob = glob or "*"
+
+        # Collect matching files
+        matches: list[dict[str, Any]] = []
+        total_matches = 0
+        enriched_count = 0
+
+        # Walk project using rglob
+        for fpath in sorted(project_root.rglob(file_glob)):
+            if not fpath.is_file():
+                continue
+            rel = str(fpath.relative_to(project_root))
+            # Skip excluded directories
+            if _is_excluded(rel):
+                continue
+
+            try:
+                text = fpath.read_text(errors="replace")
+            except (OSError, PermissionError):
+                continue
+
+            lines = text.splitlines()
+            for i, line in enumerate(lines):
+                if regex.search(line):
+                    total_matches += 1
+                    if len(matches) >= max_results:
+                        continue  # keep counting total but stop collecting
+
+                    match_entry: dict[str, Any] = {
+                        "file": rel,
+                        "line_number": i + 1,
+                        "content": line.rstrip(),
+                    }
+
+                    # Add context lines
+                    if context_lines > 0:
+                        start = max(0, i - context_lines)
+                        end = min(len(lines), i + context_lines + 1)
+                        match_entry["context"] = [
+                            ln.rstrip() for ln in lines[start:end]
+                        ]
+
+                    # Enrich .py file matches with code graph data
+                    if rel.endswith(".py"):
+                        node = self.conn.execute(
+                            """SELECT qualified_name, risk_score, fan_in
+                               FROM nodes
+                               WHERE file_path = ? AND line_start <= ? AND line_end >= ?
+                               ORDER BY (line_end - line_start) ASC
+                               LIMIT 1""",
+                            (rel, i + 1, i + 1),
+                        ).fetchone()
+                        if node:
+                            callers = self.conn.execute(
+                                "SELECT COUNT(*) FROM edges WHERE target_qname = ? AND kind = 'calls'",
+                                (node[0],),
+                            ).fetchone()[0]
+                            match_entry["enclosing_function"] = node[0]
+                            match_entry["risk_score"] = round(node[1] or 0, 3)
+                            match_entry["fan_in"] = node[2] or 0
+                            match_entry["callers_count"] = callers
+                            enriched_count += 1
+
+                    matches.append(match_entry)
+
+        # Sort results
+        if sort_by == "risk" and any(m.get("risk_score") for m in matches):
+            matches.sort(key=lambda m: m.get("risk_score", 0), reverse=True)
+
+        return {
+            "matches": matches,
+            "total_matches": total_matches,
+            "returned": len(matches),
+            "enriched": enriched_count,
+            "pattern": pattern,
+            "glob": glob,
+        }
 
     def close(self) -> None:
         """Close the database connection."""
