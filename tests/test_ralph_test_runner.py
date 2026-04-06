@@ -29,7 +29,7 @@ class TestRalphTestRun:
 
         result = ralph_test_run(
             platform="linkedin",
-            url="https://linkedin.com/jobs/view/123",
+            url="https://example.com/jobs/test-success",
             store_db_path=tmp_paths["store_db"],
             pattern_db_path=tmp_paths["pattern_db"],
             base_dir=tmp_paths["base_dir"],
@@ -50,7 +50,7 @@ class TestRalphTestRun:
 
         result = ralph_test_run(
             platform="linkedin",
-            url="https://linkedin.com/jobs/view/456",
+            url="https://example.com/jobs/test-exhausted",
             store_db_path=tmp_paths["store_db"],
             pattern_db_path=tmp_paths["pattern_db"],
             base_dir=tmp_paths["base_dir"],
@@ -68,7 +68,7 @@ class TestRalphTestRun:
 
         result = ralph_test_run(
             platform="linkedin",
-            url="https://linkedin.com/jobs/view/789",
+            url="https://example.com/jobs/test-blocked",
             store_db_path=tmp_paths["store_db"],
             pattern_db_path=tmp_paths["pattern_db"],
             base_dir=tmp_paths["base_dir"],
@@ -85,7 +85,7 @@ class TestRalphTestRun:
 
         ralph_test_run(
             platform="linkedin",
-            url="https://linkedin.com/jobs/view/123",
+            url="https://example.com/jobs/test-success",
             store_db_path=tmp_paths["store_db"],
             pattern_db_path=tmp_paths["pattern_db"],
             base_dir=tmp_paths["base_dir"],
@@ -103,7 +103,7 @@ class TestRalphTestRun:
 
         result = ralph_test_run(
             platform="linkedin",
-            url="https://linkedin.com/jobs/view/123",
+            url="https://example.com/jobs/test-success",
             store_db_path=tmp_paths["store_db"],
             pattern_db_path=tmp_paths["pattern_db"],
             base_dir=tmp_paths["base_dir"],
