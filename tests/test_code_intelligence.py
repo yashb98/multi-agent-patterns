@@ -540,7 +540,7 @@ class TestDiffImpact:
         assert "changed_files" in result
         assert "auth.py" in result["changed_files"]
         assert "impacted" in result
-        assert result["total_impacted"] >= 0
+        assert result["total_impacted"] >= 1
 
     def test_diff_impact_empty_diff(self, ci, sample_project):
         ci.index_directory(str(sample_project))
@@ -548,10 +548,16 @@ class TestDiffImpact:
         assert result["changed_files"] == []
         assert result["total_impacted"] == 0
 
-    def test_diff_impact_from_git(self, ci, sample_project):
+    def test_diff_impact_from_git_ref(self, ci, sample_project, monkeypatch):
+        import subprocess
         ci.index_directory(str(sample_project))
-        result = ci.diff_impact(ref="HEAD", root=str(sample_project))
-        assert "changed_files" in result
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="auth.py\n", stderr=""
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+        result = ci.diff_impact(ref="HEAD~1", root=str(sample_project))
+        assert "auth.py" in result["changed_files"]
+        assert result["total_impacted"] >= 1
 
 
 class TestVoyageSearchIntegration:

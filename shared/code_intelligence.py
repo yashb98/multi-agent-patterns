@@ -895,14 +895,22 @@ class CodeIntelligence:
         """Blast radius from a git diff or ref."""
         import re as _re
 
+        _empty = {"changed_files": [], "changed_functions": [], "impacted": [],
+                   "impacted_files": [], "total_impacted": 0, "max_risk": 0.0}
+
         if ref and not diff_text:
+            if ref.startswith("-"):
+                return _empty
             _root = root or self._project_root
             try:
-                result = subprocess.run(
-                    ["git", "diff", ref, "--name-only"],
+                proc = subprocess.run(
+                    ["git", "diff", "--name-only", "--", ref],
                     capture_output=True, text=True, timeout=5, cwd=_root,
                 )
-                changed_files = [f.strip() for f in result.stdout.strip().splitlines() if f.strip()] if result.returncode == 0 else []
+                if proc.returncode == 0:
+                    changed_files = [f.strip() for f in proc.stdout.strip().splitlines() if f.strip()]
+                else:
+                    changed_files = []
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 changed_files = []
         elif diff_text:
@@ -910,14 +918,14 @@ class CodeIntelligence:
                 m.group(1) for m in _re.finditer(r"^(?:---|\+\+\+) [ab]/(.+)$", diff_text, _re.MULTILINE)
             ))
         else:
-            return {"changed_files": [], "changed_functions": [], "impacted": [], "impacted_files": [], "total_impacted": 0, "max_risk": 0.0}
+            return _empty
 
         if not changed_files:
-            return {"changed_files": [], "changed_functions": [], "impacted": [], "impacted_files": [], "total_impacted": 0, "max_risk": 0.0}
+            return _empty
 
-        result = self.impact_analysis(changed_files, max_depth=max_depth, max_results=max_results)
-        result["changed_files"] = changed_files
-        return result
+        ia_result = self.impact_analysis(changed_files, max_depth=max_depth, max_results=max_results)
+        ia_result["changed_files"] = changed_files
+        return ia_result
 
     def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
         """Top-N highest-risk functions, optionally filtered by file."""
