@@ -90,6 +90,11 @@ def _is_binary(filepath: Path, sample_size: int = 8192) -> bool:
         return True
 
 
+_DEFAULT_BOUNDARY_RULES = [
+    {"module": "shared", "cannot_import": ["jobpulse", "patterns", "mindgraph_app"]},
+]
+
+
 class CodeIntelligence:
     """Unified code intelligence — structural graph + semantic search.
 
@@ -1058,6 +1063,51 @@ class CodeIntelligence:
                     not_found.append(name)
 
         return {"found": found[:max_results], "not_found": not_found, "total": len(found)}
+
+    def boundary_check(self, rules: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Check architectural boundary rules — detect forbidden imports."""
+        if rules is None:
+            rules = _DEFAULT_BOUNDARY_RULES
+
+        violations: list[dict[str, Any]] = []
+        for rule in rules:
+            source_module = rule["module"]
+            forbidden = rule["cannot_import"]
+
+            import_edges = self.conn.execute(
+                "SELECT source_qname, target_qname, file_path, line "
+                "FROM edges WHERE kind='imports' AND file_path LIKE ?",
+                (f"{source_module}/%",),
+            ).fetchall()
+
+            call_edges = self.conn.execute(
+                "SELECT e.source_qname, e.target_qname, e.file_path, e.line "
+                "FROM edges e JOIN nodes n ON n.qualified_name = e.target_qname "
+                "WHERE e.kind='calls' AND e.file_path LIKE ? AND n.file_path IS NOT NULL",
+                (f"{source_module}/%",),
+            ).fetchall()
+
+            for edge in list(import_edges) + list(call_edges):
+                target_str = str(edge[1])
+                for forbidden_mod in forbidden:
+                    if (target_str.startswith(f"{forbidden_mod}.")
+                            or target_str.startswith(f"{forbidden_mod}/")
+                            or f"/{forbidden_mod}/" in target_str):
+                        violations.append({
+                            "source_module": source_module, "source_file": edge[2],
+                            "source_function": edge[0], "target": target_str,
+                            "forbidden_module": forbidden_mod, "line": edge[3],
+                        })
+
+        seen = set()
+        unique = []
+        for v in violations:
+            key = (v["source_file"], v["target"], v["line"])
+            if key not in seen:
+                seen.add(key)
+                unique.append(v)
+
+        return {"violations": unique, "rules_checked": len(rules), "clean": len(unique) == 0}
 
     def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
         """Top-N highest-risk functions, optionally filtered by file."""

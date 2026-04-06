@@ -53,6 +53,7 @@ TOOL_NAMES = [
     "test_coverage_map",
     "call_path",
     "batch_find",
+    "boundary_check",
 ]
 
 # ─── FILE WATCHER ─────────────────────────────────────────────────
@@ -511,6 +512,24 @@ _TOOL_DEFS: list[dict] = [
             "required": [],
         },
     },
+    {
+        "name": "boundary_check",
+        "description": (
+            "Check architectural boundary rules — detect forbidden cross-module imports. "
+            "Default: shared/ cannot import from jobpulse/, patterns/, mindgraph_app/."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {"module": {"type": "string"}, "cannot_import": {"type": "array", "items": {"type": "string"}}}},
+                    "description": "Boundary rules (uses project defaults if omitted)",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -653,6 +672,8 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
         return ci.call_path(args["source"], args["target"], max_depth=args.get("max_depth", 6))
     elif name == "batch_find":
         return ci.batch_find(names=args.get("names"), pattern=args.get("pattern"), max_results=args.get("max_results", 50))
+    elif name == "boundary_check":
+        return ci.boundary_check(rules=args.get("rules"))
     else:
         raise ValueError(f"Unknown tool: {name}")
 

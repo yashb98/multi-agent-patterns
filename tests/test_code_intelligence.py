@@ -664,3 +664,37 @@ class TestBatchFind:
         result = ci.batch_find(["login", "check_access"])
         for r in result["found"]:
             assert "risk_score" in r
+
+
+class TestBoundaryCheck:
+    def test_detects_violation(self, ci, tmp_path):
+        src = tmp_path / "project"
+        src.mkdir()
+        (src / "shared").mkdir()
+        (src / "jobpulse").mkdir()
+        (src / "shared" / "utils.py").write_text(textwrap.dedent("""\
+            from jobpulse.runner import start
+            def helper():
+                return start()
+        """))
+        (src / "jobpulse" / "runner.py").write_text(textwrap.dedent("""\
+            def start():
+                return True
+        """))
+        ci.index_directory(str(src))
+        rules = [{"module": "shared", "cannot_import": ["jobpulse", "patterns", "mindgraph_app"]}]
+        result = ci.boundary_check(rules)
+        assert len(result["violations"]) >= 1
+        assert result["violations"][0]["source_module"] == "shared"
+
+    def test_no_violation_when_clean(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        rules = [{"module": "shared", "cannot_import": ["jobpulse"]}]
+        result = ci.boundary_check(rules)
+        assert result["violations"] == []
+
+    def test_default_rules(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.boundary_check()
+        assert "violations" in result
+        assert "rules_checked" in result
