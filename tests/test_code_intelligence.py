@@ -611,3 +611,29 @@ class TestTestCoverageMap:
         for fn in result["covered"]:
             assert "tested_by" in fn
             assert len(fn["tested_by"]) > 0
+
+
+class TestCallPath:
+    def test_finds_direct_path(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.call_path("check_access", "login")
+        assert result["found"] is True
+        assert len(result["path"]) >= 2
+        assert any("check_access" in n for n in result["path"])
+        assert any("login" in n for n in result["path"])
+
+    def test_no_path_returns_empty(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.call_path("login", "nonexistent_func")
+        assert result["found"] is False
+        assert result["path"] == []
+
+    def test_path_includes_depth(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.call_path("check_access", "verify_token")
+        assert "depth" in result
+
+    def test_max_depth_limits_search(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.call_path("check_access", "verify_token", max_depth=1)
+        assert "found" in result

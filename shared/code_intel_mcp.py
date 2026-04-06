@@ -51,6 +51,7 @@ TOOL_NAMES = [
     "grep_search",
     "diff_impact",
     "test_coverage_map",
+    "call_path",
 ]
 
 # ─── FILE WATCHER ─────────────────────────────────────────────────
@@ -476,6 +477,23 @@ _TOOL_DEFS: list[dict] = [
             "required": [],
         },
     },
+    {
+        "name": "call_path",
+        "description": (
+            "Find shortest call path from source to target function. "
+            "Traces through the call graph transitively. "
+            "Useful for understanding data flow."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "Source function name"},
+                "target": {"type": "string", "description": "Target function name"},
+                "max_depth": {"type": "integer", "description": "Max path length (default 6)", "default": 6},
+            },
+            "required": ["source", "target"],
+        },
+    },
 ]
 
 
@@ -614,6 +632,8 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
         )
     elif name == "test_coverage_map":
         return ci.test_coverage_map(file=args.get("file"), top_n=args.get("top_n", 50))
+    elif name == "call_path":
+        return ci.call_path(args["source"], args["target"], max_depth=args.get("max_depth", 6))
     else:
         raise ValueError(f"Unknown tool: {name}")
 

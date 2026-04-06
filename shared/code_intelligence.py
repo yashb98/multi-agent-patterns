@@ -985,6 +985,51 @@ class CodeIntelligence:
             "coverage_pct": round(len(covered) / total * 100, 1) if total else 0,
         }
 
+    def call_path(self, source: str, target: str, max_depth: int = 6) -> dict[str, Any]:
+        """Find shortest call path from source to target via BFS."""
+        from collections import deque as _deque
+
+        src_row = self.conn.execute(
+            "SELECT qualified_name FROM nodes WHERE name=? AND kind IN ('function','method') LIMIT 1",
+            (source,),
+        ).fetchone()
+        src_qname = src_row[0] if src_row else source
+
+        tgt_row = self.conn.execute(
+            "SELECT qualified_name FROM nodes WHERE name=? AND kind IN ('function','method') LIMIT 1",
+            (target,),
+        ).fetchone()
+        tgt_qname = tgt_row[0] if tgt_row else target
+
+        forward: dict[str, list[str]] = {}
+        for row in self.conn.execute(
+            "SELECT source_qname, target_qname FROM edges WHERE kind='calls'"
+        ).fetchall():
+            forward.setdefault(row[0], []).append(row[1])
+
+        visited: dict[str, str | None] = {src_qname: None}
+        queue = _deque([(src_qname, 0)])
+
+        while queue:
+            current, depth = queue.popleft()
+            if current == tgt_qname or current.endswith(f"::{target}"):
+                path = [current]
+                node = current
+                while visited[node] is not None:
+                    node = visited[node]
+                    path.append(node)
+                path.reverse()
+                return {"found": True, "source": src_qname, "target": current, "path": path, "depth": len(path) - 1}
+            if depth >= max_depth:
+                continue
+
+            for neighbor in forward.get(current, []):
+                if neighbor not in visited:
+                    visited[neighbor] = current
+                    queue.append((neighbor, depth + 1))
+
+        return {"found": False, "source": src_qname, "target": tgt_qname, "path": [], "depth": 0}
+
     def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
         """Top-N highest-risk functions, optionally filtered by file."""
         if file is not None:
