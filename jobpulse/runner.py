@@ -287,33 +287,59 @@ def main():
         from jobpulse.ralph_loop.cli_output import format_test_result
         from jobpulse.ralph_loop.test_runner import ralph_test_run
 
-        if len(sys.argv) < 3:
-            print(
-                "Usage: python -m jobpulse.runner ralph-test <url> [--platform linkedin] [--max-iterations 5]"
-            )
-            sys.exit(1)
+        args = sys.argv[2:]
+        is_live = "--live" in args
+        args = [a for a in args if a != "--live"]
 
-        url = sys.argv[2]
+        # Parse common flags
         platform = "linkedin"
         max_iters = 5
+        count = 3
+        platforms_csv = None
 
-        args = sys.argv[3:]
         for i, arg in enumerate(args):
             if arg == "--platform" and i + 1 < len(args):
                 platform = args[i + 1]
+            elif arg == "--platforms" and i + 1 < len(args):
+                platforms_csv = args[i + 1]
             elif arg == "--max-iterations" and i + 1 < len(args):
                 max_iters = int(args[i + 1])
+            elif arg == "--count" and i + 1 < len(args):
+                count = int(args[i + 1])
 
-        print(f"Running Ralph Loop dry-run test on {platform}: {url[:60]}")
-        result = ralph_test_run(platform=platform, url=url, max_iterations=max_iters)
+        if is_live:
+            # Live mode: scrape fresh URLs and test each
+            from jobpulse.ralph_loop.test_runner import ralph_live_test
+            from jobpulse.ralph_loop.cli_output import format_live_summary
 
-        from jobpulse.ralph_loop.test_store import TestStore
+            live_platforms = platforms_csv.split(",") if platforms_csv else None
+            print(f"Scraping fresh job URLs from {live_platforms or 'all platforms'}...")
+            results = ralph_live_test(
+                platforms=live_platforms,
+                count=count,
+                max_iterations=max_iters,
+            )
+            print(format_live_summary(results))
+        else:
+            # Single URL mode (existing behavior)
+            url = args[0] if args and not args[0].startswith("--") else None
+            if not url:
+                print(
+                    "Usage:\n"
+                    "  python -m jobpulse.runner ralph-test <url> [--platform linkedin] [--max-iterations 5]\n"
+                    "  python -m jobpulse.runner ralph-test --live [--platforms linkedin,reed] [--count 3]"
+                )
+                sys.exit(1)
 
-        test_store = TestStore()
-        iterations = test_store.get_iterations(result.run_id) if result.run_id else []
+            print(f"Running Ralph Loop dry-run test on {platform}: {url[:60]}")
+            result = ralph_test_run(platform=platform, url=url, max_iterations=max_iters)
 
-        output = format_test_result(result, iterations)
-        print(output)
+            from jobpulse.ralph_loop.test_store import TestStore
+
+            test_store = TestStore()
+            iterations = test_store.get_iterations(result.run_id) if result.run_id else []
+            output = format_test_result(result, iterations)
+            print(output)
 
     elif command == "test":
         from jobpulse.telegram_agent import send_message
