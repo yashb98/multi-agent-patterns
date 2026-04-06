@@ -80,8 +80,8 @@ PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
 EXT_BRIDGE_HOST = os.getenv("EXT_BRIDGE_HOST", "localhost")
 EXT_BRIDGE_PORT = int(os.getenv("EXT_BRIDGE_PORT", "8765"))
 
-# Application engine mode: "extension" uses Chrome extension, "playwright" uses existing adapters
-APPLICATION_ENGINE = os.getenv("APPLICATION_ENGINE", "playwright")
+# Application engine mode: "extension" uses Chrome extension, "playwright" uses legacy adapters
+APPLICATION_ENGINE = os.getenv("APPLICATION_ENGINE", "extension")
 
 # External application engine
 ATS_ACCOUNT_PASSWORD = os.getenv("ATS_ACCOUNT_PASSWORD", "")
