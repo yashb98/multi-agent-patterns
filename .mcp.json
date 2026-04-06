@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "code-intelligence": {
+      "command": "python",
+      "args": ["shared/code_intel_mcp.py"],
+      "env": {
+        "CI_DB_PATH": "data/code_intelligence.db",
+        "VOYAGE_API_KEY": "${VOYAGE_API_KEY}"
+      }
+    }
+  }
+}

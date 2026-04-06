@@ -102,7 +102,8 @@ class CodeIntelligence:
     Single DB file at db_path with WAL mode for concurrent reads.
     """
 
-    def __init__(self, db_path: str = "data/code_intelligence.db"):
+    def __init__(self, db_path: str = "data/code_intelligence.db",
+                 graph_only: bool = False):
         self.db_path = db_path
 
         # Ensure parent directory exists
@@ -128,14 +129,16 @@ class CodeIntelligence:
         # Voyage-code-3 client (lazy init)
         self._voyage_client = None
 
-        # Wire Voyage query embedding into HybridSearch (with disk cache)
-        self._query_embedding_cache: dict[str, list[float]] = {}
-        self._init_query_cache_table()
-        if os.environ.get(EMBEDDING_ENV_VAR):
-            self._search._query_embedding_fn = self._embed_query
+        # graph_only mode: skip embedding load for fast structural queries
+        if not graph_only:
+            # Wire Voyage query embedding into HybridSearch (with disk cache)
+            self._query_embedding_cache: dict[str, list[float]] = {}
+            self._init_query_cache_table()
+            if os.environ.get(EMBEDDING_ENV_VAR):
+                self._search._query_embedding_fn = self._embed_query
 
-        # Pre-load Voyage embeddings into numpy matrix for fast search
-        self._search.load_embeddings_to_memory()
+            # Pre-load Voyage embeddings into numpy matrix for fast search
+            self._search.load_embeddings_to_memory()
 
     def _init_extended_schema(self):
         """Create columns/tables beyond what CodeGraph + HybridSearch provide."""

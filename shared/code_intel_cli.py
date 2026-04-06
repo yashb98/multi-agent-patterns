@@ -1,30 +1,48 @@
 """CLI wrapper for CodeIntelligence — gives subagents instant graph queries.
 
-Usage (from any Bash tool call):
-    python -m shared.code_intel_cli find_symbol get_llm
-    python -m shared.code_intel_cli callers_of get_llm
-    python -m shared.code_intel_cli callees_of researcher_node
-    python -m shared.code_intel_cli impact_analysis shared/agents.py shared/streaming.py
-    python -m shared.code_intel_cli risk_report 10
-    python -m shared.code_intel_cli risk_report --file shared/agents.py
-    python -m shared.code_intel_cli semantic_search "rate limiting logic"
-    python -m shared.code_intel_cli module_summary shared/agents.py
-    python -m shared.code_intel_cli recent_changes 5
-    python -m shared.code_intel_cli dead_code 20
+Usage (from any Bash tool call — do NOT use `python -m shared.code_intel_cli`,
+use the direct script path to avoid heavy shared/__init__.py imports):
 
-Each command prints JSON to stdout. Typical latency: 5-15ms.
+    python shared/code_intel_cli.py find_symbol get_llm
+    python shared/code_intel_cli.py callers_of get_llm
+    python shared/code_intel_cli.py callees_of researcher_node
+    python shared/code_intel_cli.py impact_analysis shared/agents.py shared/streaming.py
+    python shared/code_intel_cli.py risk_report 10
+    python shared/code_intel_cli.py risk_report --file shared/agents.py
+    python shared/code_intel_cli.py semantic_search "rate limiting logic"
+    python shared/code_intel_cli.py module_summary shared/agents.py
+    python shared/code_intel_cli.py recent_changes 5
+    python shared/code_intel_cli.py dead_code 20
+
+Graph-only commands (find_symbol, callers_of, callees_of, etc.) use direct SQLite
+for ~50ms latency. semantic_search loads the full CodeIntelligence stack (~4s).
 """
 
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
 DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "code_intelligence.db")
 
+# Commands that only need SQLite graph — skip full CodeIntelligence import
+GRAPH_ONLY_COMMANDS = {
+    "find_symbol", "callers_of", "callees_of", "impact_analysis",
+    "risk_report", "module_summary", "recent_changes", "dead_code",
+}
 
-def _get_ci():
+
+def _get_ci(graph_only: bool | None = None):
+    """Get CodeIntelligence instance. graph_only=True skips embedding load."""
     from shared.code_intelligence import CodeIntelligence
-    return CodeIntelligence(DB_PATH)
+    return CodeIntelligence(DB_PATH, graph_only=bool(graph_only))
+
+
+def _get_conn():
+    """Get a raw SQLite connection for graph-only queries (~1ms)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def _print(obj):
@@ -33,76 +51,131 @@ def _print(obj):
 
 def cmd_find_symbol(args):
     if not args:
-        print("Usage: find_symbol <name>", file=sys.stderr)
-        sys.exit(1)
-    _print(_get_ci().find_symbol(args[0]))
+        print("Usage: find_symbol <name>", file=sys.stderr); sys.exit(1)
+    name = args[0]
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT name, qualified_name, file_path, kind, line_start, line_end, "
+        "risk_score, fan_in, fan_out "
+        "FROM nodes WHERE name LIKE ? OR qualified_name LIKE ? "
+        "ORDER BY CASE WHEN name = ? THEN 0 ELSE 1 END, fan_in DESC LIMIT 20",
+        (f"%{name}%", f"%{name}%", name),
+    ).fetchall()
+    _print({"query": name, "matches": [dict(r) for r in rows], "total": len(rows)})
+    conn.close()
 
 
 def cmd_callers_of(args):
     if not args:
-        print("Usage: callers_of <name> [max_results]", file=sys.stderr)
-        sys.exit(1)
-    max_r = int(args[1]) if len(args) > 1 else 20
-    _print(_get_ci().callers_of(args[0], max_results=max_r))
+        print("Usage: callers_of <name> [max_results]", file=sys.stderr); sys.exit(1)
+    name, max_r = args[0], int(args[1]) if len(args) > 1 else 20
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT source_qname, file_path, line FROM edges "
+        "WHERE kind IN ('calls', 'references') AND target_qname LIKE ? "
+        "LIMIT ?",
+        (f"%{name}%", max_r),
+    ).fetchall()
+    callers = [{"name": r[0].split("::")[-1], "qualified_name": r[0],
+                "file": r[1], "line": r[2]} for r in rows]
+    _print({"target": name, "callers": callers, "total": len(rows)})
+    conn.close()
 
 
 def cmd_callees_of(args):
     if not args:
-        print("Usage: callees_of <name> [max_results]", file=sys.stderr)
-        sys.exit(1)
-    max_r = int(args[1]) if len(args) > 1 else 20
-    _print(_get_ci().callees_of(args[0], max_results=max_r))
+        print("Usage: callees_of <name> [max_results]", file=sys.stderr); sys.exit(1)
+    name, max_r = args[0], int(args[1]) if len(args) > 1 else 20
+    conn = _get_conn()
+    # Resolve to qualified name
+    row = conn.execute(
+        "SELECT qualified_name FROM nodes WHERE name=? LIMIT 1", (name,)
+    ).fetchone()
+    qname = row[0] if row else name
+    rows = conn.execute(
+        "SELECT target_qname, file_path, line FROM edges "
+        "WHERE kind='calls' AND source_qname=? LIMIT ?",
+        (qname, max_r),
+    ).fetchall()
+    callees = [{"name": r[0].split("::")[-1], "qualified_name": r[0],
+                "file": r[1], "line": r[2]} for r in rows]
+    _print({"source": name, "callees": callees, "total": len(rows)})
+    conn.close()
 
 
 def cmd_impact_analysis(args):
     if not args:
-        print("Usage: impact_analysis <file1> [file2 ...]", file=sys.stderr)
-        sys.exit(1)
-    _print(_get_ci().impact_analysis(args))
+        print("Usage: impact_analysis <file1> [file2 ...]", file=sys.stderr); sys.exit(1)
+    # Impact analysis needs BFS traversal — use CodeIntelligence
+    _print(_get_ci(graph_only=True).impact_analysis(args))
 
 
 def cmd_risk_report(args):
-    ci = _get_ci()
+    conn = _get_conn()
     if args and args[0] == "--file":
-        _print(ci.risk_report(file=args[1] if len(args) > 1 else None))
+        file_filter = args[1] if len(args) > 1 else None
+        where = "AND file_path LIKE ?" if file_filter else ""
+        params = (f"%{file_filter}%",) if file_filter else ()
+        rows = conn.execute(
+            f"SELECT name, file_path, risk_score FROM nodes "
+            f"WHERE kind IN ('function', 'method') AND risk_score > 0 {where} "
+            f"ORDER BY risk_score DESC LIMIT 15", params
+        ).fetchall()
     else:
         top_n = int(args[0]) if args else 10
-        _print(ci.risk_report(top_n=top_n))
+        rows = conn.execute(
+            "SELECT name, file_path, risk_score FROM nodes "
+            "WHERE kind IN ('function', 'method') AND risk_score > 0 "
+            "ORDER BY risk_score DESC LIMIT ?", (top_n,)
+        ).fetchall()
+    _print({"functions": [{"name": r[0], "file": r[1], "risk": r[2]} for r in rows]})
+    conn.close()
 
 
 def cmd_semantic_search(args):
     if not args:
-        print("Usage: semantic_search <query> [top_k]", file=sys.stderr)
-        sys.exit(1)
+        print("Usage: semantic_search <query> [top_k]", file=sys.stderr); sys.exit(1)
     query = args[0]
     top_k = int(args[1]) if len(args) > 1 else 10
-    _print(_get_ci().semantic_search(query, top_k=top_k))
+    # Semantic search needs embeddings — full load required
+    _print(_get_ci(graph_only=False).semantic_search(query, top_k=top_k))
 
 
 def cmd_module_summary(args):
     if not args:
-        print("Usage: module_summary <file>", file=sys.stderr)
-        sys.exit(1)
-    _print(_get_ci().module_summary(args[0]))
+        print("Usage: module_summary <file>", file=sys.stderr); sys.exit(1)
+    file_path = args[0]
+    conn = _get_conn()
+    nodes = conn.execute(
+        "SELECT name, kind, line_start, line_end, risk_score, fan_in, fan_out "
+        "FROM nodes WHERE file_path LIKE ? ORDER BY line_start",
+        (f"%{file_path}%",),
+    ).fetchall()
+    functions = [dict(r) for r in nodes if r["kind"] in ("function", "method")]
+    classes = [dict(r) for r in nodes if r["kind"] == "class"]
+    _print({"file": file_path, "functions": functions, "classes": classes,
+            "total_functions": len(functions), "total_classes": len(classes)})
+    conn.close()
 
 
 def cmd_recent_changes(args):
     n = int(args[0]) if args else 3
-    _print(_get_ci().recent_changes(n_commits=n))
+    # recent_changes needs git log — use CodeIntelligence
+    _print(_get_ci(graph_only=True).recent_changes(n_commits=n))
 
 
 def cmd_dead_code(args):
-    """Find functions with zero incoming call edges — likely dead code."""
-    ci = _get_ci()
+    """Find functions with zero incoming call/reference edges — likely dead code."""
+    conn = _get_conn()
     top_n = int(args[0]) if args else 50
-    rows = ci.conn.execute(
+    rows = conn.execute(
         """
         SELECT n.name, n.qualified_name, n.file_path, n.line_start, n.line_end, n.risk_score
         FROM nodes n
         WHERE n.kind IN ('function', 'method')
           AND n.is_test = 0
           AND n.qualified_name NOT IN (
-              SELECT DISTINCT e.target_qname FROM edges e WHERE e.kind = 'calls'
+              SELECT DISTINCT e.target_qname FROM edges e WHERE e.kind IN ('calls', 'references')
           )
           AND n.name NOT LIKE '\\_%' ESCAPE '\\'
           AND n.name NOT IN ('main', 'setup', 'teardown', 'configure')
@@ -132,6 +205,7 @@ def cmd_dead_code(args):
         "removable_lines": total_lines,
         "functions": results,
     })
+    conn.close()
 
 
 COMMANDS = {

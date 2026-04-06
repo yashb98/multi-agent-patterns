@@ -50,6 +50,30 @@ _SECURITY_CONTEXT_WORDS = frozenset({
 # Union kept for backward compatibility (e.g. external callers).
 SECURITY_KEYWORDS = _HIGH_CONFIDENCE_KEYWORDS | _CONTEXT_DEPENDENT_KEYWORDS
 
+# Builtins and common stdlib/object methods that pollute the call graph.
+# Stripping these avoids thousands of unresolvable edges (e.g. .get(), .append()).
+_BUILTIN_SKIP = frozenset({
+    # Python builtins
+    "print", "len", "str", "int", "float", "bool", "list", "dict", "set",
+    "tuple", "range", "enumerate", "zip", "map", "filter", "sorted", "reversed",
+    "isinstance", "issubclass", "hasattr", "getattr", "setattr", "delattr",
+    "super", "type", "id", "repr", "abs", "round", "min", "max", "sum",
+    "any", "all", "next", "iter", "open", "input", "hash", "callable",
+    "vars", "dir", "chr", "ord", "hex", "oct", "bin", "format",
+    # Common object/dict/list/str methods
+    "get", "set", "items", "keys", "values", "update", "pop", "clear",
+    "append", "extend", "insert", "remove", "index", "count", "copy",
+    "sort", "reverse", "join", "split", "strip", "lstrip", "rstrip",
+    "replace", "find", "rfind", "startswith", "endswith", "lower", "upper",
+    "format", "encode", "decode", "read", "write", "close", "flush",
+    "seek", "tell", "readline", "readlines", "writelines",
+    # Common patterns that are always method calls on objects
+    "add", "discard", "intersection", "union", "difference",
+    "mkdir", "exists", "is_file", "is_dir", "unlink", "rename",
+    "fetchone", "fetchall", "execute", "executemany", "commit", "rollback",
+    "info", "debug", "warning", "error", "exception", "critical",
+})
+
 
 class CodeGraph:
     """SQLite-backed code knowledge graph with impact analysis."""
@@ -219,21 +243,171 @@ class CodeGraph:
                             is_async=isinstance(node, ast.AsyncFunctionDef),
                         )
                         self._extract_calls(node, qname, file_path)
+
+                        # Decorator detection: @router.get(), @app.post(), etc.
+                        # create a reference edge so decorated functions aren't dead
+                        for dec in node.decorator_list:
+                            dec_name = self._get_name(dec.func if isinstance(dec, ast.Call) else dec)
+                            if dec_name and "." in dec_name:
+                                self._add_edge("references", f"{file_path}::{dec_name}",
+                                               qname, file_path, node.lineno)
             except Exception:
                 # Skip nodes that fail to process — don't abort the whole file
                 continue
 
+        # Module-level reference extraction: detect function refs in top-level
+        # dicts, lists, tuples (e.g. PLATFORM_SCANNERS = {"reed": scan_reed})
+        module_qname = f"{file_path}::__module__"
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value if isinstance(node, ast.Assign) else node.value
+                if value is not None:
+                    self._extract_references(node, module_qname, file_path)
+
+            # if __name__ == "__main__": — extract calls as edges from __main__
+            elif isinstance(node, ast.If):
+                if self._is_main_guard(node):
+                    self._extract_calls(node, module_qname, file_path)
+                    self._extract_references(node, module_qname, file_path)
+
+    @staticmethod
+    def _is_main_guard(node: ast.If) -> bool:
+        """Check if an ast.If is `if __name__ == "__main__":`."""
+        test = node.test
+        if isinstance(test, ast.Compare) and len(test.ops) == 1:
+            if isinstance(test.ops[0], ast.Eq):
+                left = test.left
+                right = test.comparators[0] if test.comparators else None
+                left_is_name = isinstance(left, ast.Name) and left.id == "__name__"
+                right_is_main = isinstance(right, ast.Constant) and right.value == "__main__"
+                return left_is_name and right_is_main
+        return False
+
     def _extract_calls(self, func_node, caller_qname: str, file_path: str):
-        """Extract function calls from a function body."""
+        """Extract function calls from a function body.
+
+        Three enhancements beyond basic AST call extraction:
+        1. self.method() → resolved to ClassName::method at extraction time
+        2. Builtin filtering — skips print/len/get/append etc.
+        3. Assignment tracking — when `x = foo()` then `x.bar()`, creates
+           an edge to `foo` so the call graph captures the relationship.
+        """
+        # Determine enclosing class for self.* resolution
+        # caller_qname format: "file.py::ClassName::method_name"
+        parts = caller_qname.split("::")
+        enclosing_class_qname = None
+        if len(parts) >= 3:
+            # file::Class::method — class is parts[0]::parts[1]
+            enclosing_class_qname = f"{parts[0]}::{parts[1]}"
+
+        # Pass 1: collect variable assignments `x = foo()` for tracking
+        # Only tracks simple Name = Call patterns within the function body
+        var_to_func: dict[str, str] = {}
+        for node in ast.walk(func_node):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                if isinstance(target, ast.Name) and isinstance(node.value, ast.Call):
+                    func_name = self._get_name(node.value.func)
+                    if func_name:
+                        var_to_func[target.id] = func_name
+
+        # Pass 2: extract call edges
         for node in ast.walk(func_node):
             if isinstance(node, ast.Call):
                 try:
                     callee = self._get_name(node.func)
-                    if callee:
-                        self._add_edge("calls", caller_qname, callee, file_path,
-                                       getattr(node, "lineno", 0))
+                    if not callee:
+                        continue
+
+                    # Resolve self.method() → Class::method (same class)
+                    if enclosing_class_qname and callee.startswith("self."):
+                        method_name = callee[5:]  # strip "self."
+                        # Only resolve simple self.method, not self.attr.method
+                        if "." not in method_name:
+                            callee = f"{enclosing_class_qname}::{method_name}"
+
+                    # Skip builtins — they pollute the graph with unresolvable noise
+                    bare = callee.rsplit(".", 1)[-1] if "." in callee else callee
+                    if bare in _BUILTIN_SKIP:
+                        continue
+
+                    # Assignment tracking: x.bar() → also link to foo if x = foo()
+                    if "." in callee:
+                        var_name = callee.split(".")[0]
+                        if var_name in var_to_func and var_name != "self":
+                            source_func = var_to_func[var_name]
+                            source_bare = source_func.rsplit(".", 1)[-1] if "." in source_func else source_func
+                            if source_bare not in _BUILTIN_SKIP:
+                                self._add_edge("calls", caller_qname, source_func,
+                                               file_path, getattr(node, "lineno", 0))
+
+                    self._add_edge("calls", caller_qname, callee, file_path,
+                                   getattr(node, "lineno", 0))
                 except Exception:
                     continue
+
+        # Pass 3: detect dynamic function references (dict values, list elements,
+        # keyword args, positional args that are bare Names — not calls)
+        self._extract_references(func_node, caller_qname, file_path)
+
+    def _extract_references(self, func_node, caller_qname: str, file_path: str):
+        """Detect function references passed dynamically (not as direct calls).
+
+        General approach: collect ALL ast.Name nodes in the function body,
+        then subtract the ones already emitted as call-edge targets.
+        The remainder are potential function references (dict values, list
+        elements, return values, assignments, default args, callbacks, etc.).
+
+        False positives (variable names that aren't functions) are eliminated
+        at resolution time — unresolved references that don't match any known
+        function/class node in the graph are simply left unresolved and ignored
+        by callers_of/dead_code queries.
+        """
+        # Collect names already used as call targets (the .func of ast.Call)
+        call_targets: set[str] = set()
+        for node in ast.walk(func_node):
+            if isinstance(node, ast.Call):
+                callee = self._get_name(node.func)
+                if callee:
+                    bare = callee.rsplit(".", 1)[-1] if "." in callee else callee
+                    call_targets.add(bare)
+
+        # Collect function parameter names (these are local variables, not references)
+        param_names: set[str] = set()
+        if isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for arg in func_node.args.args + func_node.args.posonlyargs + func_node.args.kwonlyargs:
+                param_names.add(arg.arg)
+            if func_node.args.vararg:
+                param_names.add(func_node.args.vararg.arg)
+            if func_node.args.kwarg:
+                param_names.add(func_node.args.kwarg.arg)
+
+            # Also extract references from default argument values
+            for default in func_node.args.defaults + func_node.args.kw_defaults:
+                if isinstance(default, ast.Name) and default.id not in _BUILTIN_SKIP:
+                    self._add_edge("references", caller_qname, default.id,
+                                   file_path, getattr(default, "lineno", 0))
+
+        # Walk all ast.Name nodes — any bare name that isn't a call target,
+        # parameter, builtin, or constant is a potential function reference
+        seen: set[str] = set()
+        for node in ast.walk(func_node):
+            if not isinstance(node, ast.Name):
+                continue
+            name = node.id
+            if name in seen or name in call_targets or name in param_names:
+                continue
+            if name in _BUILTIN_SKIP:
+                continue
+            # Skip ALL_CAPS (constants like MAX_RETRIES), single-char (i, x, _)
+            if name.isupper() or len(name) <= 1:
+                continue
+            # Skip 'self', 'cls', common non-function names
+            if name in ("self", "cls", "True", "False", "None"):
+                continue
+            seen.add(name)
+            self._add_edge("references", caller_qname, name,
+                           file_path, getattr(node, "lineno", 0))
 
     def _get_name(self, node) -> Optional[str]:
         """Extract a name string from an AST node. Returns None for complex expressions."""
@@ -277,16 +451,35 @@ class CodeGraph:
         'self._init_schema') because AST only provides the local name.
         This pass matches them to actual node qualified_names after all
         files are indexed, dramatically increasing graph connectivity.
+
+        Import-aware resolution: uses import edges to disambiguate.
+        When file A does `from shared.agents import get_llm`, the import
+        edge maps `shared.agents.get_llm` -> `shared/agents.py::get_llm`.
+        This lets us resolve calls like `get_llm()` in file A to the
+        correct definition even with multiple candidates.
         """
         # Build lookup: simple_name -> [qualified_name, ...]
         name_to_qnames: dict[str, list[str]] = {}
         for row in self.conn.execute("SELECT name, qualified_name FROM nodes"):
             name_to_qnames.setdefault(row[0], []).append(row[1])
 
-        # Process all unresolved call edges (those without :: in target)
+        # Build import map: (file, imported_name) -> module_path
+        # e.g. ("patterns/peer_debate.py", "get_llm") -> "shared.agents"
+        import_map: dict[tuple[str, str], str] = {}
+        for row in self.conn.execute(
+            "SELECT source_qname, target_qname FROM edges WHERE kind='imports'"
+        ).fetchall():
+            source_file = row[0].split("::")[0] if "::" in row[0] else ""
+            import_target = row[1]  # e.g. "shared.agents.get_llm"
+            if "." in import_target:
+                module_path = import_target.rsplit(".", 1)[0]  # "shared.agents"
+                imported_name = import_target.rsplit(".", 1)[1]  # "get_llm"
+                import_map[(source_file, imported_name)] = module_path
+
+        # Process all unresolved call/reference edges (those without :: in target)
         unresolved = self.conn.execute(
             "SELECT rowid, target_qname, source_qname FROM edges "
-            "WHERE kind='calls' AND target_qname NOT LIKE '%::%'"
+            "WHERE kind IN ('calls', 'references') AND target_qname NOT LIKE '%::%'"
         ).fetchall()
 
         resolved_count = 0
@@ -308,6 +501,18 @@ class CodeGraph:
                 updates.append((candidates[0], rowid))
                 resolved_count += 1
             else:
+                # Try import-aware resolution first: check if source file
+                # imported this name from a specific module
+                import_module = import_map.get((source_file, bare_name))
+                if import_module:
+                    # Convert module path to file path: shared.agents -> shared/agents.py
+                    module_file = import_module.replace(".", "/") + ".py"
+                    import_match = [c for c in candidates if c.startswith(module_file + "::")]
+                    if len(import_match) == 1:
+                        updates.append((import_match[0], rowid))
+                        resolved_count += 1
+                        continue
+
                 # Disambiguate: prefer same file, then same directory
                 same_file = [c for c in candidates if c.startswith(source_file + "::")]
                 if same_file:
@@ -352,9 +557,10 @@ class CodeGraph:
         }
 
     def callers_of(self, name: str) -> list[dict]:
-        """Find all functions that call the given name."""
+        """Find all functions that call or reference the given name."""
         rows = self.conn.execute(
-            "SELECT source_qname, file_path, line FROM edges WHERE kind='calls' AND target_qname LIKE ?",
+            "SELECT source_qname, file_path, line FROM edges "
+            "WHERE kind IN ('calls', 'references') AND target_qname LIKE ?",
             (f"%{name}%",),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -377,8 +583,14 @@ class CodeGraph:
 
     # ─── IMPACT RADIUS ─────────────────────────────────────────────
 
-    def impact_radius(self, changed_files: list[str], max_depth: int = 2) -> dict:
+    def impact_radius(self, changed_files: list[str], max_depth: int = 2,
+                       max_results: int = 100) -> dict:
         """Compute blast radius from changed files via BFS.
+
+        Uses hub-node dampening: nodes with fan_in above the p95 threshold
+        are not expanded further (they connect to too much of the graph).
+        Uses exact qname matching for backward edges instead of LIKE wildcards.
+        Pre-loads adjacency lists for batch efficiency.
 
         Returns:
             impacted_files: set of files that could be affected
@@ -396,50 +608,88 @@ class CodeGraph:
         if not seed_qnames:
             return {"impacted_files": set(), "impacted_nodes": [], "depth_map": {}}
 
-        # BFS outward through calls and imports
-        visited = set(seed_qnames)
+        # Hub-node dampening: compute fan_in threshold (p95)
+        p95_row = self.conn.execute(
+            "SELECT fan_in FROM nodes WHERE fan_in > 0 "
+            "ORDER BY fan_in DESC LIMIT 1 OFFSET "
+            "(SELECT MAX(1, COUNT(*)/20) FROM nodes WHERE fan_in > 0)"
+        ).fetchone()
+        hub_threshold = max(p95_row[0] if p95_row else 20, 10)
+
+        # Pre-load fan_in for dampening checks
+        hub_qnames: set[str] = set()
+        for row in self.conn.execute(
+            "SELECT qualified_name FROM nodes WHERE fan_in > ?", (hub_threshold,)
+        ).fetchall():
+            hub_qnames.add(row[0])
+
+        # Pre-load forward adjacency: source -> [targets]
+        forward: dict[str, list[str]] = {}
+        for row in self.conn.execute(
+            "SELECT source_qname, target_qname FROM edges WHERE kind='calls'"
+        ).fetchall():
+            forward.setdefault(row[0], []).append(row[1])
+
+        # Pre-load backward adjacency: target -> [sources]
+        backward: dict[str, list[str]] = {}
+        for row in self.conn.execute(
+            "SELECT target_qname, source_qname FROM edges WHERE kind='calls'"
+        ).fetchall():
+            backward.setdefault(row[0], []).append(row[1])
+
+        # BFS with hub dampening
+        visited: dict[str, int] = {qn: 0 for qn in seed_qnames}  # qname -> depth
         queue = deque((qn, 0) for qn in seed_qnames)
         depth_map = {f: 0 for f in changed_files}
 
         while queue:
             qname, depth = queue.popleft()
-            if depth > max_depth:
+            if depth >= max_depth:
                 continue
 
-            # Forward: who does this call?
-            for row in self.conn.execute(
-                "SELECT target_qname FROM edges WHERE source_qname=? AND kind='calls'",
-                (qname,),
-            ).fetchall():
-                target = row[0]
+            # Skip expanding hub nodes (too many connections, pollutes results)
+            if qname in hub_qnames and qname not in seed_qnames:
+                continue
+
+            next_depth = depth + 1
+
+            # Forward: what does this call?
+            for target in forward.get(qname, []):
                 if target not in visited:
-                    visited.add(target)
-                    queue.append((target, depth + 1))
+                    visited[target] = next_depth
+                    queue.append((target, next_depth))
 
-            # Backward: who calls this?
-            name_part = qname.split("::")[-1]
-            for row in self.conn.execute(
-                "SELECT source_qname FROM edges WHERE target_qname LIKE ? AND kind='calls'",
-                (f"%{name_part}",),
-            ).fetchall():
-                source = row[0]
+            # Backward: who calls this? (exact qname match, not LIKE)
+            for source in backward.get(qname, []):
                 if source not in visited:
-                    visited.add(source)
-                    queue.append((source, depth + 1))
+                    visited[source] = next_depth
+                    queue.append((source, next_depth))
 
-        # Resolve visited qnames to nodes
-        impacted_files = set()
-        impacted = []
-        for qn in visited:
-            row = self.conn.execute(
-                "SELECT * FROM nodes WHERE qualified_name=?", (qn,)
-            ).fetchone()
-            if row:
-                impacted.append(dict(row))
+        # Resolve visited qnames to nodes (batch query, cap at max_results)
+        # Sort by depth first (closest impact first), then limit
+        sorted_qnames = sorted(visited.keys(), key=lambda q: visited[q])
+        if len(sorted_qnames) > max_results:
+            sorted_qnames = sorted_qnames[:max_results]
+
+        impacted_files: set[str] = set()
+        impacted: list[dict] = []
+
+        # Batch fetch in chunks to avoid SQL parameter limits
+        for i in range(0, len(sorted_qnames), 500):
+            chunk = sorted_qnames[i:i + 500]
+            placeholders = ",".join("?" * len(chunk))
+            rows = self.conn.execute(
+                f"SELECT * FROM nodes WHERE qualified_name IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                node = dict(row)
+                node["impact_depth"] = visited.get(row["qualified_name"], max_depth)
+                impacted.append(node)
                 fp = row["file_path"]
                 impacted_files.add(fp)
                 if fp not in depth_map:
-                    depth_map[fp] = max_depth
+                    depth_map[fp] = visited.get(row["qualified_name"], max_depth)
 
         return {
             "impacted_files": impacted_files,
@@ -539,7 +789,8 @@ class CodeGraph:
         self.conn.execute("""
             UPDATE nodes SET fan_in = (
                 SELECT COUNT(*) FROM edges
-                WHERE edges.target_qname = nodes.qualified_name AND edges.kind = 'calls'
+                WHERE edges.target_qname = nodes.qualified_name
+                  AND edges.kind IN ('calls', 'references')
             )
         """)
         self.conn.execute("""
