@@ -42,21 +42,44 @@ Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.
 IMPORTANT: New intents MUST be added to BOTH dispatcher.py AND swarm_dispatcher.py.
 
 ## Code Exploration — Use MCP Tools First
-Before using Grep/Glob to explore code, use CodeGraph MCP tools:
+Use CodeGraph MCP tools for ALL code exploration. Never use raw Grep/Glob.
 - `find_symbol` — locate any function/class definition
 - `callers_of` / `callees_of` — trace call chains
 - `impact_analysis` — blast radius of a change
 - `semantic_search` — find code by meaning
 - `module_summary` — overview of a module's structure
+- `grep_search` — ripgrep + code graph enrichment for literal/regex/TODO search with risk ranking
 One MCP call replaces 5-15 Grep/Glob/Read calls. Brief subagents to do the same.
 
 ## Rules
 All jobpulse rules in `.claude/rules/jobpulse.md`. Job autopilot rules in `.claude/rules/jobs.md`.
+Use `semantic_search` to retrieve detailed rules on demand — all .md files are indexed with embeddings.
+
+## 5 Telegram Bots
+Main (tasks, calendar, briefing, remote) | Budget | Research | Jobs | Alert (send-only)
+All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
+
+## Env Vars
+**Required:** `OPENAI_API_KEY` `TELEGRAM_BOT_TOKEN` `TELEGRAM_CHAT_ID`
+**Notion:** `NOTION_API_KEY` `NOTION_TASKS_DB_ID` `NOTION_RESEARCH_DB_ID` `NOTION_PARENT_PAGE_ID` `NOTION_APPLICATIONS_DB_ID`
+**Jobs:** `REED_API_KEY` `GITHUB_TOKEN` `JOB_AUTOPILOT_AUTO_SUBMIT=false` `JOB_AUTOPILOT_MAX_DAILY=10`
+**Extension:** `APPLICATION_ENGINE=extension` `EXT_BRIDGE_PORT=8765` `ATS_ACCOUNT_PASSWORD`
+
+## Chrome Extension Engine
+Replaces Playwright with Chrome MV3 extension via WebSocket (`ws://localhost:8765`).
+Start: `ext-bridge` → load `extension/` in Chrome → `APPLICATION_ENGINE=extension`
+Key: `ext_bridge.py` (WS server), `ext_adapter.py` (adapter), `form_intelligence.py` (5-tier resolver),
+`state_machines/` (per-platform), `application_orchestrator.py` (full lifecycle)
+
+## Application Orchestrator
+Cookie dismiss → hybrid page detect → SSO → account create → Gmail verify → multi-page fill → submit
+Navigation learning replays per domain (SQLite). Max 10 nav steps, 20 form pages.
 
 ## Commands
 ```
 python -m jobpulse.runner daemon         # Start Telegram daemon
 python -m jobpulse.runner multi-bot      # Start all 5 bots
 python -m jobpulse.runner briefing       # Morning digest
+python -m jobpulse.runner ext-bridge     # Extension WebSocket bridge
 python -m pytest tests/ -v -k "jobpulse" # Run JobPulse tests only
 ```

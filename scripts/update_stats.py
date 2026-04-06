@@ -18,7 +18,11 @@ ROOT = Path(__file__).resolve().parent.parent
 CLAUDE_MD = ROOT / "CLAUDE.md"
 README_MD = ROOT / "README.md"
 
-EXCLUDE_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".git", ".claude", "frontend/node_modules"}
+EXCLUDE_DIRS = {
+    ".venv", "venv", "env", "node_modules", "__pycache__", ".git", ".claude",
+    ".worktrees", "frontend/node_modules", "dist", "build", ".eggs", ".tox", ".nox",
+    "site-packages",
+}
 
 
 def count_python_files() -> int:

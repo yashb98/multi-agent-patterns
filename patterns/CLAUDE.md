@@ -24,11 +24,12 @@ Dual gate: quality score >= 8.0/10 AND factual accuracy >= 9.5/10.
 Max 3 iterations. Fallback: accept best draft.
 
 ## Code Exploration — Use MCP Tools First
-Before using Grep/Glob to explore code, use CodeGraph MCP tools:
+Use CodeGraph MCP tools for ALL code exploration. Never use raw Grep/Glob.
 - `find_symbol` — locate any function/class definition
 - `callers_of` / `callees_of` — trace call chains
 - `impact_analysis` — blast radius of a change
 - `semantic_search` — find code by meaning
+- `grep_search` — ripgrep + code graph enrichment for literal/regex/TODO search with risk ranking
 One MCP call replaces 5-15 Grep/Glob/Read calls. Brief subagents to do the same.
 
 ## Rules

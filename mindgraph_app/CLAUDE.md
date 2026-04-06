@@ -56,12 +56,13 @@ The original entity/relation knowledge graph (`storage.py`, `extractor.py`, `ret
 These will be migrated to CodeGraph in a future phase. Do not delete `storage.py`, `extractor.py`, or `retriever.py` until migration is complete.
 
 ## Code Exploration — Use MCP Tools First
-Before using Grep/Glob to explore code, use CodeGraph MCP tools:
+Use CodeGraph MCP tools for ALL code exploration. Never use raw Grep/Glob.
 - `find_symbol` — locate any function/class definition
 - `callers_of` / `callees_of` — trace call chains
 - `impact_analysis` — blast radius of a change
 - `risk_report` — high-risk functions needing careful review
 - `semantic_search` — find code by meaning
+- `grep_search` — ripgrep + code graph enrichment for literal/regex/TODO search with risk ranking
 One MCP call replaces 5-15 Grep/Glob/Read calls. Brief subagents to do the same.
 
 ## Rules

@@ -7,7 +7,7 @@ Provide the agent name (e.g., "budget", "gmail", "arxiv") and this runs all rele
 
 1. Use `find_symbol` MCP tool to locate the agent's main function, then `callers_of` to find all call sites
 2. Use `impact_analysis` MCP tool on the agent file to see blast radius before testing
-3. Find all test files that reference this agent: `grep -rl "<agent_name>" tests/`
+3. Use `grep_search` MCP tool to find all test files referencing this agent: `pattern: "<agent_name>", glob: "tests/**/*.py"`
 3. Run only those tests: `python -m pytest <found_files> -v`
 4. Check if the agent's intents exist in both dispatchers (run the check-dispatch logic for just this agent's intents)
 5. Print: tests passed/failed, dispatch status, related NLP intents

@@ -201,11 +201,11 @@ APPLYING (controlled risk, supervised only):
 **Scheduled:** Chrome Alarms API fires per-platform on configured schedule:
 ```javascript
 const SCAN_SCHEDULE = {
-  reed:       { times: ["09:00", "14:00"], days: "weekdays" },
-  linkedin:   { times: ["10:00", "16:00"], days: "weekdays" },
-  indeed:     { times: ["11:00"],          days: "weekdays" },
-  greenhouse: { times: ["09:30", "15:00"], days: "weekdays" },
-  glassdoor:  { times: ["13:00"],          days: "weekdays" },
+  reed:       { times: ["09:00", "14:00"], days: "all week" },
+  linkedin:   { times: ["10:00", "16:00"], days: "all week" },
+  indeed:     { times: ["11:00"],          days: "all week" },
+  greenhouse: { times: ["09:30", "15:00"], days: "all week" },
+  glassdoor:  { times: ["13:00", "17:00"], days: "all week" },
 };
 ```
 
@@ -220,16 +220,12 @@ const SEARCH_TITLES = [
   "data engineer",
   "machine learning engineer",
   "ai engineer",
-  "nlp engineer",
   "software engineer",
-  "devops engineer",
-  "frontend engineer",
-  "cloud engineer",
 ];
 
 const SEARCH_FILTERS = {
-  location: "United Kingdom",
-  experience: ["intern", "entry_level", "early_career"],
+  location: ["United Kingdom", "Scotland, United Kingdom"],
+  experience: ["intern", "entry_level"],
   date_posted: "last_24_hours",
   sort: "most_recent",
 };

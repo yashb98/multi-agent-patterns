@@ -30,16 +30,14 @@ The code review intelligence layer:
 3. **Review** — `risk_aware_reviewer_node()` injects top-risk functions into reviewer prompt
 4. **Visualize** — `export_code_graph_mermaid()` / `export_code_graph_dot()` with risk heatmap
 
-## Code Exploration — Use MCP Tools First
-Before using Grep/Glob to explore code, use CodeGraph MCP tools:
-- `find_symbol` — locate any function/class definition
-- `callers_of` / `callees_of` — trace call chains
-- `impact_analysis` — blast radius of a change
-- `risk_report` — high-risk functions needing careful review
-- `module_summary` — overview of a module's structure
-- `semantic_search` — find code by meaning
-- `recent_changes` — what changed recently
-One MCP call replaces 5-15 Grep/Glob/Read calls. Brief subagents to do the same.
+## Code Exploration — MCP Tools First (10-250x faster than Grep)
+MCP tools query pre-indexed SQLite (1-28ms). Grep scans 581 files every time (350-750ms).
+- `find_symbol` — locate definition | `callers_of` / `callees_of` — call graph
+- `impact_analysis` — blast radius | `risk_report` — high-risk functions
+- `module_summary` — module overview | `semantic_search` — find by meaning
+- `recent_changes` — git log + graph context
+- Grep/Glob only for non-Python files or raw regex in configs
+- Never use Explore agents for code understanding — they can't access MCP tools
 
 ## Rules
 - NEVER import from patterns/, jobpulse/, or mindgraph_app/

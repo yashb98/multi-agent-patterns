@@ -40,5 +40,6 @@ while iteration < max_iterations:
 
 ## Code Exploration
 
-- Use CodeGraph MCP tools (find_symbol, callers_of, callees_of, impact_analysis) BEFORE Grep/Glob
-- When briefing subagents for code exploration, include: "Use MCP tools first, fall back to Grep/Glob only if needed"
+- Use CodeGraph MCP tools (find_symbol, callers_of, callees_of, impact_analysis, grep_search) instead of Grep/Glob
+- `grep_search` replaces raw Grep/Glob for all literal, regex, and TODO searches — returns risk-ranked results with enclosing function context
+- When briefing subagents: "Use MCP tools (find_symbol, callers_of, semantic_search, grep_search) — never raw Grep/Glob"
