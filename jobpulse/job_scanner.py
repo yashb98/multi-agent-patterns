@@ -24,7 +24,7 @@ from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR, REED_API_KEY
 from jobpulse.models.application_models import SearchConfig
-from jobpulse.utils.safe_io import managed_persistent_browser
+# managed_persistent_browser removed — Indeed scanning now via Chrome extension
 from jobpulse.verification_detector import detect_verification_wall, simulate_human_interaction
 from jobpulse.scan_learning import ScanLearningEngine
 
@@ -359,185 +359,9 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
     return results
 
 
-def scan_indeed(config: SearchConfig) -> list[dict[str, Any]]:
-    """Indeed.co.uk job search via Playwright (public search, no login required).
 
-    Scrapes job cards from uk.indeed.com and clicks into each to extract the
-    full job description text.  Integrates verification wall detection and
-    adaptive scan parameters via ScanLearningEngine.
-    """
-    try:
-        from playwright.sync_api import sync_playwright as _  # noqa: F401
-    except ImportError:
-        logger.warning(
-            "scan_indeed: playwright not installed. "
-            "Install with: pip install playwright && playwright install chromium"
-        )
-        return []
-
-    # --- Adaptive pre-scan gate ---
-    engine = ScanLearningEngine()
-    params = engine.get_adaptive_params("indeed")
-    if params.get("cooldown_active"):
-        logger.warning(
-            "scan_indeed: cooldown active until %s — skipping scan",
-            params.get("cooldown_until"),
-        )
-        return []
-
-    delay_min, delay_max = params.get("delay_range", (2.0, 8.0))
-    max_requests = params.get("max_requests", MAX_REQUESTS_PER_PLATFORM)
-    risk_level = params.get("risk_level", "medium")
-
-    results: list[dict[str, Any]] = []
-    ua = _random_ua()
-    signals = _SessionSignals("indeed", ua)
-
-    try:
-        # Indeed doesn't need a saved profile — public search
-        with managed_persistent_browser(
-            user_data_dir=str(DATA_DIR / "indeed_profile"),
-            headless=False,
-            executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            args=["--disable-blink-features=AutomationControlled", "--disable-infobars"],
-            ignore_default_args=["--enable-automation"],
-            user_agent=ua,
-            viewport={"width": 1280, "height": 800},
-        ) as (_browser, page):
-            for title in config.titles:
-                if len(results) >= max_requests:
-                    break
-
-                search_url = (
-                    f"https://uk.indeed.com/jobs"
-                    f"?q={_url_encode(title)}"
-                    f"&l={_url_encode(config.location)}"
-                    f"&fromage=1"  # past 24 hours
-                )
-                signals.last_query = title
-
-                try:
-                    logger.info("scan_indeed: fetching '%s'", search_url)
-                    load_start = time.monotonic()
-                    page.goto(search_url, timeout=30_000, wait_until="networkidle")
-                    signals.last_load_time_ms = int((time.monotonic() - load_start) * 1000)
-                    signals.record_request()
-
-                    # Simulate human interaction for medium/high risk
-                    if risk_level != "low":
-                        simulate_human_interaction(page)
-                        signals.simulated_mouse = True
-
-                    # Check for verification wall after page load
-                    wall = detect_verification_wall(page, expected_results=True)
-                    if wall and wall.confidence >= 0.7:
-                        logger.warning(
-                            "scan_indeed: verification wall detected (%s, %.0f%%) — aborting",
-                            wall.wall_type, wall.confidence * 100,
-                        )
-                        _handle_block(engine, "indeed", wall, signals)
-                        return results
-
-                    time.sleep(random.uniform(delay_min, delay_max))
-
-                    # Find job cards
-                    cards = page.query_selector_all(
-                        ".job_seen_beacon, .resultContent, [data-jk]"
-                    )
-                    logger.info(
-                        "scan_indeed: found %d cards for '%s'", len(cards), title
-                    )
-
-                    for card in cards:
-                        try:
-                            title_el = card.query_selector(
-                                "h2.jobTitle a, h2 a, .jobTitle a"
-                            )
-                            company_el = card.query_selector(
-                                "[data-testid='company-name'], .companyName, .company"
-                            )
-                            location_el = card.query_selector(
-                                "[data-testid='text-location'], .companyLocation, .location"
-                            )
-
-                            job_title = (
-                                title_el.inner_text().strip() if title_el else ""
-                            )
-                            company = (
-                                company_el.inner_text().strip() if company_el else ""
-                            )
-                            location = (
-                                location_el.inner_text().strip() if location_el else ""
-                            )
-                            href = (
-                                title_el.get_attribute("href") if title_el else ""
-                            )
-
-                            if href and not href.startswith("http"):
-                                href = "https://uk.indeed.com" + href
-
-                            if not href or not job_title:
-                                continue
-
-                            # Click to get full description
-                            description = ""
-                            try:
-                                if title_el:
-                                    title_el.click()
-                                    signals.record_request()
-                                    time.sleep(random.uniform(delay_min, delay_max))
-
-                                    # Check for verification wall after click
-                                    wall = detect_verification_wall(page)
-                                    if wall and wall.confidence >= 0.7:
-                                        logger.warning(
-                                            "scan_indeed: wall after card click (%s) — returning partial results",
-                                            wall.wall_type,
-                                        )
-                                        _handle_block(engine, "indeed", wall, signals)
-                                        return results
-
-                                    desc_el = page.query_selector(
-                                        ".jobsearch-jobDescriptionText, "
-                                        "#jobDescriptionText, "
-                                        "[class*='jobDescription']"
-                                    )
-                                    if desc_el:
-                                        description = desc_el.inner_text()[:5000]
-                            except Exception:
-                                pass
-
-                            results.append(
-                                {
-                                    "title": job_title,
-                                    "company": company,
-                                    "url": href,
-                                    "location": location,
-                                    "salary_min": None,
-                                    "salary_max": None,
-                                    "description": description,
-                                    "platform": "indeed",
-                                    "job_id": _make_job_id(href),
-                                }
-                            )
-                        except Exception as card_err:
-                            logger.debug(
-                                "scan_indeed: card parse error: %s", card_err
-                            )
-
-                except Exception as page_err:
-                    logger.error(
-                        "scan_indeed: error fetching '%s': %s", search_url, page_err
-                    )
-
-            # Session completed without blocks — record success
-            _record_success(engine, "indeed", signals)
-
-    except Exception as exc:
-        logger.error("scan_indeed: Playwright error: %s", exc)
-
-    logger.info("scan_indeed: returning %d total results", len(results))
-    return results
+# Indeed scanning is handled entirely by the Chrome extension (scanner.js).
+# The extension uses fetch() with session cookies. No Python scanner needed.
 
 
 def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
@@ -778,57 +602,9 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
     return results
 
 
-def scan_totaljobs(config: SearchConfig) -> list[dict[str, Any]]:
-    """TotalJobs public search scraper — stub (HTML parsing complex).
 
-    Logs a fetch attempt for observability but returns an empty list.
-    """
-    for title in config.titles:
-        url = (
-            f"https://www.totaljobs.com/jobs/{_url_encode(title).replace('%20', '-')}"
-            f"?postedWithin=1&radius=50&salary={int(config.salary_min)}"
-        )
-        logger.info("scan_totaljobs: [stub] would fetch %s", url)
-        _anti_detection_sleep()
-
-    logger.warning(
-        "scan_totaljobs: stub — returning []. "
-        "Full HTML scraper not yet implemented."
-    )
-    return []
-
-
-def scan_glassdoor(config: SearchConfig) -> list[dict[str, Any]]:
-    """Glassdoor job search via Playwright — stub pending session setup.
-
-    Returns an empty list if no session or Playwright is unavailable.
-    """
-    try:
-        from playwright.sync_api import sync_playwright  # noqa: F401  # type: ignore[import]
-    except ImportError:
-        logger.warning(
-            "scan_glassdoor: playwright not installed. "
-            "Install with: pip install playwright && playwright install chromium"
-        )
-        return []
-
-    glassdoor_session = DATA_DIR / "glassdoor_session"
-    if not glassdoor_session.exists():
-        logger.warning(
-            "scan_glassdoor: no saved session at %s — returning []. "
-            "Run: playwright codegen --save-storage=%s https://www.glassdoor.co.uk",
-            glassdoor_session,
-            glassdoor_session,
-        )
-        return []
-
-    # Session exists — stub the actual scraping logic
-    for title in config.titles:
-        logger.info("scan_glassdoor: [stub] would scrape '%s' via Playwright", title)
-        _anti_detection_sleep()
-
-    logger.warning("scan_glassdoor: stub — returning []. Full scraper not yet implemented.")
-    return []
+# TotalJobs and Glassdoor scanners removed — never implemented beyond stubs.
+# Can be added to the extension scanner if needed in the future.
 
 
 # ---------------------------------------------------------------------------
@@ -837,15 +613,13 @@ def scan_glassdoor(config: SearchConfig) -> list[dict[str, Any]]:
 
 PLATFORM_SCANNERS: dict[str, Any] = {
     "reed": scan_reed,
-    "indeed": scan_indeed,
     "linkedin": scan_linkedin,
-    "totaljobs": scan_totaljobs,
-    "glassdoor": scan_glassdoor,
+    # Indeed scanning handled by Chrome extension (scanner.js)
+    # TotalJobs/Glassdoor not implemented — stubs removed
 }
 
 ALL_PLATFORMS: list[str] = list(PLATFORM_SCANNERS.keys())
-QUICK_PLATFORMS: list[str] = ["linkedin", "indeed", "reed"]
-SLOW_PLATFORMS: list[str] = ["glassdoor", "totaljobs"]
+QUICK_PLATFORMS: list[str] = ["linkedin", "reed"]
 
 
 def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:
@@ -867,18 +641,9 @@ def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:
         logger.warning("scan_platforms: unknown platforms %s — ignoring", unknown)
         platforms = [p for p in platforms if p in PLATFORM_SCANNERS]
 
-    stub_platforms = {"totaljobs", "glassdoor"}
-
     all_jobs: list[dict[str, Any]] = []
 
     for platform in platforms:
-        if platform in stub_platforms:
-            logger.warning(
-                "scan_platforms: '%s' is not yet implemented — skipping. "
-                "Only reed, linkedin, and indeed are functional.",
-                platform,
-            )
-            continue
         scanner = PLATFORM_SCANNERS[platform]
         logger.info("scan_platforms: starting %s scanner", platform)
         try:
