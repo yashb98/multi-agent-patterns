@@ -35,7 +35,7 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~138,000 LOC | 578 Python files | 17 databases | 1534 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~139,000 LOC | 581 Python files | 17 databases | 1582 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)

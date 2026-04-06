@@ -55,6 +55,7 @@ from shared.agents import (
 )
 from shared.prompts import WRITER_PROMPT, REVIEWER_PROMPT
 from shared.experiential_learning import ExperienceMemory, Experience
+from shared.memory_layer import MemoryManager
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
@@ -65,6 +66,7 @@ logger = get_logger(__name__)
 # shared across debate runs (same DB as enhanced_swarm).
 
 _experience_memory = ExperienceMemory(max_size=50, db_path="data/experience_memory.db")
+_memory_manager = MemoryManager()
 
 
 # ─── DEBATE-SPECIFIC AGENT VARIANTS ─────────────────────────────
@@ -103,10 +105,16 @@ def debate_researcher_node(state: AgentState) -> dict:
     draft = state.get("draft", "")
     review = state.get("review_feedback", "")
     existing_research = "\n\n".join(state.get("research_notes", []))
+    topic = state.get("topic", "")
+
+    # Inject memory context before LLM call
+    memory_context = _memory_manager.get_context_for_agent("researcher", topic)
 
     # Inject learned experiences from past successful research
     experience_context = _experience_memory.format_for_prompt("research")
     experience_block = f"\n\nLEARNED PATTERNS FROM PAST SUCCESSES:\n{experience_context}" if experience_context else ""
+    if memory_context:
+        experience_block = f"\n\nMEMORY CONTEXT:\n{memory_context}{experience_block}"
 
     debate_prompt = f"""You are the Research Analyst in a peer debate.{experience_block}
 
@@ -143,7 +151,12 @@ Respond with:
     
     critique = response.content
     logger.info("Research critique: %d characters", len(critique))
-    
+
+    _memory_manager.record_step(
+        "researcher",
+        f"Debate round {iteration}: produced {len(critique)}-char critique",
+    )
+
     return {
         "research_notes": [f"\n[DEBATE ROUND {iteration} - Researcher Critique]\n{critique}"],
         "current_agent": "researcher",
@@ -180,9 +193,14 @@ def debate_writer_node(state: AgentState) -> dict:
     research = "\n\n".join(state.get("research_notes", []))
     review = state.get("review_feedback", "")
 
+    # Inject memory context before LLM call
+    memory_context = _memory_manager.get_context_for_agent("writer", topic)
+
     # Inject learned writing experiences
     experience_context = _experience_memory.format_for_prompt("writing")
     experience_block = f"\n\nLEARNED PATTERNS FROM PAST SUCCESSES:\n{experience_context}" if experience_context else ""
+    if memory_context:
+        experience_block = f"\n\nMEMORY CONTEXT:\n{memory_context}{experience_block}"
 
     debate_prompt = f"""You are the Technical Writer in a peer debate.{experience_block}
 
@@ -216,7 +234,12 @@ to feedback. The article should be better than the previous draft."""
     
     new_draft = response.content
     logger.info("Revised draft: %d words", len(new_draft.split()))
-    
+
+    _memory_manager.record_step(
+        "writer",
+        f"Debate round {iteration}: revised draft to {len(new_draft.split())} words",
+    )
+
     return {
         "draft": new_draft,
         "iteration": iteration + 1,
@@ -301,6 +324,22 @@ def convergence_check(state: AgentState) -> dict:
         )
         _experience_memory.add(exp)
         logger.info("Stored debate experience (score: %s)", score)
+        # Store successful procedure for future reuse
+        _memory_manager.learn_procedure(
+            domain="writing",
+            strategy=(
+                f"Peer debate cross-critique: researcher and writer challenge each other. "
+                f"Round {iteration} produced score {score}/10."
+            ),
+            context=state.get("topic", "")[:200],
+            score=score,
+            source="peer_debate",
+        )
+        _memory_manager.record_step(
+            "convergence",
+            f"Round {iteration}: score={score}/10, decision={decision}",
+            score=score,
+        )
 
     # Prune state between debate rounds
     from shared.state import prune_state

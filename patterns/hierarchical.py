@@ -62,6 +62,11 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# ─── MODULE-LEVEL MEMORY SINGLETON ──────────────────────────────
+# MemoryManager persists across invocations (episodic, semantic,
+# procedural stores survive process restarts via JSON files).
+_memory_manager = MemoryManager()
+
 
 # ─── THE SUPERVISOR NODE ────────────────────────────────────────
 # This is the BRAIN of the hierarchical pattern.
@@ -384,7 +389,8 @@ def run_hierarchical(topic: str, use_llm_supervisor: bool = False, domain: str =
     logger.info("=" * 60)
 
     # ── Operational Principle #1: Memory before action ──
-    memory = MemoryManager()
+    memory = _memory_manager
+    memory.start_new_session()
     pattern, pattern_score = memory.search_patterns(topic, domain)
 
     if pattern and pattern_score > 0.7:
@@ -402,6 +408,12 @@ def run_hierarchical(topic: str, use_llm_supervisor: bool = False, domain: str =
     # Invoke the graph
     final_state = graph.invoke(initial_state)
 
+    # Record per-agent steps in short-term memory for this run
+    for entry in final_state.get("agent_history", []):
+        if "Supervisor →" in entry:
+            agent = entry.split("→")[1].strip().split(" ")[0].lower()
+            memory.record_step(agent, entry)
+
     # ── Operational Principle #4: Learn after success ──
     final_score = final_state.get("review_score", 0)
     if final_score >= 7.0:
@@ -414,6 +426,18 @@ def run_hierarchical(topic: str, use_llm_supervisor: bool = False, domain: str =
             iterations=final_state.get("iteration", 0),
             strengths=_extract_strengths(final_state),
             output_summary=final_state.get("final_output", "")[:500],
+        )
+        # ── Operational Principle #4b: Store successful procedure ──
+        memory.learn_procedure(
+            domain=domain or "writing",
+            strategy=(
+                f"Hierarchical supervisor pattern: research → write → review. "
+                f"Converged in {final_state.get('iteration', 0)} iterations "
+                f"with score {final_score}/10."
+            ),
+            context=topic[:200],
+            score=final_score,
+            source="hierarchical",
         )
 
     # Also record as episodic memory

@@ -58,6 +58,7 @@ from shared.agents import (
     compute_cost_summary,
 )
 from shared.experiential_learning import ExperienceMemory, Experience
+from shared.memory_layer import MemoryManager
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
@@ -65,6 +66,7 @@ logger = get_logger(__name__)
 
 # ─── SHARED LEARNING MEMORY ───────────────────────────────────
 _experience_memory = ExperienceMemory(max_size=50, db_path="data/experience_memory.db")
+_memory_manager = MemoryManager()
 
 
 # ─── TASK ANALYZER NODE ─────────────────────────────────────────
@@ -166,10 +168,18 @@ AGENT HISTORY (last 5 actions):
             "agent_history": ["Task Analyzer: Max iterations reached, stopping"]
         }
     
-    # Ask the LLM to decompose (with injected experiences)
+    # Inject memory context for task analysis before LLM call
+    memory_context = _memory_manager.get_context_for_agent(
+        "task_analysis", state.get("topic", "")
+    )
+    analyzer_prompt = _build_task_analyzer_prompt()
+    if memory_context:
+        analyzer_prompt = f"{analyzer_prompt}\n\nMEMORY CONTEXT:\n{memory_context}"
+
+    # Ask the LLM to decompose (with injected experiences + memory)
     llm = get_llm(temperature=0.2)
     response = llm.invoke([
-        SystemMessage(content=_build_task_analyzer_prompt()),
+        SystemMessage(content=analyzer_prompt),
         HumanMessage(content=state_summary)
     ])
     
@@ -307,7 +317,13 @@ def task_executor_node(state: AgentState) -> dict:
     
     # Execute the agent and merge its state updates
     agent_result = agent_fn(state)
-    
+
+    # Record this step in short-term memory
+    _memory_manager.record_step(
+        agent_name,
+        f"Swarm executed {agent_name}: {description[:120]}",
+    )
+
     # Combine executor metadata with agent results
     result = {
         **agent_result,
@@ -406,6 +422,22 @@ def swarm_finish_node(state: AgentState) -> dict:
         )
         _experience_memory.add(exp)
         logger.info("Stored swarm experience (score: %s)", score)
+        # Store successful procedure
+        _memory_manager.learn_procedure(
+            domain="task_analysis",
+            strategy=(
+                f"Dynamic swarm task decomposition: {executions} agent executions "
+                f"across {iterations} iterations produced score {score}/10."
+            ),
+            context=state.get("topic", "")[:200],
+            score=score,
+            source="dynamic_swarm",
+        )
+    _memory_manager.record_step(
+        "finish",
+        f"Swarm complete: score={score}/10, {executions} executions",
+        score=score,
+    )
 
     return {
         "final_output": draft,

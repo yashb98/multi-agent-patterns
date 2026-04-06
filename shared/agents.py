@@ -395,6 +395,19 @@ def fact_check_node(state: AgentState) -> dict:
     passed = score >= 9.5
     logger.info("Accuracy score: %.1f/10 | Passed (>=9.5): %s", score, passed)
 
+    # ── learn_fact: store verified facts in semantic memory ──
+    try:
+        from shared.memory_layer import MemoryManager
+        _mem = MemoryManager()
+        domain = topic.split()[0].lower() if topic else "general"
+        for v in verifications:
+            status = v.get("status", "") if isinstance(v, dict) else getattr(v, "status", "")
+            claim_text = v.get("claim", "") if isinstance(v, dict) else getattr(v, "claim", "")
+            if status == "VERIFIED" and claim_text:
+                _mem.learn_fact(domain, claim_text[:300])
+    except Exception as _e:
+        logger.debug("learn_fact skipped: %s", _e)
+
     revision_notes = generate_revision_notes(verifications) if not passed else None
 
     return {

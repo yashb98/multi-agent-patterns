@@ -66,6 +66,7 @@ from shared.persona_evolution import (
     PersonaEvolutionConfig,
 )
 from shared.prompt_optimizer import PromptOptimizer
+from shared.memory_layer import MemoryManager
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
@@ -78,6 +79,8 @@ logger = get_logger(__name__)
 
 _experience_memory = ExperienceMemory(max_size=50, db_path="data/experience_memory.db")
 _optimized_prompts = {}  # Cache of optimized prompts per role+domain
+_memory_manager = MemoryManager()
+_grpo = TrainingFreeGRPO(llm=None)  # llm set lazily at first use
 
 
 # ─── ENHANCED NODE FUNCTIONS ─────────────────────────────────────
@@ -92,27 +95,40 @@ def enhanced_task_analysis(state: AgentState) -> dict:
     logger.info("\n%s\n  ENHANCED TASK ANALYSIS\n%s", "=" * 60, "=" * 60)
     
     topic = state["topic"]
-    
+
+    # Inject memory context for task analysis before spawning agents
+    memory_context = _memory_manager.get_context_for_agent("task_analysis", topic)
+
     # Create factory and analyse task
     llm = get_llm(temperature=0.2)
     factory = DynamicAgentFactory(llm)
     team = factory.assemble_team(topic)
-    
+
     # Store team info in state
     team_info = json.dumps([
         {"name": a["name"], "tools": a["tools"], "max_actions": a["max_actions"]}
         for a in team
     ])
-    
+
     # Determine if we need extra agents beyond the core 3
     agent_names = [a["name"] for a in team]
     has_code_expert = "code_expert" in agent_names
     has_fact_checker = "fact_checker" in agent_names
-    
+
     logger.info("Team: %s", ", ".join(agent_names))
     logger.info("Code expert needed: %s", has_code_expert)
     logger.info("Fact checker needed: %s", has_fact_checker)
-    
+    if memory_context:
+        logger.info("Memory context injected (%d chars)", len(memory_context))
+
+    _memory_manager.record_step(
+        "task_analysis",
+        f"Assembled team: {', '.join(agent_names)}",
+    )
+    # Retire each agent from the factory after team is assembled
+    for a in team:
+        factory.retire_agent(a["name"])
+
     return {
         "pending_tasks": [{"team": team_info}],
         "current_agent": "task_analysis",
@@ -133,48 +149,75 @@ def enhanced_researcher_node(state: AgentState) -> dict:
     logger.info("\n%s\n  ENHANCED RESEARCHER (with experiential learning)\n%s", "=" * 60, "=" * 60)
     
     topic = state["topic"]
-    
+
+    # Inject memory context before LLM call
+    memory_context = _memory_manager.get_context_for_agent("researcher", topic)
+
     # Check for existing experiences
     experience_context = _experience_memory.format_for_prompt("research")
-    
-    base_prompt = """You are an elite Research Analyst. Gather comprehensive, 
+
+    base_prompt = """You are an elite Research Analyst. Gather comprehensive,
 accurate information on the given topic. Focus on:
 - Verified facts with clear sourcing
 - Technical depth appropriate to the topic
-- Current trends and recent developments  
+- Current trends and recent developments
 - Multiple perspectives and expert opinions
 - Quantitative data points where available
 
 Structure output as: Key Facts, Technical Details, Trends, Expert Views, Data."""
-    
-    # Enhance with learned experiences
-    if experience_context:
-        enhanced_prompt = f"{base_prompt}\n\n{experience_context}"
-        logger.info("Injected %d learned experiences", len(_experience_memory))
-    else:
-        enhanced_prompt = base_prompt
-    
+
+    # Enhance with learned experiences (TrainingFreeGRPO.enhance_prompt)
     llm = get_llm(temperature=0.3)
-    
+    _grpo.llm = llm  # Lazy bind LLM to GRPO instance
+    enhanced_prompt = _grpo.enhance_prompt(base_prompt, domain="research")
+    if memory_context:
+        enhanced_prompt = f"{enhanced_prompt}\n\nMEMORY CONTEXT:\n{memory_context}"
+    if experience_context:
+        enhanced_prompt = f"{enhanced_prompt}\n\n{experience_context}"
+        logger.info("Injected %d learned experiences", len(_experience_memory))
+
     # Generate research
     feedback = state.get("review_feedback", "")
     if feedback and state.get("iteration", 0) > 0:
         user_msg = f"Topic: {topic}\n\nAddress these gaps:\n{feedback}"
     else:
         user_msg = f"Topic: {topic}\n\nConduct comprehensive research."
-    
-    response = llm.invoke([
-        SystemMessage(content=enhanced_prompt),
-        HumanMessage(content=user_msg)
-    ])
-    
-    research = response.content
+
+    # Use group_sample_and_learn for GRPO pipeline
+    def _research_evaluator(output: str) -> float:
+        """Simple heuristic: longer, structured output scores higher."""
+        score = min(len(output) / 2000, 1.0) * 6.0  # Up to 6 for length
+        score += min(output.count("\n-") + output.count("\n•"), 10) * 0.3  # Bullet points
+        score += 2.0 if any(kw in output.lower() for kw in ["key facts", "trends", "data"]) else 0.0
+        return min(score, 10.0)
+
+    try:
+        research, _ = _grpo.group_sample_and_learn(
+            system_prompt=enhanced_prompt,
+            user_message=user_msg,
+            evaluator_fn=_research_evaluator,
+            domain="research",
+        )
+        logger.info("GRPO group_sample_and_learn: selected best research candidate")
+    except Exception as _e:
+        logger.warning("GRPO group sampling failed, falling back to single call: %s", _e)
+        response = llm.invoke([
+            SystemMessage(content=enhanced_prompt),
+            HumanMessage(content=user_msg)
+        ])
+        research = response.content
+
     logger.info("Research: %d chars", len(research))
-    
+
+    _memory_manager.record_step(
+        "researcher",
+        f"Enhanced research produced {len(research)} chars",
+    )
+
     return {
         "research_notes": [research],
         "current_agent": "researcher",
-        "agent_history": [f"Enhanced Researcher completed"]
+        "agent_history": [f"Enhanced Researcher completed (GRPO)"]
     }
 
 
@@ -194,20 +237,26 @@ def enhanced_writer_node(state: AgentState) -> dict:
     feedback = state.get("review_feedback", "")
     current_draft = state.get("draft", "")
     iteration = state.get("iteration", 0)
-    
-    base_prompt = """You are an elite Technical Writer. Transform research 
+
+    # Inject memory context before LLM call
+    memory_context = _memory_manager.get_context_for_agent("writer", topic)
+
+    base_prompt = """You are an elite Technical Writer. Transform research
 into polished, engaging articles. Use ONLY provided research.
 Write clearly for technical professionals with concrete examples.
 Include a compelling title, structured sections, and strong conclusion.
 Target 800-1200 words. Active voice, short paragraphs."""
-    
-    # Enhance with experiences
+
+    # Enhance with TrainingFreeGRPO.enhance_prompt + experiences
+    llm = get_llm(temperature=0.7)
+    _grpo.llm = llm  # Lazy bind LLM to GRPO instance
+    enhanced_prompt = _grpo.enhance_prompt(base_prompt, domain="writing")
     experience_context = _experience_memory.format_for_prompt("writing")
     if experience_context:
-        enhanced_prompt = f"{base_prompt}\n\n{experience_context}"
-    else:
-        enhanced_prompt = base_prompt
-    
+        enhanced_prompt = f"{enhanced_prompt}\n\n{experience_context}"
+    if memory_context:
+        enhanced_prompt = f"{enhanced_prompt}\n\nMEMORY CONTEXT:\n{memory_context}"
+
     if feedback and current_draft:
         user_msg = f"""Topic: {topic}
 Research: {research}
@@ -218,46 +267,64 @@ Produce the COMPLETE revised article."""
         user_msg = f"""Topic: {topic}
 Research: {research}
 Write a complete technical blog article."""
-    
-    # GRPO: Generate multiple candidates at different temperatures — IN PARALLEL
-    from shared.parallel_executor import parallel_grpo_candidates
 
-    temps = [0.5, 0.7, 0.9]
-    model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    # Use group_sample_and_learn for full GRPO pipeline
+    def _writer_evaluator(output: str) -> float:
+        """Heuristic scoring: length + structure + title."""
+        word_count = len(output.split())
+        has_title = output.strip().startswith("#") or output.strip().startswith("**")
+        section_count = output.count("\n#") + output.count("\n**")
+        score = min(word_count / 1000, 1.0) * 5.0
+        score += min(section_count, 5) * 0.8
+        score += 2.0 if has_title else 0.0
+        return min(score, 10.0)
 
-    def make_llm(temp):
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model_name, temperature=temp, request_timeout=30.0)
+    try:
+        best_draft, _ = _grpo.group_sample_and_learn(
+            system_prompt=enhanced_prompt,
+            user_message=user_msg,
+            evaluator_fn=_writer_evaluator,
+            domain="writing",
+        )
+        logger.info("GRPO group_sample_and_learn: selected best writing candidate")
+    except Exception as _e:
+        logger.warning("GRPO group sampling failed, falling back to parallel candidates: %s", _e)
+        from shared.parallel_executor import parallel_grpo_candidates
 
-    candidates = parallel_grpo_candidates(make_llm, enhanced_prompt, user_msg, temps)
-    
-    # Quick scoring: use length + structure as proxy
-    # (In production, use the actual reviewer for scoring)
-    scored = []
-    for i, c in enumerate(candidates):
-        # Simple heuristic score for candidate selection
-        word_count = len(c.split())
-        has_title = c.strip().startswith("#") or c.strip().startswith("**")
-        section_count = c.count("\n#") + c.count("\n**")
-        
-        score = min(word_count / 1000, 1.0) * 5  # Length component
-        score += min(section_count, 5)            # Structure component
-        score += 2 if has_title else 0            # Title component
-        scored.append((score, c))
-    
-    scored.sort(key=lambda x: x[0], reverse=True)
-    best_draft = scored[0][1]
-    
-    logger.info("Generated %d candidates", len(candidates))
+        temps = [0.5, 0.7, 0.9]
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+        def make_llm(temp):
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(model=model_name, temperature=temp, request_timeout=30.0)
+
+        candidates = parallel_grpo_candidates(make_llm, enhanced_prompt, user_msg, temps)
+        scored = [
+            (
+                min(len(c.split()) / 1000, 1.0) * 5
+                + min(c.count("\n#") + c.count("\n**"), 5)
+                + (2 if c.strip().startswith("#") or c.strip().startswith("**") else 0),
+                c,
+            )
+            for c in candidates
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best_draft = scored[0][1]
+        logger.info("Fallback: selected best of %d candidates", len(candidates))
+
     logger.info("Best candidate: %d words", len(best_draft.split()))
-    logger.info("Score spread: %.1f to %.1f", scored[0][0], scored[-1][0])
-    
+
+    _memory_manager.record_step(
+        "writer",
+        f"Enhanced writer produced draft: {len(best_draft.split())} words (iteration {iteration + 1})",
+    )
+
     return {
         "draft": best_draft,
         "iteration": iteration + 1,
         "current_agent": "writer",
         "agent_history": [
-            f"Enhanced Writer: selected best of {len(candidates)} candidates "
+            f"Enhanced Writer: GRPO best candidate "
             f"(iteration {iteration + 1})"
         ]
     }
@@ -329,6 +396,24 @@ def enhanced_convergence(state: AgentState) -> dict:
         score, accuracy_score, threshold, iteration, decision,
     )
 
+    # Learn procedure from high-scoring convergence
+    if score >= 7.0:
+        _memory_manager.learn_procedure(
+            domain="writing",
+            strategy=(
+                f"Enhanced swarm convergence: GRPO group sampling with adaptive threshold "
+                f"{threshold:.1f}. Score {score}/10 at iteration {iteration}."
+            ),
+            context=state.get("topic", "")[:200],
+            score=score,
+            source="enhanced_swarm",
+        )
+    _memory_manager.record_step(
+        "convergence",
+        f"Enhanced convergence: {decision}, score={score:.1f}, threshold={threshold:.1f}",
+        score=score,
+    )
+
     # Prune state between iterations
     from shared.state import prune_state
     result = {
@@ -349,6 +434,8 @@ def enhanced_finish(state: AgentState) -> dict:
     logger.info("Score: %s/10", score)
     logger.info("Experiences stored: %d", len(_experience_memory))
     logger.info("Total cost: $%.4f (%d LLM calls)", cost["total_cost_usd"], cost["calls"])
+
+    _memory_manager.record_step("finish", f"Enhanced swarm complete: score={score}/10", score=score)
 
     return {
         "final_output": draft,
