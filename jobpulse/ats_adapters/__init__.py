@@ -82,6 +82,21 @@ def _get_extension_adapter() -> BaseATSAdapter:
             logger.info("Extension already connected to bridge")
         else:
             logger.info("Bridge started on ws://%s:%d — waiting for extension...", bridge._host, bridge.port)
+            # Wait for the extension to actually connect before returning the adapter.
+            # Without this, the first navigate() fires into the void.
+            loop = getattr(bridge, "_loop", None)
+            if loop is not None:
+                fut = asyncio.run_coroutine_threadsafe(
+                    bridge.wait_for_connection(timeout=15), loop
+                )
+                try:
+                    connected = fut.result(timeout=20)
+                    if connected:
+                        logger.info("Extension connected to bridge")
+                    else:
+                        logger.warning("Extension did not connect within 15s — commands may fail")
+                except Exception as exc:
+                    logger.warning("Error waiting for extension connection: %s", exc)
 
         _ext_adapter = ExtensionAdapter(bridge)
     return _ext_adapter
