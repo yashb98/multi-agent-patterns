@@ -1167,6 +1167,44 @@ class CodeIntelligence:
 
         return {"suggestions": suggestions[:top_n], "total": len(suggestions)}
 
+    def rename_preview(self, symbol: str, new_name: str) -> dict[str, Any]:
+        """Preview all locations that would change if a symbol is renamed. Read-only."""
+        locations: list[dict[str, Any]] = []
+
+        defs = self.conn.execute(
+            "SELECT qualified_name, file_path, line_start, line_end, kind "
+            "FROM nodes WHERE name=? AND kind != 'document'",
+            (symbol,),
+        ).fetchall()
+        for d in defs:
+            locations.append({
+                "kind": "definition", "qualified_name": d[0],
+                "file": d[1], "line": d[2], "symbol_kind": d[4],
+            })
+
+        callers = self.conn.execute(
+            "SELECT source_qname, file_path, line FROM edges "
+            "WHERE kind='calls' AND (target_qname LIKE ? OR target_qname=?)",
+            (f"%::{symbol}", symbol),
+        ).fetchall()
+        for c in callers:
+            locations.append({"kind": "caller", "qualified_name": c[0], "file": c[1], "line": c[2]})
+
+        imports = self.conn.execute(
+            "SELECT source_qname, file_path, line FROM edges "
+            "WHERE kind='imports' AND target_qname LIKE ?",
+            (f"%.{symbol}",),
+        ).fetchall()
+        for imp in imports:
+            locations.append({"kind": "import", "qualified_name": imp[0], "file": imp[1], "line": imp[2]})
+
+        files_affected = list({loc["file"] for loc in locations if loc.get("file")})
+        return {
+            "symbol": symbol, "new_name": new_name,
+            "locations": locations, "total_locations": len(locations),
+            "files_affected": files_affected,
+        }
+
     def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
         """Top-N highest-risk functions, optionally filtered by file."""
         if file is not None:

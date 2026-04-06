@@ -732,3 +732,30 @@ class TestSuggestExtract:
         result = ci.suggest_extract(file="big.py")
         files = {s["file"] for s in result["suggestions"]}
         assert all("big.py" in f for f in files)
+
+
+class TestRenamePreview:
+    def test_finds_all_references(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.rename_preview("login", "authenticate")
+        assert result["symbol"] == "login"
+        assert result["new_name"] == "authenticate"
+        assert result["total_locations"] >= 1
+        assert any(loc["kind"] == "definition" for loc in result["locations"])
+
+    def test_includes_callers(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.rename_preview("login", "authenticate")
+        caller_locs = [loc for loc in result["locations"] if loc["kind"] == "caller"]
+        assert len(caller_locs) >= 1
+
+    def test_nonexistent_symbol(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.rename_preview("nonexistent_xyz", "new_name")
+        assert result["total_locations"] == 0
+
+    def test_shows_files_affected(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.rename_preview("login", "authenticate")
+        assert "files_affected" in result
+        assert len(result["files_affected"]) >= 1

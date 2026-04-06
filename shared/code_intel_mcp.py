@@ -55,6 +55,7 @@ TOOL_NAMES = [
     "batch_find",
     "boundary_check",
     "suggest_extract",
+    "rename_preview",
 ]
 
 # ─── FILE WATCHER ─────────────────────────────────────────────────
@@ -545,6 +546,21 @@ _TOOL_DEFS: list[dict] = [
                 "top_n": {"type": "integer", "description": "Max suggestions (default 20)", "default": 20},
             },
             "required": [],
+        },
+    },
+    {
+        "name": "rename_preview",
+        "description": (
+            "Preview all locations that would change if a symbol is renamed. "
+            "Shows definition, call sites, and imports. Read-only — does NOT modify files."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Current symbol name"},
+                "new_name": {"type": "string", "description": "Proposed new name"},
+            },
+            "required": ["symbol", "new_name"],
         },
     },
 ]
