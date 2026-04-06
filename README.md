@@ -2,7 +2,7 @@
 
 Production autonomous agent system: 4 orchestration patterns, 10+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval, NLP intent classification, AI research blog pipeline.
 
-**~139,000 LOC** | **581 Python files** | **17 databases** | **1582 tests** | **4 dashboards** | **5 Telegram bots** | **3 platforms**
+**~140,000 LOC** | **581 Python files** | **18 databases** | **1604 tests** | **4 dashboards** | **5 Telegram bots** | **3 platforms**
 
 > Stats auto-updated via `scripts/update_stats.py`. Source of truth: [CLAUDE.md](CLAUDE.md).
 
@@ -64,7 +64,7 @@ Models a senior IT recruiter's 6-30 second screening process. Zero LLM cost — 
 
 ### Code Intelligence (shared/code_intelligence.py + MCP)
 
-AST-based code graph powering risk-aware review and developer tooling via 8 MCP tools:
+AST-based code graph powering risk-aware review and developer tooling via 13 MCP tools:
 
 | MCP Tool | What It Does | Replaces |
 |----------|-------------|----------|
@@ -76,8 +76,13 @@ AST-based code graph powering risk-aware review and developer tooling via 8 MCP 
 | `semantic_search` | Find code by meaning, not text | Keyword grep |
 | `module_summary` | Overview of a module's structure | Reading every file |
 | `recent_changes` | What changed recently | `git log` + manual diff |
+| `grep_search` | Ripgrep + code graph enrichment | Raw grep/glob (literal, regex, TODOs) |
+| `dead_code_report` | Functions with zero callers | Manual dead code audit |
+| `complexity_hotspots` | High-risk + high fan-in functions | Manual triage |
+| `dependency_cycles` | Circular module dependencies | Manual dependency tracing |
+| `similar_functions` | Semantic duplicate detection | Manual code review |
 
-**4,297 nodes, 22,566 edges.** Risk scoring: security keywords, fan-in, test coverage, function size. One MCP call replaces 5-15 Grep/Glob/Read calls — saves 10-50k tokens per exploration.
+**4,322 nodes, 22,822 edges.** Risk scoring: security keywords, fan-in, test coverage, function size. `grep_search` wraps ripgrep as subprocess and enriches each match with enclosing function, risk score, and caller count — replacing raw Grep/Glob for all codebase searches. One MCP call replaces 5-15 Grep/Glob/Read calls — saves 10-50k tokens per exploration.
 
 ### 3. Knowledge MindGraph (mindgraph_app/)
 

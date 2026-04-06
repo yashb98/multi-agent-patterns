@@ -16,18 +16,20 @@ python -m jobpulse.runner ext-bridge   # Start Chrome extension WebSocket bridge
 python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 ```
 
-## Code Intelligence (use FIRST for ALL code exploration)
-- Use MCP tools before Grep/Glob/Explore agents. One call replaces 5-15 search calls.
+## Code Intelligence (use for ALL code exploration)
+MCP tools are 10-250x faster than Grep (1-28ms vs 350-750ms, pre-indexed SQLite).
 - `find_symbol` — locate definition | `callers_of` / `callees_of` — call graph
 - `impact_analysis` — blast radius | `risk_report` — high-risk functions
 - `semantic_search` — find code AND docs by meaning (all .md files are indexed)
 - `module_summary` — module overview | `recent_changes` — git log + graph
-- Brief subagents: "Use MCP tools (find_symbol, callers_of, semantic_search) before Grep/Glob"
+- Grep/Glob only for non-Python files or raw regex in configs
+- **Never use Explore agents for code understanding** — they can't access MCP, burn 50-100k tokens
+- Brief subagents (general-purpose type): "Use MCP tools (find_symbol, callers_of, semantic_search) — never raw Grep/Glob"
 
 ## Critical Rules
 - Update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
 - Always HTTPS for external APIs | Tests NEVER touch data/*.db — use tmp_path
-- Never rewrite a file without grepping for all function names used by other modules
+- Never rewrite a file without checking `callers_of` (or Grep) for all function names used by other modules
 - Log errors to `.claude/mistakes.md` | Full rules in `.claude/rules/`
 - Use `semantic_search` to retrieve detailed rules/docs on demand — they're all indexed
 
@@ -35,7 +37,7 @@ python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~139,000 LOC | 581 Python files | 17 databases | 1582 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~140,000 LOC | 581 Python files | 18 databases | 1604 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)

@@ -15,6 +15,7 @@ from shared.logging_config import get_logger
 from jobpulse.ralph_loop.loop import ralph_apply_sync
 from jobpulse.ralph_loop.test_store import TestStore
 from jobpulse.ralph_loop.pattern_store import PatternStore
+from jobpulse.job_scanner import scan_platforms
 
 logger = get_logger(__name__)
 
@@ -227,3 +228,78 @@ def _notify_telegram(
             for img in sorted(screenshot_path.glob("iter_*.png"), reverse=True):
                 send_jobs_photo(str(img), caption=f"Ralph Test — {img.name}")
                 break
+
+
+def ralph_live_test(
+    platforms: list[str] | None = None,
+    count: int = 3,
+    max_iterations: int = 5,
+    store_db_path: str | None = None,
+    pattern_db_path: str | None = None,
+    base_dir: Path | None = None,
+) -> list[TestRunResult]:
+    """Scrape fresh job URLs and test each through Ralph Loop (dry_run=True).
+
+    1. Calls scan_platforms() for fresh URLs
+    2. Picks `count` jobs with round-robin platform diversity
+    3. Runs each through ralph_test_run(dry_run=True)
+    4. Returns list of TestRunResult
+    """
+    from jobpulse.ext_adapter import _detect_ats_platform
+
+    jobs = scan_platforms(platforms)
+    if not jobs:
+        logger.warning("ralph_live_test: no jobs found from scanners")
+        return []
+
+    selected = _select_diverse_jobs(jobs, count)
+    logger.info("ralph_live_test: selected %d jobs from %d scraped", len(selected), len(jobs))
+
+    results: list[TestRunResult] = []
+    for job in selected:
+        url = job["url"]
+        platform = job.get("platform") or _detect_ats_platform(url)
+        logger.info("ralph_live_test: testing %s — %s", platform, url[:60])
+
+        result = ralph_test_run(
+            platform=platform,
+            url=url,
+            max_iterations=max_iterations,
+            store_db_path=store_db_path,
+            pattern_db_path=pattern_db_path,
+            base_dir=base_dir,
+        )
+        results.append(result)
+
+    return results
+
+
+def _select_diverse_jobs(jobs: list[dict], count: int) -> list[dict]:
+    """Pick up to `count` jobs with round-robin platform diversity."""
+    from collections import defaultdict
+
+    by_platform: dict[str, list[dict]] = defaultdict(list)
+    for job in jobs:
+        by_platform[job.get("platform", "generic")].append(job)
+
+    selected: list[dict] = []
+    seen_urls: set[str] = set()
+    platforms = list(by_platform.keys())
+    idx = 0
+
+    while len(selected) < count and platforms:
+        platform = platforms[idx % len(platforms)]
+        bucket = by_platform[platform]
+        if bucket:
+            job = bucket.pop(0)
+            if job["url"] not in seen_urls:
+                seen_urls.add(job["url"])
+                selected.append(job)
+        else:
+            platforms.remove(platform)
+            if not platforms:
+                break
+            continue
+        idx += 1
+
+    return selected
