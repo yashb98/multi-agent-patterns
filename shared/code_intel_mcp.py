@@ -1,4 +1,4 @@
-"""MCP stdio server for Code Intelligence — 13 tools + file watcher.
+"""MCP stdio server for Code Intelligence — 20 tools + file watcher.
 
 Exposes CodeIntelligence query methods as MCP tools for Claude Code.
 Auto-started via .claude/settings.json MCP configuration.

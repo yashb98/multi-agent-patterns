@@ -1451,10 +1451,11 @@ class CodeIntelligence:
         # Available MCP tools
         lines.append(
             "\nMCP tools: find_symbol · callers_of · callees_of · "
-            "impact_analysis · risk_report · semantic_search · "
+            "impact_analysis · diff_impact · risk_report · semantic_search · "
             "module_summary · recent_changes · dead_code_report · "
             "complexity_hotspots · dependency_cycles · similar_functions · "
-            "grep_search"
+            "grep_search · test_coverage_map · call_path · batch_find · "
+            "boundary_check · suggest_extract · rename_preview"
         )
 
         return "\n".join(lines)
