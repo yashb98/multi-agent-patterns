@@ -268,6 +268,11 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
                         continue
 
                     resp.raise_for_status()
+                    try:
+                        from shared.rate_monitor import record_from_headers
+                        record_from_headers("reed", dict(resp.headers))
+                    except Exception:
+                        pass  # Non-blocking monitoring
                     data = resp.json()
                     break
                 else:
@@ -622,6 +627,12 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                                 resp.status_code, title,
                             )
                         break
+
+                    try:
+                        from shared.rate_monitor import record_from_headers
+                        record_from_headers("linkedin", dict(resp.headers))
+                    except Exception:
+                        pass  # Non-blocking monitoring
 
                     soup = BeautifulSoup(resp.text, "html.parser")
                     cards = soup.select(

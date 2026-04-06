@@ -44,6 +44,11 @@ def _notion_api(method: str, endpoint: str, body: dict | None = None) -> dict:
                 headers=headers,
                 json=body,
             )
+        try:
+            from shared.rate_monitor import record_from_headers
+            record_from_headers("notion", dict(response.headers), endpoint=endpoint)
+        except Exception:
+            pass  # Non-blocking monitoring
         data: dict = response.json()
         if data.get("object") == "error":
             logger.error(

@@ -102,6 +102,11 @@ def sync_readme_skills(repos: list[dict], store) -> None:  # type: ignore[type-a
                 )
                 if resp.status_code == 200 and len(resp.text) >= 50:
                     all_md_text += resp.text + "\n"
+                try:
+                    from shared.rate_monitor import record_from_headers
+                    record_from_headers("github", dict(resp.headers), endpoint="repos/readme")
+                except Exception:
+                    pass  # Non-blocking monitoring
 
                 # Fetch extra .md files (non-blocking — skip silently on 404)
                 for md_file in EXTRA_MD_FILES:
@@ -307,3 +312,12 @@ def sync_profile() -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to retrieve profile stats: %s", exc)
+
+    # --- Nightly maintenance: clean up old rate limit records ---
+    try:
+        from shared.rate_monitor import cleanup_old_records
+        deleted = cleanup_old_records(retention_days=30)
+        if deleted:
+            logger.info("rate_monitor: cleaned up %d records older than 30 days", deleted)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("rate_monitor cleanup failed: %s", exc)
