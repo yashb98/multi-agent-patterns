@@ -83,7 +83,11 @@ def test_should_take_break_every_10(limiter):
 
 def test_different_days_dont_interfere(limiter):
     """Yesterday's applications should not affect today's counts."""
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    from datetime import datetime, timezone
+
+    # Use UTC date to match RateLimiter._today() which uses UTC
+    utc_today = datetime.now(timezone.utc).date()
+    yesterday = (utc_today - timedelta(days=1)).isoformat()
 
     # Manually insert yesterday's records
     import sqlite3

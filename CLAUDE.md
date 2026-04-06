@@ -25,7 +25,10 @@ MCP tools are 10-250x faster than Grep (1-28ms vs 350-750ms, pre-indexed SQLite)
 - `module_summary` — module overview | `recent_changes` — git log + graph
 - Grep/Glob only for non-Python files or raw regex in configs
 - **Never use Explore agents for code understanding** — they can't access MCP, burn 50-100k tokens
-- Brief subagents (general-purpose type): "Use MCP tools (find_symbol, callers_of, semantic_search) — never raw Grep/Glob"
+
+### Subagent Code Intelligence (auto-injected via AGENTS.md)
+Subagents automatically get CLI instructions via `AGENTS.md` — no manual briefing needed.
+CLI uses direct SQLite (~50ms) vs `python -m` path (~4s, heavy `shared/__init__.py` imports).
 
 ## Critical Rules
 - Update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
@@ -38,7 +41,7 @@ MCP tools are 10-250x faster than Grep (1-28ms vs 350-750ms, pre-indexed SQLite)
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~72,500 LOC | 290 Python files | 18 databases | 1591 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~72,500 LOC | 289 Python files | 18 databases | 1608 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
