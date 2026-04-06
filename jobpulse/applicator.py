@@ -67,11 +67,11 @@ def select_adapter(ats_platform: str | None) -> BaseATSAdapter:
 
 
 def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
-    """Call adapter.fill_and_submit(), handling both sync and async adapters.
+    """Call adapter.fill_and_submit(), handling the async ExtensionAdapter.
 
-    ExtensionAdapter.fill_and_submit() is async; Playwright adapters are sync.
-    For the extension adapter, we dispatch the coroutine to the bridge's event loop
-    (running on a background thread) so WebSocket calls stay on the correct loop.
+    ExtensionAdapter.fill_and_submit() is async — we dispatch the coroutine
+    to the bridge's event loop (running on a background thread) so WebSocket
+    calls stay on the correct loop.
     """
     result = adapter.fill_and_submit(**kwargs)
     if inspect.isawaitable(result):

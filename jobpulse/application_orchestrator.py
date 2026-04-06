@@ -193,19 +193,20 @@ class ApplicationOrchestrator:
                 import asyncio
                 try:
                     result = await self.bridge.wait_for_apply(timeout_ms=10000)
-                    snapshot = self._as_dict(await self.bridge.get_snapshot())
-                    waited = result.get("waited_ms", 0)
-                    diag = result.get("apply_diagnostics", [])
-                    if diag:
-                        logger.info(
-                            "wait_for_apply: %dms, %d elements with 'apply' text: %s",
-                            waited, len(diag),
-                            [d.get("text", "")[:40] for d in diag[:5]],
-                        )
-                    else:
-                        logger.warning("wait_for_apply: %dms, NO elements with 'apply' text found", waited)
-                except (TimeoutError, ConnectionError):
-                    logger.warning("wait_for_apply timed out — using cached snapshot")
+                    if isinstance(result, dict):
+                        snapshot = self._as_dict(await self.bridge.get_snapshot())
+                        waited = result.get("waited_ms", 0)
+                        diag = result.get("apply_diagnostics", [])
+                        if diag and isinstance(diag, list):
+                            logger.info(
+                                "wait_for_apply: %dms, %d elements with 'apply' text: %s",
+                                waited, len(diag),
+                                [d.get("text", "")[:40] for d in diag[:5]],
+                            )
+                        else:
+                            logger.warning("wait_for_apply: %dms, NO elements with 'apply' text found", waited)
+                except (TimeoutError, ConnectionError, TypeError, AttributeError):
+                    logger.warning("wait_for_apply unavailable — using cached snapshot")
 
                 snapshot = await self._click_apply_button(snapshot)
                 steps.append({"page_type": "job_description", "action": "click_apply"})
