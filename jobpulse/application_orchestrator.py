@@ -188,6 +188,25 @@ class ApplicationOrchestrator:
                 return {"page_type": page_type, "snapshot": snapshot}
 
             if page_type == PageType.JOB_DESCRIPTION:
+                # Use wait_for_apply: polls DOM for up to 10s for apply button to render
+                # LinkedIn SPA renders Easy Apply lazily after initial page load
+                import asyncio
+                try:
+                    result = await self.bridge.wait_for_apply(timeout_ms=10000)
+                    snapshot = self._as_dict(await self.bridge.get_snapshot())
+                    waited = result.get("waited_ms", 0)
+                    diag = result.get("apply_diagnostics", [])
+                    if diag:
+                        logger.info(
+                            "wait_for_apply: %dms, %d elements with 'apply' text: %s",
+                            waited, len(diag),
+                            [d.get("text", "")[:40] for d in diag[:5]],
+                        )
+                    else:
+                        logger.warning("wait_for_apply: %dms, NO elements with 'apply' text found", waited)
+                except (TimeoutError, ConnectionError):
+                    logger.warning("wait_for_apply timed out — using cached snapshot")
+
                 snapshot = await self._click_apply_button(snapshot)
                 steps.append({"page_type": "job_description", "action": "click_apply"})
 
@@ -226,15 +245,22 @@ class ApplicationOrchestrator:
 
     async def _click_apply_button(self, snapshot: dict) -> dict:
         import re
+        import asyncio
         apply_pattern = re.compile(
-            r"(apply\s*(now|for\s*this)?|start\s*application|apply\s*for\s*(this\s*)?job)",
+            r"(easy\s*apply|apply\s*(now|for\s*this)?|start\s*application|apply\s*for\s*(this\s*)?job|apply\s*on\s*company\s*website)",
             re.IGNORECASE,
         )
-        for btn in snapshot.get("buttons", []):
+        buttons = snapshot.get("buttons", [])
+        button_texts = [b.get("text", "")[:60] for b in buttons]
+        logger.info("Apply button search: %d buttons found — %s", len(buttons), button_texts[:10])
+        for btn in buttons:
             if btn.get("enabled") and apply_pattern.search(btn.get("text", "")):
-                logger.info("Clicking: %s", btn["text"])
+                logger.info("Clicking apply: '%s' via %s", btn["text"][:60], btn["selector"])
                 await self.bridge.click(btn["selector"])
+                # Wait for modal/page transition after click
+                await asyncio.sleep(2)
                 return self._as_dict(await self.bridge.get_snapshot())
+        logger.warning("No apply button found in snapshot")
         return snapshot
 
     async def _handle_login(self, snapshot: dict, platform: str) -> dict:
@@ -384,10 +410,20 @@ class ApplicationOrchestrator:
                 form_intelligence=form_intelligence,
             )
 
-            for action in actions:
-                await self._execute_action(action, tg_stream=tg_stream)
+            for i, action in enumerate(actions):
+                try:
+                    atype = getattr(action, "type", None) or (action.get("type", "?") if isinstance(action, dict) else "?")
+                    sel = getattr(action, "selector", None) or (action.get("selector", "?") if isinstance(action, dict) else "?")
+                    logger.info("  Action %d/%d: %s → %s", i + 1, len(actions), atype, str(sel)[:60])
+                    await self._execute_action(action, tg_stream=tg_stream)
+                except (TimeoutError, ConnectionError) as exc:
+                    logger.warning("  Action %d/%d failed: %s — %r", i + 1, len(actions), atype, exc)
 
-            screenshot_bytes = await self.bridge.screenshot()
+            try:
+                screenshot_bytes = await self.bridge.screenshot()
+            except (TimeoutError, ConnectionError):
+                screenshot_bytes = None
+                logger.warning("Screenshot failed after form page %d", page_num)
             if screenshot_bytes:
                 last_screenshot = screenshot_bytes
 

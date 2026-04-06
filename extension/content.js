@@ -123,7 +123,10 @@ function extractFieldInfo(el, iframeIndex) {
 
   // Build a unique CSS selector for this element
   let selector = "";
-  if (el.id) selector = `#${el.id}`;
+  if (el.id) {
+    // Use attribute selector for IDs with special chars (React uses :r4: etc)
+    selector = /[:#.\[\]]/.test(el.id) ? `[id="${el.id}"]` : `#${el.id}`;
+  }
   else if (el.name) selector = `${tag}[name="${el.name}"]`;
   else {
     const parent = el.parentElement;
@@ -238,15 +241,41 @@ function buildSnapshot() {
   const fields = deepScan();
 
   // Extract clickable buttons and submit elements
+  // Include role='button' elements + <a> tags with button-like classes (LinkedIn uses a.artdeco-button for Apply)
   const buttons = [];
-  document.querySelectorAll("button, input[type='submit'], a[role='button']").forEach((el) => {
-    const text = el.textContent?.trim() || el.value || "";
+  const seen = new Set();
+  document.querySelectorAll("button, input[type='submit'], [role='button'], [class*='apply'], [class*='btn'], a[class*='button']").forEach((el) => {
+    if (seen.has(el)) return;
+    seen.add(el);
+    // Get text: textContent first, then aria-label, then value
+    let text = el.textContent?.trim() || "";
+    // Clean up multi-line/whitespace text from nested elements
+    if (text) text = text.replace(/\s+/g, " ").trim();
+    // Fallback to aria-label (LinkedIn uses this for icon-only buttons)
+    if (!text) text = el.getAttribute("aria-label") || "";
+    if (!text) text = el.value || "";
     if (text) {
+      const tag = el.tagName.toLowerCase();
+      let selector = "";
+      if (el.id) {
+        // Use attribute selector for IDs with special chars (React uses :r4: etc)
+        if (/[:#.\[\]]/.test(el.id)) selector = `[id="${el.id}"]`;
+        else selector = `#${el.id}`;
+      }
+      else if (el.className && typeof el.className === "string") {
+        // Prefer jobs-apply-button (LinkedIn) or other meaningful class
+        const classes = el.className.split(/\s+/).filter(c => c.length > 3);
+        const applyClass = classes.find(c => c.includes("apply") || c.includes("submit"));
+        const meaningful = applyClass || classes.find(c => !c.startsWith("artdeco"));
+        if (meaningful) selector = `${tag}.${meaningful}`;
+        else if (classes[0]) selector = `${tag}.${classes[0]}`;
+      }
+      if (!selector) selector = `${tag}:nth-of-type(${buttons.length + 1})`;
       buttons.push({
-        selector: el.id ? `#${el.id}` : `button:nth-of-type(${buttons.length + 1})`,
+        selector,
         text: text.substring(0, 100),
-        type: el.type || (el.tagName === "A" ? "link" : "button"),
-        enabled: !el.disabled,
+        type: el.type || (tag === "a" ? "link" : "button"),
+        enabled: !el.disabled && !el.getAttribute("aria-disabled"),
       });
     }
   });
@@ -469,6 +498,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "check":
         result = await checkBox(payload.selector, payload.value);
         break;
+      case "wait_for_apply": {
+        // Poll DOM for up to 10s waiting for an apply-like button to render.
+        // LinkedIn SPA renders the Easy Apply button lazily after page load.
+        const applyRe = /easy\s*apply|apply\s*(now|for\s*this)?|start\s*application|submit\s*application/i;
+        const maxWait = payload.timeout_ms || 10000;
+        const pollInterval = 500;
+        let elapsed = 0;
+        let snap = null;
+        while (elapsed < maxWait) {
+          snap = buildSnapshot();
+          const hasApply = snap.buttons.some(b => applyRe.test(b.text));
+          if (hasApply) break;
+          await delay(pollInterval);
+          elapsed += pollInterval;
+        }
+        // Final snapshot regardless
+        if (!snap) snap = buildSnapshot();
+        // Also dump all elements containing "apply" for diagnostics
+        const applyDiag = [];
+        document.querySelectorAll("*").forEach(el => {
+          const t = (el.textContent || "").trim();
+          if (t.length < 100 && /apply/i.test(t)) {
+            applyDiag.push({
+              tag: el.tagName.toLowerCase(),
+              classes: (el.className && typeof el.className === "string") ? el.className.substring(0, 120) : "",
+              text: t.substring(0, 80),
+              role: el.getAttribute("role") || "",
+              ariaLabel: el.getAttribute("aria-label") || "",
+            });
+          }
+        });
+        result = { ...snap, apply_diagnostics: applyDiag.slice(0, 30), waited_ms: elapsed };
+        break;
+      }
       case "analyze_field": {
         // Tier 3: try Prompt API first, fall back to Writer API for textarea
         let answer = await analyzeFieldLocally(payload.question, payload.input_type, payload.options || []);

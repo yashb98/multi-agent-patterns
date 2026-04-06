@@ -19,7 +19,7 @@ _VISION_THRESHOLD = 0.6
 
 # --- Button patterns ---
 _APPLY_BUTTONS = re.compile(
-    r"^(apply\s*(now|for\s*this)?|submit\s*application|start\s*application|apply\s*for\s*(this\s*)?job)$",
+    r"^(easy\s*apply|apply\s*(now|for\s*this)?|submit\s*application|start\s*application|apply\s*for\s*(this\s*)?job|apply\s*on\s*company\s*website)$",
     re.IGNORECASE,
 )
 _LOGIN_BUTTONS = re.compile(r"^(sign\s*in|log\s*in|login)$", re.IGNORECASE)
@@ -52,6 +52,16 @@ _APPLICATION_LABELS = re.compile(
 )
 
 
+_JOB_VIEW_URLS = re.compile(
+    r"linkedin\.com/jobs/view/"
+    r"|boards\.greenhouse\.io/.+/jobs/"
+    r"|jobs\.lever\.co/.+/"
+    r"|indeed\.com/viewjob"
+    r"|\.myworkdayjobs\.com/",
+    re.IGNORECASE,
+)
+
+
 def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     """Classify page type from DOM snapshot. Returns (PageType, confidence 0.0-1.0)."""
     if hasattr(snapshot, "model_dump"):
@@ -59,6 +69,7 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     buttons = snapshot.get("buttons", [])
     fields = snapshot.get("fields", [])
     page_text = snapshot.get("page_text_preview", "")
+    url = snapshot.get("url", "")
     verification_wall = snapshot.get("verification_wall")
 
     button_texts = [b.get("text", "") for b in buttons]
@@ -109,7 +120,11 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     if len(fields) >= 3:
         return PageType.APPLICATION_FORM, 0.65
 
-    # 8. Unknown — low confidence
+    # 8. URL hint — known job view page patterns (SPA may not have apply button in DOM yet)
+    if url and _JOB_VIEW_URLS.search(url):
+        return PageType.JOB_DESCRIPTION, 0.7
+
+    # 9. Unknown — low confidence
     return PageType.UNKNOWN, 0.2
 
 
@@ -202,11 +217,14 @@ class PageAnalyzer:
         )
         try:
             screenshot_bytes = await self.bridge.screenshot()
-            if screenshot_bytes:
+            if not screenshot_bytes:
+                logger.warning("Vision fallback skipped: screenshot() returned empty/None")
+            else:
+                logger.debug("Vision fallback: screenshot %d bytes", len(screenshot_bytes))
                 vision_type, vision_confidence = await _vision_detect(screenshot_bytes)
                 if vision_confidence > confidence:
                     return vision_type
         except Exception as exc:
-            logger.warning("Vision fallback failed: %s", exc)
+            logger.warning("Vision fallback failed: %r", exc, exc_info=True)
 
         return page_type

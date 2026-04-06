@@ -113,8 +113,8 @@ def ralph_test_run(
             iteration_callback=iteration_callback,
         )
     except Exception as exc:
-        logger.error("Ralph test run failed with exception: %s", exc)
-        result = {"success": False, "error": str(exc)}
+        logger.error("Ralph test run failed with exception: %r", exc, exc_info=True)
+        result = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
 
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
 
@@ -246,6 +246,13 @@ def ralph_live_test(
     4. Returns list of TestRunResult
     """
     from jobpulse.ext_adapter import _detect_ats_platform
+    from jobpulse.config import APPLICATION_ENGINE
+
+    # Start bridge eagerly so the extension can connect during scraping
+    if APPLICATION_ENGINE == "extension":
+        from jobpulse.ats_adapters import _get_extension_adapter
+        logger.info("Starting extension bridge before scraping...")
+        _get_extension_adapter()
 
     jobs = scan_platforms(platforms)
     if not jobs:

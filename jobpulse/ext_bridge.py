@@ -231,15 +231,17 @@ class ExtensionBridge:
             await asyncio.sleep(1)
 
         # Last resort: request snapshot directly from content script
+        # After MV3 restart, content script may need time to inject + page to render
         if self._snapshot is None and self.connected:
-            for _ in range(3):
+            for attempt in range(5):
                 try:
-                    result = await self._send_command("get_snapshot", timeout_ms=5000)
+                    result = await self._send_command("get_snapshot", timeout_ms=8000)
                     if result:
                         self._snapshot = PageSnapshot(**result)
                         break
                 except (TimeoutError, ConnectionError):
-                    await asyncio.sleep(2)
+                    logger.debug("get_snapshot attempt %d failed, retrying...", attempt + 1)
+                    await asyncio.sleep(3)
 
         if self._snapshot is None:
             raise RuntimeError("No snapshot received after navigation")
@@ -306,6 +308,23 @@ class ExtensionBridge:
         )
         answer = result.get("answer", "")
         return answer if answer else None
+
+    async def wait_for_apply(self, timeout_ms: int = 12000) -> dict[str, Any]:
+        """Wait for an apply button to appear in the DOM.
+
+        Returns the full snapshot + apply_diagnostics + waited_ms.
+        Used on LinkedIn job pages where the Easy Apply button renders late.
+        """
+        result = await self._send_command(
+            "wait_for_apply",
+            {"timeout_ms": timeout_ms},
+            timeout_ms=timeout_ms + 3000,  # Extra buffer for WS round-trip
+        )
+        # Update cached snapshot from the result
+        snap_fields = {k: v for k, v in result.items() if k not in ("apply_diagnostics", "waited_ms")}
+        if snap_fields:
+            self._snapshot = PageSnapshot(**snap_fields)
+        return result
 
     async def get_snapshot(self, force_refresh: bool = False) -> PageSnapshot | None:
         """Return the latest page snapshot.

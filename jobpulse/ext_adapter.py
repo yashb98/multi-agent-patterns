@@ -29,6 +29,12 @@ def _detect_ats_platform(url: str) -> str:
         return "indeed"
     if "workday" in url_lower or "myworkdayjobs" in url_lower:
         return "workday"
+    if "reed.co.uk" in url_lower:
+        return "reed"
+    if "totaljobs.com" in url_lower:
+        return "totaljobs"
+    if "glassdoor" in url_lower:
+        return "glassdoor"
     return "generic"
 
 
