@@ -1,0 +1,7 @@
+{
+  "name": "com.jobpulse.brain",
+  "description": "JobPulse Python backend bootstrap",
+  "path": "/Users/yashbishnoi/projects/multi_agent_patterns/jobpulse/native_host.py",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://*/"]
+}

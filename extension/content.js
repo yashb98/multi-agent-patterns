@@ -470,6 +470,44 @@ async function writeShortAnswer(question) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// JD Text Extraction — used by scanning flow
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Extract full job description text from the current page.
+ * Tries platform-specific selectors first, falls back to body text.
+ */
+function extractJDText() {
+  const selectors = [
+    // LinkedIn
+    ".description__text", ".show-more-less-html__markup", "#job-details",
+    // Indeed
+    "#jobDescriptionText", ".jobsearch-jobDescriptionText",
+    // Greenhouse
+    "#content .body", ".job__description",
+    // Lever
+    ".posting-page .content", '[data-qa="job-description"]',
+    // Workday
+    '[data-automation-id="jobPostingDescription"]',
+    // Generic
+    "article", '[class*="description"]', '[class*="job-detail"]',
+  ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = el.innerText?.trim();
+      if (text && text.length > 100) {
+        return text.replace(/\s+/g, " ").substring(0, 10000);
+      }
+    }
+  }
+
+  // Fallback: body text (limited)
+  return (document.body?.innerText || "").replace(/\s+/g, " ").substring(0, 10000);
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Message handler — commands from background.js
 // ═══════════════════════════════════════════════════════════════
 
@@ -530,6 +568,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
         });
         result = { ...snap, apply_diagnostics: applyDiag.slice(0, 30), waited_ms: elapsed };
+        break;
+      }
+      case "scan_jd": {
+        const jdText = extractJDText();
+        result = { success: true, jd_text: jdText };
         break;
       }
       case "analyze_field": {

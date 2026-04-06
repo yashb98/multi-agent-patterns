@@ -1,51 +1,126 @@
-<!-- extension/sidepanel.html -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <link rel="stylesheet" href="styles/sidepanel.css">
+  <meta charset="UTF-8">
+  <title>JobPulse</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #1a1a2e; color: #e0e0e0; font-size: 13px; width: 320px;
+      overflow-y: auto; min-height: 100vh;
+    }
+    header {
+      background: #16213e; padding: 12px 16px; display: flex;
+      align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #0f3460;
+    }
+    header h1 { font-size: 16px; font-weight: 600; color: #fff; }
+    .status-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      display: inline-block; margin-left: 8px;
+    }
+    .status-dot.online { background: #53d769; }
+    .status-dot.offline { background: #e94560; }
+
+    section { padding: 12px 16px; border-bottom: 1px solid #16213e; }
+    section h2 {
+      font-size: 12px; text-transform: uppercase; color: #8a8a9e;
+      margin-bottom: 8px; letter-spacing: 0.5px;
+    }
+
+    .phase-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .phase-badge {
+      background: #16213e; border-radius: 6px; padding: 8px;
+      text-align: center; font-size: 11px;
+    }
+    .phase-badge .platform { font-weight: 600; color: #fff; margin-bottom: 2px; }
+    .phase-badge .phase {
+      font-size: 10px; border-radius: 3px; padding: 2px 6px; display: inline-block;
+    }
+    .phase.observation { background: #4a4e69; color: #c9c9d4; }
+    .phase.dry_run { background: #0f3460; color: #7ec8e3; }
+    .phase.supervised { background: #533483; color: #c8a2f0; }
+    .phase.auto { background: #1b5e20; color: #81c784; }
+
+    .scan-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+    .scan-btn {
+      background: #0f3460; color: #7ec8e3; border: none; border-radius: 4px;
+      padding: 6px 10px; font-size: 11px; cursor: pointer;
+    }
+    .scan-btn:hover { background: #1a4a7a; }
+    .scan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .job-list { max-height: 300px; overflow-y: auto; }
+    .job-card {
+      background: #16213e; border-radius: 6px; padding: 10px; margin-bottom: 6px;
+    }
+    .job-card .title { font-weight: 600; color: #fff; font-size: 12px; }
+    .job-card .company { color: #8a8a9e; font-size: 11px; }
+    .job-card .meta { display: flex; gap: 8px; margin-top: 4px; font-size: 10px; }
+    .job-card .meta .platform-tag {
+      background: #0f3460; color: #7ec8e3; padding: 1px 6px; border-radius: 3px;
+    }
+    .job-card .meta .score { color: #53d769; }
+    .job-card .actions { margin-top: 6px; display: flex; gap: 4px; }
+    .job-card .actions button {
+      font-size: 10px; border: none; border-radius: 3px; padding: 4px 8px; cursor: pointer;
+    }
+    .btn-approve { background: #1b5e20; color: #81c784; }
+    .btn-reject { background: #4a1520; color: #e94560; }
+    .btn-review { background: #0f3460; color: #7ec8e3; }
+
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; text-align: center;
+    }
+    .stat-box { background: #16213e; border-radius: 6px; padding: 8px 4px; }
+    .stat-box .value { font-size: 18px; font-weight: 700; color: #fff; }
+    .stat-box .label { font-size: 9px; color: #8a8a9e; text-transform: uppercase; }
+
+    .limit-bar { margin-bottom: 6px; }
+    .limit-bar .bar-label {
+      font-size: 11px; display: flex; justify-content: space-between; margin-bottom: 2px;
+    }
+    .limit-bar .bar { background: #16213e; border-radius: 3px; height: 6px; overflow: hidden; }
+    .limit-bar .bar .fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+    .fill.low { background: #53d769; }
+    .fill.mid { background: #f9a825; }
+    .fill.high { background: #e94560; }
+
+    .empty { text-align: center; color: #8a8a9e; padding: 20px; font-size: 12px; }
+  </style>
 </head>
 <body>
-  <div class="panel">
-    <header>
-      <h1>JobPulse</h1>
-      <span id="conn-status" class="badge disconnected">Disconnected</span>
-    </header>
+  <header>
+    <h1>JobPulse <span id="backend-status" class="status-dot offline"></span></h1>
+    <span id="ws-status" style="font-size:11px; color:#8a8a9e;">--</span>
+  </header>
 
-    <section id="current-app" class="section hidden">
-      <h2>Current Application</h2>
-      <div id="app-company" class="company-name"></div>
-      <div id="app-role" class="role-name"></div>
-      <div class="progress-bar"><div id="progress-fill"></div></div>
-      <div id="app-state" class="state-label"></div>
-    </section>
+  <section>
+    <h2>Phase Status</h2>
+    <div id="phase-grid" class="phase-grid"></div>
+  </section>
 
-    <section id="company-intel" class="section hidden">
-      <h2>Company Intel</h2>
-      <div id="intel-body"></div>
-    </section>
+  <section>
+    <h2>Scan</h2>
+    <div id="scan-controls" class="scan-btns"></div>
+  </section>
 
-    <section id="field-log" class="section">
-      <h2>Field Log</h2>
-      <div id="log-entries"></div>
-    </section>
+  <section>
+    <h2>Job Queue</h2>
+    <div id="job-list" class="job-list"><div class="empty">No jobs yet</div></div>
+  </section>
 
-    <section id="controls" class="section">
-      <h2>Controls</h2>
-      <div class="btn-row">
-        <button id="btn-pause">Pause</button>
-        <button id="btn-skip">Skip Field</button>
-        <button id="btn-abort">Abort</button>
-      </div>
-    </section>
+  <section>
+    <h2>Today</h2>
+    <div id="stats" class="stats-grid"></div>
+  </section>
 
-    <section id="queue" class="section">
-      <h2>Queue</h2>
-      <div id="queue-list"><em>No pending applications.</em></div>
-    </section>
-  </div>
+  <section>
+    <h2>Daily Limits</h2>
+    <div id="limits"></div>
+  </section>
 
-  <script src="protocol.js"></script>
-  <script src="sidepanel.js"></script>
+  <script type="module" src="sidepanel.js"></script>
 </body>
 </html>

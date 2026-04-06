@@ -343,5 +343,154 @@ chrome.runtime.onInstalled.addListener(() => {
 // Service worker woke up (may be fresh start or after idle timeout)
 connect();
 
-// Side panel: don't auto-open on action click
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
+// Side panel: open on action click for dashboard access
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+
+// ═══════════════════════════════════════════════════════════════
+// Extension-Driven Pipeline — Scanning, Alarms, Phase Engine
+// ═══════════════════════════════════════════════════════════════
+
+// Dynamic imports (ES module not needed — load on demand to avoid startup cost)
+let _scannerModule = null;
+let _jobQueueModule = null;
+let _phaseModule = null;
+let _bridgeModule = null;
+
+async function getScanner() {
+  if (!_scannerModule) _scannerModule = await import('./scanner.js');
+  return _scannerModule;
+}
+
+async function getJobQueue() {
+  if (!_jobQueueModule) _jobQueueModule = await import('./job_queue.js');
+  return _jobQueueModule;
+}
+
+async function getPhaseEngine() {
+  if (!_phaseModule) _phaseModule = await import('./phase_engine.js');
+  return _phaseModule;
+}
+
+async function getNativeBridge() {
+  if (!_bridgeModule) _bridgeModule = await import('./native_bridge.js');
+  return _bridgeModule;
+}
+
+// Initialize extension pipeline on install/startup
+async function initPipeline() {
+  try {
+    const jq = await getJobQueue();
+    await jq.initDB();
+    console.log("[JobPulse] IndexedDB initialized");
+
+    const pe = await getPhaseEngine();
+    await pe.initPhases();
+    console.log("[JobPulse] Phase engine initialized");
+
+    const scanner = await getScanner();
+    await scanner.registerScanAlarms();
+    console.log("[JobPulse] Scan alarms registered");
+
+    // Try to wake up Python backend
+    const bridge = await getNativeBridge();
+    const healthy = await bridge.isBackendHealthy();
+    if (healthy) {
+      console.log("[JobPulse] Python backend is running");
+    } else {
+      console.log("[JobPulse] Python backend not reachable — will bootstrap on demand");
+    }
+  } catch (e) {
+    console.error("[JobPulse] Pipeline init error:", e.message);
+  }
+}
+
+// Run pipeline init after WebSocket connect attempt
+setTimeout(initPipeline, 2000);
+
+// Chrome Alarms — scheduled scan triggers
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (!alarm.name.startsWith("jobpulse_scan:")) return;
+  console.log("[JobPulse] Alarm fired:", alarm.name);
+  try {
+    const scanner = await getScanner();
+    await scanner.handleScanAlarm(alarm.name);
+  } catch (e) {
+    console.error("[JobPulse] Scan alarm error:", e.message);
+  }
+});
+
+// Side panel + popup message handler (extend existing listener)
+const _origListener = chrome.runtime.onMessage.hasListeners;
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Scan Now — triggered from side panel
+  if (msg.type === "scan_now") {
+    (async () => {
+      try {
+        const scanner = await getScanner();
+        const stats = await scanner.runScanCycle(msg.platform);
+        sendResponse({ started: true, stats });
+      } catch (e) {
+        sendResponse({ started: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  // Approve job — from side panel
+  if (msg.type === "approve_job") {
+    (async () => {
+      try {
+        const jq = await getJobQueue();
+        await jq.updateJob(msg.jobId, { apply_status: "approved" });
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  // Reject job — from side panel
+  if (msg.type === "reject_job") {
+    (async () => {
+      try {
+        const jq = await getJobQueue();
+        await jq.updateJob(msg.jobId, { apply_status: "rejected" });
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  // Get phase status — from side panel
+  if (msg.type === "get_phases") {
+    (async () => {
+      try {
+        const pe = await getPhaseEngine();
+        const phases = await pe.getAllPhases();
+        sendResponse({ phases });
+      } catch (e) {
+        sendResponse({ phases: null, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  // Get job queue stats — from side panel
+  if (msg.type === "get_job_stats") {
+    (async () => {
+      try {
+        const jq = await getJobQueue();
+        const stats = await jq.getStats();
+        sendResponse({ stats });
+      } catch (e) {
+        sendResponse({ stats: null, error: e.message });
+      }
+    })();
+    return true;
+  }
+
+  return false;
+});
