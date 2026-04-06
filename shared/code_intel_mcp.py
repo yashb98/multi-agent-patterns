@@ -52,6 +52,7 @@ TOOL_NAMES = [
     "diff_impact",
     "test_coverage_map",
     "call_path",
+    "batch_find",
 ]
 
 # ─── FILE WATCHER ─────────────────────────────────────────────────
@@ -494,6 +495,22 @@ _TOOL_DEFS: list[dict] = [
             "required": ["source", "target"],
         },
     },
+    {
+        "name": "batch_find",
+        "description": (
+            "Find multiple symbols at once or match by glob pattern (e.g. '*_handler'). "
+            "Returns all found symbols with risk scores."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "names": {"type": "array", "items": {"type": "string"}, "description": "List of symbol names to look up"},
+                "pattern": {"type": "string", "description": "Glob pattern to match (e.g. '*_handler', 'test_*')"},
+                "max_results": {"type": "integer", "description": "Max results (default 50)", "default": 50},
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -634,6 +651,8 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
         return ci.test_coverage_map(file=args.get("file"), top_n=args.get("top_n", 50))
     elif name == "call_path":
         return ci.call_path(args["source"], args["target"], max_depth=args.get("max_depth", 6))
+    elif name == "batch_find":
+        return ci.batch_find(names=args.get("names"), pattern=args.get("pattern"), max_results=args.get("max_results", 50))
     else:
         raise ValueError(f"Unknown tool: {name}")
 

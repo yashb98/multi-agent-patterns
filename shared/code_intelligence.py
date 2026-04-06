@@ -1030,6 +1030,35 @@ class CodeIntelligence:
 
         return {"found": False, "source": src_qname, "target": tgt_qname, "path": [], "depth": 0}
 
+    def batch_find(self, names: list[str] | None = None, *, pattern: str | None = None, max_results: int = 50) -> dict[str, Any]:
+        """Find multiple symbols at once, or match by glob pattern."""
+        found: list[dict[str, Any]] = []
+        not_found: list[str] = []
+
+        if pattern:
+            sql_pattern = pattern.replace("*", "%").replace("?", "_")
+            rows = self.conn.execute(
+                "SELECT qualified_name, name, kind, file_path, line_start, line_end, "
+                "risk_score, is_async FROM nodes "
+                "WHERE name LIKE ? AND kind != 'document' ORDER BY risk_score DESC LIMIT ?",
+                (sql_pattern, max_results),
+            ).fetchall()
+            for row in rows:
+                found.append({
+                    "qualified_name": row[0], "name": row[1], "kind": row[2],
+                    "file": row[3], "line_start": row[4], "line_end": row[5],
+                    "risk_score": round(row[6] or 0, 3), "is_async": bool(row[7]),
+                })
+        elif names:
+            for name in names:
+                result = self.find_symbol(name)
+                if result:
+                    found.append(result)
+                else:
+                    not_found.append(name)
+
+        return {"found": found[:max_results], "not_found": not_found, "total": len(found)}
+
     def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
         """Top-N highest-risk functions, optionally filtered by file."""
         if file is not None:

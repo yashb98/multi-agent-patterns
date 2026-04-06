@@ -637,3 +637,30 @@ class TestCallPath:
         ci.index_directory(str(sample_project))
         result = ci.call_path("check_access", "verify_token", max_depth=1)
         assert "found" in result
+
+
+class TestBatchFind:
+    def test_finds_multiple_symbols(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.batch_find(["login", "check_access"])
+        assert len(result["found"]) == 2
+        names = [r["name"] for r in result["found"]]
+        assert "login" in names
+        assert "check_access" in names
+
+    def test_glob_pattern(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.batch_find(pattern="*_token")
+        assert len(result["found"]) >= 1
+        assert any("verify_token" in r["name"] for r in result["found"])
+
+    def test_missing_symbols_in_not_found(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.batch_find(["login", "nonexistent_xyz"])
+        assert "nonexistent_xyz" in result["not_found"]
+
+    def test_includes_risk_comparison(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.batch_find(["login", "check_access"])
+        for r in result["found"]:
+            assert "risk_score" in r
