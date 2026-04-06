@@ -13,7 +13,8 @@ python -m jobpulse.runner export       # Full data backup
 python -m jobpulse.runner profile-sync # Refresh skill/project graph (3am cron)
 python -m jobpulse.runner skill-gaps   # Show top missing skills + export CSV
 python -m jobpulse.runner ext-bridge   # Start Chrome extension WebSocket bridge
-python -m jobpulse.runner ralph-test   # Dry-run Ralph Loop self-healing test
+python -m jobpulse.runner ralph-test <url>   # Test single URL via Ralph Loop
+python -m jobpulse.runner ralph-test --live  # Scrape fresh URLs + test via extension
 ```
 
 ## Code Intelligence (use for ALL code exploration)
@@ -37,7 +38,7 @@ MCP tools are 10-250x faster than Grep (1-28ms vs 350-750ms, pre-indexed SQLite)
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~140,000 LOC | 581 Python files | 18 databases | 1606 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~140,000 LOC | 579 Python files | 18 databases | 1597 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
