@@ -26,7 +26,8 @@ async def test_analyze_returns_answer_on_success():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = "Male"
 
-    with patch("jobpulse.vision_tier.OpenAI") as MockClient:
+    with patch("jobpulse.vision_tier.OPENAI_API_KEY", "test-key"), \
+         patch("jobpulse.vision_tier.OpenAI") as MockClient:
         MockClient.return_value.chat.completions.create.return_value = mock_response
         result = await analyze_field_screenshot(
             "What is your gender?",
@@ -39,7 +40,8 @@ async def test_analyze_returns_answer_on_success():
 @pytest.mark.asyncio
 async def test_analyze_returns_none_on_error():
     """Vision tier returns None when API fails."""
-    with patch("jobpulse.vision_tier.OpenAI") as MockClient:
+    with patch("jobpulse.vision_tier.OPENAI_API_KEY", "test-key"), \
+         patch("jobpulse.vision_tier.OpenAI") as MockClient:
         MockClient.return_value.chat.completions.create.side_effect = Exception("API down")
         result = await analyze_field_screenshot(
             "What is your gender?",

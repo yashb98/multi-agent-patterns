@@ -12,11 +12,10 @@ from jobpulse.ats_adapters import get_adapter, _ext_adapter
 from jobpulse.ext_adapter import ExtensionAdapter
 
 
-def test_get_adapter_playwright_mode():
-    """Default mode returns Playwright adapter."""
-    with patch("jobpulse.config.APPLICATION_ENGINE", "playwright"):
-        adapter = get_adapter("greenhouse")
-    assert adapter.name == "greenhouse"
+def test_get_adapter_always_extension():
+    """get_adapter always returns ExtensionAdapter (extension-only mode)."""
+    adapter = get_adapter("greenhouse")
+    assert isinstance(adapter, ExtensionAdapter)
 
 
 def test_get_adapter_extension_mode():
@@ -74,6 +73,9 @@ def test_call_fill_and_submit_async():
 
     mock_adapter = MagicMock()
     mock_adapter.fill_and_submit.return_value = async_fill()
+    # Prevent MagicMock auto-creating a truthy .bridge attribute,
+    # which would route into the bridge event-loop path and hang.
+    mock_adapter.bridge = None
 
     result = _call_fill_and_submit(mock_adapter, url="http://test.com", cv_path=Path("/cv.pdf"))
     assert result["success"] is True

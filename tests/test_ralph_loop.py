@@ -688,13 +688,13 @@ class TestDryRunFlag:
 # ---------------------------------------------------------------------------
 
 
-class TestLinkedInDryRun:
+class TestExtensionAdapterDryRun:
     def test_dry_run_param_in_signature(self) -> None:
-        """LinkedInAdapter.fill_and_submit must have a 'dry_run' parameter."""
+        """ExtensionAdapter.fill_and_submit must have a 'dry_run' parameter."""
         import inspect
-        from jobpulse.ats_adapters.linkedin import LinkedInAdapter
+        from jobpulse.ext_adapter import ExtensionAdapter
 
-        sig = inspect.signature(LinkedInAdapter.fill_and_submit)
+        sig = inspect.signature(ExtensionAdapter.fill_and_submit)
         assert "dry_run" in sig.parameters, (
             f"fill_and_submit is missing 'dry_run' parameter. "
             f"Found params: {list(sig.parameters.keys())}"

@@ -47,6 +47,15 @@ class TestDetectPlatform:
     def test_workday_alt(self):
         assert _detect_ats_platform("https://company.workday.com/jobs") == "workday"
 
+    def test_reed(self):
+        assert _detect_ats_platform("https://www.reed.co.uk/jobs/data-analyst/123") == "reed"
+
+    def test_totaljobs(self):
+        assert _detect_ats_platform("https://www.totaljobs.com/job/data-engineer/456") == "totaljobs"
+
+    def test_glassdoor(self):
+        assert _detect_ats_platform("https://www.glassdoor.co.uk/job-listing/ml-engineer") == "glassdoor"
+
     def test_generic_unknown(self):
         assert _detect_ats_platform("https://careers.randomcompany.com/apply") == "generic"
 

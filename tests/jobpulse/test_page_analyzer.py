@@ -6,14 +6,14 @@ from jobpulse.ext_models import PageType
 from jobpulse.page_analyzer import PageAnalyzer, _dom_detect
 
 
-def _snapshot(buttons=None, fields=None, page_text="", verification_wall=None, has_file_inputs=False):
+def _snapshot(buttons=None, fields=None, page_text="", verification_wall=None, has_file_inputs=False, url="https://example.com/apply"):
     return {
         "buttons": buttons or [],
         "fields": fields or [],
         "page_text_preview": page_text,
         "verification_wall": verification_wall,
         "has_file_inputs": has_file_inputs,
-        "url": "https://example.com/apply",
+        "url": url,
     }
 
 
@@ -119,6 +119,38 @@ def test_dom_verification_wall():
     assert confidence >= 0.9
 
 
+def test_dom_easy_apply_linkedin():
+    s = _snapshot(buttons=[{"text": "Easy Apply", "enabled": True}])
+    result, confidence = _dom_detect(s)
+    assert result == PageType.JOB_DESCRIPTION
+    assert confidence >= 0.8
+
+
+def test_dom_url_hint_linkedin_job_view():
+    """LinkedIn job view URL detected as job_description even without apply button in DOM."""
+    s = _snapshot(
+        buttons=[{"text": "Save", "enabled": True}],
+        url="https://www.linkedin.com/jobs/view/12345",
+    )
+    result, confidence = _dom_detect(s)
+    assert result == PageType.JOB_DESCRIPTION
+    assert confidence >= 0.6
+
+
+def test_dom_url_hint_greenhouse():
+    s = _snapshot(url="https://boards.greenhouse.io/company/jobs/999")
+    result, confidence = _dom_detect(s)
+    assert result == PageType.JOB_DESCRIPTION
+    assert confidence >= 0.6
+
+
+def test_dom_url_hint_indeed():
+    s = _snapshot(url="https://uk.indeed.com/viewjob?jk=abc")
+    result, confidence = _dom_detect(s)
+    assert result == PageType.JOB_DESCRIPTION
+    assert confidence >= 0.6
+
+
 def test_dom_unknown_low_confidence():
     s = _snapshot(
         page_text="Welcome to our company. Learn about our culture.",
@@ -161,3 +193,17 @@ async def test_hybrid_falls_back_to_vision():
         result = await analyzer.detect(s)
         assert result == PageType.JOB_DESCRIPTION
         mock_vision.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hybrid_empty_screenshot_degrades_gracefully():
+    """Empty screenshot from bridge doesn't crash — returns DOM result."""
+    bridge = AsyncMock()
+    bridge.screenshot = AsyncMock(return_value=None)
+    analyzer = PageAnalyzer(bridge)
+    s = _snapshot(
+        page_text="Welcome to our company.",
+        buttons=[{"text": "Learn More", "enabled": True}],
+    )
+    result = await analyzer.detect(s)
+    assert result == PageType.UNKNOWN

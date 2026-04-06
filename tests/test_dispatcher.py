@@ -31,6 +31,7 @@ class TestDispatchMap:
             Intent.STOP, Intent.SHOW_JOBS, Intent.APPROVE_JOBS, Intent.REJECT_JOB,
             Intent.JOB_STATS, Intent.SEARCH_CONFIG, Intent.PAUSE_JOBS,
             Intent.RESUME_JOBS, Intent.JOB_DETAIL,
+            Intent.SCAN_JOBS,
         }
         all_intents = set(Intent) - {Intent.UNKNOWN}
         missing = all_intents - handlers_covered
