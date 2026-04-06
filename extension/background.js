@@ -436,7 +436,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Approve job — from side panel: mark approved, then trigger apply via Python backend
+  // Approve job — from side panel: check phase, mark approved, trigger apply
   if (msg.type === "approve_job") {
     (async () => {
       try {
@@ -450,25 +450,55 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
 
+        const platform = job.platform || "generic";
+
+        // Phase engine gate: check if this platform can fill/submit
+        const pe = await getPhaseEngine();
+        const phase = await pe.getPhase(platform);
+        const fillOk = await pe.canFill(platform);
+        const submitOk = await pe.canSubmit(platform);
+
+        if (!fillOk) {
+          // observation phase — log only, don't apply
+          console.log(`[JobPulse] Phase ${phase}: observation only for ${platform}, skipping apply`);
+          sendResponse({ ok: true, applied: false, phase, error: `Phase ${phase}: observation only` });
+          return;
+        }
+
+        // dry_run phase: fill forms but don't submit
+        const dryRun = !submitOk;
+        if (dryRun) {
+          console.log(`[JobPulse] Phase ${phase}: dry_run mode for ${platform}`);
+        }
+
         // Trigger application via Python backend HTTP API
         const bridge = await getNativeBridge();
         const result = await bridge.applyJob(
           job.url,
-          job.platform || "generic",
+          platform,
           job.company || "",
           job.title || "",
-          false,  // not dry_run
+          dryRun,
         );
 
         if (result.success) {
           await jq.markApplied(msg.jobId);
-          console.log(`[JobPulse] Applied to ${job.title} @ ${job.company}`);
+          // Record success in phase engine for graduation tracking
+          await pe.recordCorrectMapping(platform);
+          if (dryRun) {
+            await pe.recordCleanDryRun(platform);
+          }
+          console.log(`[JobPulse] Applied to ${job.title} @ ${job.company} (phase=${phase}, dryRun=${dryRun})`);
         } else {
           await jq.markError(msg.jobId, result.error || "Apply failed");
+          await pe.recordSubmissionError(platform);
           console.warn(`[JobPulse] Apply failed for ${job.title}: ${result.error}`);
         }
 
-        sendResponse({ ok: true, applied: result.success, error: result.error });
+        // Check if platform should graduate after this attempt
+        await pe.checkGraduation(platform);
+
+        sendResponse({ ok: true, applied: result.success, phase, dryRun, error: result.error });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });
       }
