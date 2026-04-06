@@ -698,3 +698,37 @@ class TestBoundaryCheck:
         result = ci.boundary_check()
         assert "violations" in result
         assert "rules_checked" in result
+
+
+class TestSuggestExtract:
+    def test_suggests_extraction_for_long_function(self, ci, tmp_path):
+        src = tmp_path / "project"
+        src.mkdir()
+        lines = ["def big_function():"]
+        for i in range(65):
+            lines.append(f"    x{i} = {i}")
+        lines.append("    return x0")
+        (src / "big.py").write_text("\n".join(lines))
+        ci.index_directory(str(src))
+        result = ci.suggest_extract()
+        assert len(result["suggestions"]) >= 1
+        assert result["suggestions"][0]["reason"] == "large_function"
+
+    def test_no_suggestions_for_small_functions(self, ci, sample_project):
+        ci.index_directory(str(sample_project))
+        result = ci.suggest_extract(min_lines=200)
+        assert len(result["suggestions"]) == 0
+
+    def test_filter_by_file(self, ci, tmp_path):
+        src = tmp_path / "project"
+        src.mkdir()
+        lines = ["def big_function():"]
+        for i in range(65):
+            lines.append(f"    x{i} = {i}")
+        lines.append("    return x0")
+        (src / "big.py").write_text("\n".join(lines))
+        (src / "small.py").write_text("def tiny(): pass\n")
+        ci.index_directory(str(src))
+        result = ci.suggest_extract(file="big.py")
+        files = {s["file"] for s in result["suggestions"]}
+        assert all("big.py" in f for f in files)

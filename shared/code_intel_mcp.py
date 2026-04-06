@@ -54,6 +54,7 @@ TOOL_NAMES = [
     "call_path",
     "batch_find",
     "boundary_check",
+    "suggest_extract",
 ]
 
 # ─── FILE WATCHER ─────────────────────────────────────────────────
@@ -530,6 +531,22 @@ _TOOL_DEFS: list[dict] = [
             "required": [],
         },
     },
+    {
+        "name": "suggest_extract",
+        "description": (
+            "Suggest functions that could benefit from extraction or refactoring. "
+            "Finds large functions (>50 lines) and functions with too many callees (>8)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Filter to a specific file (optional)"},
+                "min_lines": {"type": "integer", "description": "Min function size to flag (default 50)", "default": 50},
+                "top_n": {"type": "integer", "description": "Max suggestions (default 20)", "default": 20},
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -674,6 +691,8 @@ def _dispatch(ci: CodeIntelligence, name: str, args: dict) -> object:
         return ci.batch_find(names=args.get("names"), pattern=args.get("pattern"), max_results=args.get("max_results", 50))
     elif name == "boundary_check":
         return ci.boundary_check(rules=args.get("rules"))
+    elif name == "suggest_extract":
+        return ci.suggest_extract(file=args.get("file"), min_lines=args.get("min_lines", 50), top_n=args.get("top_n", 20))
     else:
         raise ValueError(f"Unknown tool: {name}")
 

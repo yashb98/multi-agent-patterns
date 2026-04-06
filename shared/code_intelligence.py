@@ -1109,6 +1109,64 @@ class CodeIntelligence:
 
         return {"violations": unique, "rules_checked": len(rules), "clean": len(unique) == 0}
 
+    def suggest_extract(self, file: str | None = None, min_lines: int = 50, top_n: int = 20) -> dict[str, Any]:
+        """Suggest functions that could benefit from extraction/refactoring."""
+        file_filter = ""
+        params: list[Any] = []
+        if file:
+            file_filter = "AND file_path LIKE ?"
+            params.append(f"%{file}%")
+
+        suggestions: list[dict[str, Any]] = []
+
+        # Large functions
+        large = self.conn.execute(
+            f"""SELECT qualified_name, file_path, line_start, line_end, risk_score, fan_in
+                FROM nodes WHERE kind IN ('function', 'method')
+                AND (line_end - line_start) > ? {file_filter}
+                ORDER BY (line_end - line_start) DESC LIMIT ?""",
+            [min_lines] + params + [top_n],
+        ).fetchall()
+
+        for row in large:
+            size = (row[3] or 0) - (row[2] or 0)
+            callees = self.conn.execute(
+                "SELECT COUNT(*) FROM edges WHERE kind='calls' AND source_qname=?", (row[0],),
+            ).fetchone()[0]
+            suggestions.append({
+                "name": row[0], "file": row[1], "lines": size,
+                "risk_score": round(row[4] or 0, 3), "fan_in": row[5] or 0,
+                "callees_count": callees, "reason": "large_function",
+                "suggestion": f"Function is {size} lines. Consider extracting logical blocks into helpers.",
+            })
+
+        # Functions with too many callees
+        busy = self.conn.execute(
+            f"""SELECT n.qualified_name, n.file_path, n.line_start, n.line_end,
+                       n.risk_score, n.fan_in, COUNT(e.id) as callee_count
+                FROM nodes n
+                JOIN edges e ON e.source_qname = n.qualified_name AND e.kind = 'calls'
+                WHERE n.kind IN ('function', 'method') AND (n.line_end - n.line_start) > 20
+                {file_filter.replace('file_path', 'n.file_path')}
+                GROUP BY n.qualified_name HAVING callee_count > 8
+                ORDER BY callee_count DESC LIMIT ?""",
+            params + [top_n],
+        ).fetchall()
+
+        seen = {s["name"] for s in suggestions}
+        for row in busy:
+            if row[0] in seen:
+                continue
+            suggestions.append({
+                "name": row[0], "file": row[1],
+                "lines": (row[3] or 0) - (row[2] or 0),
+                "risk_score": round(row[4] or 0, 3), "fan_in": row[5] or 0,
+                "callees_count": row[6], "reason": "too_many_callees",
+                "suggestion": f"Function calls {row[6]} other functions. Consider splitting responsibilities.",
+            })
+
+        return {"suggestions": suggestions[:top_n], "total": len(suggestions)}
+
     def risk_report(self, top_n: int = 10, file: str | None = None) -> dict[str, Any]:
         """Top-N highest-risk functions, optionally filtered by file."""
         if file is not None:
