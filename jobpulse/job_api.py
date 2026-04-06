@@ -94,6 +94,25 @@ class RalphLearnResponse(BaseModel):
     stored: bool
 
 
+class ApplyJobRequest(BaseModel):
+    url: str = Field(description="Job listing or application URL")
+    platform: str = Field(default="generic", description="ATS platform (greenhouse, lever, etc.)")
+    cv_path: str = Field(default="", description="Path to CV PDF (auto-generates if empty)")
+    cover_letter_path: str | None = Field(default=None, description="Path to CL PDF")
+    dry_run: bool = Field(default=False, description="If true, fill forms but don't submit")
+    company: str = Field(default="", description="Company name (for CV generation)")
+    role: str = Field(default="", description="Role title (for CV generation)")
+
+
+class ApplyJobResponse(BaseModel):
+    success: bool
+    error: str | None = None
+    screenshot: str | None = None
+    pages_filled: int | None = None
+    external_redirect: bool = False
+    external_url: str | None = None
+
+
 class NotifyRequest(BaseModel):
     message: str
     bot: str = Field(default="main", description="'jobs' or 'main'")
@@ -490,3 +509,64 @@ def notify(req: NotifyRequest) -> NotifyResponse:
             raise HTTPException(status_code=500, detail=f"Telegram send failed: {exc}") from exc
 
     return NotifyResponse(sent=bool(sent))
+
+
+@job_api_router.post("/apply", response_model=ApplyJobResponse)
+def apply_job_endpoint(req: ApplyJobRequest) -> ApplyJobResponse:
+    """Trigger a job application via the Ralph self-healing loop.
+
+    This is the endpoint the extension calls after a user approves a job
+    in the side panel. It runs the full pipeline: rate limit → CV gen →
+    ralph_apply_sync → fill + submit via extension WebSocket.
+    """
+    from pathlib import Path
+
+    try:
+        from jobpulse.ralph_loop.loop import ralph_apply_sync
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=f"ralph_loop unavailable: {exc}") from exc
+
+    # Auto-generate CV if no path provided
+    cv_path: Path | None = Path(req.cv_path) if req.cv_path else None
+    if cv_path is None or not cv_path.exists():
+        try:
+            from jobpulse.cv_templates.generate_cv import generate_cv_pdf
+            from jobpulse.project_portfolio import get_best_projects_for_jd
+            from jobpulse.cv_templates.generate_cv import get_role_profile
+
+            role_profile = get_role_profile(req.role or "Software Engineer")
+            matched_projects = get_best_projects_for_jd([], [])
+            cv_path = generate_cv_pdf(
+                company=req.company or "Company",
+                location="United Kingdom",
+                tagline=role_profile.get("tagline"),
+                summary=role_profile.get("summary"),
+                projects=matched_projects,
+            )
+            logger.info("apply endpoint: auto-generated CV at %s", cv_path)
+        except Exception as exc:
+            logger.error("apply endpoint: CV generation failed: %s", exc)
+            return ApplyJobResponse(success=False, error=f"CV generation failed: {exc}")
+
+    cl_path: Path | None = Path(req.cover_letter_path) if req.cover_letter_path else None
+
+    try:
+        result = ralph_apply_sync(
+            url=req.url,
+            ats_platform=req.platform,
+            cv_path=cv_path,
+            cover_letter_path=cl_path,
+            dry_run=req.dry_run,
+        )
+    except Exception as exc:
+        logger.error("apply endpoint: ralph_apply_sync failed: %s", exc)
+        return ApplyJobResponse(success=False, error=str(exc))
+
+    return ApplyJobResponse(
+        success=result.get("success", False),
+        error=result.get("error"),
+        screenshot=result.get("screenshot"),
+        pages_filled=result.get("pages_filled"),
+        external_redirect=result.get("external_redirect", False),
+        external_url=result.get("external_url"),
+    )

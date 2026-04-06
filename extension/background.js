@@ -436,13 +436,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Approve job — from side panel
+  // Approve job — from side panel: mark approved, then trigger apply via Python backend
   if (msg.type === "approve_job") {
     (async () => {
       try {
         const jq = await getJobQueue();
         await jq.updateJob(msg.jobId, { apply_status: "approved" });
-        sendResponse({ ok: true });
+
+        // Retrieve job data for apply call
+        const job = await jq.getJob(msg.jobId);
+        if (!job || !job.url) {
+          sendResponse({ ok: true, applied: false, error: "No URL for job" });
+          return;
+        }
+
+        // Trigger application via Python backend HTTP API
+        const bridge = await getNativeBridge();
+        const result = await bridge.applyJob(
+          job.url,
+          job.platform || "generic",
+          job.company || "",
+          job.title || "",
+          false,  // not dry_run
+        );
+
+        if (result.success) {
+          await jq.markApplied(msg.jobId);
+          console.log(`[JobPulse] Applied to ${job.title} @ ${job.company}`);
+        } else {
+          await jq.markError(msg.jobId, result.error || "Apply failed");
+          console.warn(`[JobPulse] Apply failed for ${job.title}: ${result.error}`);
+        }
+
+        sendResponse({ ok: true, applied: result.success, error: result.error });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });
       }

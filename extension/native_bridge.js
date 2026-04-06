@@ -248,3 +248,23 @@ export function notifyTelegram(message) {
 export function ralphLearn(platform, fixType, fixPayload) {
   return callBackend("ralph-learn", { platform, fix_type: fixType, fix_payload: fixPayload });
 }
+
+/**
+ * Trigger a job application via the Python backend.
+ * Calls ralph_apply_sync which handles rate limiting, CV gen, and the
+ * self-healing apply loop through the extension WebSocket.
+ *
+ * @param {string} url       — job listing URL
+ * @param {string} platform  — ATS platform (greenhouse, lever, etc.)
+ * @param {string} company   — company name (used for CV generation)
+ * @param {string} role      — role title (used for CV generation)
+ * @param {boolean} dryRun   — if true, fill forms but don't submit
+ * @returns {Promise<{success: boolean, error?: string, ...}>}
+ */
+export function applyJob(url, platform, company = "", role = "", dryRun = false) {
+  return callBackend(
+    "apply",
+    { url, platform, company, role, dry_run: dryRun },
+    CV_TIMEOUT_MS  // 120s — apply loop can take a while
+  );
+}
