@@ -441,6 +441,31 @@ function setNativeValue(el, value) {
 }
 
 /**
+ * Verify a field's value matches what was intended.
+ */
+function verifyFieldValue(el, intended) {
+  if (!el) return false;
+  const tag = el.tagName.toLowerCase();
+
+  if (tag === "select") {
+    const selected = el.options[el.selectedIndex];
+    return selected && (
+      normalizeText(selected.text) === normalizeText(intended) ||
+      normalizeText(selected.value) === normalizeText(intended)
+    );
+  }
+
+  if (el.type === "radio") return el.checked;
+  if (el.type === "checkbox") {
+    const want = intended === "true" || intended === true || intended === "yes";
+    return el.checked === want;
+  }
+
+  return (el.value || "") === intended ||
+    (el.value || "").includes(intended.substring(0, 10));
+}
+
+/**
  * Check if a form field is visible to the user.
  * Hidden fields may be honeypot traps — bots fill them, humans never see them.
  * ATS platforms silently discard submissions that fill honeypot fields.
@@ -1289,11 +1314,11 @@ async function fillCustomSelect(triggerSelector, value) {
     || document.querySelector(".select__input input, .search-typeahead input");
 
   if (searchInput) {
-    searchInput.value = "";
+    setNativeValue(searchInput, "");
     searchInput.dispatchEvent(new Event("input", { bubbles: true }));
     const filterText = value.substring(0, Math.min(value.length, 5));
     for (const char of filterText) {
-      searchInput.value += char;
+      setNativeValue(searchInput, searchInput.value + char);
       searchInput.dispatchEvent(new Event("input", { bubbles: true }));
       await delay(80 + Math.random() * 40);
     }
@@ -1356,14 +1381,14 @@ async function fillAutocomplete(selector, value) {
   el.focus();
   el.dispatchEvent(new Event("focus", { bubbles: true }));
 
-  el.value = "";
+  setNativeValue(el, "");
   el.dispatchEvent(new Event("input", { bubbles: true }));
   await delay(200);
 
   const typeText = value.substring(0, Math.min(value.length, 5));
   for (const char of typeText) {
     el.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
-    el.value += char;
+    setNativeValue(el, el.value + char);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
     await delay(behaviorProfile.avg_typing_speed * (1 + (Math.random() - 0.5) * 0.3));
@@ -1405,7 +1430,7 @@ async function fillAutocomplete(selector, value) {
     }
   }
 
-  el.value = value;
+  setNativeValue(el, value);
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
   el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -1512,10 +1537,10 @@ async function fillCombobox(selector, value) {
   const innerInput = el.querySelector("input");
   if (innerInput) {
     innerInput.focus();
-    innerInput.value = "";
+    setNativeValue(innerInput, "");
     for (const char of value) {
       innerInput.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
-      innerInput.value += char;
+      setNativeValue(innerInput, innerInput.value + char);
       innerInput.dispatchEvent(new Event("input", { bubbles: true }));
       innerInput.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
       await delay(80);
@@ -1559,11 +1584,11 @@ async function fillTagInput(selector, values) {
 
   const added = [];
   for (const val of values) {
-    el.value = "";
+    setNativeValue(el, "");
     el.dispatchEvent(new Event("input", { bubbles: true }));
 
     for (const char of val) {
-      el.value += char;
+      setNativeValue(el, el.value + char);
       el.dispatchEvent(new Event("input", { bubbles: true }));
       await delay(60 + Math.random() * 40);
     }
