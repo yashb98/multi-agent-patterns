@@ -68,6 +68,32 @@ function delay(ms) {
 }
 
 /**
+ * Calculate field-to-field gap based on label complexity.
+ */
+function getFieldGap(labelText) {
+  const len = (labelText || "").length;
+  if (len < 10) return 300 + Math.random() * 200;
+  if (len < 40) return 500 + Math.random() * 300;
+  if (len < 100) return 800 + Math.random() * 500;
+  return 1200 + Math.random() * 500;
+}
+
+/**
+ * Scroll element into view and wait proportional to distance scrolled.
+ */
+async function smartScroll(el) {
+  const rectBefore = el.getBoundingClientRect();
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const rectAfter = el.getBoundingClientRect();
+  const scrollDistance = Math.abs(rectAfter.top - rectBefore.top);
+  const scrollWait = scrollDistance > 10
+    ? Math.min(800, Math.max(100, scrollDistance * 0.4))
+    : 50;
+  await delay(scrollWait);
+  return scrollWait;
+}
+
+/**
  * Retry wrapper for fill operations.
  * Retries on element-not-found or fill failure. Max 2 retries with 500ms gap.
  * Does NOT retry on success (even partial).
@@ -1240,8 +1266,8 @@ async function fillRadioGroup(groupSelector, value) {
   const matched = labelMap.find(l => l.text === match);
   if (matched) {
     const target = matched.labelEl || matched.radio;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
-    await delay(behaviorProfile.reading_pause * 300 * (0.5 + Math.random()));
+    await smartScroll(target);
+    await delay(getFieldGap(match));
     target.click();
     matched.radio.dispatchEvent(new Event("change", { bubbles: true }));
     return { success: true, value_set: match };
@@ -1254,8 +1280,7 @@ async function fillCustomSelect(triggerSelector, value) {
   const trigger = resolveSelector(triggerSelector);
   if (!trigger) return { success: false, error: "Trigger not found: " + triggerSelector };
 
-  trigger.scrollIntoView({ behavior: "smooth", block: "center" });
-  await delay(behaviorProfile.field_to_field_gap);
+  await smartScroll(trigger);
   trigger.click();
   await delay(600);
 
@@ -1327,8 +1352,7 @@ async function fillAutocomplete(selector, value) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
-  await delay(behaviorProfile.field_to_field_gap);
+  await smartScroll(el);
   el.focus();
   el.dispatchEvent(new Event("focus", { bubbles: true }));
 
@@ -1404,8 +1428,7 @@ async function fillCombobox(selector, value) {
   await moveCursorTo(el);
   highlightElement(el);
 
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
-  await delay(300);
+  await smartScroll(el);
 
   // Click the combobox trigger to open the dropdown
   el.click();
@@ -1531,8 +1554,7 @@ async function fillTagInput(selector, values) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
-  await delay(behaviorProfile.field_to_field_gap);
+  await smartScroll(el);
   el.focus();
 
   const added = [];
@@ -1559,8 +1581,7 @@ async function fillDate(selector, isoDate) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
-  await delay(behaviorProfile.field_to_field_gap);
+  await smartScroll(el);
 
   const inputType = (el.getAttribute("type") || "text").toLowerCase();
 
