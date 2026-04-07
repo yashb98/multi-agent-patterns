@@ -85,6 +85,45 @@ function resolveSelector(selector) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// Fuzzy Matching — mirrors Python select_filler._fuzzy_match_option
+// ═══════════════════════════════════════════════════════════════
+
+const ABBREVIATIONS = {
+  "uk": "united kingdom",
+  "us": "united states",
+  "usa": "united states of america",
+  "nyc": "new york city",
+  "sf": "san francisco",
+  "la": "los angeles",
+  "phd": "doctor of philosophy",
+  "msc": "master of science",
+  "bsc": "bachelor of science",
+};
+
+function normalizeText(text) {
+  return (text || "").toLowerCase().trim().replace(/[.,;:!?]+$/, "");
+}
+
+function fuzzyMatchOption(value, options) {
+  const norm = normalizeText(value);
+  const expanded = ABBREVIATIONS[norm] || norm;
+
+  for (const opt of options) {
+    if (normalizeText(opt) === expanded) return opt;
+  }
+  for (const opt of options) {
+    if (normalizeText(opt).startsWith(expanded)) return opt;
+  }
+  for (const opt of options) {
+    if (normalizeText(opt).includes(expanded)) return opt;
+  }
+  for (const opt of options) {
+    if (expanded.includes(normalizeText(opt)) && normalizeText(opt).length > 2) return opt;
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Deep Page Scanner
 // ═══════════════════════════════════════════════════════════════
 
@@ -152,6 +191,59 @@ function extractFieldInfo(el, iframeIndex) {
     in_shadow_dom: false,
     in_iframe: iframeIndex !== null && iframeIndex !== undefined,
     iframe_index: iframeIndex,
+    // v2: parent context for form intelligence
+    group_label: (() => {
+      const group = el.closest("fieldset, .form-group, .field, [data-test-form-element], .jobs-easy-apply-form-section__grouping, .fb-dash-form-element");
+      if (!group) return "";
+      const legend = group.querySelector("label, legend, .field-label, .fb-form-element-label, span.t-14");
+      return legend ? legend.textContent.trim().substring(0, 200) : "";
+    })(),
+    group_selector: (() => {
+      const group = el.closest("fieldset, .form-group, .field, [data-test-form-element], .jobs-easy-apply-form-section__grouping, .fb-dash-form-element");
+      if (!group) return "";
+      if (group.id) return `#${group.id}`;
+      const tag = group.tagName.toLowerCase();
+      const cls = group.className && typeof group.className === "string"
+        ? group.className.split(/\s+/).filter(c => c.length > 3)[0]
+        : "";
+      return cls ? `${tag}.${cls}` : tag;
+    })(),
+    parent_text: (() => {
+      const p = el.parentElement;
+      return p ? p.textContent.trim().substring(0, 300) : "";
+    })(),
+    fieldset_legend: (() => {
+      const fs = el.closest("fieldset");
+      if (!fs) return "";
+      const leg = fs.querySelector("legend");
+      return leg ? leg.textContent.trim() : "";
+    })(),
+    help_text: (() => {
+      const describedBy = el.getAttribute("aria-describedby");
+      if (describedBy) {
+        const desc = document.getElementById(describedBy);
+        if (desc) return desc.textContent.trim().substring(0, 200);
+      }
+      const next = el.nextElementSibling;
+      if (next && /help|hint|description|info/.test(next.className || "")) {
+        return next.textContent.trim().substring(0, 200);
+      }
+      return "";
+    })(),
+    error_text: (() => {
+      const errId = el.getAttribute("aria-errormessage");
+      if (errId) {
+        const errEl = document.getElementById(errId);
+        if (errEl) return errEl.textContent.trim();
+      }
+      const parent = el.closest(".form-group, .field-wrapper, .form-field, [data-test-form-element]");
+      if (parent) {
+        const errEl = parent.querySelector(".error, .invalid-feedback, [role='alert'], .field-error");
+        if (errEl) return errEl.textContent.trim();
+      }
+      return "";
+    })(),
+    aria_describedby: el.getAttribute("aria-describedby") || "",
   };
 }
 
@@ -197,6 +289,79 @@ function deepScan(root, depth, iframeIndex) {
   });
 
   return fields;
+}
+
+function scanFormGroups(rootSelector) {
+  const root = rootSelector ? resolveSelector(rootSelector) : document;
+  if (!root) return [];
+
+  const groupSelectors =
+    "fieldset, .form-group, .field, [data-test-form-element], " +
+    ".jobs-easy-apply-form-section__grouping, .fb-dash-form-element, " +
+    ".application-question, .field-wrapper";
+
+  const groups = [];
+  const seen = new Set();
+
+  for (const group of root.querySelectorAll(groupSelectors)) {
+    const labelEl = group.querySelector(
+      "label, legend, .field-label, .application-label, " +
+      ".fb-form-element-label, span.t-14, span.t-bold"
+    );
+    const question = labelEl ? labelEl.textContent.trim().substring(0, 300) : "";
+    if (!question || question.length < 2) continue;
+
+    const inputSelector =
+      "input:not([type='hidden']):not([type='submit']), select, textarea, " +
+      "[contenteditable='true'], [role='listbox'], [role='combobox'], " +
+      "[role='radiogroup'], [role='switch'], [role='textbox']";
+    const inputs = group.querySelectorAll(inputSelector);
+    if (inputs.length === 0) continue;
+
+    const fields = [];
+    let isAnswered = true;
+
+    for (const inp of inputs) {
+      if (seen.has(inp)) continue;
+      seen.add(inp);
+      const fieldInfo = extractFieldInfo(inp, null);
+      fields.push(fieldInfo);
+
+      const val = inp.value || inp.textContent || "";
+      const isRadioChecked = inp.type === "radio" && inp.checked;
+      const isCheckboxChecked = inp.type === "checkbox" && inp.checked;
+      if (!val.trim() && !isRadioChecked && !isCheckboxChecked) {
+        isAnswered = false;
+      }
+    }
+
+    let grpSelector = "";
+    if (group.id) grpSelector = `#${group.id}`;
+    else {
+      const tag = group.tagName.toLowerCase();
+      const cls = (group.className && typeof group.className === "string")
+        ? group.className.split(/\s+/).filter(c => c.length > 3)[0] : "";
+      grpSelector = cls ? `${tag}.${cls}` : tag;
+    }
+
+    const helpEl = group.querySelector(".help-text, .field-hint, .description, [class*='helper']");
+    const helpText = helpEl ? helpEl.textContent.trim().substring(0, 200) : "";
+
+    const isRequired = group.querySelector("[required], [aria-required='true']") !== null
+      || /\*|required/i.test(question);
+
+    groups.push({
+      group_selector: grpSelector,
+      question,
+      fields,
+      is_required: isRequired,
+      is_answered: isAnswered,
+      fieldset_legend: group.closest("fieldset")?.querySelector("legend")?.textContent?.trim() || "",
+      help_text: helpText,
+    });
+  }
+
+  return groups;
 }
 
 /**
@@ -280,6 +445,31 @@ function buildSnapshot() {
     }
   });
 
+  // Detect modal (LinkedIn Easy Apply, generic dialogs)
+  const modal = document.querySelector(
+    "[role='dialog'], .artdeco-modal, .jobs-easy-apply-modal, " +
+    "[aria-modal='true'], .modal--open, .modal-dialog"
+  );
+  const modalDetected = modal !== null;
+
+  // Parse progress indicators ("Step 2 of 5", "Page 1/3")
+  let progress = null;
+  const pageText = document.body?.innerText || "";
+  const progressMatch = pageText.match(/(?:step|page)\s+(\d+)\s+(?:of|\/)\s+(\d+)/i)
+    || pageText.match(/(\d+)\s+(?:of|\/)\s+(\d+)/);
+  if (progressMatch) {
+    const current = parseInt(progressMatch[1]);
+    const total = parseInt(progressMatch[2]);
+    if (current >= 1 && current <= total && total <= 20) {
+      progress = [current, total];
+    }
+  }
+
+  // Scan form groups (scoped to modal if present)
+  const formGroups = scanFormGroups(modal ? (
+    modal.id ? `#${modal.id}` : "[role='dialog']"
+  ) : null);
+
   return {
     url: window.location.href,
     title: document.title,
@@ -293,6 +483,10 @@ function buildSnapshot() {
       !document.querySelector('[aria-busy="true"]') &&
       !document.querySelector('.loading, .spinner, [class*="loading"]'),
     timestamp: Date.now(),
+    // v2 additions
+    form_groups: formGroups,
+    progress,
+    modal_detected: modalDetected,
   };
 }
 
@@ -371,23 +565,56 @@ async function clickElement(selector) {
 }
 
 /**
- * Select a dropdown option by matching text or value (case-insensitive).
+ * Select a dropdown option using fuzzy matching (mirrors Python select_filler).
  */
 async function selectOption(selector, value) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
+  const options = [];
   for (const opt of el.querySelectorAll("option")) {
-    if (
-      opt.textContent.trim().toLowerCase().includes(value.toLowerCase()) ||
-      opt.value.toLowerCase() === value.toLowerCase()
-    ) {
-      el.value = opt.value;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { success: true, value_set: opt.textContent.trim() };
+    const text = opt.textContent.trim();
+    if (text && !text.toLowerCase().startsWith("select")) {
+      options.push({ text, value: opt.value, el: opt });
     }
   }
-  return { success: false, error: "Option not found: " + value };
+
+  if (options.length === 0) {
+    await delay(2000);
+    for (const opt of el.querySelectorAll("option")) {
+      const text = opt.textContent.trim();
+      if (text && !text.toLowerCase().startsWith("select")) {
+        options.push({ text, value: opt.value, el: opt });
+      }
+    }
+  }
+
+  if (options.length === 0) {
+    return { success: false, error: "No options found in select" };
+  }
+
+  const match = fuzzyMatchOption(value, options.map(o => o.text));
+  if (match) {
+    const matched = options.find(o => o.text === match);
+    if (matched) {
+      el.value = matched.value;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { success: true, value_set: match };
+    }
+  }
+
+  for (const opt of options) {
+    if (normalizeText(opt.value) === normalizeText(value)) {
+      el.value = opt.value;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { success: true, value_set: opt.text };
+    }
+  }
+
+  return {
+    success: false,
+    error: `No match for '${value}' in [${options.slice(0, 5).map(o => o.text).join(", ")}]`,
+  };
 }
 
 /**
@@ -401,6 +628,423 @@ async function checkBox(selector, shouldCheck) {
   if (el.checked !== want) el.click();
 
   return { success: true, value_set: String(el.checked) };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// v2 Form Engine — Specialized Fill Handlers
+// ═══════════════════════════════════════════════════════════════
+
+async function fillRadioGroup(groupSelector, value) {
+  let radios;
+  const container = resolveSelector(groupSelector);
+  if (container && container.tagName.toLowerCase() !== "input") {
+    radios = container.querySelectorAll("input[type='radio']");
+  } else {
+    const nameEl = resolveSelector(groupSelector);
+    if (nameEl) {
+      const name = nameEl.getAttribute("name");
+      radios = name
+        ? document.querySelectorAll(`input[type='radio'][name='${name}']`)
+        : [nameEl];
+    } else {
+      return { success: false, error: "Radio group not found: " + groupSelector };
+    }
+  }
+
+  if (!radios || radios.length === 0) {
+    return { success: false, error: "No radio buttons found in: " + groupSelector };
+  }
+
+  const labelMap = [];
+  for (const radio of radios) {
+    let labelText = "";
+    let labelEl = null;
+
+    const radioId = radio.id;
+    if (radioId) {
+      labelEl = document.querySelector(`label[for='${radioId}']`);
+      if (labelEl) labelText = labelEl.textContent.trim();
+    }
+
+    if (!labelText) {
+      labelEl = radio.closest("label");
+      if (labelEl) labelText = labelEl.textContent.trim();
+    }
+
+    if (!labelText) {
+      labelText = radio.getAttribute("aria-label") || "";
+    }
+
+    if (!labelText && radio.nextSibling) {
+      labelText = (radio.nextSibling.textContent || "").trim();
+    }
+
+    if (!labelText && radio.parentElement) {
+      labelText = radio.parentElement.textContent.trim();
+    }
+
+    if (labelText) {
+      labelMap.push({ text: labelText, radio, labelEl });
+    }
+  }
+
+  if (labelMap.length === 0) {
+    return { success: false, error: "No labels found for radio buttons" };
+  }
+
+  const labels = labelMap.map(l => l.text);
+  const match = fuzzyMatchOption(value, labels);
+
+  if (!match) {
+    return {
+      success: false,
+      error: `No matching radio for '${value}' in [${labels.slice(0, 5).join(", ")}]`,
+    };
+  }
+
+  const matched = labelMap.find(l => l.text === match);
+  if (matched) {
+    const target = matched.labelEl || matched.radio;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    await delay(behaviorProfile.reading_pause * 300 * (0.5 + Math.random()));
+    target.click();
+    matched.radio.dispatchEvent(new Event("change", { bubbles: true }));
+    return { success: true, value_set: match };
+  }
+
+  return { success: false, error: "Match found but click failed" };
+}
+
+async function fillCustomSelect(triggerSelector, value) {
+  const trigger = resolveSelector(triggerSelector);
+  if (!trigger) return { success: false, error: "Trigger not found: " + triggerSelector };
+
+  trigger.scrollIntoView({ behavior: "smooth", block: "center" });
+  await delay(behaviorProfile.field_to_field_gap);
+  trigger.click();
+  await delay(600);
+
+  const searchInput = trigger.querySelector("input")
+    || document.querySelector("[role='combobox'] input:focus")
+    || document.querySelector(".select__input input, .search-typeahead input");
+
+  if (searchInput) {
+    searchInput.value = "";
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    const filterText = value.substring(0, Math.min(value.length, 5));
+    for (const char of filterText) {
+      searchInput.value += char;
+      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+      await delay(80 + Math.random() * 40);
+    }
+    await delay(800);
+  }
+
+  const optionSelectors = [
+    "[role='option']",
+    "[role='listbox'] li",
+    ".select__option",
+    ".basic-typeahead__selectable",
+    "li.search-typeahead-v2__hit",
+    ".dropdown-item",
+    ".artdeco-dropdown__item",
+    "ul[role='listbox'] > li",
+  ];
+
+  let optionEls = [];
+  for (const sel of optionSelectors) {
+    optionEls = document.querySelectorAll(sel);
+    if (optionEls.length > 0) break;
+  }
+
+  if (optionEls.length === 0) {
+    document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return { success: false, error: "No options visible after opening dropdown" };
+  }
+
+  const options = [];
+  for (const opt of optionEls) {
+    const text = opt.textContent.trim();
+    if (text) options.push({ text, el: opt });
+  }
+
+  const match = fuzzyMatchOption(value, options.map(o => o.text));
+  if (!match) {
+    document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return {
+      success: false,
+      error: `No match for '${value}' in [${options.slice(0, 5).map(o => o.text).join(", ")}]`,
+    };
+  }
+
+  const matched = options.find(o => o.text === match);
+  if (matched) {
+    matched.el.scrollIntoView({ block: "nearest" });
+    await delay(200);
+    matched.el.click();
+    return { success: true, value_set: match };
+  }
+
+  return { success: false, error: "Match found but click failed" };
+}
+
+async function fillAutocomplete(selector, value) {
+  const el = resolveSelector(selector);
+  if (!el) return { success: false, error: "Element not found: " + selector };
+
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  await delay(behaviorProfile.field_to_field_gap);
+  el.focus();
+  el.dispatchEvent(new Event("focus", { bubbles: true }));
+
+  el.value = "";
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  await delay(200);
+
+  const typeText = value.substring(0, Math.min(value.length, 5));
+  for (const char of typeText) {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
+    el.value += char;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
+    await delay(behaviorProfile.avg_typing_speed * (1 + (Math.random() - 0.5) * 0.3));
+  }
+
+  await delay(1500);
+
+  const suggestionSelectors = [
+    "[role='option']",
+    "[role='listbox'] li",
+    ".basic-typeahead__selectable",
+    "li.search-typeahead-v2__hit",
+    ".autocomplete-result",
+    ".pac-item",
+    ".suggestion-item",
+    "ul.suggestions li",
+  ];
+
+  for (const sugSel of suggestionSelectors) {
+    const suggestions = document.querySelectorAll(sugSel);
+    if (suggestions.length === 0) continue;
+
+    for (const sug of suggestions) {
+      const sugText = sug.textContent.trim();
+      if (sugText && (value.toLowerCase().includes(sugText.toLowerCase().substring(0, 5))
+          || sugText.toLowerCase().includes(value.toLowerCase().substring(0, 5)))) {
+        sug.click();
+        await delay(300);
+        return { success: true, value_set: sugText };
+      }
+    }
+
+    const firstSug = suggestions[0];
+    if (firstSug) {
+      const firstText = firstSug.textContent.trim();
+      firstSug.click();
+      await delay(300);
+      return { success: true, value_set: firstText, used_first_suggestion: true };
+    }
+  }
+
+  el.value = value;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await delay(200);
+  el.dispatchEvent(new Event("blur", { bubbles: true }));
+
+  return { success: true, value_set: value, no_suggestions: true };
+}
+
+async function fillTagInput(selector, values) {
+  const el = resolveSelector(selector);
+  if (!el) return { success: false, error: "Element not found: " + selector };
+
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  await delay(behaviorProfile.field_to_field_gap);
+  el.focus();
+
+  const added = [];
+  for (const val of values) {
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+
+    for (const char of val) {
+      el.value += char;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      await delay(60 + Math.random() * 40);
+    }
+    await delay(300);
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
+    await delay(400);
+    added.push(val);
+  }
+
+  return { success: true, value_set: added.join(", "), count: added.length };
+}
+
+async function fillDate(selector, isoDate) {
+  const el = resolveSelector(selector);
+  if (!el) return { success: false, error: "Element not found: " + selector };
+
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  await delay(behaviorProfile.field_to_field_gap);
+
+  const inputType = (el.getAttribute("type") || "text").toLowerCase();
+
+  if (inputType === "date") {
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, "value"
+    ).set;
+    nativeInputValueSetter.call(el, isoDate);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { success: true, value_set: isoDate };
+  }
+
+  const placeholder = (el.getAttribute("placeholder") || "").toLowerCase();
+  let formatted = isoDate;
+  try {
+    const [y, m, d] = isoDate.split("-");
+    if (placeholder.includes("dd/mm")) {
+      formatted = `${d}/${m}/${y}`;
+    } else if (placeholder.includes("mm/dd")) {
+      formatted = `${m}/${d}/${y}`;
+    }
+  } catch (_) { /* keep ISO format */ }
+
+  el.focus();
+  el.value = "";
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+
+  for (const char of formatted) {
+    el.value += char;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    await delay(80 + Math.random() * 40);
+  }
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("blur", { bubbles: true }));
+
+  return { success: true, value_set: formatted };
+}
+
+async function scrollTo(selector) {
+  const el = resolveSelector(selector);
+  if (!el) return { success: false, error: "Element not found: " + selector };
+
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  await delay(500);
+  return { success: true };
+}
+
+async function waitForSelector(selector, timeoutMs) {
+  const maxWait = timeoutMs || 10000;
+  const pollInterval = 300;
+  let elapsed = 0;
+
+  while (elapsed < maxWait) {
+    const el = resolveSelector(selector);
+    if (el) {
+      return {
+        success: true,
+        found_after_ms: elapsed,
+        tag: el.tagName.toLowerCase(),
+        text: (el.textContent || "").trim().substring(0, 100),
+      };
+    }
+    await delay(pollInterval);
+    elapsed += pollInterval;
+  }
+
+  return { success: false, error: `Selector '${selector}' not found after ${maxWait}ms` };
+}
+
+async function forceClick(selector) {
+  const el = resolveSelector(selector);
+  if (!el) return { success: false, error: "Element not found: " + selector };
+
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  await delay(200);
+
+  el.dispatchEvent(new MouseEvent("click", {
+    bubbles: true, cancelable: true, view: window,
+  }));
+
+  return { success: true };
+}
+
+async function checkConsentBoxes(rootSelector) {
+  const root = rootSelector ? resolveSelector(rootSelector) : document;
+  if (!root) return { success: false, error: "Root not found" };
+
+  const consentPattern = /agree|consent|terms|privacy|gdpr|accept|acknowledge|policy|conditions|certify|confirm.*read/i;
+  const checkboxes = root.querySelectorAll("input[type='checkbox']");
+  const checked = [];
+
+  for (const cb of checkboxes) {
+    if (cb.checked || cb.disabled) continue;
+
+    let labelText = "";
+    if (cb.id) {
+      const labelEl = document.querySelector(`label[for='${cb.id}']`);
+      if (labelEl) labelText = labelEl.textContent.trim();
+    }
+    if (!labelText && cb.parentElement) {
+      labelText = cb.parentElement.textContent.trim();
+    }
+    if (!labelText) {
+      labelText = cb.getAttribute("aria-label") || "";
+    }
+
+    if (consentPattern.test(labelText)) {
+      cb.click();
+      cb.dispatchEvent(new Event("change", { bubbles: true }));
+      checked.push(labelText.substring(0, 60));
+      await delay(200);
+    }
+  }
+
+  return { success: true, checked_count: checked.length, labels: checked };
+}
+
+async function rescanAfterFill(filledSelector) {
+  await delay(800);
+
+  const result = {
+    new_fields: [],
+    validation_errors: [],
+    snapshot: buildSnapshot(),
+  };
+
+  const filledEl = resolveSelector(filledSelector);
+  if (filledEl) {
+    const isInvalid = filledEl.getAttribute("aria-invalid") === "true";
+    if (isInvalid) {
+      const errId = filledEl.getAttribute("aria-errormessage");
+      let errMsg = "";
+      if (errId) {
+        const errEl = document.getElementById(errId);
+        if (errEl) errMsg = errEl.textContent.trim();
+      }
+      result.validation_errors.push({
+        selector: filledSelector,
+        error: errMsg || "Field marked as invalid",
+      });
+    }
+  }
+
+  for (const alert of document.querySelectorAll("[role='alert']")) {
+    const text = alert.textContent.trim();
+    if (text) {
+      result.validation_errors.push({
+        selector: "[role='alert']",
+        error: text,
+      });
+    }
+  }
+
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -690,6 +1334,51 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           answer = await writeShortAnswer(payload.question);
         }
         result = { success: !!answer, answer: answer || "" };
+        break;
+      }
+      case "fill_radio_group":
+        result = await fillRadioGroup(payload.selector, payload.value);
+        break;
+      case "fill_custom_select":
+        result = await fillCustomSelect(payload.selector, payload.value);
+        break;
+      case "fill_autocomplete":
+        result = await fillAutocomplete(payload.selector, payload.value);
+        break;
+      case "fill_tag_input":
+        result = await fillTagInput(payload.selector, payload.values || []);
+        break;
+      case "fill_date":
+        result = await fillDate(payload.selector, payload.value);
+        break;
+      case "scroll_to":
+        result = await scrollTo(payload.selector);
+        break;
+      case "wait_for_selector":
+        result = await waitForSelector(payload.selector, payload.timeout_ms);
+        break;
+      case "force_click":
+        result = await forceClick(payload.selector);
+        break;
+      case "check_consent_boxes":
+        result = await checkConsentBoxes(payload.root_selector || null);
+        break;
+      case "rescan_after_fill":
+        result = await rescanAfterFill(payload.selector);
+        break;
+      case "scan_form_groups":
+        result = { success: true, groups: scanFormGroups(payload.root_selector || null) };
+        break;
+      case "get_field_context": {
+        const ctxEl = resolveSelector(payload.selector);
+        if (!ctxEl) {
+          result = { success: false, error: "Element not found" };
+        } else {
+          result = {
+            success: true,
+            context: extractFieldInfo(ctxEl, null),
+          };
+        }
         break;
       }
       default:
