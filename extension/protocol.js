@@ -13,6 +13,22 @@ const MSG = Object.freeze({
   CMD_SCROLL: "scroll",
   CMD_WAIT: "wait",
   CMD_CLOSE_TAB: "close_tab",
+  CMD_ANALYZE_FIELD: "analyze_field",
+  CMD_GET_SNAPSHOT: "get_snapshot",
+
+  // v2 form engine commands
+  CMD_FILL_RADIO_GROUP: "fill_radio_group",
+  CMD_FILL_CUSTOM_SELECT: "fill_custom_select",
+  CMD_FILL_AUTOCOMPLETE: "fill_autocomplete",
+  CMD_FILL_TAG_INPUT: "fill_tag_input",
+  CMD_FILL_DATE: "fill_date",
+  CMD_SCROLL_TO: "scroll_to",
+  CMD_WAIT_FOR_SELECTOR: "wait_for_selector",
+  CMD_GET_FIELD_CONTEXT: "get_field_context",
+  CMD_SCAN_FORM_GROUPS: "scan_form_groups",
+  CMD_CHECK_CONSENT_BOXES: "check_consent_boxes",
+  CMD_FORCE_CLICK: "force_click",
+  CMD_RESCAN_AFTER_FILL: "rescan_after_fill",
 
   // Extension -> Python response types
   RESP_ACK: "ack",
