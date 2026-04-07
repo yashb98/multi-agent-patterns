@@ -289,18 +289,18 @@ class TestMergeFixIntoOverrides:
 
 class TestUrlToJobId:
     def test_same_url_produces_same_id(self):
-        url = "https://greenhouse.io/jobs/123456"
+        url = "https://boards.greenhouse.io/stripe/jobs/6142978003"
         assert _url_to_job_id(url) == _url_to_job_id(url)
 
     def test_different_urls_produce_different_ids(self):
-        assert _url_to_job_id("https://a.com/1") != _url_to_job_id("https://b.com/2")
+        assert _url_to_job_id("https://boards.greenhouse.io/stripe/jobs/6142978003") != _url_to_job_id("https://jobs.lever.co/figma/5118a0b8-4a29-4029-8e49-17dbfc3694b0")
 
     def test_output_is_12_chars(self):
-        result = _url_to_job_id("https://example.com/job/99")
+        result = _url_to_job_id("https://www.linkedin.com/jobs/view/3945782198")
         assert len(result) == 12
 
     def test_output_is_hex(self):
-        result = _url_to_job_id("https://example.com/job/99")
+        result = _url_to_job_id("https://uk.indeed.com/viewjob?jk=a1b2c3d4e5f6")
         assert all(c in "0123456789abcdef" for c in result)
 
     def test_empty_url_is_stable(self):
@@ -312,7 +312,7 @@ class TestUrlToJobId:
 # ---------------------------------------------------------------------------
 
 # Common fixtures for these tests
-_URL = "https://greenhouse.io/jobs/test-12345"
+_URL = "https://boards.greenhouse.io/stripe/jobs/6142978003"
 _CV = Path("/tmp/test_cv.pdf")
 _PLATFORM = "greenhouse"
 
@@ -675,7 +675,7 @@ class TestRalphApplySync:
     ):
         """When apply_job returns external_redirect, subsequent iterations use the new URL/platform."""
         db_path = str(tmp_path / "ralph_test.db")
-        external_url = "https://lever.co/acme/jobs/external-123"
+        external_url = "https://jobs.lever.co/acme/b72f3c91-6e08-4d2a-9f1a-82c456def789"
 
         mock_apply.return_value = {
             "success": False,

@@ -60,7 +60,7 @@ logger = get_logger(__name__)
 
 # ─── LLM INITIALISATION ─────────────────────────────────────────
 
-def get_llm(temperature: float = 0.7, model: str = "gpt-5o-mini",
+def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
             timeout: float = 30.0):
     """
     Factory function for LLM instances.
@@ -217,7 +217,7 @@ def reviewer_node(state: AgentState) -> dict:
         encoder = None
         try:
             from shared.context_compression import get_token_encoder
-            encoder = get_token_encoder("gpt-5o-mini")
+            encoder = get_token_encoder("gpt-4.1-mini")
         except Exception:
             pass
         if encoder:
@@ -240,7 +240,7 @@ Evaluate against all criteria and respond with ONLY the JSON structure
 specified in your instructions."""
 
     llm = ChatOpenAI(
-        model="gpt-5o-mini",
+        model="gpt-4.1-mini",
         temperature=0.2,
         request_timeout=30.0,
         model_kwargs={"response_format": {"type": "json_object"}},

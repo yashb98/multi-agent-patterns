@@ -310,7 +310,7 @@ class TrainingFreeGRPO:
         # STEP 1: Group sampling — generate multiple completions IN PARALLEL
         from shared.parallel_executor import parallel_grpo_candidates
 
-        model_name = self.llm.model_name if hasattr(self.llm, 'model_name') else "gpt-5o-mini"
+        model_name = self.llm.model_name if hasattr(self.llm, 'model_name') else "gpt-4.1-mini"
         temps = [
             self.config.temperature_spread[i % len(self.config.temperature_spread)]
             for i in range(self.config.group_size)

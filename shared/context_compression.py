@@ -18,7 +18,7 @@ MODEL_CONTEXT_LIMITS = {
     "gpt-4o": 128_000,
     "gpt-4.1-mini": 1_000_000,
     "gpt-4.1": 1_000_000,
-    "gpt-5o-mini": 128_000,
+    "gpt-4.1-mini": 128_000,
     "o3-mini": 128_000,
 }
 
@@ -29,7 +29,7 @@ RESPONSE_RESERVE = 4_096
 _encoder_cache = {}
 
 
-def get_token_encoder(model: str = "gpt-5o-mini"):
+def get_token_encoder(model: str = "gpt-4.1-mini"):
     """Get a tiktoken encoder for the given model. Cached per model."""
     if model not in _encoder_cache:
         try:
@@ -45,7 +45,7 @@ def get_token_encoder(model: str = "gpt-5o-mini"):
     return _encoder_cache[model]
 
 
-def count_tokens(text: str, model: str = "gpt-5o-mini") -> int:
+def count_tokens(text: str, model: str = "gpt-4.1-mini") -> int:
     """Count tokens in a string using tiktoken. Falls back to char/4 estimate."""
     encoder = get_token_encoder(model)
     if encoder is None:
@@ -53,7 +53,7 @@ def count_tokens(text: str, model: str = "gpt-5o-mini") -> int:
     return len(encoder.encode(text))
 
 
-def count_messages_tokens(messages: list[dict], model: str = "gpt-5o-mini") -> int:
+def count_messages_tokens(messages: list[dict], model: str = "gpt-4.1-mini") -> int:
     """Count total tokens across a list of chat messages.
 
     Accounts for message overhead (~4 tokens per message for role/formatting).
@@ -73,7 +73,7 @@ def count_messages_tokens(messages: list[dict], model: str = "gpt-5o-mini") -> i
     return total
 
 
-def get_context_limit(model: str = "gpt-5o-mini") -> int:
+def get_context_limit(model: str = "gpt-4.1-mini") -> int:
     """Get the context window limit for a model in tokens."""
     for prefix, limit in MODEL_CONTEXT_LIMITS.items():
         if model.startswith(prefix):
@@ -83,7 +83,7 @@ def get_context_limit(model: str = "gpt-5o-mini") -> int:
 
 def truncate_messages_to_fit(
     messages: list[dict],
-    model: str = "gpt-5o-mini",
+    model: str = "gpt-4.1-mini",
     reserve: int = RESPONSE_RESERVE,
 ) -> list[dict]:
     """Truncate older messages if total tokens would exceed context limit.

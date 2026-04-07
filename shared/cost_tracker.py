@@ -17,7 +17,7 @@ MODEL_COSTS = {
     "gpt-4o": (2.50, 10.00),
     "gpt-4.1-mini": (0.40, 1.60),
     "gpt-4.1": (2.00, 8.00),
-    "gpt-5o-mini": (0.15, 0.60),
+    "gpt-4.1-mini": (0.15, 0.60),
     "o3-mini": (1.10, 4.40),
 }
 
@@ -46,7 +46,7 @@ def track_llm_usage(response, agent_name: str) -> dict:
     usage = metadata.get("token_usage", {}) or {}
     prompt_tokens = usage.get("prompt_tokens", 0)
     completion_tokens = usage.get("completion_tokens", 0)
-    model = metadata.get("model_name", "gpt-5o-mini")
+    model = metadata.get("model_name", "gpt-4.1-mini")
     cost = estimate_cost(model, prompt_tokens, completion_tokens)
 
     return {

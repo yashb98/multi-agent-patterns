@@ -41,7 +41,7 @@ from jobpulse.ext_models import (
 
 
 def _snap(
-    url="https://example.com",
+    url="https://boards.greenhouse.io/acme/jobs/4567890",
     title="Test",
     fields=None,
     buttons=None,
@@ -139,14 +139,14 @@ class TestNavigationHappyPaths:
     async def test_jd_page_to_form_via_apply_click(self, orchestrator, bridge, cv_path):
         """JD page → clicks Apply → reaches APPLICATION_FORM → fills → confirms."""
         jd_snap = _snap_dict(
-            url="https://greenhouse.io/job/1",
-            text="Software Engineer at Acme. We are looking for...",
+            url="https://boards.greenhouse.io/stripe/jobs/6142978003",
+            text="Software Engineer at Stripe. We are looking for...",
             buttons=[
                 {"selector": "#apply", "text": "Apply Now", "enabled": True, "type": "button"},
             ],
         )
         form_snap = _snap_dict(
-            url="https://greenhouse.io/job/1/apply",
+            url="https://boards.greenhouse.io/stripe/jobs/6142978003/apply",
             fields=[
                 {"selector": "#first_name", "input_type": "text", "label": "First Name"},
                 {"selector": "#email", "input_type": "email", "label": "Email"},
@@ -154,7 +154,7 @@ class TestNavigationHappyPaths:
             has_files=True,
         )
         confirm_snap = _snap_dict(
-            url="https://greenhouse.io/job/1/thanks",
+            url="https://boards.greenhouse.io/stripe/jobs/6142978003/thanks",
             text="Thank you for applying! Your application has been received.",
         )
 
@@ -170,7 +170,7 @@ class TestNavigationHappyPaths:
         bridge.fill.return_value = MagicMock(success=True)
 
         result = await orchestrator.apply(
-            url="https://greenhouse.io/job/1",
+            url="https://boards.greenhouse.io/stripe/jobs/6142978003",
             platform="greenhouse",
             cv_path=cv_path,
             profile={"first_name": "Yash", "email": "y@test.com"},
@@ -182,7 +182,7 @@ class TestNavigationHappyPaths:
     async def test_direct_application_form(self, orchestrator, bridge, cv_path):
         """Direct link to application form (skips JD page)."""
         form_snap = _snap_dict(
-            url="https://lever.co/apply",
+            url="https://jobs.lever.co/figma/5118a0b8-4a29-4029-8e49-17dbfc3694b0/apply",
             fields=[
                 {"selector": "#name", "input_type": "text", "label": "Full Name"},
             ],
@@ -198,7 +198,7 @@ class TestNavigationHappyPaths:
         bridge.fill.return_value = MagicMock(success=True)
 
         result = await orchestrator.apply(
-            url="https://lever.co/apply",
+            url="https://jobs.lever.co/figma/5118a0b8-4a29-4029-8e49-17dbfc3694b0/apply",
             platform="lever",
             cv_path=cv_path,
             profile={"first_name": "Yash"},
@@ -225,8 +225,8 @@ class TestVerificationWall:
         orchestrator.analyzer.detect.return_value = PageType.VERIFICATION_WALL
 
         result = await orchestrator.apply(
-            url="https://example.com/job",
-            platform="generic",
+            url="https://www.reed.co.uk/jobs/data-analyst-dundee/52489123",
+            platform="reed",
             cv_path=cv_path,
         )
         assert result["success"] is False
@@ -254,8 +254,8 @@ class TestVerificationWall:
         bridge.fill.return_value = MagicMock(success=True)
 
         result = await orchestrator.apply(
-            url="https://example.com",
-            platform="generic",
+            url="https://uk.indeed.com/viewjob?jk=a1b2c3d4e5f6g7h8",
+            platform="indeed",
             cv_path=cv_path,
         )
         assert result["success"] is False
@@ -279,7 +279,7 @@ class TestUnknownPage:
         orchestrator.analyzer.detect.return_value = PageType.UNKNOWN
 
         result = await orchestrator.apply(
-            url="https://company.com",
+            url="https://careers.revolut.com/jobs/data-engineer-london",
             platform="generic",
             cv_path=cv_path,
         )
@@ -312,8 +312,8 @@ class TestUnknownPage:
         bridge.fill.return_value = MagicMock(success=True)
 
         result = await orchestrator.apply(
-            url="https://company.com/careers/1",
-            platform="generic",
+            url="https://jobs.smartrecruiters.com/Adidas/743999987654321-data-engineer",
+            platform="smartrecruiters",
             cv_path=cv_path,
             profile={"first_name": "Test"},
         )
@@ -331,7 +331,7 @@ class TestLoginFlow:
         """Login page detected → fills credentials from account manager."""
         # Note: FieldInfo doesn't support 'password' type, use 'text' for password fields
         login_snap = {
-            "url": "https://boards.greenhouse.io/login",
+            "url": "https://boards.greenhouse.io/stripe/login",
             "title": "Login",
             "fields": [
                 {"selector": "#email", "input_type": "email", "label": "Email"},
@@ -367,7 +367,7 @@ class TestLoginFlow:
         bridge.fill.return_value = MagicMock(success=True)
 
         result = await orchestrator.apply(
-            url="https://boards.greenhouse.io/login",
+            url="https://boards.greenhouse.io/stripe/login",
             platform="greenhouse",
             cv_path=cv_path,
             profile={"first_name": "Yash"},
@@ -399,8 +399,8 @@ class TestStuckDetection:
         bridge.fill.return_value = MagicMock(success=True)
 
         result = await orchestrator.apply(
-            url="https://example.com",
-            platform="generic",
+            url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/Data-Analyst_R-12345",
+            platform="workday",
             cv_path=cv_path,
         )
         assert result["success"] is False
@@ -423,8 +423,8 @@ class TestStuckDetection:
         bridge.fill.return_value = MagicMock(success=True)
 
         result = await orchestrator.apply(
-            url="https://example.com",
-            platform="generic",
+            url="https://www.totaljobs.com/job/data-analyst/acme-corp-job98765432",
+            platform="totaljobs",
             cv_path=cv_path,
         )
         assert result["success"] is True
@@ -453,8 +453,8 @@ class TestDryRun:
         orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
 
         result = await orchestrator.apply(
-            url="https://example.com",
-            platform="generic",
+            url="https://jobs.lever.co/openai/e1a2b3c4-d5e6-7890-abcd-ef1234567890",
+            platform="lever",
             cv_path=cv_path,
             dry_run=True,
         )
@@ -476,7 +476,7 @@ class TestMaxPages:
             unique_middle = f"UNIQUE_PAGE_{i}_" * 35  # ~500 chars
             text = ("W" * 200) + unique_middle + ("T" * 100)
             return {
-                "url": f"https://example.com/page/{i}",
+                "url": f"https://acme.wd5.myworkdayjobs.com/en-US/External/page/{i}",
                 "title": "Test",
                 "fields": [{"selector": f"#q{i}", "input_type": "text", "label": f"Question {i}"}],
                 "buttons": [{"selector": "#next", "text": "Next", "enabled": True, "type": "button"}],
@@ -497,8 +497,8 @@ class TestMaxPages:
         bridge.fill.return_value = MagicMock(success=True)
 
         result = await orchestrator.apply(
-            url="https://example.com",
-            platform="generic",
+            url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/ML-Engineer_R-67890",
+            platform="workday",
             cv_path=cv_path,
         )
         assert result["success"] is False
@@ -572,19 +572,19 @@ class TestStaticHelpers:
         assert btn is not None
 
     def test_as_dict_pydantic_model(self):
-        snap = _snap(url="https://test.com")
+        snap = _snap(url="https://boards.greenhouse.io/deepmind/jobs/5551234567")
         result = ApplicationOrchestrator._as_dict(snap)
         assert isinstance(result, dict)
-        assert result["url"] == "https://test.com"
+        assert result["url"] == "https://boards.greenhouse.io/deepmind/jobs/5551234567"
 
     def test_as_dict_already_dict(self):
-        d = {"url": "https://test.com"}
+        d = {"url": "https://jobs.lever.co/anthropic/a1b2c3d4-e5f6-7890-abcd-ef0123456789"}
         result = ApplicationOrchestrator._as_dict(d)
         assert result is d
 
     def test_to_page_snapshot_from_dict(self):
         raw = {
-            "url": "https://test.com",
+            "url": "https://www.linkedin.com/jobs/view/3945782198",
             "title": "Test",
             "fields": [
                 {"selector": "#q", "input_type": "text", "label": "Name"},
@@ -655,8 +655,8 @@ class TestNavigationLimit:
         orchestrator.analyzer.detect.return_value = PageType.JOB_DESCRIPTION
 
         result = await orchestrator.apply(
-            url="https://example.com",
-            platform="generic",
+            url="https://www.glassdoor.co.uk/job-listing/data-engineer-acme-JV_IC2671300_KO0,13.htm",
+            platform="glassdoor",
             cv_path=cv_path,
         )
         assert result["success"] is False
@@ -685,8 +685,8 @@ class TestLearnedSequence:
 
         with patch.object(orchestrator.learner, "save_sequence") as mock_save:
             result = await orchestrator.apply(
-                url="https://example.com/job",
-                platform="generic",
+                url="https://www.reed.co.uk/jobs/ml-engineer-edinburgh/52498765",
+                platform="reed",
                 cv_path=cv_path,
                 profile={"first_name": "Yash"},
             )
@@ -736,10 +736,10 @@ class TestHandleLogin:
     async def test_login_fills_email_and_password(self, orchestrator, bridge):
         """With a known account, _handle_login fills both email and password."""
         with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
-            orchestrator.accounts.create_account("login.example.com")
+            orchestrator.accounts.create_account("jobs.lever.co")
 
         login_snap = _snap_dict(
-            url="https://login.example.com/sign-in",
+            url="https://jobs.lever.co/auth/sign-in",
             text="Sign in to continue",
             fields=[
                 {"selector": "#email", "input_type": "email", "label": "Email"},
@@ -750,7 +750,7 @@ class TestHandleLogin:
             ],
         )
         post_snap = _snap_dict(
-            url="https://login.example.com/dashboard",
+            url="https://jobs.lever.co/dashboard",
             text="Welcome back",
         )
         bridge.get_snapshot.return_value = post_snap
@@ -766,43 +766,43 @@ class TestHandleLogin:
     async def test_login_no_account_redirects_to_signup(self, orchestrator, bridge):
         """No account + snapshot has signup button → clicks signup."""
         snap = _snap_dict(
-            url="https://noac.example.com/login",
+            url="https://careers-acme.icims.com/login",
             text="Log in",
             buttons=[
                 {"selector": "#signup-link", "text": "Create Account", "enabled": True, "type": "button"},
             ],
         )
-        after_click = _snap_dict(url="https://noac.example.com/register", text="Create account")
+        after_click = _snap_dict(url="https://careers-acme.icims.com/register", text="Create account")
         bridge.get_snapshot.return_value = after_click
 
-        result = await orchestrator._handle_login(snap, "generic")
+        result = await orchestrator._handle_login(snap, "icims")
 
         bridge.click.assert_called_once_with("#signup-link")
-        assert result["url"] == "https://noac.example.com/register"
+        assert result["url"] == "https://careers-acme.icims.com/register"
 
     @pytest.mark.asyncio
     async def test_login_no_account_no_signup_returns_snapshot(self, orchestrator, bridge):
         """No account, no signup button → returns original snapshot unchanged."""
         snap = _snap_dict(
-            url="https://noac2.example.com/login",
+            url="https://acme.bamboohr.com/careers/login",
             text="Log in",
             buttons=[
                 {"selector": "#about", "text": "About Us", "enabled": True, "type": "button"},
             ],
         )
-        result = await orchestrator._handle_login(snap, "generic")
+        result = await orchestrator._handle_login(snap, "bamboohr")
 
         bridge.click.assert_not_called()
-        assert result["url"] == "https://noac2.example.com/login"
+        assert result["url"] == "https://acme.bamboohr.com/careers/login"
 
     @pytest.mark.asyncio
     async def test_login_verifies_success_before_marking(self, orchestrator, bridge):
         """After clicking sign-in, if post-login page still looks like login, do NOT mark success."""
         with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
-            orchestrator.accounts.create_account("verify.example.com")
+            orchestrator.accounts.create_account("jobs.ashbyhq.com")
 
         snap = _snap_dict(
-            url="https://verify.example.com/login",
+            url="https://jobs.ashbyhq.com/auth/login",
             text="Sign in to continue",
             fields=[
                 {"selector": "#email", "input_type": "email", "label": "Email"},
@@ -814,7 +814,7 @@ class TestHandleLogin:
         )
         # Post-login snapshot still looks like a login page
         still_login = _snap_dict(
-            url="https://verify.example.com/login",
+            url="https://jobs.ashbyhq.com/auth/login",
             text="sign in — invalid password",
         )
         bridge.fill.return_value = MagicMock(success=True)
@@ -828,10 +828,10 @@ class TestHandleLogin:
     async def test_login_fill_failure_returns_early(self, orchestrator, bridge):
         """TimeoutError on email fill → returns snapshot without clicking sign-in."""
         with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
-            orchestrator.accounts.create_account("timeout.example.com")
+            orchestrator.accounts.create_account("jobs.jobvite.com")
 
         snap = _snap_dict(
-            url="https://timeout.example.com/login",
+            url="https://jobs.jobvite.com/acme/login",
             text="Sign in",
             fields=[
                 {"selector": "#email", "input_type": "email", "label": "Email"},
@@ -843,7 +843,7 @@ class TestHandleLogin:
         )
         # email fill raises TimeoutError; password fill is fine
         bridge.fill.side_effect = [TimeoutError("timeout"), MagicMock(success=True)]
-        bridge.get_snapshot.return_value = _snap_dict(url="https://timeout.example.com/dashboard")
+        bridge.get_snapshot.return_value = _snap_dict(url="https://jobs.jobvite.com/acme/dashboard")
 
         result = await orchestrator._handle_login(snap, "generic")
 
