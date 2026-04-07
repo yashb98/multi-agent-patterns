@@ -909,6 +909,58 @@ async function fillField(selector, value) {
 }
 
 /**
+ * Fill a contenteditable element (Lever cover letter, Workday rich text).
+ * Uses document.execCommand('insertText') which preserves undo stack
+ * and triggers framework event listeners correctly.
+ */
+async function fillContentEditable(el, value) {
+  if (!el) return { success: false, error: "Contenteditable element is null" };
+
+  // Scroll-aware timing
+  const rectBefore = el.getBoundingClientRect();
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const rectAfter = el.getBoundingClientRect();
+  const scrollDistance = Math.abs(rectAfter.top - rectBefore.top);
+  const scrollWait = scrollDistance > 10
+    ? Math.min(800, Math.max(100, scrollDistance * 0.4))
+    : 50;
+  await delay(scrollWait);
+
+  await moveCursorTo(el);
+  highlightElement(el);
+  await cursorClickFlash();
+
+  el.focus();
+  el.dispatchEvent(new Event("focus", { bubbles: true }));
+
+  // Clear existing content
+  el.innerText = "";
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+
+  // Type character by character using execCommand
+  for (const char of value) {
+    document.execCommand("insertText", false, char);
+    const speed = behaviorProfile.avg_typing_speed *
+      (1 + (Math.random() - 0.5) * behaviorProfile.typing_variance);
+    await delay(Math.max(30, speed));
+  }
+
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("blur", { bubbles: true }));
+
+  // Verify
+  const actualText = (el.innerText || el.textContent || "").trim();
+  const verified = actualText.includes(value.substring(0, 20));
+
+  return {
+    success: true,
+    value_set: actualText,
+    value_verified: verified,
+    contenteditable: true,
+  };
+}
+
+/**
  * Upload a file via DataTransfer API.
  * Receives base64 data from Python, creates a File object, assigns to input.
  */
