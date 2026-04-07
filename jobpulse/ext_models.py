@@ -69,6 +69,14 @@ class FieldInfo(BaseModel):
     in_shadow_dom: bool = False
     in_iframe: bool = False
     iframe_index: int | None = None
+    # v2: parent context for form intelligence
+    group_label: str = ""
+    group_selector: str = ""
+    parent_text: str = ""
+    fieldset_legend: str = ""
+    help_text: str = ""
+    error_text: str = ""
+    aria_describedby: str = ""
 
 
 class ButtonInfo(BaseModel):
@@ -78,6 +86,18 @@ class ButtonInfo(BaseModel):
     text: str
     type: str = "button"
     enabled: bool = True
+
+
+class FormGroup(BaseModel):
+    """A form group: label + input(s) paired together."""
+
+    group_selector: str
+    question: str  # The label/legend text
+    fields: list[FieldInfo] = []
+    is_required: bool = False
+    is_answered: bool = False
+    fieldset_legend: str = ""
+    help_text: str = ""
 
 
 class VerificationWall(BaseModel):
@@ -101,6 +121,10 @@ class PageSnapshot(BaseModel):
     iframe_count: int = 0
     page_stable: bool = True
     timestamp: int = 0
+    # v2 additions
+    form_groups: list[FormGroup] = []
+    progress: tuple[int, int] | None = None  # (current_step, total_steps)
+    modal_detected: bool = False
 
 
 class ExtCommand(BaseModel):
@@ -120,6 +144,19 @@ class ExtCommand(BaseModel):
         "close_tab",
         "analyze_field",
         "get_snapshot",
+        # v2 actions
+        "fill_radio_group",
+        "fill_custom_select",
+        "fill_autocomplete",
+        "fill_tag_input",
+        "fill_date",
+        "scroll_to",
+        "wait_for_selector",
+        "get_field_context",
+        "scan_form_groups",
+        "check_consent_boxes",
+        "force_click",
+        "rescan_after_fill",
     ]
     payload: dict[str, Any] = {}
 
@@ -143,7 +180,13 @@ class FillResult(BaseModel):
 class Action(BaseModel):
     """An action for the state machine to execute."""
 
-    type: Literal["fill", "upload", "click", "select", "check", "wait"]
+    type: Literal[
+        "fill", "upload", "click", "select", "check", "wait",
+        # v2 action types
+        "fill_radio_group", "fill_custom_select", "fill_autocomplete",
+        "fill_tag_input", "fill_date", "scroll_to", "force_click",
+        "check_consent_boxes",
+    ]
     selector: str = ""
     value: str | None = None
     file_path: str | None = None
