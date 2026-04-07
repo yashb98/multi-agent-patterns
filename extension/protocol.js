@@ -29,6 +29,8 @@ const MSG = Object.freeze({
   CMD_CHECK_CONSENT_BOXES: "check_consent_boxes",
   CMD_FORCE_CLICK: "force_click",
   CMD_RESCAN_AFTER_FILL: "rescan_after_fill",
+  CMD_SCAN_VALIDATION_ERRORS: "scan_validation_errors",
+  CMD_FILL_CONTENTEDITABLE: "fill_contenteditable",
 
   // MV3 state persistence
   CMD_SAVE_FORM_PROGRESS: "save_form_progress",
