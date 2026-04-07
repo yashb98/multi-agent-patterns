@@ -183,23 +183,40 @@ class PlatformStateMachine:
         custom_answers: dict[str, str],
         form_intelligence: object | None = None,
     ) -> list[Action]:
-        """Answer screening questions — uses FormIntelligence router when provided,
-        otherwise falls back to screening_answers.get_answer()."""
+        """Answer screening questions — full-page LLM analysis.
+
+        Sends the entire form page to Claude in one call. The LLM sees all fields,
+        labels, options, and page context simultaneously and returns fill actions
+        for every field. Falls back to per-field pattern matching if the LLM fails.
+        """
+        from jobpulse.form_analyzer import analyze_form_page
+
+        job_context = custom_answers.get("_job_context")
+        context_dict = job_context if isinstance(job_context, dict) else None
+
+        # Full-page LLM analysis — single call, all fields at once
+        try:
+            actions = analyze_form_page(
+                snapshot,
+                job_context=context_dict,
+                platform=self.platform,
+            )
+            # Trust the LLM's decision — if it returns [] it means no fields
+            # should be filled (e.g. search/nav page, not an application form)
+            return actions
+        except Exception as exc:
+            logger.warning("FormAnalyzer failed: %s — falling back to per-field", exc)
+
+        # Fallback: per-field pattern matching (old behavior)
         from jobpulse.screening_answers import get_answer
 
-        actions: list[Action] = []
-        job_context = custom_answers.get("_job_context")
-        # job_context is stored as a string key; pass None to get_answer if not a dict
-        context_dict = None
-        if isinstance(job_context, dict):
-            context_dict = job_context
-
+        actions = []
         for field in snapshot.fields:
             if field.current_value:
-                continue  # Already filled
+                continue
 
             if form_intelligence is not None:
-                field_answer = form_intelligence.resolve(  # type: ignore[union-attr]
+                field_answer = form_intelligence.resolve(
                     question=field.label,
                     job_context=context_dict,
                     input_type=field.input_type,
@@ -217,7 +234,6 @@ class PlatformStateMachine:
             if not answer:
                 continue
 
-            # Route to correct action type based on input_type
             if field.input_type in ("select", "custom_select"):
                 actions.append(Action(type="select", selector=field.selector, value=answer))
             elif field.input_type == "search_autocomplete":

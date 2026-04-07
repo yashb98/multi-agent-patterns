@@ -541,6 +541,18 @@ class ApplicationOrchestrator:
                 form_intelligence=form_intelligence,
             )
 
+            # If LLM returned no actions (page has fields but they're navigation/search),
+            # try clicking the apply button — we may still be on the job listing page
+            if not actions and state == ApplicationState.SCREENING_QUESTIONS:
+                logger.info("  No fill actions — page may not be an application form, trying apply button")
+                apply_snapshot = await self._click_apply_button(
+                    snapshot if isinstance(snapshot, dict) else snapshot.model_dump()
+                )
+                if apply_snapshot != snapshot:
+                    snapshot = apply_snapshot
+                    prev_snapshot = None  # Reset stuck detection
+                    continue
+
             page_start = time.monotonic()
 
             for i, action in enumerate(actions):
