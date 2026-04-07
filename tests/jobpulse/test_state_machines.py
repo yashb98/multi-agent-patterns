@@ -511,7 +511,7 @@ class TestActionGeneration:
             ApplicationState.SCREENING_QUESTIONS, snap, {}, {}, "", None
         )
         assert len(actions) == 1
-        assert actions[0].type == "check"
+        assert actions[0].type == "fill_radio_group"
 
 
 # =========================================================================

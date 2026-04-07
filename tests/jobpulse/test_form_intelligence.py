@@ -90,12 +90,12 @@ class TestTier1Pattern:
 
 class TestTier2SemanticCache:
     def test_cache_hit(self, fi, mock_cache):
-        """Cache hit returns tier 2 with similarity score."""
-        mock_cache.find_similar.return_value = ("Cached answer", 0.92)
+        """Cache hit returns tier 2 with cached answer string."""
+        mock_cache.find_similar.return_value = "Cached answer"
         result = fi.resolve("Some novel question")
         assert result.tier == 2
         assert result.answer == "Cached answer"
-        assert result.confidence == pytest.approx(0.92)
+        assert result.confidence == pytest.approx(0.85)
 
     def test_cache_miss_falls_to_llm(self, fi, mock_cache):
         """Cache miss continues to next tier."""
