@@ -68,6 +68,242 @@ function delay(ms) {
 }
 
 /**
+ * Exhaustive DOM context extraction for a form field.
+ *
+ * Captures EVERYTHING around the field — every text node, sibling, ancestor,
+ * ARIA attribute, data attribute, title, tooltip, etc. The LLM uses this
+ * context to understand what each field is asking, regardless of the site's
+ * HTML structure. No hardcoded strategies — just a thorough DOM walk.
+ *
+ * Returns { label, context } where label is our best guess and context is
+ * the full surrounding text for the LLM.
+ */
+function extractFieldContext(el) {
+  const texts = [];       // All candidate label texts, ranked by proximity
+  const contextParts = []; // Full surrounding context for the LLM
+
+  // Helper: clean text
+  const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
+  // Helper: is this an input element?
+  const isInput = (e) => e && ["INPUT","SELECT","TEXTAREA","BUTTON"].includes(e.tagName);
+
+  // ─── Explicit associations (highest confidence) ───
+
+  // <label for="id">
+  if (el.id) {
+    const labelFor = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+    if (labelFor) texts.push({ text: clean(labelFor.textContent), rank: 1, src: "label[for]" });
+  }
+
+  // Wrapping <label>
+  const wrappingLabel = el.closest("label");
+  if (wrappingLabel) {
+    // Get label text excluding the input's own text
+    const clone = wrappingLabel.cloneNode(true);
+    clone.querySelectorAll("input,select,textarea").forEach(c => c.remove());
+    const t = clean(clone.textContent);
+    if (t) texts.push({ text: t, rank: 1, src: "wrapping-label" });
+  }
+
+  // aria-labelledby
+  const labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const parts = labelledBy.split(/\s+/).map(id => {
+      const ref = document.getElementById(id);
+      return ref ? clean(ref.textContent) : "";
+    }).filter(Boolean);
+    if (parts.length) texts.push({ text: parts.join(" "), rank: 1, src: "aria-labelledby" });
+  }
+
+  // aria-label
+  const ariaLabel = el.getAttribute("aria-label");
+  if (ariaLabel) texts.push({ text: clean(ariaLabel), rank: 2, src: "aria-label" });
+
+  // aria-description / aria-describedby
+  const describedBy = el.getAttribute("aria-describedby");
+  if (describedBy) {
+    const parts = describedBy.split(/\s+/).map(id => {
+      const ref = document.getElementById(id);
+      return ref ? clean(ref.textContent) : "";
+    }).filter(Boolean);
+    if (parts.length) contextParts.push("described-by: " + parts.join(" "));
+  }
+
+  // title attribute
+  if (el.title) texts.push({ text: clean(el.title), rank: 3, src: "title" });
+
+  // placeholder
+  if (el.placeholder) texts.push({ text: clean(el.placeholder), rank: 4, src: "placeholder" });
+
+  // data-* attributes that might contain labels
+  for (const attr of el.attributes) {
+    if (attr.name.startsWith("data-") && /label|name|field|title|desc|hint|question/i.test(attr.name)) {
+      const v = clean(attr.value);
+      if (v && v.length < 200) texts.push({ text: v, rank: 3, src: `attr:${attr.name}` });
+    }
+  }
+
+  // ─── DOM proximity (walk outward from the element) ───
+
+  // Previous siblings (immediate + up to 3 levels)
+  const collectPrevSiblings = (node, maxDepth) => {
+    for (let depth = 0; node && depth < maxDepth; depth++) {
+      let prev = node.previousElementSibling;
+      while (prev) {
+        if (!isInput(prev)) {
+          const t = clean(prev.textContent);
+          if (t.length > 0 && t.length < 200) {
+            texts.push({ text: t, rank: 5 + depth, src: `prev-sib-d${depth}` });
+            break; // Take the closest one at this depth
+          }
+        }
+        prev = prev.previousElementSibling;
+      }
+      node = node.parentElement;
+    }
+  };
+  collectPrevSiblings(el, 4);
+
+  // Walk up ancestors, collecting container text
+  let ancestor = el.parentElement;
+  for (let depth = 0; ancestor && depth < 6; depth++, ancestor = ancestor.parentElement) {
+    // Direct text nodes of this ancestor (not from child elements)
+    const directText = Array.from(ancestor.childNodes)
+      .filter(n => n.nodeType === 3)
+      .map(n => clean(n.textContent))
+      .filter(t => t.length > 0 && t.length < 150)
+      .join(" ");
+    if (directText) texts.push({ text: directText, rank: 7 + depth, src: `parent-text-d${depth}` });
+
+    // Short text children of this ancestor that precede our element
+    for (const child of ancestor.children) {
+      if (child === el || child.contains(el)) break; // Stop at our element
+      if (isInput(child)) continue;
+      const t = clean(child.textContent);
+      if (t.length > 0 && t.length < 150 && !child.querySelector("input,select,textarea")) {
+        texts.push({ text: t, rank: 6 + depth, src: `ancestor-child-d${depth}` });
+      }
+    }
+
+    // Check for legend, header, or label-like elements in this container
+    const labelLike = ancestor.querySelector(
+      ":scope > label, :scope > legend, :scope > h1, :scope > h2, :scope > h3, " +
+      ":scope > h4, :scope > h5, :scope > h6, :scope > [class*='label'], " +
+      ":scope > [class*='title'], :scope > [class*='header'], :scope > [class*='question']"
+    );
+    if (labelLike && !labelLike.contains(el) && !isInput(labelLike)) {
+      const t = clean(labelLike.textContent);
+      if (t.length > 0 && t.length < 200) {
+        texts.push({ text: t, rank: 4 + depth, src: `label-like-d${depth}` });
+      }
+    }
+
+    // Stop walking up if we hit a form, dialog, or major container
+    const tag = ancestor.tagName.toLowerCase();
+    if (["form", "dialog", "main", "body", "html"].includes(tag)) break;
+  }
+
+  // ─── Sibling fields context (what's around this field) ───
+  // Next sibling text (sometimes labels come after)
+  let nextSib = el.nextElementSibling;
+  if (!nextSib && el.parentElement) nextSib = el.parentElement.nextElementSibling;
+  if (nextSib && !isInput(nextSib)) {
+    const t = clean(nextSib.textContent);
+    if (t.length > 0 && t.length < 150) {
+      texts.push({ text: t, rank: 10, src: "next-sib" });
+    }
+  }
+
+  // ─── Build context string for the LLM ───
+  // Deduplicate and sort by rank (lower = more likely to be the label)
+  const seen = new Set();
+  const unique = texts.filter(t => {
+    if (seen.has(t.text)) return false;
+    seen.add(t.text);
+    return true;
+  }).sort((a, b) => a.rank - b.rank);
+
+  // Best label = highest ranked text
+  const bestLabel = unique.length > 0 ? unique[0].text : "";
+
+  // Full context = all unique texts joined (for the LLM to see everything)
+  const fullContext = unique
+    .map(t => t.text)
+    .slice(0, 8) // Top 8 most relevant texts
+    .join(" | ");
+
+  return {
+    label: bestLabel.substring(0, 200),
+    context: fullContext.substring(0, 500),
+    sources: unique.slice(0, 5).map(t => `${t.src}: "${t.text.substring(0, 60)}"`),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Visual Cursor — animated overlay so the user can see automation
+// ═══════════════════════════════════════════════════════════════
+
+let _cursor = null;
+
+function ensureCursor() {
+  if (_cursor && document.body.contains(_cursor)) return _cursor;
+  _cursor = document.createElement("div");
+  _cursor.id = "jobpulse-cursor";
+  _cursor.style.cssText = `
+    position: fixed; z-index: 2147483647; pointer-events: none;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: rgba(59, 130, 246, 0.7);
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.5), 0 0 4px rgba(0,0,0,0.3);
+    transition: left 0.4s cubic-bezier(0.25, 0.1, 0.25, 1),
+                top 0.4s cubic-bezier(0.25, 0.1, 0.25, 1),
+                transform 0.15s ease;
+    left: -100px; top: -100px;
+    transform: translate(-50%, -50%);
+  `;
+  document.body.appendChild(_cursor);
+  return _cursor;
+}
+
+/** Smoothly move the visual cursor to an element's center. */
+async function moveCursorTo(el) {
+  const cursor = ensureCursor();
+  const rect = el.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  cursor.style.left = cx + "px";
+  cursor.style.top = cy + "px";
+  cursor.style.display = "block";
+  await delay(450); // wait for CSS transition
+}
+
+/** Flash a click animation on the cursor. */
+async function cursorClickFlash() {
+  const cursor = ensureCursor();
+  cursor.style.transform = "translate(-50%, -50%) scale(0.6)";
+  await delay(100);
+  cursor.style.transform = "translate(-50%, -50%) scale(1.0)";
+  await delay(100);
+}
+
+/** Highlight an element briefly (glow effect). */
+function highlightElement(el) {
+  const prev = el.style.outline;
+  const prevTransition = el.style.transition;
+  el.style.transition = "outline 0.2s ease";
+  el.style.outline = "2px solid rgba(59, 130, 246, 0.8)";
+  setTimeout(() => {
+    el.style.outline = prev;
+    el.style.transition = prevTransition;
+  }, 1500);
+}
+
+/** Hide the cursor after automation is done. */
+function hideCursor() {
+  if (_cursor) _cursor.style.display = "none";
+}
+
+/**
  * Resolve a CSS selector, including shadow DOM paths.
  * Shadow DOM syntax: "host-selector>>inner-selector"
  * Example: "#my-component>>input.email"
@@ -82,6 +318,22 @@ function resolveSelector(selector) {
     return el;
   }
   return document.querySelector(selector);
+}
+
+/**
+ * Set input value using the native setter — bypasses React/Vue/Angular
+ * controlled component wrappers that ignore direct .value assignment.
+ */
+function setNativeValue(el, value) {
+  const proto = el instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+  if (descriptor && descriptor.set) {
+    descriptor.set.call(el, value);
+  } else {
+    el.value = value;
+  }
 }
 
 /**
@@ -164,11 +416,15 @@ function extractFieldInfo(el, iframeIndex) {
   else if (el.getAttribute("role") === "switch") inputType = "toggle";
   else inputType = (el.getAttribute("type") || "text").toLowerCase();
 
-  // Find label: explicit <label for=>, wrapping <label>, aria-label, placeholder
-  let label = "";
-  const labelEl = el.closest("label") || (el.id && document.querySelector(`label[for="${el.id}"]`));
-  if (labelEl) label = labelEl.textContent.trim();
-  if (!label) label = el.getAttribute("aria-label") || el.getAttribute("placeholder") || "";
+  // ── Dynamic DOM context extraction ──
+  // Instead of hardcoded strategies, we scrape EVERYTHING around the field.
+  // The LLM decides what's relevant. The content script is a thorough scanner.
+  const domContext = extractFieldContext(el);
+  let label = domContext.label;
+
+  // Clean up label
+  label = label.replace(/\s*\*\s*$/, "").replace(/\s+/g, " ").trim();
+  label = label.replace(/\s*Please enter a valid.*$/i, "").trim();
 
   // Extract <select> options (skip placeholder "Select..." options)
   const options = [];
@@ -187,10 +443,56 @@ function extractFieldInfo(el, iframeIndex) {
   }
   else if (el.name) selector = `${tag}[name="${el.name}"]`;
   else {
-    const parent = el.parentElement;
-    if (parent) {
-      const siblings = Array.from(parent.querySelectorAll(tag));
-      selector = `${tag}:nth-of-type(${siblings.indexOf(el) + 1})`;
+    // No id or name — build a unique selector by walking up the DOM
+    // to find a parent with a distinguishing id, data attribute, or class
+    let built = false;
+    let ancestor = el.parentElement;
+    for (let depth = 0; ancestor && depth < 8; depth++, ancestor = ancestor.parentElement) {
+      let anchorSel = "";
+      if (ancestor.id) {
+        anchorSel = /[:#.\[\]]/.test(ancestor.id) ? `[id="${ancestor.id}"]` : `#${ancestor.id}`;
+      } else if (ancestor.getAttribute("data-zcqa")) {
+        anchorSel = `[data-zcqa="${ancestor.getAttribute("data-zcqa")}"]`;
+      } else if (ancestor.getAttribute("data-field")) {
+        anchorSel = `[data-field="${ancestor.getAttribute("data-field")}"]`;
+      } else if (ancestor.getAttribute("data-name")) {
+        anchorSel = `[data-name="${ancestor.getAttribute("data-name")}"]`;
+      } else if (ancestor.className && typeof ancestor.className === "string" && ancestor.className.length > 2 && ancestor.className.length < 80) {
+        // Use class-based selector only if it matches exactly one element on the page
+        const cls = ancestor.className.split(/\s+/).filter(c => c.length > 2).join(".");
+        if (cls && document.querySelectorAll("." + cls.split(".")[0]).length <= 3) {
+          anchorSel = `${ancestor.tagName.toLowerCase()}.${cls}`;
+        }
+      }
+      if (anchorSel) {
+        // Find the element relative to this anchor
+        const role = el.getAttribute("role");
+        const ariaLabel = el.getAttribute("aria-label");
+        if (role) {
+          const matches = ancestor.querySelectorAll(`[role="${role}"]`);
+          if (matches.length === 1) {
+            selector = `${anchorSel} [role="${role}"]`;
+          } else {
+            const idx = Array.from(matches).indexOf(el);
+            selector = `${anchorSel} [role="${role}"]:nth-of-type(${idx + 1})`;
+          }
+        } else if (ariaLabel) {
+          selector = `${anchorSel} [aria-label="${ariaLabel}"]`;
+        } else {
+          const matches = ancestor.querySelectorAll(tag);
+          const idx = Array.from(matches).indexOf(el);
+          selector = `${anchorSel} ${tag}:nth-of-type(${idx + 1})`;
+        }
+        built = true;
+        break;
+      }
+    }
+    if (!built) {
+      const parent = el.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.querySelectorAll(tag));
+        selector = `${tag}:nth-of-type(${siblings.indexOf(el) + 1})`;
+      }
     }
   }
 
@@ -210,23 +512,11 @@ function extractFieldInfo(el, iframeIndex) {
     in_shadow_dom: false,
     in_iframe: iframeIndex !== null && iframeIndex !== undefined,
     iframe_index: iframeIndex,
-    // v2: parent context for form intelligence
-    group_label: (() => {
-      const group = el.closest("fieldset, .form-group, .field, [data-test-form-element], .jobs-easy-apply-form-section__grouping, .fb-dash-form-element");
-      if (!group) return "";
-      const legend = group.querySelector("label, legend, .field-label, .fb-form-element-label, span.t-14");
-      return legend ? legend.textContent.trim().substring(0, 200) : "";
-    })(),
-    group_selector: (() => {
-      const group = el.closest("fieldset, .form-group, .field, [data-test-form-element], .jobs-easy-apply-form-section__grouping, .fb-dash-form-element");
-      if (!group) return "";
-      if (group.id) return `#${group.id}`;
-      const tag = group.tagName.toLowerCase();
-      const cls = group.className && typeof group.className === "string"
-        ? group.className.split(/\s+/).filter(c => c.length > 3)[0]
-        : "";
-      return cls ? `${tag}.${cls}` : tag;
-    })(),
+    // Dynamic DOM context — exhaustive surrounding text for the LLM
+    dom_context: domContext.context,
+    label_sources: domContext.sources,
+    group_label: domContext.context.split(" | ")[1] || "", // Second-best label candidate
+    group_selector: "",
     parent_text: (() => {
       const p = el.parentElement;
       return p ? p.textContent.trim().substring(0, 300) : "";
@@ -238,16 +528,22 @@ function extractFieldInfo(el, iframeIndex) {
       return leg ? leg.textContent.trim() : "";
     })(),
     help_text: (() => {
+      // Collect everything that could be help text
+      const parts = [];
       const describedBy = el.getAttribute("aria-describedby");
       if (describedBy) {
-        const desc = document.getElementById(describedBy);
-        if (desc) return desc.textContent.trim().substring(0, 200);
+        describedBy.split(/\s+/).forEach(id => {
+          const desc = document.getElementById(id);
+          if (desc) parts.push(desc.textContent.trim());
+        });
       }
       const next = el.nextElementSibling;
-      if (next && /help|hint|description|info/.test(next.className || "")) {
-        return next.textContent.trim().substring(0, 200);
+      if (next && !isFieldVisible(next)) {} // skip hidden
+      else if (next && next.textContent.trim().length < 200 &&
+               !["INPUT","SELECT","TEXTAREA","BUTTON"].includes(next.tagName)) {
+        parts.push(next.textContent.trim());
       }
-      return "";
+      return parts.join(" ").substring(0, 300);
     })(),
     error_text: (() => {
       const errId = el.getAttribute("aria-errormessage");
@@ -433,7 +729,7 @@ function buildSnapshot() {
   // Include role='button' elements + <a> tags with button-like classes (LinkedIn uses a.artdeco-button for Apply)
   const buttons = [];
   const seen = new Set();
-  document.querySelectorAll("button, input[type='submit'], [role='button'], [class*='apply'], [class*='btn'], a[class*='button']").forEach((el) => {
+  document.querySelectorAll("button, input[type='submit'], [role='button'], [class*='apply'], [class*='btn'], a[class*='button'], a[href*='apply'], a[aria-label*='Apply']").forEach((el) => {
     if (seen.has(el)) return;
     seen.add(el);
     // Get text: textContent first, then aria-label, then value
@@ -451,7 +747,14 @@ function buildSnapshot() {
         if (/[:#.\[\]]/.test(el.id)) selector = `[id="${el.id}"]`;
         else selector = `#${el.id}`;
       }
-      else if (el.className && typeof el.className === "string") {
+      // For <a> links: prefer href-based selector (unique, unlike CSS module hashes)
+      else if (tag === "a" && el.href) {
+        const href = el.getAttribute("href");
+        if (href && href.length < 200) {
+          selector = `a[href="${href.replace(/"/g, '\\"')}"]`;
+        }
+      }
+      if (!selector && el.className && typeof el.className === "string") {
         // Prefer jobs-apply-button (LinkedIn) or other meaningful class
         const classes = el.className.split(/\s+/).filter(c => c.length > 3);
         const applyClass = classes.find(c => c.includes("apply") || c.includes("submit"));
@@ -460,12 +763,21 @@ function buildSnapshot() {
         else if (classes[0]) selector = `${tag}.${classes[0]}`;
       }
       if (!selector) selector = `${tag}:nth-of-type(${buttons.length + 1})`;
-      buttons.push({
+      const btnData = {
         selector,
         text: text.substring(0, 100),
         type: el.type || (tag === "a" ? "link" : "button"),
         enabled: !el.disabled && !el.getAttribute("aria-disabled"),
-      });
+      };
+      // For links: include href so Python can navigate directly instead of clicking
+      if (tag === "a" && el.href) {
+        btnData.href = el.href.substring(0, 500);
+        btnData.target = el.target || "";
+      }
+      // Include aria-label for icon-only buttons
+      const ariaLabel = el.getAttribute("aria-label");
+      if (ariaLabel) btnData.ariaLabel = ariaLabel.substring(0, 100);
+      buttons.push(btnData);
     }
   });
 
@@ -526,21 +838,42 @@ async function fillField(selector, value) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
-  // Scroll into view and pause (mimics human reading the label)
+  // Detect contenteditable (Lever, some Workday forms)
+  if (el.getAttribute("contenteditable") === "true" || el.isContentEditable) {
+    return fillContentEditable(el, value);
+  }
+
+  // Scroll-aware timing: measure if scroll actually happens
+  const rectBefore = el.getBoundingClientRect();
   el.scrollIntoView({ behavior: "smooth", block: "center" });
-  await delay(behaviorProfile.field_to_field_gap);
+  const rectAfter = el.getBoundingClientRect();
+  const scrollDistance = Math.abs(rectAfter.top - rectBefore.top);
+  const scrollWait = scrollDistance > 10
+    ? Math.min(800, Math.max(100, scrollDistance * 0.4))
+    : 50;
+  await delay(scrollWait);
+
+  // Visual cursor + highlight
+  await moveCursorTo(el);
+  highlightElement(el);
+  await cursorClickFlash();
+
+  // Smart read-time: longer labels = more reading time
+  const labelLength = (el.getAttribute("aria-label") || el.placeholder || "").length;
+  const readDelay = Math.min(1500, 200 + labelLength * 15);
+  await delay(readDelay);
 
   el.focus();
   el.dispatchEvent(new Event("focus", { bubbles: true }));
 
-  // Clear existing value
-  el.value = "";
+  // Clear existing value using native setter (React-safe)
+  setNativeValue(el, "");
   el.dispatchEvent(new Event("input", { bubbles: true }));
 
   // Type each character with realistic timing variance
   for (const char of value) {
     el.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
-    el.value += char;
+    setNativeValue(el, el.value + char);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
     const speed = behaviorProfile.avg_typing_speed *
@@ -552,7 +885,27 @@ async function fillField(selector, value) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
   el.dispatchEvent(new Event("blur", { bubbles: true }));
 
-  return { success: true, value_set: el.value };
+  // ── Post-fill verification ──
+  await delay(100);
+  const actualValue = el.value || "";
+  const verified = actualValue === value;
+
+  if (!verified && actualValue !== value) {
+    setNativeValue(el, value);
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    await delay(100);
+
+    const retryValue = el.value || "";
+    return {
+      success: retryValue === value || retryValue.length > 0,
+      value_set: retryValue,
+      value_verified: retryValue === value,
+      retried: true,
+    };
+  }
+
+  return { success: true, value_set: actualValue, value_verified: true };
 }
 
 /**
@@ -581,8 +934,36 @@ async function clickElement(selector) {
   const el = resolveSelector(selector);
   if (!el) return { success: false, error: "Element not found: " + selector };
 
+  // Visual: scroll into view, move cursor, highlight
   el.scrollIntoView({ behavior: "smooth", block: "center" });
-  await delay(behaviorProfile.reading_pause * 500 * (0.5 + Math.random()));
+  await delay(300);
+  await moveCursorTo(el);
+  highlightElement(el);
+  await cursorClickFlash();
+
+  // For <a> links with target="_blank" (e.g. LinkedIn "Apply ↗"), navigate in
+  // the current tab instead of opening a new one — the bot needs to follow the link.
+  if (el.tagName === "A" && el.target === "_blank" && el.href) {
+    const href = el.href;
+    window.location.href = href;
+    return { success: true, navigated: href };
+  }
+
+  // Dispatch real mouse events with coordinates — some sites (Zoho, etc.)
+  // listen for mousedown/mouseup/mouseover, not just .click()
+  const rect = el.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
+
+  el.dispatchEvent(new MouseEvent("mouseover", evtOpts));
+  await delay(50 + Math.random() * 80);
+  el.dispatchEvent(new MouseEvent("mousedown", { ...evtOpts, button: 0 }));
+  await delay(30 + Math.random() * 60);
+  el.dispatchEvent(new MouseEvent("mouseup", { ...evtOpts, button: 0 }));
+  el.dispatchEvent(new MouseEvent("click", { ...evtOpts, button: 0 }));
+
+  // Also call .click() as final fallback
   el.click();
 
   return { success: true };
@@ -878,6 +1259,142 @@ async function fillAutocomplete(selector, value) {
   el.dispatchEvent(new Event("blur", { bubbles: true }));
 
   return { success: true, value_set: value, no_suggestions: true };
+}
+
+/**
+ * Fill a combobox/custom dropdown by clicking it open, scanning the entire
+ * document for the floating option panel, and selecting the best match.
+ * Works with Zoho lyte-dropdown, React Select, MUI Select, etc.
+ */
+async function fillCombobox(selector, value) {
+  const el = resolveSelector(selector);
+  if (!el) return { success: false, error: "Element not found: " + selector };
+
+  // Visual cursor
+  await moveCursorTo(el);
+  highlightElement(el);
+
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  await delay(300);
+
+  // Click the combobox trigger to open the dropdown
+  el.click();
+  el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await delay(800);
+
+  // Also try clicking any inner trigger (arrow button, input, etc.)
+  const innerTrigger = el.querySelector("input, [class*='trigger'], [class*='arrow'], [class*='toggle'], button");
+  if (innerTrigger) {
+    innerTrigger.click();
+    innerTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await delay(800);
+  }
+
+  // Search the ENTIRE document for floating dropdown panels with options
+  const optionSelectors = [
+    "[role='option']",
+    "[role='listbox'] li",
+    "[role='listbox'] [role='option']",
+    "lyte-drop-box li",
+    "lyte-drop-box [role='option']",
+    ".lyte-dropdown-items li",
+    ".cxDropdownMenuList li",
+    ".cxDropdownMenuItems li",
+    "[class*='dropdown'] li",
+    "[class*='dropdown'] [class*='option']",
+    "[class*='menu'] li[class*='option']",
+    "[class*='listbox'] li",
+    "ul[class*='select'] li",
+    ".select-options li",
+    "[data-value]",
+  ];
+
+  const valueLower = value.toLowerCase().trim();
+  let allOptions = [];
+
+  for (const optSel of optionSelectors) {
+    const opts = document.querySelectorAll(optSel);
+    if (opts.length === 0) continue;
+
+    for (const opt of opts) {
+      const text = opt.textContent.trim();
+      if (!text || text.length > 200) continue;
+      allOptions.push({ el: opt, text });
+
+      // Exact match
+      if (text.toLowerCase() === valueLower) {
+        await moveCursorTo(opt);
+        cursorClickFlash();
+        opt.click();
+        opt.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await delay(500);
+        return { success: true, value_set: text, match: "exact" };
+      }
+    }
+
+    // Partial match — option contains our value or vice versa
+    for (const opt of opts) {
+      const text = opt.textContent.trim();
+      if (!text) continue;
+      if (text.toLowerCase().includes(valueLower) || valueLower.includes(text.toLowerCase())) {
+        await moveCursorTo(opt);
+        cursorClickFlash();
+        opt.click();
+        opt.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await delay(500);
+        return { success: true, value_set: text, match: "partial" };
+      }
+    }
+  }
+
+  // If we found options but none matched, report what was available
+  if (allOptions.length > 0) {
+    const available = allOptions.slice(0, 20).map(o => o.text);
+    return { success: false, error: "No matching option", available_options: available, wanted: value };
+  }
+
+  // No options found — try typing into any input inside the combobox
+  const innerInput = el.querySelector("input");
+  if (innerInput) {
+    innerInput.focus();
+    innerInput.value = "";
+    for (const char of value) {
+      innerInput.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
+      innerInput.value += char;
+      innerInput.dispatchEvent(new Event("input", { bubbles: true }));
+      innerInput.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
+      await delay(80);
+    }
+    await delay(1000);
+
+    // Check for suggestions again
+    for (const optSel of optionSelectors) {
+      const opts = document.querySelectorAll(optSel);
+      for (const opt of opts) {
+        const text = opt.textContent.trim();
+        if (text && (text.toLowerCase().includes(valueLower) || valueLower.includes(text.toLowerCase()))) {
+          await moveCursorTo(opt);
+          cursorClickFlash();
+          opt.click();
+          await delay(500);
+          return { success: true, value_set: text, match: "typed_then_selected" };
+        }
+      }
+      if (opts.length > 0) {
+        const first = opts[0];
+        const firstText = first.textContent.trim();
+        await moveCursorTo(first);
+        cursorClickFlash();
+        first.click();
+        await delay(500);
+        return { success: true, value_set: firstText, match: "typed_first_option" };
+      }
+    }
+  }
+
+  return { success: false, error: "Could not open dropdown or find options" };
 }
 
 async function fillTagInput(selector, values) {
@@ -1317,7 +1834,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         while (elapsed < maxWait) {
           snap = buildSnapshot();
           const hasApply = snap.buttons.some(b => applyRe.test(b.text));
-          if (hasApply) break;
+          // Also check for <a> links with "apply" in class/aria-label (LinkedIn external Apply ↗)
+          const hasApplyLink = !!document.querySelector("a[class*='apply'], a[aria-label*='Apply'], a[href*='apply']");
+          if (hasApply || hasApplyLink) break;
           await delay(pollInterval);
           elapsed += pollInterval;
         }
@@ -1368,6 +1887,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       case "fill_autocomplete":
         result = await fillAutocomplete(payload.selector, payload.value);
+        break;
+      case "fill_combobox":
+        result = await fillCombobox(payload.selector, payload.value);
         break;
       case "fill_tag_input":
         result = await fillTagInput(payload.selector, payload.values || []);
