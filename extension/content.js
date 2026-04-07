@@ -351,6 +351,37 @@ function hideCursor() {
 }
 
 /**
+ * Generate points along a cubic Bezier curve with randomized control
+ * points. Creates natural-looking mouse trajectories that overshoot
+ * slightly and curve, unlike Playwright's straight lines.
+ */
+function bezierCurve(x0, y0, x1, y1, steps = 18) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+
+  const perpX = -dy / (distance || 1);
+  const perpY = dx / (distance || 1);
+  const curvature = (Math.random() - 0.5) * distance * 0.3;
+  const overshoot = 1.0 + (Math.random() * 0.08 - 0.02);
+
+  const cp1x = x0 + dx * 0.3 + perpX * curvature;
+  const cp1y = y0 + dy * 0.3 + perpY * curvature;
+  const cp2x = x0 + dx * 0.7 * overshoot + perpX * curvature * 0.3;
+  const cp2y = y0 + dy * 0.7 * overshoot + perpY * curvature * 0.3;
+
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    const x = u*u*u*x0 + 3*u*u*t*cp1x + 3*u*t*t*cp2x + t*t*t*x1;
+    const y = u*u*u*y0 + 3*u*u*t*cp1y + 3*u*t*t*cp2y + t*t*t*y1;
+    points.push({ x, y });
+  }
+  return points;
+}
+
+/**
  * Resolve a CSS selector, including shadow DOM paths.
  * Shadow DOM syntax: "host-selector>>inner-selector"
  * Example: "#my-component>>input.email"
