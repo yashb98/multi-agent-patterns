@@ -428,14 +428,28 @@ class ApplicationOrchestrator:
             if screenshot_bytes:
                 last_screenshot = screenshot_bytes
 
+            # Auto-check consent boxes before any navigation
+            try:
+                await self.bridge.check_consent_boxes()
+            except (TimeoutError, ConnectionError):
+                pass  # Non-critical — proceed without
+
             if state == ApplicationState.SUBMIT:
                 if dry_run:
                     return {"success": True, "dry_run": True, "screenshot": last_screenshot, "pages_filled": page_num}
-                submit_btn = find_next_button(snapshot.get("buttons", []))
+                # Use CURRENT page_snapshot (not stale snapshot variable)
+                current_buttons = page_snapshot.buttons if hasattr(page_snapshot, 'buttons') else snapshot.get("buttons", [])
+                submit_btn = find_next_button(
+                    [b.model_dump() if hasattr(b, 'model_dump') else b for b in current_buttons]
+                )
                 if submit_btn:
                     await self.bridge.click(submit_btn["selector"])
             else:
-                next_btn = find_next_button(snapshot.get("buttons", []))
+                # Use CURRENT page_snapshot for next button
+                current_buttons = page_snapshot.buttons if hasattr(page_snapshot, 'buttons') else snapshot.get("buttons", [])
+                next_btn = find_next_button(
+                    [b.model_dump() if hasattr(b, 'model_dump') else b for b in current_buttons]
+                )
                 if next_btn:
                     await self.bridge.click(next_btn["selector"])
 
@@ -465,17 +479,6 @@ class ApplicationOrchestrator:
 
         if atype == "fill":
             await self.bridge.fill(selector, value)
-            # Stream field progress to Telegram in real-time
-            if tg_stream is not None:
-                try:
-                    await tg_stream.stream_field(
-                        label=str(label),
-                        value=str(value),
-                        tier=int(tier),
-                        confident=float(confidence) >= 0.7,
-                    )
-                except Exception as _se:
-                    logger.debug("stream_field failed: %s", _se)
         elif atype == "upload":
             await self.bridge.upload(selector, str(file_path))
         elif atype == "click":
@@ -483,7 +486,37 @@ class ApplicationOrchestrator:
         elif atype == "select":
             await self.bridge.select_option(selector, value)
         elif atype == "check":
-            await self.bridge.check(selector)
+            await self.bridge.check(selector, value.lower() in ("true", "yes", "1", "checked") if value else True)
+        # v2 action types
+        elif atype == "fill_radio_group":
+            await self.bridge.fill_radio_group(selector, value)
+        elif atype == "fill_custom_select":
+            await self.bridge.fill_custom_select(selector, value)
+        elif atype == "fill_autocomplete":
+            await self.bridge.fill_autocomplete(selector, value)
+        elif atype == "fill_tag_input":
+            values = [v.strip() for v in value.split(",") if v.strip()] if value else []
+            await self.bridge.fill_tag_input(selector, values)
+        elif atype == "fill_date":
+            await self.bridge.fill_date(selector, value)
+        elif atype == "scroll_to":
+            await self.bridge.scroll_to(selector)
+        elif atype == "force_click":
+            await self.bridge.force_click(selector)
+        elif atype == "check_consent_boxes":
+            await self.bridge.check_consent_boxes(selector or None)
+
+        # Stream field progress to Telegram in real-time
+        if tg_stream is not None and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date"):
+            try:
+                await tg_stream.stream_field(
+                    label=str(label),
+                    value=str(value),
+                    tier=int(tier),
+                    confident=float(confidence) >= 0.7,
+                )
+            except Exception as _se:
+                logger.debug("stream_field failed: %s", _se)
 
     @staticmethod
     def _extract_domain(url: str) -> str:

@@ -217,10 +217,17 @@ class PlatformStateMachine:
             if not answer:
                 continue
 
-            if field.input_type == "select":
+            # Route to correct action type based on input_type
+            if field.input_type in ("select", "custom_select"):
                 actions.append(Action(type="select", selector=field.selector, value=answer))
-            elif field.input_type in ("radio", "checkbox"):
+            elif field.input_type == "search_autocomplete":
+                actions.append(Action(type="fill_autocomplete", selector=field.selector, value=answer))
+            elif field.input_type == "radio":
+                actions.append(Action(type="fill_radio_group", selector=field.selector, value=answer))
+            elif field.input_type == "checkbox":
                 actions.append(Action(type="check", selector=field.selector, value=answer))
+            elif field.input_type == "date":
+                actions.append(Action(type="fill_date", selector=field.selector, value=answer))
             else:
                 actions.append(Action(type="fill", selector=field.selector, value=answer))
 

@@ -326,6 +326,113 @@ class ExtensionBridge:
             self._snapshot = PageSnapshot(**snap_fields)
         return result
 
+    # ─── v2 Form Engine API ─────────────────────────────────────
+
+    async def fill_radio_group(
+        self, selector: str, value: str, timeout_ms: int = 10000
+    ) -> dict[str, Any]:
+        """Fill a radio button group by matching option labels to value."""
+        return await self._send_command(
+            "fill_radio_group",
+            {"selector": selector, "value": value},
+            timeout_ms=timeout_ms,
+        )
+
+    async def fill_custom_select(
+        self, selector: str, value: str, timeout_ms: int = 15000
+    ) -> dict[str, Any]:
+        """Fill a custom React/Angular dropdown widget."""
+        return await self._send_command(
+            "fill_custom_select",
+            {"selector": selector, "value": value},
+            timeout_ms=timeout_ms,
+        )
+
+    async def fill_autocomplete(
+        self, selector: str, value: str, timeout_ms: int = 15000
+    ) -> dict[str, Any]:
+        """Fill a typeahead/autocomplete field — types partial, clicks suggestion."""
+        return await self._send_command(
+            "fill_autocomplete",
+            {"selector": selector, "value": value},
+            timeout_ms=timeout_ms,
+        )
+
+    async def fill_tag_input(
+        self, selector: str, values: list[str], timeout_ms: int = 20000
+    ) -> dict[str, Any]:
+        """Fill a tag/chip input — types each value + Enter."""
+        return await self._send_command(
+            "fill_tag_input",
+            {"selector": selector, "values": values},
+            timeout_ms=timeout_ms,
+        )
+
+    async def fill_date(
+        self, selector: str, iso_date: str, timeout_ms: int = 10000
+    ) -> dict[str, Any]:
+        """Fill a date field (native or text-based)."""
+        return await self._send_command(
+            "fill_date",
+            {"selector": selector, "value": iso_date},
+            timeout_ms=timeout_ms,
+        )
+
+    async def scroll_to(self, selector: str, timeout_ms: int = 5000) -> bool:
+        """Scroll an element into view."""
+        result = await self._send_command(
+            "scroll_to", {"selector": selector}, timeout_ms=timeout_ms
+        )
+        return bool(result.get("success", False))
+
+    async def wait_for_selector(
+        self, selector: str, timeout_ms: int = 10000
+    ) -> dict[str, Any]:
+        """Wait for a selector to appear in the DOM."""
+        return await self._send_command(
+            "wait_for_selector",
+            {"selector": selector, "timeout_ms": timeout_ms},
+            timeout_ms=timeout_ms + 3000,
+        )
+
+    async def force_click(self, selector: str, timeout_ms: int = 10000) -> bool:
+        """Click element even if obscured (dispatches event directly)."""
+        result = await self._send_command(
+            "force_click", {"selector": selector}, timeout_ms=timeout_ms
+        )
+        return bool(result.get("success", False))
+
+    async def check_consent_boxes(
+        self, root_selector: str | None = None, timeout_ms: int = 10000
+    ) -> dict[str, Any]:
+        """Auto-check all consent/GDPR/terms checkboxes."""
+        return await self._send_command(
+            "check_consent_boxes",
+            {"root_selector": root_selector or ""},
+            timeout_ms=timeout_ms,
+        )
+
+    async def scan_form_groups(
+        self, root_selector: str | None = None, timeout_ms: int = 10000
+    ) -> list[dict[str, Any]]:
+        """Scan for form groups (label+input pairs) within a container."""
+        result = await self._send_command(
+            "scan_form_groups",
+            {"root_selector": root_selector or ""},
+            timeout_ms=timeout_ms,
+        )
+        return result.get("groups", [])
+
+    async def rescan_after_fill(
+        self, selector: str, timeout_ms: int = 10000
+    ) -> dict[str, Any]:
+        """Re-scan page after filling a field for conditional fields and errors."""
+        return await self._send_command(
+            "rescan_after_fill",
+            {"selector": selector},
+            timeout_ms=timeout_ms,
+        )
+
     async def get_snapshot(self, force_refresh: bool = False) -> PageSnapshot | None:
         """Return the latest page snapshot.
 
