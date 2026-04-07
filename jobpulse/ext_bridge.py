@@ -125,8 +125,25 @@ class ExtensionBridge:
         Relay clients identify themselves with {"type":"relay_hello"} as their
         first message. Their commands are forwarded to the extension and results
         relayed back.
+
+        Default assumption: new connection is the extension (matches old behavior).
+        Reclassified to relay only after receiving relay_hello.
         """
         is_relay = False
+        assumed_extension = False
+
+        # Assume extension by default — but DON'T close an existing extension
+        # connection yet (relay clients connect + immediately send relay_hello,
+        # so we wait for the first message before closing the old ws).
+        if self._ws is None or self._ws is ws:
+            # No existing extension — adopt this connection immediately
+            self._ws = ws
+            self._connected.set()
+            assumed_extension = True
+            logger.info("Extension connected from %s", ws.remote_address)
+        else:
+            # Existing extension connection — defer classification until first message
+            assumed_extension = False
 
         try:
             async for raw in ws:
@@ -143,6 +160,11 @@ class ExtensionBridge:
                 if msg_type == "relay_hello":
                     is_relay = True
                     self._relay_clients.add(ws)
+                    # Undo the default extension assumption if we adopted this ws
+                    if assumed_extension and self._ws is ws:
+                        self._ws = None
+                        self._connected.clear()
+                        assumed_extension = False
                     logger.info("Relay client connected from %s", ws.remote_address)
                     await ws.send(json.dumps({"type": "relay_hello_ack", "connected": self.connected}))
                     continue
@@ -157,14 +179,16 @@ class ExtensionBridge:
                         action = msg.get("action", "")
                         payload = msg.get("payload", {})
                         cmd_id = str(uuid.uuid4())
-                        cmd = ExtCommand(id=cmd_id, action=action, payload=payload)
+
+                        # Build raw JSON to avoid ExtCommand Literal validation
+                        cmd_json = json.dumps({"id": cmd_id, "action": action, "payload": payload})
 
                         loop = asyncio.get_running_loop()
                         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
                         self._pending[cmd_id] = fut
 
                         assert self._ws is not None
-                        await self._ws.send(cmd.model_dump_json())
+                        await self._ws.send(cmd_json)
 
                         timeout_ms = msg.get("timeout_ms", 30000)
                         try:
@@ -181,20 +205,21 @@ class ExtensionBridge:
 
                 # ── Extension client messages below ──
 
-                if msg_type == "ping":
-                    await ws.send(json.dumps({"type": "pong"}))
-                    continue
-
-                # First non-relay, non-ping message = this is the extension
-                if not self._connected.is_set() or (self._ws is not None and self._ws is not ws):
-                    if self._ws is not None and self._ws is not ws:
+                # Adopt this ws as the extension if we deferred earlier
+                if not assumed_extension and self._ws is not ws:
+                    if self._ws is not None:
                         try:
                             await self._ws.close()
                         except Exception:
                             pass
                     self._ws = ws
                     self._connected.set()
-                    logger.info("Extension connected from %s", ws.remote_address)
+                    assumed_extension = True
+                    logger.info("Extension reconnected from %s", ws.remote_address)
+
+                if msg_type == "ping":
+                    await ws.send(json.dumps({"type": "pong"}))
+                    continue
 
                 # Content script events — update cached snapshot
                 if msg_type in ("mutation", "navigation"):
