@@ -643,3 +643,170 @@ class TestBridgeCommands:
 
         task.cancel()
         await bridge.stop()
+
+
+# =========================================================================
+# v2 Form Engine methods
+# =========================================================================
+
+
+class TestBridgeV2Methods:
+    """Tests for v2 form engine bridge methods."""
+
+    @pytest.mark.asyncio
+    async def test_fill_radio_group(self, bridge):
+        """fill_radio_group sends correct command and returns result."""
+        await bridge.start()
+        port = bridge.port
+
+        async def mock_extension():
+            async with websockets.connect(f"ws://localhost:{port}") as ws:
+                raw = await ws.recv()
+                msg = json.loads(raw)
+                assert msg["action"] == "fill_radio_group"
+                assert msg["payload"]["selector"] == "fieldset.sponsor"
+                assert msg["payload"]["value"] == "No"
+                await ws.send(json.dumps({"id": msg["id"], "type": "ack", "payload": {}}))
+                await ws.send(json.dumps({
+                    "id": msg["id"], "type": "result",
+                    "payload": {"success": True, "value_set": "No"},
+                }))
+
+        ext_task = asyncio.create_task(mock_extension())
+        await bridge.wait_for_connection(timeout=2.0)
+        result = await bridge.fill_radio_group("fieldset.sponsor", "No")
+        assert result["success"] is True
+        assert result["value_set"] == "No"
+        ext_task.cancel()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_fill_custom_select(self, bridge):
+        """fill_custom_select sends correct command."""
+        await bridge.start()
+        port = bridge.port
+
+        async def mock_extension():
+            async with websockets.connect(f"ws://localhost:{port}") as ws:
+                raw = await ws.recv()
+                msg = json.loads(raw)
+                assert msg["action"] == "fill_custom_select"
+                await ws.send(json.dumps({"id": msg["id"], "type": "ack", "payload": {}}))
+                await ws.send(json.dumps({
+                    "id": msg["id"], "type": "result",
+                    "payload": {"success": True, "value_set": "United Kingdom"},
+                }))
+
+        ext_task = asyncio.create_task(mock_extension())
+        await bridge.wait_for_connection(timeout=2.0)
+        result = await bridge.fill_custom_select("[role='listbox']", "UK")
+        assert result["success"] is True
+        assert result["value_set"] == "United Kingdom"
+        ext_task.cancel()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_fill_autocomplete(self, bridge):
+        """fill_autocomplete sends correct command."""
+        await bridge.start()
+        port = bridge.port
+
+        async def mock_extension():
+            async with websockets.connect(f"ws://localhost:{port}") as ws:
+                raw = await ws.recv()
+                msg = json.loads(raw)
+                assert msg["action"] == "fill_autocomplete"
+                assert msg["payload"]["value"] == "Dundee"
+                await ws.send(json.dumps({"id": msg["id"], "type": "ack", "payload": {}}))
+                await ws.send(json.dumps({
+                    "id": msg["id"], "type": "result",
+                    "payload": {"success": True, "value_set": "Dundee, United Kingdom"},
+                }))
+
+        ext_task = asyncio.create_task(mock_extension())
+        await bridge.wait_for_connection(timeout=2.0)
+        result = await bridge.fill_autocomplete("input[aria-label*='City']", "Dundee")
+        assert result["success"] is True
+        ext_task.cancel()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_fill_tag_input(self, bridge):
+        """fill_tag_input sends values list."""
+        await bridge.start()
+        port = bridge.port
+
+        async def mock_extension():
+            async with websockets.connect(f"ws://localhost:{port}") as ws:
+                raw = await ws.recv()
+                msg = json.loads(raw)
+                assert msg["action"] == "fill_tag_input"
+                assert msg["payload"]["values"] == ["Python", "ML"]
+                await ws.send(json.dumps({"id": msg["id"], "type": "ack", "payload": {}}))
+                await ws.send(json.dumps({
+                    "id": msg["id"], "type": "result",
+                    "payload": {"success": True, "count": 2},
+                }))
+
+        ext_task = asyncio.create_task(mock_extension())
+        await bridge.wait_for_connection(timeout=2.0)
+        result = await bridge.fill_tag_input("input.skills", ["Python", "ML"])
+        assert result["success"] is True
+        assert result["count"] == 2
+        ext_task.cancel()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_scan_form_groups(self, bridge):
+        """scan_form_groups sends correct command."""
+        await bridge.start()
+        port = bridge.port
+
+        async def mock_extension():
+            async with websockets.connect(f"ws://localhost:{port}") as ws:
+                raw = await ws.recv()
+                msg = json.loads(raw)
+                assert msg["action"] == "scan_form_groups"
+                await ws.send(json.dumps({"id": msg["id"], "type": "ack", "payload": {}}))
+                await ws.send(json.dumps({
+                    "id": msg["id"], "type": "result",
+                    "payload": {"groups": [
+                        {"group_selector": "fieldset.q1", "question": "Work auth?", "fields": []},
+                    ]},
+                }))
+
+        ext_task = asyncio.create_task(mock_extension())
+        await bridge.wait_for_connection(timeout=2.0)
+        result = await bridge.scan_form_groups("[role='dialog']")
+        assert len(result) == 1
+        assert result[0]["question"] == "Work auth?"
+        ext_task.cancel()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_rescan_after_fill(self, bridge):
+        """rescan_after_fill returns validation errors."""
+        await bridge.start()
+        port = bridge.port
+
+        async def mock_extension():
+            async with websockets.connect(f"ws://localhost:{port}") as ws:
+                raw = await ws.recv()
+                msg = json.loads(raw)
+                assert msg["action"] == "rescan_after_fill"
+                await ws.send(json.dumps({"id": msg["id"], "type": "ack", "payload": {}}))
+                await ws.send(json.dumps({
+                    "id": msg["id"], "type": "result",
+                    "payload": {
+                        "new_fields": [],
+                        "validation_errors": [{"selector": "#email", "error": "Invalid email"}],
+                        "snapshot": {"url": "https://example.com", "title": "Test", "fields": [], "buttons": []},
+                    },
+                }))
+
+        ext_task = asyncio.create_task(mock_extension())
+        await bridge.wait_for_connection(timeout=2.0)
+        result = await bridge.rescan_after_fill("#email")
+        assert len(result["validation_errors"]) == 1
+        ext_task.cancel()
+        await bridge.stop()
