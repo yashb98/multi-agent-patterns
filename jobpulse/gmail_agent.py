@@ -4,7 +4,7 @@ import json
 import base64
 from datetime import datetime
 from openai import OpenAI
-from jobpulse.config import OPENAI_API_KEY, GOOGLE_TOKEN_PATH
+from jobpulse.config import OPENAI_API_KEY, GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
 from jobpulse import db
 from jobpulse import telegram_agent
 from jobpulse import event_logger
@@ -37,9 +37,7 @@ def _get_gmail_service():
 
         creds = None
         if os.path.exists(GOOGLE_TOKEN_PATH):
-            creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_PATH,
-                ["https://www.googleapis.com/auth/gmail.readonly",
-                 "https://www.googleapis.com/auth/gmail.modify"])
+            creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_PATH, GOOGLE_SCOPES)
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
@@ -139,6 +137,14 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
     last_check = db.get_last_check_ts()
     now = datetime.now().isoformat()
     new_recruiter_emails = []
+    messages = []
+
+    # Cap lookback to 2 days — avoids flooding after downtime
+    from datetime import timedelta
+    two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    if last_check[:10] < two_days_ago:
+        last_check = two_days_ago + last_check[10:]  # keep time portion
+        logger.info("Capping Gmail lookback to 2 days: %s", two_days_ago)
 
     try:
         # Step 2: Fetch inbox
@@ -318,7 +324,7 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
 
 
 def get_yesterday_recruiter_emails() -> list[dict]:
-    """Get yesterday's recruiter emails from SQLite for morning digest."""
+    """Get last 2 days of recruiter emails from SQLite for morning digest."""
     from datetime import timedelta
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    return db.get_emails_since(yesterday, [SELECTED, INTERVIEW, REJECTED])
+    two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    return db.get_emails_since(two_days_ago, [SELECTED, INTERVIEW, REJECTED])

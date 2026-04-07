@@ -2,7 +2,7 @@
 
 import os
 from datetime import datetime, timedelta
-from jobpulse.config import GOOGLE_TOKEN_PATH
+from jobpulse.config import GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
 from jobpulse import event_logger
 from shared.logging_config import get_logger
 
@@ -18,8 +18,7 @@ def _get_calendar_service():
 
         creds = None
         if os.path.exists(GOOGLE_TOKEN_PATH):
-            creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_PATH,
-                ["https://www.googleapis.com/auth/calendar.readonly"])
+            creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_PATH, GOOGLE_SCOPES)
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:

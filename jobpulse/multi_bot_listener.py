@@ -135,7 +135,7 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 # Send processing indicator with time estimate
                 INTENT_ESTIMATES = {
                     "arxiv": "Fetching & ranking 200 papers... ~60s",
-                    "weekly_report": "Building 7-day report... ~10s",
+                    "weekly_report": "Building period report... ~10s",
                     "briefing": "Collecting from all agents... ~15s",
                     "gmail": "Scanning inbox + classifying... ~10s",
                     "calendar": "Fetching events... ~3s",

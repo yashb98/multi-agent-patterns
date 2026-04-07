@@ -706,8 +706,8 @@ def _handle_help(cmd: ParsedCommand) -> str:
   "\u00a38.50 coffee" \u2014 log expense
   "earned 500 freelance" \u2014 log income
   "saved 100" \u2014 log savings/investment
-  "set budget groceries 50" \u2014 set weekly limit
-  "budget" \u2014 weekly summary
+  "set budget groceries 50" \u2014 set period limit
+  "budget" \u2014 period summary
   "undo" \u2014 undo last transaction
   "recurring: 50 rent monthly 1" \u2014 add recurring expense
   "list recurring" \u2014 show all recurring
@@ -717,11 +717,11 @@ def _handle_help(cmd: ParsedCommand) -> str:
   "!! urgent task" \u2014 create urgent priority task
   "! important task" \u2014 create high priority task
   "task by Friday" \u2014 task with due date
-  "weekly plan" \u2014 show undone tasks from past week
+  "weekly plan" \u2014 show undone tasks from past period
   "carry: 1,3,5" \u2014 move selected tasks to today
 
 \U0001f4ca REPORTS:
-  "weekly report" \u2014 7-day summary
+  "period report" \u2014 28-day period summary
   "export" \u2014 data backup instructions
 
 \U0001f4ec OTHER:
@@ -829,11 +829,11 @@ def _handle_unknown(cmd: ParsedCommand) -> str:
         (["email", "mail", "inbox", "recruiter", "gmail"], "check emails", "scan for recruiter emails"),
         (["commit", "github", "push", "code"], "commits", "see yesterday's GitHub activity"),
         (["trend", "hot", "popular", "repo"], "trending", "see trending repos"),
-        (["budget", "spend", "money", "expense", "cost"], "budget", "see weekly spending"),
+        (["budget", "spend", "money", "expense", "cost"], "budget", "see period spending"),
         (["earn", "income", "salary", "paid", "freelance"], "earned 500 freelance", "log income"),
         (["save", "saving", "invest"], "saved 100", "log savings"),
         (["brief", "morning", "update", "digest", "report"], "briefing", "get full morning report"),
-        (["week", "weekly", "summary"], "weekly report", "7-day summary"),
+        (["week", "weekly", "summary", "period"], "weekly report", "period summary"),
         (["paper", "arxiv", "research", "ai paper"], "papers", "latest AI research"),
         (["export", "backup", "dump", "download"], "export", "backup all data"),
         (["help", "command", "menu", "what can"], "help", "see all commands"),

@@ -1,6 +1,6 @@
 """Budget Tracker v2 — Category sub-pages with individual transaction rows in Notion.
 
-Every category (17 total) gets a weekly sub-page under the budget page.
+Every category (17 total) gets a period sub-page under the budget page.
 Each transaction is logged as a row: Amount | Date | Description | Items | Store | Running Total.
 
 SQLite is the source of truth. Notion is the display layer.
@@ -194,7 +194,7 @@ def _get_budget_page_id():
 
 
 def get_or_create_category_page(category: str, week_start: str) -> str:
-    """Get or create a Notion sub-page for a category's transactions this week."""
+    """Get or create a Notion sub-page for a category's transactions this period."""
     conn = _get_conn()
     row = conn.execute(
         "SELECT notion_page_id FROM category_pages WHERE week_start=? AND category=?",
@@ -208,11 +208,12 @@ def get_or_create_category_page(category: str, week_start: str) -> str:
     # Create new sub-page
     parent_id = _get_budget_page_id()
     try:
-        week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
-    except ValueError:
-        logger.error("get_or_create_category_page: invalid week_start date: %s", week_start)
+        from jobpulse.budget_agent import _get_period_end
+        period_end = _get_period_end(week_start)
+    except (ValueError, ImportError):
+        logger.error("get_or_create_category_page: invalid period_start date: %s", week_start)
         return ""
-    title = f"{category} — {week_start} to {week_end}"
+    title = f"{category} — {week_start} to {period_end}"
 
     # Choose columns based on category type
     from jobpulse.budget_agent import INCOME_CATEGORIES, SAVINGS_CATEGORIES, FIXED_EXPENSE_CATEGORIES
@@ -248,7 +249,7 @@ def get_or_create_category_page(category: str, week_start: str) -> str:
                 "rich_text": [{"text": {"content": f"{category} Transactions"}}]
             }},
             {"object": "block", "type": "paragraph", "paragraph": {
-                "rich_text": [{"text": {"content": f"Week: {week_start} to {week_end}"}}]
+                "rich_text": [{"text": {"content": f"Period: {week_start} to {period_end}"}}]
             }},
             {"object": "block", "type": "divider", "divider": {}},
             {"object": "block", "type": "table", "table": {
@@ -413,74 +414,74 @@ def get_category_page_url(category: str, week_start: str) -> str:
     return ""
 
 
-# ── Weekly Archival + New Week ──
+# ── Period Archival + New Period ──
 
 def archive_current_week() -> str:
-    """Archive the current week's budget and prepare for next week.
+    """Archive the current 28-day budget period and prepare for the next one.
 
-    Called Sunday morning before briefing. Stores summary in weekly_archives,
-    carries over planned budgets to the new week.
+    Stores summary in weekly_archives, carries over planned budgets.
     """
-    from jobpulse.budget_agent import _get_week_start, get_week_summary, BUDGET_PAGE_ID
+    from jobpulse.budget_agent import _get_period_start, _get_period_end, get_week_summary, BUDGET_PAGE_ID, PERIOD_DAYS
 
     now = datetime.now()
-    current_week = _get_week_start(now)
+    current_period = _get_period_start(now)
 
     # Check if already archived
     conn = _get_conn()
     existing = conn.execute(
-        "SELECT 1 FROM weekly_archives WHERE week_start=?", (current_week,)
+        "SELECT 1 FROM weekly_archives WHERE week_start=?", (current_period,)
     ).fetchone()
     if existing:
         conn.close()
-        return f"Week of {current_week} already archived."
+        return f"Period {current_period} already archived."
 
     # Get summary
-    summary = get_week_summary(current_week)
+    summary = get_week_summary(current_period)
 
     # Store archive
     conn.execute(
         "INSERT INTO weekly_archives (week_start, notion_page_id, total_income, total_spending, total_savings, net, archived_at) "
         "VALUES (?,?,?,?,?,?,?)",
-        (current_week, BUDGET_PAGE_ID, summary["income_total"], summary["spending_total"],
+        (current_period, BUDGET_PAGE_ID, summary["income_total"], summary["spending_total"],
          summary["savings_total"], summary["net"], now.isoformat())
     )
     conn.commit()
 
-    # Carry over planned budgets to next week
-    next_week = (datetime.strptime(current_week, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+    # Carry over planned budgets to next period
+    next_period = (datetime.strptime(current_period, "%Y-%m-%d") + timedelta(days=PERIOD_DAYS)).strftime("%Y-%m-%d")
     planned = conn.execute(
         "SELECT category, section, planned_amount FROM planned_budgets WHERE week_start=?",
-        (current_week,)
+        (current_period,)
     ).fetchall()
 
     for p in planned:
         conn.execute(
             "INSERT OR IGNORE INTO planned_budgets (week_start, category, section, planned_amount) VALUES (?,?,?,?)",
-            (next_week, p["category"], p["section"], p["planned_amount"])
+            (next_period, p["category"], p["section"], p["planned_amount"])
         )
 
     conn.commit()
     conn.close()
 
-    logger.info("Archived week %s: income=£%.2f, spending=£%.2f, net=£%.2f",
-                current_week, summary["income_total"], summary["spending_total"], summary["net"])
+    period_end = _get_period_end(current_period)
+    logger.info("Archived period %s to %s: income=£%.2f, spending=£%.2f, net=£%.2f",
+                current_period, period_end, summary["income_total"], summary["spending_total"], summary["net"])
 
-    return (f"📦 Week of {current_week} archived.\n"
+    return (f"📦 Period {current_period} to {period_end} archived.\n"
             f"  Income: £{summary['income_total']:.2f}\n"
             f"  Spending: £{summary['spending_total']:.2f}\n"
             f"  Savings: £{summary['savings_total']:.2f}\n"
             f"  Net: £{summary['net']:.2f}\n\n"
-            f"Planned budgets carried over to {next_week}.")
+            f"Planned budgets carried over to {next_period}.")
 
 
 def get_weekly_comparison() -> str:
-    """Compare this week vs last week spending per category."""
-    from jobpulse.budget_agent import _get_week_start
+    """Compare this 28-day period vs last period spending per category."""
+    from jobpulse.budget_agent import _get_period_start, _get_period_end, PERIOD_DAYS
 
     now = datetime.now()
-    this_week = _get_week_start(now)
-    last_week = (datetime.strptime(this_week, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+    this_period = _get_period_start(now)
+    last_period = (datetime.strptime(this_period, "%Y-%m-%d") - timedelta(days=PERIOD_DAYS)).strftime("%Y-%m-%d")
 
     conn = _get_conn()
 
@@ -488,14 +489,14 @@ def get_weekly_comparison() -> str:
         "SELECT category, SUM(amount) as total, COUNT(*) as count "
         "FROM transactions WHERE week_start=? AND type='expense' "
         "GROUP BY category ORDER BY total DESC",
-        (this_week,)
+        (this_period,)
     ).fetchall()
 
     last_data = conn.execute(
         "SELECT category, SUM(amount) as total, COUNT(*) as count "
         "FROM transactions WHERE week_start=? AND type='expense' "
         "GROUP BY category ORDER BY total DESC",
-        (last_week,)
+        (last_period,)
     ).fetchall()
 
     conn.close()
@@ -505,7 +506,8 @@ def get_weekly_comparison() -> str:
 
     last_map = {r["category"]: {"total": r["total"], "count": r["count"]} for r in last_data}
 
-    lines = [f"📊 WEEKLY COMPARISON (vs last week):\n"]
+    this_end = _get_period_end(this_period)
+    lines = [f"📊 PERIOD COMPARISON ({this_period} to {this_end} vs last period):\n"]
     total_this = 0
     total_last = 0
 
@@ -524,15 +526,15 @@ def get_weekly_comparison() -> str:
             warn = " ⚠️" if pct > 50 else " ✅" if pct < -10 else ""
             lines.append(f"  {cat:20s} £{this_total:>7.2f}  {arrow}{abs(pct)}% (£{abs(diff):.2f}){warn}")
         else:
-            lines.append(f"  {cat:20s} £{this_total:>7.2f}  (new this week)")
+            lines.append(f"  {cat:20s} £{this_total:>7.2f}  (new this period)")
 
-    # Categories only in last week (not this week)
+    # Categories only in last period (not this period)
     for row in last_data:
         if row["category"] not in [r["category"] for r in this_data]:
             total_last += row["total"]
             lines.append(f"  {row['category']:20s} £{'0.00':>7s}  ↓100% (was £{row['total']:.2f}) ✅")
 
-    lines.append(f"\n  {'TOTAL':20s} £{total_this:>7.2f}  (last week: £{total_last:.2f})")
+    lines.append(f"\n  {'TOTAL':20s} £{total_this:>7.2f}  (last period: £{total_last:.2f})")
 
     return "\n".join(lines)
 

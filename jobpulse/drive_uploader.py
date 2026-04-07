@@ -17,12 +17,10 @@ from jobpulse.config import (
     GOOGLE_DRIVE_RESUMES_FOLDER_ID,
     GOOGLE_DRIVE_COVERLETTERS_FOLDER_ID,
     GOOGLE_TOKEN_PATH,
+    GOOGLE_SCOPES,
 )
 
 logger = get_logger(__name__)
-
-_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
-
 
 def _get_drive_service() -> Any | None:
     """Build Google Drive API v3 service using stored OAuth2 token.
@@ -40,7 +38,7 @@ def _get_drive_service() -> Any | None:
         creds = None
         if os.path.exists(GOOGLE_TOKEN_PATH):
             creds = Credentials.from_authorized_user_file(
-                GOOGLE_TOKEN_PATH, [_DRIVE_SCOPE]
+                GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
             )
 
         if not creds or not creds.valid:

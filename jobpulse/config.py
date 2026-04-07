@@ -12,6 +12,15 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", os.getenv("GOOGLE_CLIENT_
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", os.getenv("GOOGLE_CLIENT_SECRET", ""))
 GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", str(PROJECT_DIR / "data" / "google_token.json"))
 
+# Canonical Google OAuth scopes — ALL agents must use this list when loading/refreshing
+# the token, otherwise whichever agent refreshes first clobbers the scopes for the rest.
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+]
+
 # Notion
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "")
 NOTION_TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID", "")

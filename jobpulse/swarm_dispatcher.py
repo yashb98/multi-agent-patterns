@@ -176,7 +176,7 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
         return [{"agent": "arxiv", "priority": 1, "description": "Fetch papers"}]
 
     if intent == Intent.WEEKLY_REPORT:
-        return [{"agent": "weekly_report", "priority": 1, "description": "Build weekly summary"}]
+        return [{"agent": "weekly_report", "priority": 1, "description": "Build period summary"}]
 
     if intent == Intent.EXPORT:
         return [{"agent": "export", "priority": 1, "description": "Export data"}]
@@ -463,7 +463,7 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         from jobpulse.budget_agent import get_week_summary, format_week_summary
         try:
             summary = get_week_summary()
-            return format_week_summary(summary) if summary["by_category"] else "No transactions this week"
+            return format_week_summary(summary) if summary["by_category"] else "No transactions this period"
         except Exception as e:
             logger.debug("Budget collect failed: %s", e)
             return "Budget unavailable"

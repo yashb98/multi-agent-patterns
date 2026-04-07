@@ -127,7 +127,7 @@ def build_weekly_report() -> str:
 
     # Build message
     report = (
-        f"\U0001f4ca WEEKLY REPORT ({start.strftime('%b %d')} \u2014 {end.strftime('%b %d, %Y')})\n"
+        f"\U0001f4ca PERIOD REPORT ({start.strftime('%b %d')} \u2014 {end.strftime('%b %d, %Y')})\n"
         f"\n"
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
         f"\n"

@@ -156,7 +156,7 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     # Budget — show (after set_budget so "set budget" matches first)
     (Intent.SHOW_BUDGET, [
         r"^budget\s*$",
-        r"(spending|how much.+(spent|spend|earned)|weekly (budget|spend)|show budget|show spending|^summary$)",
+        r"(spending|how much.+(spent|spend|earned)|(weekly|period) (budget|spend)|show budget|show spending|^summary$)",
         r"(today.?s|this week.?s)\s+(spend|budget|expenses?|money)",
         r"(budget|spending)\s*(compare|comparison|vs|versus|vs last)",
         r"^compare\s+(budget|spending)",
@@ -177,9 +177,9 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"[£$€]\s*\d+",
         r"\d+(\.\d{1,2})?\s+(on|for|at)\s+\w+",
     ]),
-    # Weekly report
+    # Period / weekly report
     (Intent.WEEKLY_REPORT, [
-        r"(weekly (report|summary)|week.?s? (report|summary)|this week|last week.?s? (summary|report))",
+        r"((weekly|period) (report|summary)|week.?s? (report|summary)|this (week|period)|last (week|period).?s? (summary|report))",
     ]),
     # Export
     (Intent.EXPORT, [

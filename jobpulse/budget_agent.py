@@ -1,14 +1,14 @@
-"""Budget agent — tracks income/spending, categorizes with LLM, updates Notion weekly budget sheet.
+"""Budget agent — tracks income/spending, categorizes with LLM, updates Notion budget period sheet.
 
-Matches the user's exact Notion "Weekly Budget Sheet" structure:
+Matches the user's exact Notion "Budget Period Sheet" structure:
 
   INCOME: Salary, Freelance, Other
   FIXED EXPENSES: Rent/Mortgage, Utilities, Phone/Internet, Subscriptions, Insurance
   VARIABLE SPENDING: Groceries, Eating out, Transport, Shopping, Entertainment, Health, Misc
   SAVINGS + DEBT: Savings, Investments, Credit card/Loan payment
-  WEEKLY SUMMARY: Total income, Total spending, Total savings, Net
+  PERIOD SUMMARY: Total income, Total spending, Total savings, Net
 
-Each week gets its own Notion page (cloned from template structure).
+Each period gets its own Notion page (cloned from template structure).
 The Notion tables are updated in-place as you log expenses/income.
 """
 
@@ -23,8 +23,8 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# ── Your existing Notion Weekly Budget Sheet ──
-# Page: https://www.notion.so/Weekly-Budget-Sheet-50f750e493694f5e91e4f1680e7192fd
+# ── Your existing Notion Budget Period Sheet ──
+# Page: https://www.notion.so/Budget-Period-Sheet-50f750e493694f5e91e4f1680e7192fd
 BUDGET_PAGE_ID = "50f750e4-9369-4f5e-91e4-f1680e7192fd"
 
 # Table IDs inside the sheet
@@ -270,10 +270,33 @@ def init_db():
     conn.close()
 
 
-def _get_week_start(date: datetime = None) -> str:
+PERIOD_DAYS = 28
+PERIOD_ANCHOR = datetime(2026, 4, 2)  # First period starts April 2, 2026
+
+
+def _get_period_start(date: datetime = None) -> str:
+    """Return the start of the 28-day budget period containing *date*.
+
+    Periods are anchored to 2026-04-02 (salary cycle start) and repeat
+    every 28 days forward and backward from that anchor.
+    """
     date = date or datetime.now()
-    monday = date - timedelta(days=date.weekday())
-    return monday.strftime("%Y-%m-%d")
+    # Strip time for clean date math
+    d = datetime(date.year, date.month, date.day)
+    delta_days = (d - PERIOD_ANCHOR).days
+    period_num = delta_days // PERIOD_DAYS  # Python floor division handles negatives correctly
+    start = PERIOD_ANCHOR + timedelta(days=period_num * PERIOD_DAYS)
+    return start.strftime("%Y-%m-%d")
+
+
+def _get_period_end(period_start: str) -> str:
+    """Return the last day of the 28-day period (inclusive)."""
+    start = datetime.strptime(period_start, "%Y-%m-%d")
+    return (start + timedelta(days=PERIOD_DAYS - 1)).strftime("%Y-%m-%d")
+
+
+# Backwards-compat alias — lots of code imports this name
+_get_week_start = _get_period_start
 
 
 def get_notion_budget_url(week_start: str = None) -> str:
@@ -846,7 +869,7 @@ def set_budget(text: str) -> str:
 
     notion_url = get_notion_budget_url()
     link_line = f"\n📎 {notion_url}" if notion_url else ""
-    return f"📋 Budget set: {category} = £{amount:.2f}/week{link_line}"
+    return f"📋 Budget set: {category} = £{amount:.2f}/period{link_line}"
 
 
 def _update_planned_column(row_id: str, amount: float):
@@ -869,9 +892,10 @@ def _update_planned_column(row_id: str, amount: float):
 
 def format_week_summary(summary: dict) -> str:
     if not summary["by_category"] and summary["income_total"] == 0:
-        return "💰 No transactions logged this week yet."
+        return "💰 No transactions logged this period yet."
 
-    lines = [f"💰 WEEKLY BUDGET (since {summary['week_start']}):\n"]
+    period_end = _get_period_end(summary["week_start"])
+    lines = [f"💰 BUDGET PERIOD ({summary['week_start']} to {period_end}):\n"]
 
     # Income
     income_items = [c for c in summary["by_category"] if c["type"] == "income"]
@@ -1099,10 +1123,10 @@ def check_budget_alerts() -> list[str]:
 
     alerts = []
     today = datetime.now()
-    # Calculate days left in week (Mon=0 .. Sun=6)
-    days_left = 6 - today.weekday()
-    if days_left < 0:
-        days_left = 0
+    # Calculate days left in 28-day period
+    period_start_dt = datetime.strptime(week_start, "%Y-%m-%d")
+    days_elapsed = (today - period_start_dt).days
+    days_left = max(0, PERIOD_DAYS - 1 - days_elapsed)
 
     for row in planned_rows:
         category = row["category"]
@@ -1116,12 +1140,12 @@ def check_budget_alerts() -> list[str]:
         if planned > 0 and actual >= planned * 0.8:
             pct = int((actual / planned) * 100)
             alerts.append(
-                f"⚠️ {category}: £{actual:.0f}/£{planned:.0f} ({pct}%) — {days_left} day{'s' if days_left != 1 else ''} left in the week"
+                f"⚠️ {category}: £{actual:.0f}/£{planned:.0f} ({pct}%) — {days_left} day{'s' if days_left != 1 else ''} left in period"
             )
 
-    # Historical pace alerts (compare to last week's spending by this day)
-    day_of_week = today.weekday()  # 0=Mon .. 6=Sun
-    last_week = (datetime.strptime(week_start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+    # Historical pace alerts (compare to last period's spending by this day in the period)
+    last_period = (period_start_dt - timedelta(days=PERIOD_DAYS)).strftime("%Y-%m-%d")
+    cutoff_date = (datetime.strptime(last_period, "%Y-%m-%d") + timedelta(days=days_elapsed)).strftime("%Y-%m-%d")
 
     for row in planned_rows:
         category = row["category"]
@@ -1131,17 +1155,17 @@ def check_budget_alerts() -> list[str]:
             (week_start, category)
         ).fetchone()[0]
 
-        # What was spent by this day last week?
+        # What was spent by this day in the last period?
         last_week_by_now = conn.execute(
             "SELECT COALESCE(SUM(amount), 0) FROM transactions "
-            "WHERE week_start=? AND category=? AND CAST(strftime('%w', date) AS INTEGER) <= ?",
-            (last_week, category, day_of_week)
+            "WHERE week_start=? AND category=? AND date <= ?",
+            (last_period, category, cutoff_date)
         ).fetchone()[0]
 
         if last_week_by_now > 0 and actual > last_week_by_now * 1.5:
             # Spending 50%+ more than usual pace
             pct_over = int(((actual - last_week_by_now) / last_week_by_now) * 100)
-            alert = f"📈 {category}: £{actual:.0f} so far (was £{last_week_by_now:.0f} by this day last week, +{pct_over}%)"
+            alert = f"📈 {category}: £{actual:.0f} so far (was £{last_week_by_now:.0f} by day {days_elapsed} last period, +{pct_over}%)"
             if alert not in [a for a in alerts]:  # avoid duplicates with threshold alerts
                 alerts.append(alert)
 
@@ -1227,12 +1251,11 @@ SAVINGS_RATE = 0.30  # 30% of after-tax goes to savings
 
 
 def _get_salary_week_start(date: datetime = None) -> str:
-    """Get the Sunday that starts this working week (Sunday–Saturday)."""
-    date = date or datetime.now()
-    # weekday(): Mon=0 ... Sun=6. We want Sunday as start.
-    days_since_sunday = (date.weekday() + 1) % 7
-    sunday = date - timedelta(days=days_since_sunday)
-    return sunday.strftime("%Y-%m-%d")
+    """Get the start of the 28-day salary period containing *date*.
+
+    Uses the same anchor as the budget period so budget + salary align.
+    """
+    return _get_period_start(date)
 
 
 def _get_or_create_salary_page(week_start: str) -> str:
@@ -1248,10 +1271,10 @@ def _get_or_create_salary_page(week_start: str) -> str:
     if row and row["notion_page_id"]:
         return row["notion_page_id"]
 
-    # Create a new Notion page for this week's timesheet
+    # Create a new Notion page for this period's timesheet
     parent_id = BUDGET_PAGE_ID
-    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
-    title = f"Salary Timesheet — {week_start} to {week_end}"
+    period_end = _get_period_end(week_start)
+    title = f"Salary Timesheet — {week_start} to {period_end}"
 
     data = {
         "parent": {"page_id": parent_id},
@@ -1260,7 +1283,7 @@ def _get_or_create_salary_page(week_start: str) -> str:
         },
         "children": [
             {"object": "block", "type": "heading_2", "heading_2": {
-                "rich_text": [{"text": {"content": f"⏱️ Work Hours — Week of {week_start}"}}]
+                "rich_text": [{"text": {"content": f"⏱️ Work Hours — {week_start} to {period_end}"}}]
             }},
             {"object": "block", "type": "paragraph", "paragraph": {
                 "rich_text": [{"text": {"content": f"Hourly rate: £{HOURLY_RATE:.2f}/hr"}}]
@@ -1353,7 +1376,7 @@ def _add_row_to_salary_page(page_id: str, hours: float, rate: float, date_str: s
                 "cells": [
                     [{"type": "text", "text": {"content": f"TOTAL: {total_h:.1f}h"}}],
                     [{"type": "text", "text": {"content": f"£{rate:.2f}/hr"}}],
-                    [{"type": "text", "text": {"content": f"Week of {salary_week}"}}],
+                    [{"type": "text", "text": {"content": f"Period {salary_week}"}}],
                     [{"type": "text", "text": {"content": f"£{total_e:.2f} gross | £{total_after_tax:.2f} net | Save £{total_savings:.2f}"}}],
                 ]
             }},
@@ -1501,7 +1524,7 @@ def _words_to_numbers(text: str) -> str:
 def log_hours(text: str) -> str:
     """Parse 'worked X hours' and log to SQLite + Notion salary timesheet.
 
-    Week starts Sunday. Shows tax (20%) and savings suggestion (30% of after-tax).
+    28-day budget periods anchored to 2026-04-02. Shows tax (20%) and savings suggestion (30% of after-tax).
     Supports: numbers, floats, words ("six hours", "seven and a half hours")
     Supports past dates: "yesterday", "on monday", "march 24"
     """
@@ -1582,7 +1605,7 @@ def log_hours(text: str) -> str:
     return (f"⏱️ Logged: {hours}h × £{rate:.2f} = £{gross:.2f}{date_label}\n"
             f"  Tax (20%): -£{tax:.2f}\n"
             f"  After tax: £{after_tax:.2f}\n\n"
-            f"📊 This week (Sun–Sat): {week_hours:.1f}h\n"
+            f"📊 This period: {week_hours:.1f}h\n"
             f"  Gross:     £{week_gross:.2f}\n"
             f"  Tax (20%): -£{week_tax:.2f}\n"
             f"  After tax: £{week_after_tax:.2f}\n"
@@ -1605,17 +1628,17 @@ def confirm_savings_transfer(week_start: str = None) -> str:
 
     week_gross = week_totals["e"] or 0
     if week_gross == 0:
-        return "No hours logged this week — nothing to save."
+        return "No hours logged this period — nothing to save."
 
     week_tax = round(week_gross * TAX_RATE, 2)
     week_after_tax = round(week_gross - week_tax, 2)
     savings_amount = round(week_after_tax * SAVINGS_RATE, 2)
 
     # Log as savings transaction
-    add_transaction(savings_amount, f"Weekly savings (30% of £{week_after_tax:.2f})",
+    add_transaction(savings_amount, f"Period savings (30% of £{week_after_tax:.2f})",
                     "Savings", "savings", "savings")
     sync_expense_to_notion({"category": "Savings", "week_start": _get_week_start(now),
-                            "description": f"Weekly savings", "date": now.strftime("%Y-%m-%d")})
+                            "description": f"Period savings", "date": now.strftime("%Y-%m-%d")})
 
     # Add "Saved" row to the Notion timesheet
     conn2 = _get_conn()
@@ -1638,7 +1661,7 @@ def confirm_savings_transfer(week_start: str = None) -> str:
                 "children": [
                     {"object": "block", "type": "table_row", "table_row": {
                         "cells": [
-                            [{"type": "text", "text": {"content": "SAVED THIS WEEK"}}],
+                            [{"type": "text", "text": {"content": "SAVED THIS PERIOD"}}],
                             [{"type": "text", "text": {"content": "30% of after-tax"}}],
                             [{"type": "text", "text": {"content": now.strftime("%Y-%m-%d")}}],
                             [{"type": "text", "text": {"content": f"£{savings_amount:.2f}"}}],
@@ -1649,7 +1672,7 @@ def confirm_savings_transfer(week_start: str = None) -> str:
 
     notion_url = get_notion_budget_url()
     return (f"🏦 Confirmed! £{savings_amount:.2f} logged as savings.\n\n"
-            f"  Gross this week: £{week_gross:.2f}\n"
+            f"  Gross this period: £{week_gross:.2f}\n"
             f"  Tax (20%): -£{week_tax:.2f}\n"
             f"  After tax: £{week_after_tax:.2f}\n"
             f"  Saved (30%): £{savings_amount:.2f}\n"
@@ -1658,7 +1681,7 @@ def confirm_savings_transfer(week_start: str = None) -> str:
 
 
 def get_hours_summary(week_start: str = None) -> str:
-    """Get formatted work hours summary for the week (Sunday–Saturday)."""
+    """Get formatted work hours summary for the current budget period."""
     week_start = week_start or _get_salary_week_start()
     conn = _get_conn()
 
@@ -1674,7 +1697,7 @@ def get_hours_summary(week_start: str = None) -> str:
     conn.close()
 
     if not rows:
-        return "⏱️ No hours logged this week (Sun–Sat)."
+        return "⏱️ No hours logged this period yet."
 
     total_h = totals["h"] or 0
     total_gross = totals["e"] or 0
@@ -1682,8 +1705,8 @@ def get_hours_summary(week_start: str = None) -> str:
     total_after_tax = round(total_gross - total_tax, 2)
     total_savings = round(total_after_tax * SAVINGS_RATE, 2)
 
-    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
-    lines = [f"⏱️ WORK HOURS ({week_start} to {week_end}):\n"]
+    period_end = _get_period_end(week_start)
+    lines = [f"⏱️ WORK HOURS ({week_start} to {period_end}):\n"]
     for r in rows:
         lines.append(f"  {r['date']} — {r['hours']:.1f}h × £{r['hourly_rate']:.2f} = £{r['total_earned']:.2f}")
 
@@ -1776,7 +1799,7 @@ def _rebuild_notion_timesheet(page_id: str, salary_week_start: str):
                 "cells": [
                     [{"type": "text", "text": {"content": f"TOTAL: {total_h:.1f}h"}}],
                     [{"type": "text", "text": {"content": f"£{HOURLY_RATE:.2f}/hr"}}],
-                    [{"type": "text", "text": {"content": f"Week of {salary_week_start}"}}],
+                    [{"type": "text", "text": {"content": f"Period {salary_week_start}"}}],
                     [{"type": "text", "text": {"content": f"£{total_e:.2f} gross | £{total_after_tax:.2f} net | Save £{total_savings:.2f}"}}],
                 ]
             }

@@ -211,7 +211,7 @@ HELP_MAIN = """\U0001f916 MAIN BOT — Full Control
   "commits" — yesterday's GitHub
   "trending" — hot repos
   "briefing" — full morning report
-  "weekly report" — 7-day summary
+  "period report" — 28-day period summary
 
 \U0001f5a5 REMOTE:
   "run: <cmd>" / "$ <cmd>" — shell command
@@ -237,13 +237,13 @@ HELP_BUDGET = """\U0001f4b0 BUDGET BOT — Track Your Money
 \u23f1 SALARY / WORK HOURS:
   "worked 7 hours" — log hours \u00d7 \u00a313.99/hr
   "worked 3.5h" — same, shorter format
-  "hours" / "timesheet" — this week's summary
+  "hours" / "timesheet" — this period's summary
   "saved" / "transferred" — confirm savings transfer
-  Week runs Sun\u2013Sat. Shows tax (20%) + savings (30%).
+  28-day period from 2nd of each cycle. Shows tax (20%) + savings (30%).
 
 \U0001f4ca OVERVIEW:
-  "budget" — weekly summary with alerts
-  "set budget groceries 50" — set weekly limit
+  "budget" — period summary with alerts
+  "set budget groceries 50" — set period limit
 
 \U0001f504 RECURRING:
   "recurring: 12 netflix monthly" — auto-log on schedule
@@ -271,7 +271,7 @@ HELP_RESEARCH = """\U0001f4da RESEARCH BOT — AI Papers & Knowledge
   4. Extracts to knowledge graph
 
 Daily digest runs at 7:57am automatically.
-Weekly Notion summary posted Mondays 8:33am."""
+Notion summary posted periodically."""
 
 HELP_JOBS = """💼 JOBS BOT — Job Autopilot
 

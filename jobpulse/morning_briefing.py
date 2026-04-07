@@ -72,7 +72,7 @@ def build_and_send(trigger: str = "cron_morning"):
             if week_summary["by_category"]:
                 section_budget = budget_agent.format_week_summary(week_summary)
             else:
-                section_budget = "  No transactions logged this week"
+                section_budget = "  No transactions logged this period"
             s["output"] = f"Income: £{week_summary['income_total']:.2f}, Spent: £{week_summary['spending_total']:.2f}"
         except Exception as e:
             from jobpulse.dispatcher import _classify_error
@@ -115,9 +115,9 @@ def build_and_send(trigger: str = "cron_morning"):
             s["output"] = f"Alerts error: {e}"
             s["metadata"] = {"error": str(e), "errorType": type(e).__name__}
 
-    # ── Section 9: Weekly spending comparison ──
+    # ── Section 9: Period spending comparison ──
     section_comparison = ""
-    with trail.step("decision", "Weekly spending comparison") as s:
+    with trail.step("decision", "Period spending comparison") as s:
         try:
             from jobpulse.budget_tracker import get_weekly_comparison
             comparison = get_weekly_comparison()
@@ -127,7 +127,7 @@ def build_and_send(trigger: str = "cron_morning"):
             else:
                 s["output"] = "Not enough data yet"
         except Exception as e:
-            logger.warning("Weekly comparison failed: %s (%s)", e, type(e).__name__)
+            logger.warning("Period comparison failed: %s (%s)", e, type(e).__name__)
             s["output"] = f"Comparison error: {e}"
             s["metadata"] = {"error": str(e), "errorType": type(e).__name__}
 
