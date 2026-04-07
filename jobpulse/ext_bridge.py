@@ -66,6 +66,7 @@ class ExtensionBridge:
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._snapshot: PageSnapshot | None = None
         self._connected: asyncio.Event = asyncio.Event()
+        self._relay_clients: set[ServerConnection] = set()
 
     # ─── Server lifecycle ────────────────────────────────────────
 
@@ -115,36 +116,85 @@ class ExtensionBridge:
     # ─── WebSocket handler ───────────────────────────────────────
 
     async def _handler(self, ws: ServerConnection) -> None:
-        """Handle a WebSocket connection from the extension.
+        """Handle a WebSocket connection from the extension or a relay client.
 
-        Handles reconnection gracefully: if a new connection arrives while
-        an old one exists (MV3 service worker restart), the old connection
-        is replaced without clearing state.
+        Connection types:
+        - Extension: sends snapshots, receives commands (the Chrome MV3 extension)
+        - Relay: sends commands, receives results (ralph-test or other Python callers)
+
+        Relay clients identify themselves with {"type":"relay_hello"} as their
+        first message. Their commands are forwarded to the extension and results
+        relayed back.
         """
-        # Replace previous connection if the extension reconnected
-        if self._ws is not None and self._ws is not ws:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
-        self._ws = ws
-        self._connected.set()
-        logger.info("Extension connected from %s", ws.remote_address)
+        is_relay = False
 
         try:
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
-                    logger.warning("Invalid JSON from extension: %s", str(raw)[:100])
+                    logger.warning("Invalid JSON from connection: %s", str(raw)[:100])
                     continue
 
                 msg_type: str = msg.get("type", "")
                 msg_id: str = msg.get("id", "")
 
+                # ── Relay client handshake ──
+                if msg_type == "relay_hello":
+                    is_relay = True
+                    self._relay_clients.add(ws)
+                    logger.info("Relay client connected from %s", ws.remote_address)
+                    await ws.send(json.dumps({"type": "relay_hello_ack", "connected": self.connected}))
+                    continue
+
+                # ── Relay client forwarding ──
+                if is_relay:
+                    if msg_type == "command" and msg_id:
+                        # Forward command to extension, track relay origin
+                        if not self.connected:
+                            await ws.send(json.dumps({"id": msg_id, "type": "result", "payload": {"error": "Extension not connected"}}))
+                            continue
+                        action = msg.get("action", "")
+                        payload = msg.get("payload", {})
+                        cmd_id = str(uuid.uuid4())
+                        cmd = ExtCommand(id=cmd_id, action=action, payload=payload)
+
+                        loop = asyncio.get_running_loop()
+                        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+                        self._pending[cmd_id] = fut
+
+                        assert self._ws is not None
+                        await self._ws.send(cmd.model_dump_json())
+
+                        timeout_ms = msg.get("timeout_ms", 30000)
+                        try:
+                            result = await asyncio.wait_for(fut, timeout=timeout_ms / 1000)
+                            await ws.send(json.dumps({"id": msg_id, "type": "result", "payload": result}))
+                        except TimeoutError:
+                            self._pending.pop(cmd_id, None)
+                            await ws.send(json.dumps({"id": msg_id, "type": "error", "payload": {"error": "timeout"}}))
+                    elif msg_type == "get_snapshot":
+                        snap = self._snapshot
+                        data = snap.model_dump() if snap else {}
+                        await ws.send(json.dumps({"id": msg_id, "type": "result", "payload": data}))
+                    continue
+
+                # ── Extension client messages below ──
+
                 if msg_type == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
                     continue
+
+                # First non-relay, non-ping message = this is the extension
+                if not self._connected.is_set() or (self._ws is not None and self._ws is not ws):
+                    if self._ws is not None and self._ws is not ws:
+                        try:
+                            await self._ws.close()
+                        except Exception:
+                            pass
+                    self._ws = ws
+                    self._connected.set()
+                    logger.info("Extension connected from %s", ws.remote_address)
 
                 # Content script events — update cached snapshot
                 if msg_type in ("mutation", "navigation"):
@@ -164,10 +214,14 @@ class ExtensionBridge:
                 logger.debug("Unhandled message type=%s id=%s", msg_type, msg_id)
 
         except websockets.exceptions.ConnectionClosed:
-            logger.info("Extension disconnected")
+            if is_relay:
+                logger.info("Relay client disconnected")
+            else:
+                logger.info("Extension disconnected")
         finally:
-            # Only clear state if no newer connection has replaced us
-            if self._ws is ws:
+            if is_relay:
+                self._relay_clients.discard(ws)
+            elif self._ws is ws:
                 self._ws = None
                 self._connected.clear()
 
