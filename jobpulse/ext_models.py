@@ -157,6 +157,10 @@ class ExtCommand(BaseModel):
         "check_consent_boxes",
         "force_click",
         "rescan_after_fill",
+        # MV3 state persistence
+        "save_form_progress",
+        "get_form_progress",
+        "clear_form_progress",
     ]
     payload: dict[str, Any] = {}
 

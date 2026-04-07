@@ -447,3 +447,34 @@ class ExtensionBridge:
             except (TimeoutError, Exception):
                 pass  # Fall back to cached snapshot
         return self._snapshot
+
+    # ─── MV3 State Persistence ─────────────────────────────────
+
+    async def save_form_progress(
+        self, url: str, progress: dict[str, Any], timeout_ms: int = 5000
+    ) -> bool:
+        """Save form fill progress to chrome.storage.session (survives SW restarts)."""
+        result = await self._send_command(
+            "save_form_progress",
+            {"url": url, "progress": progress},
+            timeout_ms=timeout_ms,
+        )
+        return bool(result.get("success", False))
+
+    async def get_form_progress(
+        self, url: str, timeout_ms: int = 5000
+    ) -> dict[str, Any] | None:
+        """Retrieve saved form progress for a URL. Returns None if no progress saved."""
+        result = await self._send_command(
+            "get_form_progress", {"url": url}, timeout_ms=timeout_ms
+        )
+        if result.get("success") is False:
+            return None
+        return result
+
+    async def clear_form_progress(self, url: str, timeout_ms: int = 5000) -> bool:
+        """Clear saved form progress after successful submission."""
+        result = await self._send_command(
+            "clear_form_progress", {"url": url}, timeout_ms=timeout_ms
+        )
+        return bool(result.get("success", False))

@@ -30,6 +30,11 @@ const MSG = Object.freeze({
   CMD_FORCE_CLICK: "force_click",
   CMD_RESCAN_AFTER_FILL: "rescan_after_fill",
 
+  // MV3 state persistence
+  CMD_SAVE_FORM_PROGRESS: "save_form_progress",
+  CMD_GET_FORM_PROGRESS: "get_form_progress",
+  CMD_CLEAR_FORM_PROGRESS: "clear_form_progress",
+
   // Extension -> Python response types
   RESP_ACK: "ack",
   RESP_RESULT: "result",
