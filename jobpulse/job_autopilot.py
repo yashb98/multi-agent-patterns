@@ -35,8 +35,14 @@ from shared.logging_config import get_logger
 from jobpulse.applicator import classify_action
 from jobpulse.ralph_loop import ralph_apply_sync
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
-from jobpulse.cover_letter_agent import generate_cover_letter
-from jobpulse.cv_tailor import determine_match_tier, generate_tailored_cv
+
+def determine_match_tier(ats_score: float) -> str:
+    """Return 'auto' if >= 90, 'review' if >= 82, 'skip' otherwise."""
+    if ats_score >= 90:
+        return "auto"
+    if ats_score >= 82:
+        return "review"
+    return "skip"
 from jobpulse.cv_templates.generate_cv import generate_cv_pdf, build_extra_skills, get_role_profile
 from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
 from jobpulse.drive_uploader import upload_cv, upload_cover_letter

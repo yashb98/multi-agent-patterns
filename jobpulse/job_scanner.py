@@ -35,7 +35,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONFIG_PATH = DATA_DIR / "job_search_config.json"
-_LINKEDIN_SESSION_DIR = DATA_DIR / "linkedin_session"
 
 _USER_AGENTS: list[str] = [
     (

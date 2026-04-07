@@ -550,12 +550,31 @@ def apply_job_endpoint(req: ApplyJobRequest) -> ApplyJobResponse:
 
     cl_path: Path | None = Path(req.cover_letter_path) if req.cover_letter_path else None
 
+    # Lazy CL generator for Greenhouse/Lever — only runs if adapter finds a CL field
+    cl_generator = None
+    if cl_path is None and req.company and req.role:
+        def cl_generator():
+            try:
+                from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
+                from jobpulse.project_portfolio import get_best_projects_for_jd
+                matched = get_best_projects_for_jd([], [])
+                return generate_cover_letter_pdf(
+                    company=req.company,
+                    role=req.role,
+                    matched_projects=matched,
+                    required_skills=[],
+                )
+            except Exception as exc:
+                logger.warning("apply endpoint: lazy CL generation failed: %s", exc)
+                return None
+
     try:
         result = ralph_apply_sync(
             url=req.url,
             ats_platform=req.platform,
             cv_path=cv_path,
             cover_letter_path=cl_path,
+            cl_generator=cl_generator,
             dry_run=req.dry_run,
         )
     except Exception as exc:

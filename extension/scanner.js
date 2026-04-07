@@ -542,12 +542,13 @@ export async function evaluateJobs(jobs) {
 
   try {
     const result = await callBackend('evaluate-batch', { jobs });
-    const evaluated = Array.isArray(result?.jobs) ? result.jobs : [];
+    // Backend returns { results: [ {passed, score, tier, gate_failed, details}, ... ] }
+    const evaluated = Array.isArray(result?.results) ? result.results : [];
 
     // Merge gate_results back by index — backend returns same order
     return jobs.map((job, idx) => ({
       ...job,
-      gate_results: evaluated[idx]?.gate_results ?? null,
+      gate_results: evaluated[idx] ?? null,
     }));
   } catch (err) {
     console.error(`${LOG} evaluateJobs backend error:`, err);

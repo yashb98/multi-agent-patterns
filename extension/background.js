@@ -456,7 +456,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const pe = await getPhaseEngine();
         const phase = await pe.getPhase(platform);
         const fillOk = await pe.canFill(platform);
-        const submitOk = await pe.canSubmit(platform);
+        const atsScore = job.gate_results?.score ?? 0;
+        const submitOk = await pe.canSubmit(platform, atsScore);
 
         if (!fillOk) {
           // observation phase — log only, don't apply
