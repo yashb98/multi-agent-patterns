@@ -141,6 +141,7 @@ class ExtensionBridge:
             self._connected.set()
             assumed_extension = True
             logger.info("Extension connected from %s", ws.remote_address)
+            await self._notify_relays_extension_status(True)
         else:
             # Existing extension connection — defer classification until first message
             assumed_extension = False
@@ -216,6 +217,7 @@ class ExtensionBridge:
                     self._connected.set()
                     assumed_extension = True
                     logger.info("Extension reconnected from %s", ws.remote_address)
+                    await self._notify_relays_extension_status(True)
 
                 if msg_type == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
@@ -249,6 +251,17 @@ class ExtensionBridge:
             elif self._ws is ws:
                 self._ws = None
                 self._connected.clear()
+                # Notify relay clients that extension disconnected
+                await self._notify_relays_extension_status(False)
+
+    async def _notify_relays_extension_status(self, connected: bool) -> None:
+        """Notify all relay clients when extension connects/disconnects."""
+        msg = json.dumps({"type": "extension_status", "connected": connected})
+        for relay_ws in list(self._relay_clients):
+            try:
+                await relay_ws.send(msg)
+            except Exception:
+                pass
 
     # ─── Command transport ───────────────────────────────────────
 
@@ -334,6 +347,16 @@ class ExtensionBridge:
     async def click(self, selector: str, timeout_ms: int = 10000) -> bool:
         """Click an element by CSS selector."""
         result = await self._send_command("click", {"selector": selector}, timeout_ms=timeout_ms)
+        return bool(result.get("success", False))
+
+    async def real_click(self, x: float, y: float, timeout_ms: int = 10000) -> bool:
+        """Click at pixel coordinates via chrome.debugger (real mouse event)."""
+        result = await self._send_command("real_click", {"x": x, "y": y}, timeout_ms=timeout_ms)
+        return bool(result.get("success", False))
+
+    async def real_type(self, text: str, timeout_ms: int = 30000) -> bool:
+        """Type text via chrome.debugger (real keyboard events)."""
+        result = await self._send_command("real_type", {"text": text}, timeout_ms=timeout_ms)
         return bool(result.get("success", False))
 
     async def upload(self, selector: str, file_path: Path, timeout_ms: int = 30000) -> bool:
@@ -509,6 +532,25 @@ class ExtensionBridge:
         return await self._send_command(
             "rescan_after_fill",
             {"selector": selector},
+            timeout_ms=timeout_ms,
+        )
+
+    async def scan_validation_errors(self, timeout_ms: int = 10000) -> dict[str, Any]:
+        """Ask the extension to scan for validation errors on the current page.
+
+        Returns dict with keys: errors (list), has_errors (bool), count (int).
+        """
+        return await self._send_command(
+            "scan_validation_errors", {}, timeout_ms=timeout_ms
+        )
+
+    async def fill_contenteditable(
+        self, selector: str, value: str, timeout_ms: int = 10000
+    ) -> dict[str, Any]:
+        """Fill a contenteditable element (rich text editors in Lever/Workday)."""
+        return await self._send_command(
+            "fill_contenteditable",
+            {"selector": selector, "value": value},
             timeout_ms=timeout_ms,
         )
 
