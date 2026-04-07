@@ -113,16 +113,18 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     if has_apply_button and len(fields) <= 2 and not has_application_fields:
         return PageType.JOB_DESCRIPTION, 0.85
 
-    # 7. Application form: form fields (contact, resume, screening)
+    # 7. URL hint — known job view page patterns (SPA may not have apply button in DOM yet)
+    # MUST come before the generic "3+ fields = application" rule because
+    # LinkedIn job pages have search/nav fields that trigger false positives.
+    if url and _JOB_VIEW_URLS.search(url) and not has_application_fields:
+        return PageType.JOB_DESCRIPTION, 0.7
+
+    # 8. Application form: form fields (contact, resume, screening)
     has_file_input = snapshot.get("has_file_inputs", False)
     if has_application_fields or has_file_input:
         return PageType.APPLICATION_FORM, 0.85
     if len(fields) >= 3:
         return PageType.APPLICATION_FORM, 0.65
-
-    # 8. URL hint — known job view page patterns (SPA may not have apply button in DOM yet)
-    if url and _JOB_VIEW_URLS.search(url):
-        return PageType.JOB_DESCRIPTION, 0.7
 
     # 9. Unknown — low confidence
     return PageType.UNKNOWN, 0.2
