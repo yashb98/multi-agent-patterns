@@ -68,6 +68,32 @@ function delay(ms) {
 }
 
 /**
+ * Retry wrapper for fill operations.
+ * Retries on element-not-found or fill failure. Max 2 retries with 500ms gap.
+ * Does NOT retry on success (even partial).
+ */
+async function withRetry(fn, maxRetries = 2, retryDelayMs = 500) {
+  let lastResult;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    lastResult = await fn();
+    if (lastResult.success) return lastResult;
+
+    // Only retry on transient errors
+    const isRetryable = lastResult.error &&
+      (lastResult.error.includes("not found") ||
+       lastResult.error.includes("No options") ||
+       lastResult.error.includes("not visible"));
+    if (!isRetryable) return lastResult;
+
+    if (attempt < maxRetries) {
+      await delay(retryDelayMs);
+    }
+  }
+  lastResult.retries_exhausted = true;
+  return lastResult;
+}
+
+/**
  * Exhaustive DOM context extraction for a form field.
  *
  * Captures EVERYTHING around the field — every text node, sibling, ancestor,
@@ -265,16 +291,37 @@ function ensureCursor() {
   return _cursor;
 }
 
-/** Smoothly move the visual cursor to an element's center. */
+/** Smoothly move the visual cursor along a Bezier curve to an element's center. */
 async function moveCursorTo(el) {
   const cursor = ensureCursor();
   const rect = el.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  cursor.style.left = cx + "px";
-  cursor.style.top = cy + "px";
+  const targetX = rect.left + rect.width / 2;
+  const targetY = rect.top + rect.height / 2;
+
+  const currentX = parseFloat(cursor.style.left) || -100;
+  const currentY = parseFloat(cursor.style.top) || -100;
+
+  const dist = Math.sqrt((targetX - currentX) ** 2 + (targetY - currentY) ** 2);
+  if (dist < 30) {
+    cursor.style.left = targetX + "px";
+    cursor.style.top = targetY + "px";
+    cursor.style.display = "block";
+    await delay(50);
+    return;
+  }
+
+  cursor.style.transition = "transform 0.15s ease";
+
+  const points = bezierCurve(currentX, currentY, targetX, targetY);
   cursor.style.display = "block";
-  await delay(450); // wait for CSS transition
+
+  for (let i = 0; i < points.length; i++) {
+    cursor.style.left = points[i].x + "px";
+    cursor.style.top = points[i].y + "px";
+    const t = i / points.length;
+    const easeMs = 8 + 20 * (1 - Math.abs(2 * t - 1));
+    await delay(easeMs + Math.random() * 5);
+  }
 }
 
 /** Flash a click animation on the cursor. */
@@ -1952,7 +1999,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         result = buildSnapshot();
         break;
       case "fill":
-        result = await fillField(payload.selector, payload.value);
+        result = await withRetry(() => fillField(payload.selector, payload.value));
         break;
       case "upload":
         result = await uploadFile(payload.selector, payload.file_base64, payload.file_name, payload.mime_type);
@@ -1961,10 +2008,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         result = await clickElement(payload.selector);
         break;
       case "select":
-        result = await selectOption(payload.selector, payload.value);
+        result = await withRetry(() => selectOption(payload.selector, payload.value));
         break;
       case "check":
-        result = await checkBox(payload.selector, payload.value);
+        result = await withRetry(() => checkBox(payload.selector, payload.value));
         break;
       case "wait_for_apply": {
         // Poll DOM for up to 10s waiting for an apply-like button to render.
@@ -2023,22 +2070,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       }
       case "fill_radio_group":
-        result = await fillRadioGroup(payload.selector, payload.value);
+        result = await withRetry(() => fillRadioGroup(payload.selector, payload.value));
         break;
       case "fill_custom_select":
-        result = await fillCustomSelect(payload.selector, payload.value);
+        result = await withRetry(() => fillCustomSelect(payload.selector, payload.value));
         break;
       case "fill_autocomplete":
-        result = await fillAutocomplete(payload.selector, payload.value);
+        result = await withRetry(() => fillAutocomplete(payload.selector, payload.value));
         break;
       case "fill_combobox":
-        result = await fillCombobox(payload.selector, payload.value);
+        result = await withRetry(() => fillCombobox(payload.selector, payload.value));
         break;
       case "fill_tag_input":
-        result = await fillTagInput(payload.selector, payload.values || []);
+        result = await withRetry(() => fillTagInput(payload.selector, payload.values || []));
         break;
       case "fill_date":
-        result = await fillDate(payload.selector, payload.value);
+        result = await withRetry(() => fillDate(payload.selector, payload.value));
         break;
       case "scroll_to":
         result = await scrollTo(payload.selector);
@@ -2059,10 +2106,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         result = scanValidationErrors();
         break;
       case "fill_contenteditable": {
-        const ceEl = resolveSelector(payload.selector);
-        result = ceEl
-          ? await fillContentEditable(ceEl, payload.value)
-          : { success: false, error: "Element not found: " + payload.selector };
+        result = await withRetry(async () => {
+          const ceEl = resolveSelector(payload.selector);
+          return ceEl
+            ? await fillContentEditable(ceEl, payload.value)
+            : { success: false, error: "Element not found: " + payload.selector };
+        });
         break;
       }
       case "scan_form_groups":
