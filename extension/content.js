@@ -84,6 +84,25 @@ function resolveSelector(selector) {
   return document.querySelector(selector);
 }
 
+/**
+ * Check if a form field is visible to the user.
+ * Hidden fields may be honeypot traps — bots fill them, humans never see them.
+ * ATS platforms silently discard submissions that fill honeypot fields.
+ */
+function isFieldVisible(el) {
+  const style = window.getComputedStyle(el);
+  if (style.display === "none") return false;
+  if (style.visibility === "hidden") return false;
+  if (parseFloat(style.opacity) === 0) return false;
+  // Off-screen positioning (common honeypot technique)
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  if (rect.top < -9000 || rect.left < -9000) return false;
+  // aria-hidden + negative tabindex = intentionally hidden from users
+  if (el.getAttribute("aria-hidden") === "true" && el.tabIndex === -1) return false;
+  return true;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Fuzzy Matching — mirrors Python select_filler._fuzzy_match_option
 // ═══════════════════════════════════════════════════════════════
@@ -267,6 +286,9 @@ function deepScan(root, depth, iframeIndex) {
     "input:not([type='hidden']), select, textarea, [contenteditable='true'], " +
     "[role='listbox'], [role='combobox'], [role='radiogroup'], [role='switch'], [role='textbox']";
   for (const el of root.querySelectorAll(selector)) {
+    // Skip honeypot fields — hidden inputs that bots fill, humans never see
+    // Exception: file inputs are often hidden and triggered via custom upload buttons
+    if (!isFieldVisible(el) && el.type !== "file") continue;
     fields.push(extractFieldInfo(el, iframeIndex));
   }
 
@@ -324,6 +346,8 @@ function scanFormGroups(rootSelector) {
     for (const inp of inputs) {
       if (seen.has(inp)) continue;
       seen.add(inp);
+      // Skip honeypot fields within groups
+      if (!isFieldVisible(inp) && inp.type !== "file") continue;
       const fieldInfo = extractFieldInfo(inp, null);
       fields.push(fieldInfo);
 
