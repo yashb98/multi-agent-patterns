@@ -114,12 +114,12 @@ class FormIntelligence:
         try:
             result = self._cache.find_similar(question)
             if result is not None:
-                cached_answer, similarity = result
-                logger.debug("Tier 2 cache hit '%s' (sim=%.2f)", question[:60], similarity)
+                # find_similar returns str | None (not a tuple)
+                logger.debug("Tier 2 cache hit '%s'", question[:60])
                 return FieldAnswer(
-                    answer=cached_answer,
+                    answer=result,
                     tier=2,
-                    confidence=float(similarity),
+                    confidence=0.85,
                     tier_name=_TIER_NAMES[2],
                 )
         except Exception as exc:
@@ -229,7 +229,11 @@ class FormIntelligence:
         # Tier 3 — Gemini Nano (on-device, via extension bridge)
         if self._bridge is not None:
             try:
-                nano_answer = await self._bridge.analyze_field_locally(question, job_context)
+                nano_answer = await self._bridge.analyze_field_locally(
+                    question=question,
+                    input_type=input_type or "text",
+                    options=[],
+                )
                 if nano_answer:
                     logger.debug("Tier 3 Nano answer for '%s'", question[:60])
                     return FieldAnswer(
