@@ -200,6 +200,48 @@ class ApplicationOrchestrator:
         if learned:
             logger.info("Replaying learned navigation for %s (%d steps)", domain, len(learned))
             self.learner.increment_replay(domain)
+            replay_ok = True
+            for learned_step in learned:
+                action = learned_step.get("action", "")
+                step_page_type = learned_step.get("page_type", "")
+                try:
+                    if action == "click_apply" or action == "click_apply_guess":
+                        snapshot = await self._click_apply_button(snapshot)
+                    elif action == "fill_login":
+                        snapshot = await self._handle_login(snapshot, platform)
+                    elif action.startswith("sso_"):
+                        provider = action[len("sso_"):]
+                        sso = self.sso.detect_sso(snapshot)
+                        if sso and sso.get("provider") == provider:
+                            await self.sso.click_sso(sso)
+                            snapshot = self._as_dict(await self.bridge.get_snapshot())
+                        else:
+                            logger.warning("Replay: SSO provider %s not found, falling through", provider)
+                            replay_ok = False
+                            break
+                    elif action == "fill_signup":
+                        snapshot = await self._handle_signup(snapshot, platform)
+                    elif action == "verify_email":
+                        snapshot = await self._handle_email_verification(snapshot, platform, url)
+                    else:
+                        logger.warning("Replay: unknown action %r in step, falling through", action)
+                        replay_ok = False
+                        break
+                    # Dismiss any new cookie banners after each replay step
+                    await self.cookie_dismisser.dismiss(snapshot)
+                    snapshot = self._as_dict(await self.bridge.get_snapshot())
+                except Exception as replay_exc:
+                    logger.warning("Replay step failed (action=%s): %s — falling through to fresh detection", action, replay_exc)
+                    replay_ok = False
+                    break
+
+            if replay_ok:
+                # Check if we reached the application form after replay
+                page_type_after = await self.analyzer.detect(snapshot)
+                if page_type_after == PageType.APPLICATION_FORM:
+                    logger.info("Replay succeeded: reached APPLICATION_FORM for %s", domain)
+                    return {"page_type": page_type_after, "snapshot": snapshot}
+                logger.info("Replay completed but page_type=%s — continuing with fresh detection", page_type_after)
 
         # Dismiss cookie banner
         await self.cookie_dismisser.dismiss(snapshot)

@@ -409,11 +409,26 @@ class PatternStore:
         return [dict(r) for r in rows]
 
     def flag_for_human_review(self, job_url: str, platform: str, attempt_ids: list[str]) -> None:
-        """Log that a job exhausted all retries and needs human review."""
+        """Log that a job exhausted all retries and needs human review. Sends Telegram alert."""
+        attempts = len(attempt_ids)
         logger.warning(
             "Ralph Loop EXHAUSTED for %s on %s — %d attempts, flagging for human review",
-            job_url[:60], platform, len(attempt_ids),
+            job_url[:60], platform, attempts,
         )
+        # Send Telegram alert so human review items don't silently vanish
+        try:
+            from jobpulse.telegram_agent import send_message
+            job_id = hashlib.sha256(job_url.encode()).hexdigest()[:12]
+            send_message(
+                f"Ralph Loop Exhausted\n"
+                f"Job: {job_id}\n"
+                f"URL: {job_url[:200]}\n"
+                f"Platform: {platform}\n"
+                f"Attempts: {attempts}\n"
+                f"Action: needs human review"
+            )
+        except Exception as exc:
+            logger.warning("Failed to send human review alert: %s", exc)
 
     # --- Consolidation ---
 

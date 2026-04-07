@@ -230,6 +230,16 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
         logger.warning("scan_reed: REED_API_KEY not set — skipping Reed scan")
         return []
 
+    # --- Cooldown gate ---
+    engine = ScanLearningEngine()
+    if not engine.can_scan_now("reed"):
+        cooldown = engine.get_cooldown_info("reed")
+        logger.warning(
+            "scan_reed: cooldown active until %s — skipping scan",
+            cooldown.get("cooldown_until") if cooldown else "unknown",
+        )
+        return []
+
     results: list[dict[str, Any]] = []
     base_url = "https://www.reed.co.uk/api/1.0/search"
 
