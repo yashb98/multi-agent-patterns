@@ -284,6 +284,12 @@ def ralph_apply_sync(
             if len(all_fixes) >= 10:
                 store.consolidate_patterns(platform)
 
+            # Sync proven Ralph fixes to GotchasDB for orchestrator's direct use
+            try:
+                store.sync_to_gotchas()
+            except Exception as _sync_exc:
+                logger.debug("sync_to_gotchas failed: %s", _sync_exc)
+
             result["ralph_iterations"] = iteration
 
             if iteration_callback is not None:

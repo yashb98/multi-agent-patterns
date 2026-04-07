@@ -173,15 +173,19 @@ class SemanticAnswerCache:
 
             conn.commit()
 
-    def find_similar(self, question: str, threshold: float | None = None) -> str | None:
+    def find_similar(
+        self, question: str, threshold: float | None = None, company: str = ""
+    ) -> str | None:
         """Find the best-matching cached answer for *question*.
 
-        Performs a brute-force cosine scan over all rows. Returns the answer
-        string for the highest-scoring row if it meets *threshold*, else None.
+        Performs a brute-force cosine scan over all rows. When *company* is
+        provided, same-company matches get a 5% score boost so company-specific
+        answers are preferred over generic ones.
 
         Args:
             question:  The screening question to look up.
             threshold: Override the instance-level threshold for this call.
+            company:   Company name — same-company matches score higher.
 
         Returns:
             The cached answer string, or None if no match is good enough.
@@ -189,25 +193,32 @@ class SemanticAnswerCache:
         effective_threshold = threshold if threshold is not None else self.threshold
 
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute("SELECT answer, embedding FROM answer_cache").fetchall()
+            rows = conn.execute(
+                "SELECT answer, embedding, company FROM answer_cache"
+            ).fetchall()
 
         if not rows:
             return None
 
         query_emb = self._embed(question)
+        company_lower = company.lower().strip()
         best_score = -1.0
         best_answer: str | None = None
 
-        for answer, embedding_json in rows:
+        for answer, embedding_json, row_company in rows:
             cached_emb: list[float] = json.loads(embedding_json)
             score = _cosine_similarity(query_emb, cached_emb)
+            # Boost same-company matches so we prefer company-specific answers
+            if company_lower and row_company and row_company.lower().strip() == company_lower:
+                score = min(score + 0.05, 1.0)
             if score > best_score:
                 best_score = score
                 best_answer = answer
 
         if best_score >= effective_threshold:
             logger.debug(
-                "semantic_cache: hit (score=%.4f, threshold=%.4f)", best_score, effective_threshold
+                "semantic_cache: hit (score=%.4f, threshold=%.4f, company=%r)",
+                best_score, effective_threshold, company,
             )
             return best_answer
 

@@ -107,15 +107,15 @@ class FormIntelligence:
     # Tier 2 helper — semantic cache
     # ------------------------------------------------------------------
 
-    def _try_semantic_cache(self, question: str) -> FieldAnswer | None:
+    def _try_semantic_cache(self, question: str, company: str = "") -> FieldAnswer | None:
         """Attempt Tier 2: semantic similarity cache lookup."""
         if self._cache is None:
             return None
         try:
-            result = self._cache.find_similar(question)
+            result = self._cache.find_similar(question, company=company)
             if result is not None:
                 # find_similar returns str | None (not a tuple)
-                logger.debug("Tier 2 cache hit '%s'", question[:60])
+                logger.debug("Tier 2 cache hit '%s' (company=%r)", question[:60], company)
                 return FieldAnswer(
                     answer=result,
                     tier=2,
@@ -134,13 +134,14 @@ class FormIntelligence:
         self,
         question: str,
         job_context: dict | None,
+        company: str = "",
     ) -> FieldAnswer:
         """Tier 4: LLM generation (always succeeds — falls back to generic)."""
         answer = _generate_answer_llm(question, job_context)
-        # Store in semantic cache for future reuse
+        # Store in semantic cache for future reuse (with company for scoped retrieval)
         if self._cache is not None:
             try:
-                self._cache.store(question, answer)
+                self._cache.store(question, answer, company=company)
             except Exception as exc:
                 logger.warning("Failed to store LLM answer in cache: %s", exc)
         logger.debug("Tier 4 LLM answer for '%s'", question[:60])
@@ -172,6 +173,8 @@ class FormIntelligence:
         if not question or not question.strip():
             return FieldAnswer(answer="", tier=1, confidence=0.0, tier_name=_TIER_NAMES[1])
 
+        company = (job_context or {}).get("company", "")
+
         # Tier 1 — pattern
         result = self._try_pattern(
             question, job_context, input_type=input_type, platform=platform, db=db
@@ -179,13 +182,13 @@ class FormIntelligence:
         if result is not None:
             return result
 
-        # Tier 2 — semantic cache
-        result = self._try_semantic_cache(question)
+        # Tier 2 — semantic cache (company-scoped)
+        result = self._try_semantic_cache(question, company=company)
         if result is not None:
             return result
 
         # Tier 4 — LLM
-        return self._try_llm(question, job_context)
+        return self._try_llm(question, job_context, company=company)
 
     # ------------------------------------------------------------------
     # Public: async resolve (Tiers 1, 2, 3, 4, 5)
@@ -214,6 +217,8 @@ class FormIntelligence:
         if not question or not question.strip():
             return FieldAnswer(answer="", tier=1, confidence=0.0, tier_name=_TIER_NAMES[1])
 
+        company = (job_context or {}).get("company", "")
+
         # Tier 1 — pattern
         result = self._try_pattern(
             question, job_context, input_type=input_type, platform=platform, db=db
@@ -221,8 +226,8 @@ class FormIntelligence:
         if result is not None:
             return result
 
-        # Tier 2 — semantic cache
-        result = self._try_semantic_cache(question)
+        # Tier 2 — semantic cache (company-scoped)
+        result = self._try_semantic_cache(question, company=company)
         if result is not None:
             return result
 
@@ -246,7 +251,7 @@ class FormIntelligence:
                 logger.warning("Tier 3 Nano error: %s", exc)
 
         # Tier 4 — LLM
-        result = self._try_llm(question, job_context)
+        result = self._try_llm(question, job_context, company=company)
 
         # Tier 5 — Vision (only when screenshot provided and LLM gave a weak answer)
         if screenshot_b64 is not None and result.confidence < 0.8:

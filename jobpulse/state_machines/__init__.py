@@ -318,6 +318,104 @@ class WorkdayStateMachine(PlatformStateMachine):
         return self._detect_by_fields(snapshot)
 
 
+class SmartRecruitersStateMachine(PlatformStateMachine):
+    platform = "smartrecruiters"
+
+    def _detect_platform_state(self, snapshot: PageSnapshot) -> ApplicationState:
+        url = snapshot.url.lower()
+        # SmartRecruiters uses multi-step modal with "Apply" tab
+        if "/apply" in url or "apply" in snapshot.page_text_preview.lower()[:200]:
+            return self._detect_by_fields(snapshot)
+        # Login wall via SSO prompt
+        for field in snapshot.fields:
+            if "sso" in field.label.lower() or "sign in" in field.label.lower():
+                return ApplicationState.LOGIN_WALL
+        return self._detect_by_fields(snapshot)
+
+
+class BambooHRStateMachine(PlatformStateMachine):
+    platform = "bamboohr"
+
+    def _detect_platform_state(self, snapshot: PageSnapshot) -> ApplicationState:
+        # BambooHR uses data-testid attributes for form sections
+        for field in snapshot.fields:
+            attrs = field.attributes
+            test_id = attrs.get("data-testid", "")
+            if "resume" in test_id or "coverLetter" in test_id:
+                return ApplicationState.RESUME_UPLOAD
+            if "login" in test_id or "signIn" in test_id:
+                return ApplicationState.LOGIN_WALL
+        return self._detect_by_fields(snapshot)
+
+
+class AshbyStateMachine(PlatformStateMachine):
+    platform = "ashby"
+
+    def _detect_platform_state(self, snapshot: PageSnapshot) -> ApplicationState:
+        # Ashby uses single-page forms with sections identified by class names
+        text = snapshot.page_text_preview.lower()
+        if "personal information" in text:
+            return ApplicationState.CONTACT_INFO
+        if "resume" in text and snapshot.has_file_inputs:
+            return ApplicationState.RESUME_UPLOAD
+        if "additional" in text or "screening" in text:
+            return ApplicationState.SCREENING_QUESTIONS
+        return self._detect_by_fields(snapshot)
+
+
+class JobviteStateMachine(PlatformStateMachine):
+    platform = "jobvite"
+
+    def _detect_platform_state(self, snapshot: PageSnapshot) -> ApplicationState:
+        # Jobvite uses jv-* prefixed form elements
+        for field in snapshot.fields:
+            attrs = field.attributes
+            jv_id = attrs.get("id", "")
+            if jv_id.startswith("jv-"):
+                if "login" in jv_id or "sign" in jv_id:
+                    return ApplicationState.LOGIN_WALL
+                if "resume" in jv_id or "cv" in jv_id:
+                    return ApplicationState.RESUME_UPLOAD
+        return self._detect_by_fields(snapshot)
+
+
+class ICIMSStateMachine(PlatformStateMachine):
+    platform = "icims"
+
+    def _detect_platform_state(self, snapshot: PageSnapshot) -> ApplicationState:
+        url = snapshot.url.lower()
+        # iCIMS uses /portal/apply/ URL pattern with numbered steps
+        if "/portal/" in url:
+            text = snapshot.page_text_preview.lower()
+            if "sign in" in text or "create account" in text:
+                return ApplicationState.LOGIN_WALL
+            if "upload" in text and snapshot.has_file_inputs:
+                return ApplicationState.RESUME_UPLOAD
+        # iCIMS uses iCIMS_* name attributes
+        for field in snapshot.fields:
+            name = field.attributes.get("name", "")
+            if name.startswith("iCIMS"):
+                break
+        return self._detect_by_fields(snapshot)
+
+
+class TaleoStateMachine(PlatformStateMachine):
+    platform = "taleo"
+
+    def _detect_platform_state(self, snapshot: PageSnapshot) -> ApplicationState:
+        # Taleo (Oracle) uses multi-page wizard with numbered steps
+        text = snapshot.page_text_preview.lower()
+        if "sign in" in text or "create an account" in text:
+            if not any(f.input_type not in ("hidden",) for f in snapshot.fields
+                       if "password" not in f.label.lower()):
+                return ApplicationState.LOGIN_WALL
+        # Taleo step detection via URL fragments
+        url = snapshot.url.lower()
+        if "requisition" in url and "apply" not in url:
+            return ApplicationState.INITIAL  # Job description page
+        return self._detect_by_fields(snapshot)
+
+
 class GenericStateMachine(PlatformStateMachine):
     platform = "generic"
 
@@ -330,6 +428,12 @@ _MACHINES: dict[str, type[PlatformStateMachine]] = {
     "linkedin": LinkedInStateMachine,
     "indeed": IndeedStateMachine,
     "workday": WorkdayStateMachine,
+    "smartrecruiters": SmartRecruitersStateMachine,
+    "bamboohr": BambooHRStateMachine,
+    "ashby": AshbyStateMachine,
+    "jobvite": JobviteStateMachine,
+    "icims": ICIMSStateMachine,
+    "taleo": TaleoStateMachine,
     "generic": GenericStateMachine,
 }
 

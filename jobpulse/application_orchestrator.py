@@ -27,6 +27,7 @@ from jobpulse.ext_models import ButtonInfo, FieldInfo, PageSnapshot, PageType
 from jobpulse.gmail_verify import GmailVerifier
 from jobpulse.navigation_learner import NavigationLearner
 from jobpulse.page_analyzer import PageAnalyzer
+from jobpulse.form_engine.gotchas import GotchasDB
 from jobpulse.sso_handler import SSOHandler
 from jobpulse.state_machines import (
     ApplicationState,
@@ -76,6 +77,7 @@ class ApplicationOrchestrator:
         self.analyzer = PageAnalyzer(bridge)
         self.cookie_dismisser = CookieBannerDismisser(bridge)
         self.sso = SSOHandler(bridge)
+        self.gotchas = GotchasDB()
 
     @staticmethod
     def _as_dict(snapshot: Any) -> dict:
@@ -466,6 +468,12 @@ class ApplicationOrchestrator:
         else:
             filled_selectors = set()
 
+        # Load known gotchas for this domain (learned from Ralph Loop + manual fixes)
+        domain = self._extract_domain(current_url) if current_url else platform
+        domain_gotchas = {g["selector_pattern"]: g for g in self.gotchas.lookup_domain(domain)}
+        if domain_gotchas:
+            logger.info("Loaded %d gotchas for domain %s", len(domain_gotchas), domain)
+
         for page_num in range(1, MAX_FORM_PAGES + 1):
             page_snapshot = self._to_page_snapshot(snapshot) if isinstance(snapshot, dict) else snapshot
             state = machine.detect_state(page_snapshot)
@@ -501,6 +509,12 @@ class ApplicationOrchestrator:
                 if sel and sel in filled_selectors:
                     logger.debug("  Skipping pre-filled field %s (MV3 recovery)", str(sel)[:60])
                     continue
+                # Apply known gotchas — if we have a learned workaround for this selector, use it
+                gotcha = domain_gotchas.get(str(sel))
+                if gotcha:
+                    logger.info("  Applying gotcha for %s: %s", str(sel)[:40], gotcha["solution"][:60])
+                    self.gotchas.record_usage(domain, str(sel))
+
                 logger.info("  Action %d/%d: %s → %s", i + 1, len(actions), atype, str(sel)[:60])
                 try:
                     await self._execute_action_with_retry(action, tg_stream=tg_stream)

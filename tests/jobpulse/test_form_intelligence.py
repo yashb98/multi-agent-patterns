@@ -184,7 +184,7 @@ class TestTier4LLM:
         with patch("jobpulse.form_intelligence._generate_answer_llm") as mock_llm:
             mock_llm.return_value = "Generated"
             result = fi.resolve("Novel question")
-            mock_cache.store.assert_called_once_with("Novel question", "Generated")
+            mock_cache.store.assert_called_once_with("Novel question", "Generated", company="")
             assert result.tier == 4
             assert result.confidence == 0.7
 

@@ -35,6 +35,18 @@ def _detect_ats_platform(url: str) -> str:
         return "totaljobs"
     if "glassdoor" in url_lower:
         return "glassdoor"
+    if "smartrecruiters.com" in url_lower:
+        return "smartrecruiters"
+    if "bamboohr.com" in url_lower:
+        return "bamboohr"
+    if "ashbyhq.com" in url_lower or "jobs.ashby.com" in url_lower:
+        return "ashby"
+    if "jobvite.com" in url_lower:
+        return "jobvite"
+    if "icims.com" in url_lower:
+        return "icims"
+    if "taleo" in url_lower or "oracle.com/careers" in url_lower:
+        return "taleo"
     return "generic"
 
 

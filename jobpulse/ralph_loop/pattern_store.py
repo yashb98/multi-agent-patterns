@@ -511,6 +511,45 @@ class PatternStore:
 
         return deleted
 
+    # --- Cross-system sync ---
+
+    def sync_to_gotchas(self, min_success_rate: float = 0.7) -> int:
+        """Export high-confidence Ralph fixes to GotchasDB for orchestrator use.
+
+        Only syncs fixes with success_rate >= min_success_rate and
+        times_applied >= 3 (proven fixes, not one-offs).
+        Returns count of fixes synced.
+        """
+        from jobpulse.form_engine.gotchas import GotchasDB
+
+        gotchas = GotchasDB()
+        synced = 0
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT platform, step_name, error_signature, fix_type, fix_payload,
+                      success_rate, times_applied
+               FROM fix_patterns
+               WHERE superseded_by IS NULL
+                 AND success_rate >= ?
+                 AND times_applied >= 3""",
+            (min_success_rate,),
+        ).fetchall()
+        conn.close()
+
+        for row in rows:
+            domain = row["platform"]  # Map platform to domain
+            selector = row["step_name"]  # step_name acts as selector context
+            problem = f"{row['error_signature']} ({row['fix_type']})"
+            solution = row["fix_payload"]
+            gotchas.store(domain, selector, problem, solution)
+            synced += 1
+
+        if synced:
+            logger.info("Synced %d Ralph fixes to GotchasDB", synced)
+        return synced
+
     # --- Helpers ---
 
     @staticmethod
