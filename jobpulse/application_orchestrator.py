@@ -329,21 +329,47 @@ class ApplicationOrchestrator:
         import re
         import asyncio
         apply_pattern = re.compile(
-            r"(easy\s*apply|apply\s*(now|for\s*this)?|start\s*application|apply\s*for\s*(this\s*)?job|apply\s*on\s*company\s*website)",
+            r"(easy\s*apply|apply\W*(now|for\s*this|on\s*company)?"
+            r"|start\s*application|submit\s*application"
+            r"|i.?m\s*interested|submit\s*interest)",
             re.IGNORECASE,
         )
+
         buttons = snapshot.get("buttons", [])
         button_texts = [b.get("text", "")[:60] for b in buttons]
         logger.info("Apply button search: %d buttons found — %s", len(buttons), button_texts[:10])
+
+        # Find apply buttons — collect all matches, prefer ones with href
+        apply_matches = []
         for btn in buttons:
-            if btn.get("enabled") and apply_pattern.search(btn.get("text", "")):
-                logger.info("Clicking apply: '%s' via %s", btn["text"][:60], btn["selector"])
-                await self.bridge.click(btn["selector"])
-                # Wait for modal/page transition after click
-                await asyncio.sleep(2)
+            text = btn.get("text", "")
+            if not btn.get("enabled"):
+                continue
+            if "save" in text.lower():
+                continue
+            if apply_pattern.search(text):
+                apply_matches.append(btn)
+
+        if not apply_matches:
+            logger.warning("No apply button found in snapshot")
+            return snapshot
+
+        # Strategy: if the match is a link with href, navigate directly (most reliable)
+        # This avoids target="_blank" new-tab issues entirely
+        for btn in apply_matches:
+            href = btn.get("href", "")
+            if href and href.startswith("http"):
+                logger.info("Apply link found: '%s' → navigating to %s", btn["text"][:40], href[:100])
+                await self.bridge.navigate(href)
+                await asyncio.sleep(3)
                 return self._as_dict(await self.bridge.get_snapshot())
-        logger.warning("No apply button found in snapshot")
-        return snapshot
+
+        # Fallback: click the button directly (Easy Apply modals, non-link buttons)
+        btn = apply_matches[0]
+        logger.info("Clicking apply button: '%s' via %s", btn["text"][:60], btn["selector"])
+        await self.bridge.click(btn["selector"])
+        await asyncio.sleep(2)
+        return self._as_dict(await self.bridge.get_snapshot())
 
     async def _handle_login(self, snapshot: dict, platform: str) -> dict:
         domain = self._extract_domain(snapshot.get("url", ""))
@@ -620,6 +646,27 @@ class ApplicationOrchestrator:
             if state == ApplicationState.SUBMIT:
                 if dry_run:
                     return {"success": True, "dry_run": True, "screenshot": last_screenshot, "pages_filled": page_num}
+                # ── Pre-submit validation gate ──
+                try:
+                    validation = await self.bridge.scan_validation_errors()
+                    if validation.get("has_errors"):
+                        errors = validation.get("errors", [])
+                        logger.warning(
+                            "Pre-submit validation errors (%d): %s",
+                            len(errors),
+                            [e.get("error_message", "")[:60] for e in errors[:5]],
+                        )
+                        return {
+                            "status": "validation_errors",
+                            "errorCategory": "validation",
+                            "errors": errors,
+                            "message": f"{len(errors)} validation error(s) before submit",
+                            "isRetryable": True,
+                            "agentName": "application_orchestrator",
+                            "attemptedAction": "pre_submit_validation",
+                        }
+                except Exception as exc:
+                    logger.warning("Validation scan failed (non-blocking): %s", exc)
                 # Use CURRENT page_snapshot (not stale snapshot variable)
                 current_buttons = page_snapshot.buttons if hasattr(page_snapshot, 'buttons') else snapshot.get("buttons", [])
                 submit_btn = find_next_button(
