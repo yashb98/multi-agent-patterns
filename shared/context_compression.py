@@ -150,33 +150,6 @@ def truncate_messages_to_fit(
     return result
 
 
-def check_context_budget(
-    messages: list[dict],
-    model: str = "gpt-5o-mini",
-    reserve: int = RESPONSE_RESERVE,
-) -> dict:
-    """Check context budget before sending to LLM.
-
-    Returns:
-        tokens_used: int
-        tokens_limit: int
-        tokens_available: int
-        over_budget: bool
-        utilization_pct: float (0-100)
-    """
-    limit = get_context_limit(model)
-    used = count_messages_tokens(messages, model)
-    available = limit - reserve - used
-
-    return {
-        "tokens_used": used,
-        "tokens_limit": limit,
-        "tokens_available": max(0, available),
-        "over_budget": available < 0,
-        "utilization_pct": round(used / limit * 100, 1),
-    }
-
-
 def compress_research_notes(notes: list[str]) -> list[str]:
     """Compress older research notes if total size exceeds budget.
 

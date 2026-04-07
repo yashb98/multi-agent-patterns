@@ -371,42 +371,6 @@ def check_duplicate(new_title: str) -> str | None:
     return None
 
 
-def create_tasks_batch_smart(tasks: list[str], date: str = None) -> dict:
-    """Create tasks with dedup checking and big-task detection.
-
-    Returns:
-        {"created": [...], "duplicates": [...], "big_tasks": [...]}
-    """
-    created = []
-    duplicates = []
-    big_tasks = []
-
-    for task in tasks:
-        task = task.strip()
-        if not task:
-            continue
-
-        # Check for duplicates
-        existing = check_duplicate(task)
-        if existing:
-            duplicates.append({"new": task, "existing": existing})
-            continue
-
-        # Check if task is too big (heuristic: >10 words or contains "and"/"then"/"also")
-        words = task.split()
-        has_conjunction = any(w.lower() in ("and", "then", "also", "plus", "&") for w in words)
-        if len(words) > 12 or (len(words) > 6 and has_conjunction):
-            big_tasks.append(task)
-            continue
-
-        # Create normally
-        success = create_task(task, date)
-        if success:
-            created.append(task)
-
-    return {"created": created, "duplicates": duplicates, "big_tasks": big_tasks}
-
-
 def suggest_subtasks(big_task: str) -> list[str]:
     """Use LLM to suggest subtasks for a large task."""
     import os
