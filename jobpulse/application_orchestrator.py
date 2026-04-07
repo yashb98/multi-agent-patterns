@@ -7,7 +7,12 @@ Flow: URL → cookie dismiss → page stability wait → detect page type (DOM+V
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import random
+import re
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,6 +39,26 @@ logger = get_logger(__name__)
 
 MAX_NAVIGATION_STEPS = 10
 MAX_FORM_PAGES = 20
+
+# Per-platform minimum page times (seconds) — from anti-detection research
+# Workday tracks client-side timing and flags <2min total
+_PLATFORM_MIN_PAGE_TIME: dict[str, float] = {
+    "workday": 45.0,
+    "linkedin": 8.0,
+    "greenhouse": 5.0,
+    "lever": 5.0,
+    "indeed": 10.0,
+    "generic": 5.0,
+}
+
+# Fields that MUST succeed or the application is incomplete
+_CRITICAL_FIELD_PATTERNS = ("email", "name", "first", "last", "resume", "cv", "phone")
+
+
+def _is_critical_field(selector: str) -> bool:
+    """Check if a field is critical (missing it = worthless application)."""
+    sel_lower = selector.lower()
+    return any(p in sel_lower for p in _CRITICAL_FIELD_PATTERNS)
 
 
 class ApplicationOrchestrator:
@@ -411,13 +436,18 @@ class ApplicationOrchestrator:
                 form_intelligence=form_intelligence,
             )
 
+            page_start = time.monotonic()
+
             for i, action in enumerate(actions):
+                atype = getattr(action, "type", None) or (action.get("type", "?") if isinstance(action, dict) else "?")
+                sel = getattr(action, "selector", None) or (action.get("selector", "?") if isinstance(action, dict) else "?")
+                logger.info("  Action %d/%d: %s → %s", i + 1, len(actions), atype, str(sel)[:60])
                 try:
-                    atype = getattr(action, "type", None) or (action.get("type", "?") if isinstance(action, dict) else "?")
-                    sel = getattr(action, "selector", None) or (action.get("selector", "?") if isinstance(action, dict) else "?")
-                    logger.info("  Action %d/%d: %s → %s", i + 1, len(actions), atype, str(sel)[:60])
-                    await self._execute_action(action, tg_stream=tg_stream)
+                    await self._execute_action_with_retry(action, tg_stream=tg_stream)
                 except (TimeoutError, ConnectionError) as exc:
+                    if _is_critical_field(str(sel)):
+                        logger.error("  Critical field %s failed — aborting page", sel)
+                        return {"success": False, "error": f"Critical field failed: {sel}", "screenshot": last_screenshot}
                     logger.warning("  Action %d/%d failed: %s — %r", i + 1, len(actions), atype, exc)
 
             try:
@@ -427,6 +457,14 @@ class ApplicationOrchestrator:
                 logger.warning("Screenshot failed after form page %d", page_num)
             if screenshot_bytes:
                 last_screenshot = screenshot_bytes
+
+            # Enforce minimum page timing (anti-detection)
+            min_page_time = _PLATFORM_MIN_PAGE_TIME.get(platform, 5.0)
+            elapsed = time.monotonic() - page_start
+            if elapsed < min_page_time:
+                remaining = min_page_time - elapsed
+                jitter = random.gauss(remaining * 0.3, remaining * 0.1)
+                await asyncio.sleep(max(0.5, remaining + jitter))
 
             # Auto-check consent boxes before any navigation
             try:
@@ -444,6 +482,14 @@ class ApplicationOrchestrator:
                 )
                 if submit_btn:
                     await self.bridge.click(submit_btn["selector"])
+                    # Verify submission actually went through
+                    verification = await self._verify_submission()
+                    if verification.get("verified"):
+                        logger.info("Submission verified: %s", verification)
+                        return {"success": True, "verified": True, "screenshot": last_screenshot, "pages_filled": page_num}
+                    elif verification.get("reason") == "form_error":
+                        logger.warning("Submit rejected: %s", verification)
+                        # Don't return — let the loop continue to re-detect state
             else:
                 # Use CURRENT page_snapshot for next button
                 current_buttons = page_snapshot.buttons if hasattr(page_snapshot, 'buttons') else snapshot.get("buttons", [])
@@ -480,7 +526,7 @@ class ApplicationOrchestrator:
         if atype == "fill":
             await self.bridge.fill(selector, value)
         elif atype == "upload":
-            await self.bridge.upload(selector, str(file_path))
+            await self.bridge.upload(selector, Path(file_path) if file_path else file_path)
         elif atype == "click":
             await self.bridge.click(selector)
         elif atype == "select":
@@ -517,6 +563,82 @@ class ApplicationOrchestrator:
                 )
             except Exception as _se:
                 logger.debug("stream_field failed: %s", _se)
+
+    async def _execute_action_with_retry(
+        self, action: Any, tg_stream: Any = None, max_retries: int = 2
+    ):
+        """Execute action with retry for critical fields and post-fill validation."""
+        selector = getattr(action, "selector", "") or (
+            action.get("selector", "") if isinstance(action, dict) else ""
+        )
+        atype = getattr(action, "type", "") or (
+            action.get("type", "") if isinstance(action, dict) else ""
+        )
+
+        for attempt in range(max_retries + 1):
+            try:
+                await self._execute_action(action, tg_stream=tg_stream)
+
+                # Post-fill validation for fill actions
+                if atype in ("fill", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date") and selector:
+                    try:
+                        rescan = await self.bridge.rescan_after_fill(selector)
+                        errors = rescan.get("validation_errors", [])
+                        if errors:
+                            logger.warning("Validation error after %s: %s", atype, errors)
+                            if attempt < max_retries:
+                                await asyncio.sleep(1.5 * (attempt + 1))
+                                continue
+                    except (TimeoutError, ConnectionError):
+                        pass  # Rescan failed — don't block the fill
+                return  # Success
+            except (TimeoutError, ConnectionError) as exc:
+                logger.warning("Action %s attempt %d/%d failed: %r", atype, attempt + 1, max_retries + 1, exc)
+                if attempt < max_retries:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                else:
+                    raise  # Let caller handle
+
+    async def _verify_submission(self) -> dict:
+        """Wait for and verify the confirmation page after submit click."""
+        await asyncio.sleep(3.0)
+        snapshot = await self.bridge.get_snapshot(force_refresh=True)
+        if not snapshot:
+            return {"verified": False, "reason": "no_snapshot"}
+
+        text = (snapshot.page_text_preview or "").lower()
+
+        # Success indicators
+        success_patterns = [
+            r"application.*(?:submitted|received|complete|sent)",
+            r"thank\s*you\s*for\s*(?:applying|your\s*application)",
+            r"we.ll\s*(?:be\s*in\s*touch|review|get\s*back)",
+            r"application\s*(?:reference|confirmation|id)\s*[\w-]+",
+            r"successfully\s*(?:applied|submitted)",
+            r"you\s*(?:have\s*)?applied",
+        ]
+        for pat in success_patterns:
+            if re.search(pat, text):
+                return {"verified": True, "pattern": pat}
+
+        # URL-based confirmation
+        url = (snapshot.url or "").lower()
+        for path in ("/confirmation", "/thank-you", "/success", "/applied", "/complete"):
+            if path in url:
+                return {"verified": True, "url_match": path}
+
+        # Error indicators (form rejected submission)
+        error_patterns = [
+            r"please\s*(?:fix|correct|review)\s*(?:the\s*)?(?:errors|fields)",
+            r"required\s*field",
+            r"there\s*(?:was|were)\s*(?:an?\s*)?error",
+            r"submission\s*failed",
+        ]
+        for pat in error_patterns:
+            if re.search(pat, text):
+                return {"verified": False, "reason": "form_error", "pattern": pat}
+
+        return {"verified": False, "reason": "unknown_state"}
 
     @staticmethod
     def _extract_domain(url: str) -> str:
