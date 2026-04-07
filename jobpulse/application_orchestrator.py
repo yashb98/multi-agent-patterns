@@ -452,6 +452,20 @@ class ApplicationOrchestrator:
         # Extract Telegram progress stream if provided (injected by applicator.py)
         tg_stream = custom_answers.pop("_stream", None) if custom_answers else None
 
+        # MV3 recovery: check if we have saved progress from a service worker restart
+        current_url = snapshot.get("url", "") if isinstance(snapshot, dict) else getattr(snapshot, "url", "")
+        saved_progress = None
+        if current_url:
+            try:
+                saved_progress = await self.bridge.get_form_progress(current_url)
+                if saved_progress:
+                    filled_selectors = {f["selector"] for f in saved_progress.get("filled_fields", [])}
+                    logger.info("MV3 recovery: resuming with %d pre-filled fields", len(filled_selectors))
+            except (TimeoutError, ConnectionError):
+                filled_selectors = set()
+        else:
+            filled_selectors = set()
+
         for page_num in range(1, MAX_FORM_PAGES + 1):
             page_snapshot = self._to_page_snapshot(snapshot) if isinstance(snapshot, dict) else snapshot
             state = machine.detect_state(page_snapshot)
@@ -483,9 +497,23 @@ class ApplicationOrchestrator:
             for i, action in enumerate(actions):
                 atype = getattr(action, "type", None) or (action.get("type", "?") if isinstance(action, dict) else "?")
                 sel = getattr(action, "selector", None) or (action.get("selector", "?") if isinstance(action, dict) else "?")
+                # Skip fields already filled in a previous MV3 session
+                if sel and sel in filled_selectors:
+                    logger.debug("  Skipping pre-filled field %s (MV3 recovery)", str(sel)[:60])
+                    continue
                 logger.info("  Action %d/%d: %s → %s", i + 1, len(actions), atype, str(sel)[:60])
                 try:
                     await self._execute_action_with_retry(action, tg_stream=tg_stream)
+                    # Track filled field for MV3 persistence
+                    if sel and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date", "check"):
+                        filled_selectors.add(sel)
+                        try:
+                            await self.bridge.save_form_progress(current_url, {
+                                "filled_fields": [{"selector": s} for s in filled_selectors],
+                                "current_page": page_num,
+                            })
+                        except (TimeoutError, ConnectionError):
+                            pass  # Non-critical — best effort
                 except (TimeoutError, ConnectionError) as exc:
                     if _is_critical_field(str(sel)):
                         logger.error("  Critical field %s failed — aborting page", sel)
@@ -528,6 +556,12 @@ class ApplicationOrchestrator:
                     verification = await self._verify_submission()
                     if verification.get("verified"):
                         logger.info("Submission verified: %s", verification)
+                        # Clear MV3 progress — application complete
+                        if current_url:
+                            try:
+                                await self.bridge.clear_form_progress(current_url)
+                            except (TimeoutError, ConnectionError):
+                                pass
                         return {"success": True, "verified": True, "screenshot": last_screenshot, "pages_filled": page_num}
                     elif verification.get("reason") == "form_error":
                         logger.warning("Submit rejected: %s", verification)
