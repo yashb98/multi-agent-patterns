@@ -247,6 +247,13 @@ class TestIntegrationFlows:
         """Greenhouse single-page: orchestrator navigates -> detects form -> fills -> confirms."""
         mock_bridge = AsyncMock(spec=ExtensionBridge)
         mock_bridge.connected = True
+        # MV3 persistence defaults
+        mock_bridge.get_form_progress.return_value = None
+        mock_bridge.save_form_progress.return_value = True
+        mock_bridge.clear_form_progress.return_value = True
+        mock_bridge.rescan_after_fill.return_value = {"validation_errors": []}
+        mock_bridge.check_consent_boxes.return_value = None
+        mock_bridge.wait_for_apply.return_value = {"waited_ms": 0, "apply_diagnostics": []}
         adapter = ExtensionAdapter(bridge=mock_bridge)
         cv = tmp_path / "cv.pdf"
         cv.write_bytes(b"%PDF-1.4 test")
@@ -290,6 +297,13 @@ class TestIntegrationFlows:
         """Verification wall stops the application."""
         mock_bridge = AsyncMock(spec=ExtensionBridge)
         mock_bridge.connected = True
+        # MV3 persistence defaults
+        mock_bridge.get_form_progress.return_value = None
+        mock_bridge.save_form_progress.return_value = True
+        mock_bridge.clear_form_progress.return_value = True
+        mock_bridge.rescan_after_fill.return_value = {"validation_errors": []}
+        mock_bridge.check_consent_boxes.return_value = None
+        mock_bridge.wait_for_apply.return_value = {"waited_ms": 0, "apply_diagnostics": []}
         adapter = ExtensionAdapter(bridge=mock_bridge)
         cv = tmp_path / "cv.pdf"
         cv.write_bytes(b"%PDF-1.4 test")
@@ -315,6 +329,13 @@ class TestIntegrationFlows:
         """Safety cap prevents infinite loops — orchestrator detects stuck pages."""
         mock_bridge = AsyncMock(spec=ExtensionBridge)
         mock_bridge.connected = True
+        # MV3 persistence defaults
+        mock_bridge.get_form_progress.return_value = None
+        mock_bridge.save_form_progress.return_value = True
+        mock_bridge.clear_form_progress.return_value = True
+        mock_bridge.rescan_after_fill.return_value = {"validation_errors": []}
+        mock_bridge.check_consent_boxes.return_value = None
+        mock_bridge.wait_for_apply.return_value = {"waited_ms": 0, "apply_diagnostics": []}
         adapter = ExtensionAdapter(bridge=mock_bridge)
         cv = tmp_path / "cv.pdf"
         cv.write_bytes(b"%PDF-1.4 test")

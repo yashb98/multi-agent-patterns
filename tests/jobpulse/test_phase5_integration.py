@@ -17,6 +17,21 @@ def bridge():
     b.screenshot = AsyncMock(return_value=b"screenshot")
     b.select_option = AsyncMock()
     b.check = AsyncMock()
+    # v2 form engine methods
+    b.fill_radio_group = AsyncMock()
+    b.fill_custom_select = AsyncMock()
+    b.fill_autocomplete = AsyncMock()
+    b.fill_tag_input = AsyncMock()
+    b.fill_date = AsyncMock()
+    b.scroll_to = AsyncMock()
+    b.force_click = AsyncMock()
+    b.check_consent_boxes = AsyncMock()
+    b.rescan_after_fill = AsyncMock(return_value={"validation_errors": []})
+    b.wait_for_apply = AsyncMock(return_value={"waited_ms": 0, "apply_diagnostics": []})
+    # MV3 state persistence — return None by default (no saved progress)
+    b.get_form_progress = AsyncMock(return_value=None)
+    b.save_form_progress = AsyncMock(return_value=True)
+    b.clear_form_progress = AsyncMock(return_value=True)
     return b
 
 
@@ -24,12 +39,16 @@ def bridge():
 def orchestrator(bridge, tmp_path):
     from jobpulse.account_manager import AccountManager
     from jobpulse.navigation_learner import NavigationLearner
-    return ApplicationOrchestrator(
+    from jobpulse.form_engine.gotchas import GotchasDB
+
+    orch = ApplicationOrchestrator(
         bridge=bridge,
         account_manager=AccountManager(db_path=str(tmp_path / "acc.db")),
         gmail_verifier=MagicMock(),
         navigation_learner=NavigationLearner(db_path=str(tmp_path / "nav.db")),
     )
+    orch.gotchas = GotchasDB(db_path=str(tmp_path / "gotchas.db"))
+    return orch
 
 
 def _snapshot(buttons=None, fields=None, page_text="", verification_wall=None, has_file_inputs=False, url="https://example.com"):
@@ -78,7 +97,9 @@ async def test_jd_then_form(orchestrator, bridge):
         has_file_inputs=True,
     )
     confirm = _snapshot(page_text="Thank you for applying!")
-    bridge.get_snapshot.side_effect = [jd, jd, form, form, form, confirm, confirm, confirm, confirm]
+    # Sequence: navigate→jd, cookie-dismiss→jd, wait_for_apply→jd(refreshed),
+    # apply-click→form, cookie-dismiss→form, fill-loop→confirm...
+    bridge.get_snapshot.side_effect = [jd, jd, jd, form, form, confirm, confirm, confirm, confirm]
 
     result = await orchestrator.apply(
         url="https://example.com/jobs/123", platform="generic", cv_path=Path("/tmp/cv.pdf"),

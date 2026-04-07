@@ -19,10 +19,16 @@ import pytest
 from jobpulse.ext_models import Action, ButtonInfo, FieldInfo, PageSnapshot, VerificationWall
 from jobpulse.state_machines import (
     ApplicationState,
+    AshbyStateMachine,
+    BambooHRStateMachine,
     GenericStateMachine,
     GreenhouseStateMachine,
+    ICIMSStateMachine,
+    JobviteStateMachine,
     LinkedInStateMachine,
     PlatformStateMachine,
+    SmartRecruitersStateMachine,
+    TaleoStateMachine,
     WorkdayStateMachine,
     detect_progress,
     find_next_button,
@@ -573,3 +579,632 @@ class TestStateTransitions:
         snap = _snap(text="Thank you for applying")
         new_state = machine.transition(ApplicationState.SUBMIT, snap)
         assert new_state == ApplicationState.CONFIRMATION
+
+
+# =========================================================================
+# SmartRecruiters-specific detection
+# =========================================================================
+
+
+class TestSmartRecruitersDetection:
+    def test_sso_sign_in_field_returns_login_wall(self):
+        """SSO/sign-in labelled field triggers LOGIN_WALL."""
+        machine = SmartRecruitersStateMachine()
+        snap = _snap(
+            url="https://jobs.smartrecruiters.com/company/job-123",
+            fields=[
+                FieldInfo(selector="#sso", input_type="text", label="SSO Login"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_sign_in_label_returns_login_wall(self):
+        """Label containing 'sign in' triggers LOGIN_WALL when not on /apply URL."""
+        machine = SmartRecruitersStateMachine()
+        snap = _snap(
+            url="https://jobs.smartrecruiters.com/company/job-123/sign-in",
+            fields=[
+                FieldInfo(selector="#signin", input_type="text", label="Sign In with Email"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_apply_url_delegates_to_field_detection(self):
+        """/apply in URL routes to field-based detection (contact info)."""
+        machine = SmartRecruitersStateMachine()
+        snap = _snap(
+            url="https://jobs.smartrecruiters.com/company/job-123/apply",
+            fields=[
+                FieldInfo(selector="#fn", input_type="text", label="First Name"),
+                FieldInfo(selector="#em", input_type="email", label="Email"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_apply_in_page_text_delegates_to_field_detection(self):
+        """'apply' in first 200 chars of page text routes to field-based detection."""
+        machine = SmartRecruitersStateMachine()
+        snap = _snap(
+            url="https://jobs.smartrecruiters.com/company/job-123",
+            text="Apply for this job at Acme Corp",
+            fields=[
+                FieldInfo(selector="#cv", input_type="file", label="Resume"),
+            ],
+            has_files=True,
+        )
+        assert machine.detect_state(snap) == ApplicationState.RESUME_UPLOAD
+
+    def test_no_sso_no_apply_url_falls_back_to_generic(self):
+        """No SSO fields and no /apply URL → field-based fallback."""
+        machine = SmartRecruitersStateMachine()
+        snap = _snap(
+            url="https://jobs.smartrecruiters.com/company/job-123",
+            fields=[
+                FieldInfo(selector="#q1", input_type="select", label="Years of experience"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.SCREENING_QUESTIONS
+
+    def test_platform_name(self):
+        assert SmartRecruitersStateMachine.platform == "smartrecruiters"
+
+
+# =========================================================================
+# BambooHR-specific detection
+# =========================================================================
+
+
+class TestBambooHRDetection:
+    def test_resume_data_testid_returns_resume_upload(self):
+        """data-testid containing 'resume' triggers RESUME_UPLOAD."""
+        machine = BambooHRStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#resume",
+                    input_type="file",
+                    label="Upload Resume",
+                    attributes={"data-testid": "resume-upload"},
+                ),
+            ],
+            has_files=True,
+        )
+        assert machine.detect_state(snap) == ApplicationState.RESUME_UPLOAD
+
+    def test_cover_letter_data_testid_returns_resume_upload(self):
+        """data-testid containing 'coverLetter' triggers RESUME_UPLOAD."""
+        machine = BambooHRStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#cl",
+                    input_type="file",
+                    label="Cover Letter",
+                    attributes={"data-testid": "coverLetter-upload"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.RESUME_UPLOAD
+
+    def test_login_data_testid_returns_login_wall(self):
+        """data-testid containing 'login' triggers LOGIN_WALL."""
+        machine = BambooHRStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#email",
+                    input_type="email",
+                    label="Email",
+                    attributes={"data-testid": "login-email"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_sign_in_data_testid_returns_login_wall(self):
+        """data-testid containing 'signIn' triggers LOGIN_WALL."""
+        machine = BambooHRStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#pw",
+                    input_type="text",
+                    label="Password",
+                    attributes={"data-testid": "signIn-password"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_no_special_testid_falls_back_to_field_detection(self):
+        """Fields without relevant data-testid fall back to generic detection."""
+        machine = BambooHRStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#fn",
+                    input_type="text",
+                    label="First Name",
+                    attributes={"data-testid": "applicant-firstName"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_no_fields_returns_initial(self):
+        machine = BambooHRStateMachine()
+        snap = _snap()
+        assert machine.detect_state(snap) == ApplicationState.INITIAL
+
+    def test_platform_name(self):
+        assert BambooHRStateMachine.platform == "bamboohr"
+
+
+# =========================================================================
+# Ashby-specific detection
+# =========================================================================
+
+
+class TestAshbyDetection:
+    def test_personal_information_text_returns_contact_info(self):
+        """'personal information' in page text triggers CONTACT_INFO."""
+        machine = AshbyStateMachine()
+        snap = _snap(
+            text="Personal Information\nPlease fill in your details below.",
+            fields=[
+                FieldInfo(selector="#fn", input_type="text", label="First Name"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_resume_text_with_file_input_returns_resume_upload(self):
+        """'resume' in text + has_file_inputs triggers RESUME_UPLOAD."""
+        machine = AshbyStateMachine()
+        snap = _snap(
+            text="Upload your resume or CV to continue.",
+            has_files=True,
+            fields=[
+                FieldInfo(selector="#cv", input_type="file", label="Resume"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.RESUME_UPLOAD
+
+    def test_resume_text_without_file_input_falls_through(self):
+        """'resume' in text but no file inputs → falls through to field detection."""
+        machine = AshbyStateMachine()
+        snap = _snap(
+            text="Attach your resume below.",
+            has_files=False,
+            fields=[
+                FieldInfo(selector="#fn", input_type="text", label="First Name"),
+            ],
+        )
+        # No file inputs, so 'resume' check fails; falls through to _detect_by_fields
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_additional_text_returns_screening_questions(self):
+        """'additional' in page text triggers SCREENING_QUESTIONS."""
+        machine = AshbyStateMachine()
+        snap = _snap(
+            text="Additional questions to help us learn more about you.",
+            fields=[
+                FieldInfo(selector="#q1", input_type="textarea", label="Tell us about yourself"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.SCREENING_QUESTIONS
+
+    def test_screening_text_returns_screening_questions(self):
+        """'screening' in page text triggers SCREENING_QUESTIONS."""
+        machine = AshbyStateMachine()
+        snap = _snap(
+            text="Screening questions — please answer all questions honestly.",
+        )
+        assert machine.detect_state(snap) == ApplicationState.SCREENING_QUESTIONS
+
+    def test_no_matching_text_falls_back_to_field_detection(self):
+        """No matching text sections → generic field-based detection."""
+        machine = AshbyStateMachine()
+        snap = _snap(
+            text="Welcome to our careers page.",
+            fields=[
+                FieldInfo(selector="#q1", input_type="select", label="Years of experience"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.SCREENING_QUESTIONS
+
+    def test_platform_name(self):
+        assert AshbyStateMachine.platform == "ashby"
+
+
+# =========================================================================
+# Jobvite-specific detection
+# =========================================================================
+
+
+class TestJobviteDetection:
+    def test_jv_login_id_returns_login_wall(self):
+        """Field with jv- prefix and 'login' in id triggers LOGIN_WALL."""
+        machine = JobviteStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#jv-login-email",
+                    input_type="email",
+                    label="Email",
+                    attributes={"id": "jv-login-email"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_jv_sign_in_id_returns_login_wall(self):
+        """Field with jv- prefix and 'sign' in id triggers LOGIN_WALL."""
+        machine = JobviteStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#jv-sign-in-pw",
+                    input_type="text",
+                    label="Password",
+                    attributes={"id": "jv-sign-in-pw"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_jv_resume_id_returns_resume_upload(self):
+        """Field with jv- prefix and 'resume' in id triggers RESUME_UPLOAD."""
+        machine = JobviteStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#jv-resume-upload",
+                    input_type="file",
+                    label="Upload Resume",
+                    attributes={"id": "jv-resume-upload"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.RESUME_UPLOAD
+
+    def test_jv_cv_id_returns_resume_upload(self):
+        """Field with jv- prefix and 'cv' in id triggers RESUME_UPLOAD."""
+        machine = JobviteStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#jv-cv-file",
+                    input_type="file",
+                    label="CV",
+                    attributes={"id": "jv-cv-file"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.RESUME_UPLOAD
+
+    def test_jv_prefix_other_id_falls_back_to_field_detection(self):
+        """jv-prefixed field with no special keyword → field-based fallback."""
+        machine = JobviteStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#jv-first-name",
+                    input_type="text",
+                    label="First Name",
+                    attributes={"id": "jv-first-name"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_non_jv_prefix_falls_back_to_field_detection(self):
+        """Fields without jv- prefix use generic detection."""
+        machine = JobviteStateMachine()
+        snap = _snap(
+            fields=[
+                FieldInfo(
+                    selector="#email",
+                    input_type="email",
+                    label="Email",
+                    attributes={"id": "email"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_platform_name(self):
+        assert JobviteStateMachine.platform == "jobvite"
+
+
+# =========================================================================
+# iCIMS-specific detection
+# =========================================================================
+
+
+class TestICIMSDetection:
+    def test_portal_url_sign_in_returns_login_wall(self):
+        """/portal/ URL + 'sign in' text triggers LOGIN_WALL."""
+        machine = ICIMSStateMachine()
+        snap = _snap(
+            url="https://careers.company.icims.com/portal/apply/step1",
+            text="Sign in to your iCIMS account to continue.",
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_portal_url_create_account_returns_login_wall(self):
+        """/portal/ URL + 'create account' text triggers LOGIN_WALL."""
+        machine = ICIMSStateMachine()
+        snap = _snap(
+            url="https://careers.company.icims.com/portal/apply/step1",
+            text="Create account to apply for this position.",
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_portal_url_upload_with_file_returns_resume_upload(self):
+        """/portal/ URL + 'upload' text + file inputs triggers RESUME_UPLOAD."""
+        machine = ICIMSStateMachine()
+        snap = _snap(
+            url="https://careers.company.icims.com/portal/apply/step2",
+            text="Upload your resume to continue.",
+            has_files=True,
+            fields=[
+                FieldInfo(selector="#resume", input_type="file", label="Resume"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.RESUME_UPLOAD
+
+    def test_portal_url_upload_without_file_inputs_falls_through(self):
+        """/portal/ URL + 'upload' text but no file inputs → field-based detection."""
+        machine = ICIMSStateMachine()
+        snap = _snap(
+            url="https://careers.company.icims.com/portal/apply/step2",
+            text="Upload your resume to continue.",
+            has_files=False,
+            fields=[
+                FieldInfo(selector="#fn", input_type="text", label="First Name"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_non_portal_url_falls_back_to_field_detection(self):
+        """URL without /portal/ → field-based detection (iCIMS_* name check + fallback)."""
+        machine = ICIMSStateMachine()
+        snap = _snap(
+            url="https://careers.company.icims.com/jobs/1234/apply",
+            fields=[
+                FieldInfo(
+                    selector="#icims-field",
+                    input_type="text",
+                    label="First Name",
+                    attributes={"name": "iCIMS_FirstName"},
+                ),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_portal_url_normal_form_falls_to_field_detection(self):
+        """/portal/ URL with no sign-in/upload triggers → field-based detection."""
+        machine = ICIMSStateMachine()
+        snap = _snap(
+            url="https://careers.company.icims.com/portal/apply/step3",
+            text="Please answer all screening questions.",
+            fields=[
+                FieldInfo(selector="#q1", input_type="select", label="Years of experience"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.SCREENING_QUESTIONS
+
+    def test_platform_name(self):
+        assert ICIMSStateMachine.platform == "icims"
+
+
+# =========================================================================
+# Taleo-specific detection
+# =========================================================================
+
+
+class TestTaleoDetection:
+    def test_sign_in_text_with_no_fillable_fields_returns_login_wall(self):
+        """'sign in' + no non-password non-hidden fields → LOGIN_WALL."""
+        machine = TaleoStateMachine()
+        snap = _snap(
+            url="https://company.taleo.net/careersection/apply",
+            text="Sign in to your Oracle Taleo account to proceed.",
+            fields=[],
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_create_account_text_with_no_fillable_fields_returns_login_wall(self):
+        """'create an account' + no non-hidden non-password fields → LOGIN_WALL."""
+        machine = TaleoStateMachine()
+        snap = _snap(
+            url="https://company.taleo.net/careersection/apply",
+            text="Create an account to apply for this job.",
+            fields=[],
+        )
+        assert machine.detect_state(snap) == ApplicationState.LOGIN_WALL
+
+    def test_sign_in_text_with_fillable_fields_falls_through(self):
+        """'sign in' text but there ARE non-password fillable fields → no LOGIN_WALL."""
+        machine = TaleoStateMachine()
+        snap = _snap(
+            url="https://company.taleo.net/careersection/apply",
+            text="Sign in or fill in your details below.",
+            fields=[
+                FieldInfo(selector="#fn", input_type="text", label="First Name"),
+            ],
+        )
+        # The condition requires NO fillable non-password fields to return LOGIN_WALL
+        # With a fillable text field, it falls through to _detect_by_fields
+        state = machine.detect_state(snap)
+        assert state != ApplicationState.LOGIN_WALL
+
+    def test_requisition_url_without_apply_returns_initial(self):
+        """URL with 'requisition' but not 'apply' → INITIAL (job description page)."""
+        machine = TaleoStateMachine()
+        snap = _snap(
+            url="https://company.taleo.net/careersection/requisition/12345",
+            text="Software Engineer at Acme Corp\nRequirements: Python, SQL",
+        )
+        assert machine.detect_state(snap) == ApplicationState.INITIAL
+
+    def test_requisition_url_with_apply_falls_through(self):
+        """URL with both 'requisition' and 'apply' → not treated as initial."""
+        machine = TaleoStateMachine()
+        snap = _snap(
+            url="https://company.taleo.net/careersection/requisition/12345/apply",
+            text="Apply for Software Engineer",
+            fields=[
+                FieldInfo(selector="#fn", input_type="text", label="First Name"),
+            ],
+        )
+        # 'apply' in URL prevents INITIAL return, falls to _detect_by_fields
+        assert machine.detect_state(snap) != ApplicationState.INITIAL
+
+    def test_normal_apply_page_uses_field_detection(self):
+        """Standard Taleo apply page with contact fields → CONTACT_INFO."""
+        machine = TaleoStateMachine()
+        snap = _snap(
+            url="https://company.taleo.net/careersection/apply/step1",
+            text="Enter your personal information.",
+            fields=[
+                FieldInfo(selector="#fn", input_type="text", label="First Name"),
+                FieldInfo(selector="#ln", input_type="text", label="Last Name"),
+                FieldInfo(selector="#em", input_type="email", label="Email"),
+            ],
+        )
+        assert machine.detect_state(snap) == ApplicationState.CONTACT_INFO
+
+    def test_platform_name(self):
+        assert TaleoStateMachine.platform == "taleo"
+
+
+# =========================================================================
+# get_state_machine() — all 12 platforms
+# =========================================================================
+
+
+class TestGetStateMachine:
+    @pytest.mark.parametrize("platform,expected_platform_attr", [
+        ("greenhouse", "greenhouse"),
+        ("lever", "lever"),
+        ("linkedin", "linkedin"),
+        ("indeed", "indeed"),
+        ("workday", "workday"),
+        ("smartrecruiters", "smartrecruiters"),
+        ("bamboohr", "bamboohr"),
+        ("ashby", "ashby"),
+        ("jobvite", "jobvite"),
+        ("icims", "icims"),
+        ("taleo", "taleo"),
+        ("generic", "generic"),
+    ])
+    def test_returns_correct_machine(self, platform, expected_platform_attr):
+        machine = get_state_machine(platform)
+        assert machine.platform == expected_platform_attr
+
+    def test_smartrecruiters_returns_correct_type(self):
+        machine = get_state_machine("smartrecruiters")
+        assert isinstance(machine, SmartRecruitersStateMachine)
+
+    def test_bamboohr_returns_correct_type(self):
+        machine = get_state_machine("bamboohr")
+        assert isinstance(machine, BambooHRStateMachine)
+
+    def test_ashby_returns_correct_type(self):
+        machine = get_state_machine("ashby")
+        assert isinstance(machine, AshbyStateMachine)
+
+    def test_jobvite_returns_correct_type(self):
+        machine = get_state_machine("jobvite")
+        assert isinstance(machine, JobviteStateMachine)
+
+    def test_icims_returns_correct_type(self):
+        machine = get_state_machine("icims")
+        assert isinstance(machine, ICIMSStateMachine)
+
+    def test_taleo_returns_correct_type(self):
+        machine = get_state_machine("taleo")
+        assert isinstance(machine, TaleoStateMachine)
+
+    def test_all_new_platforms_return_fresh_instances(self):
+        """Each call returns a new instance — no shared state."""
+        for platform in ("smartrecruiters", "bamboohr", "ashby", "jobvite", "icims", "taleo"):
+            m1 = get_state_machine(platform)
+            m2 = get_state_machine(platform)
+            assert m1 is not m2
+
+    def test_all_new_platforms_start_at_initial(self):
+        for platform in ("smartrecruiters", "bamboohr", "ashby", "jobvite", "icims", "taleo"):
+            machine = get_state_machine(platform)
+            assert machine.current_state == ApplicationState.INITIAL
+
+    def test_unknown_platform_still_returns_generic(self):
+        machine = get_state_machine("workable")
+        assert isinstance(machine, GenericStateMachine)
+
+
+# =========================================================================
+# URL-based platform detection (_detect_ats_platform from ext_adapter.py)
+# =========================================================================
+
+
+class TestNewPlatformURLDetection:
+    """Tests for URL pattern matching of the 6 new platforms in _detect_ats_platform."""
+
+    @pytest.fixture(autouse=True)
+    def import_detector(self):
+        from jobpulse.ext_adapter import _detect_ats_platform
+        self._detect = _detect_ats_platform
+
+    def test_smartrecruiters_url(self):
+        assert self._detect("https://jobs.smartrecruiters.com/AcmeCorp/apply") == "smartrecruiters"
+
+    def test_smartrecruiters_url_case_insensitive(self):
+        assert self._detect("https://jobs.SmartRecruiters.COM/company/job") == "smartrecruiters"
+
+    def test_bamboohr_url(self):
+        assert self._detect("https://acme.bamboohr.com/jobs/123/apply") == "bamboohr"
+
+    def test_bamboohr_url_case_insensitive(self):
+        assert self._detect("https://ACME.BambooHR.COM/jobs/123") == "bamboohr"
+
+    def test_ashby_hq_url(self):
+        assert self._detect("https://jobs.ashbyhq.com/acme/software-engineer") == "ashby"
+
+    def test_ashby_jobs_url(self):
+        assert self._detect("https://jobs.ashby.com/acme/software-engineer/apply") == "ashby"
+
+    def test_ashby_hq_subdomain_url(self):
+        assert self._detect("https://acme.ashbyhq.com/apply") == "ashby"
+
+    def test_jobvite_url(self):
+        assert self._detect("https://jobs.jobvite.com/acmecorp/job/abc123/apply") == "jobvite"
+
+    def test_jobvite_url_case_insensitive(self):
+        assert self._detect("https://jobs.JOBVITE.COM/company/apply") == "jobvite"
+
+    def test_icims_url(self):
+        assert self._detect("https://careers.acme.icims.com/portal/apply/step1") == "icims"
+
+    def test_icims_url_case_insensitive(self):
+        assert self._detect("https://careers.acme.ICIMS.COM/jobs/apply") == "icims"
+
+    def test_taleo_url(self):
+        assert self._detect("https://acme.taleo.net/careersection/apply") == "taleo"
+
+    def test_taleo_oracle_careers_url(self):
+        assert self._detect("https://www.oracle.com/careers/engineering/job/123") == "taleo"
+
+    def test_taleo_url_case_insensitive(self):
+        assert self._detect("https://acme.TALEO.NET/apply") == "taleo"
+
+    def test_greenhouse_still_detected(self):
+        """Ensure existing platforms unaffected."""
+        assert self._detect("https://boards.greenhouse.io/acme/jobs/123") == "greenhouse"
+
+    def test_unknown_url_returns_generic(self):
+        assert self._detect("https://careers.example.com/apply") == "generic"
+
+    def test_empty_url_returns_generic(self):
+        assert self._detect("") == "generic"

@@ -77,6 +77,21 @@ def bridge():
     b.screenshot = AsyncMock(return_value=b"screenshot")
     b.select_option = AsyncMock()
     b.check = AsyncMock()
+    # v2 form engine methods
+    b.fill_radio_group = AsyncMock()
+    b.fill_custom_select = AsyncMock()
+    b.fill_autocomplete = AsyncMock()
+    b.fill_tag_input = AsyncMock()
+    b.fill_date = AsyncMock()
+    b.scroll_to = AsyncMock()
+    b.force_click = AsyncMock()
+    b.check_consent_boxes = AsyncMock()
+    b.rescan_after_fill = AsyncMock(return_value={"validation_errors": []})
+    b.wait_for_apply = AsyncMock(return_value={"waited_ms": 0, "apply_diagnostics": []})
+    # MV3 state persistence — return None by default (no saved progress)
+    b.get_form_progress = AsyncMock(return_value=None)
+    b.save_form_progress = AsyncMock(return_value=True)
+    b.clear_form_progress = AsyncMock(return_value=True)
     return b
 
 
@@ -101,6 +116,9 @@ def orchestrator(bridge, tmp_path):
     # Mock SSO handler
     orch.sso = MagicMock()
     orch.sso.detect_sso = MagicMock(return_value=None)
+    # Use temp GotchasDB to avoid touching production data
+    from jobpulse.form_engine.gotchas import GotchasDB
+    orch.gotchas = GotchasDB(db_path=str(tmp_path / "gotchas.db"))
     return orch
 
 
@@ -700,9 +718,431 @@ class TestExecuteAction:
     @pytest.mark.asyncio
     async def test_check_action(self, orchestrator, bridge):
         await orchestrator._execute_action({"type": "check", "selector": "#cb"})
-        bridge.check.assert_called_once_with("#cb")
+        bridge.check.assert_called_once_with("#cb", True)
 
     @pytest.mark.asyncio
     async def test_upload_action(self, orchestrator, bridge):
         await orchestrator._execute_action({"type": "upload", "selector": "#file", "file_path": "/tmp/cv.pdf"})
-        bridge.upload.assert_called_once_with("#file", "/tmp/cv.pdf")
+        bridge.upload.assert_called_once_with("#file", Path("/tmp/cv.pdf"))
+
+
+# =========================================================================
+# Login handler
+# =========================================================================
+
+
+class TestHandleLogin:
+    @pytest.mark.asyncio
+    async def test_login_fills_email_and_password(self, orchestrator, bridge):
+        """With a known account, _handle_login fills both email and password."""
+        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
+            orchestrator.accounts.create_account("login.example.com")
+
+        login_snap = _snap_dict(
+            url="https://login.example.com/sign-in",
+            text="Sign in to continue",
+            fields=[
+                {"selector": "#email", "input_type": "email", "label": "Email"},
+                {"selector": "#pass", "input_type": "text", "label": "Password"},
+            ],
+            buttons=[
+                {"selector": "#sign-in", "text": "Sign In", "enabled": True, "type": "button"},
+            ],
+        )
+        post_snap = _snap_dict(
+            url="https://login.example.com/dashboard",
+            text="Welcome back",
+        )
+        bridge.get_snapshot.return_value = post_snap
+
+        result = await orchestrator._handle_login(login_snap, "generic")
+
+        fill_calls = [str(c) for c in bridge.fill.call_args_list]
+        selectors = [c.args[0] for c in bridge.fill.call_args_list]
+        assert "#email" in selectors
+        assert "#pass" in selectors
+
+    @pytest.mark.asyncio
+    async def test_login_no_account_redirects_to_signup(self, orchestrator, bridge):
+        """No account + snapshot has signup button → clicks signup."""
+        snap = _snap_dict(
+            url="https://noac.example.com/login",
+            text="Log in",
+            buttons=[
+                {"selector": "#signup-link", "text": "Create Account", "enabled": True, "type": "button"},
+            ],
+        )
+        after_click = _snap_dict(url="https://noac.example.com/register", text="Create account")
+        bridge.get_snapshot.return_value = after_click
+
+        result = await orchestrator._handle_login(snap, "generic")
+
+        bridge.click.assert_called_once_with("#signup-link")
+        assert result["url"] == "https://noac.example.com/register"
+
+    @pytest.mark.asyncio
+    async def test_login_no_account_no_signup_returns_snapshot(self, orchestrator, bridge):
+        """No account, no signup button → returns original snapshot unchanged."""
+        snap = _snap_dict(
+            url="https://noac2.example.com/login",
+            text="Log in",
+            buttons=[
+                {"selector": "#about", "text": "About Us", "enabled": True, "type": "button"},
+            ],
+        )
+        result = await orchestrator._handle_login(snap, "generic")
+
+        bridge.click.assert_not_called()
+        assert result["url"] == "https://noac2.example.com/login"
+
+    @pytest.mark.asyncio
+    async def test_login_verifies_success_before_marking(self, orchestrator, bridge):
+        """After clicking sign-in, if post-login page still looks like login, do NOT mark success."""
+        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
+            orchestrator.accounts.create_account("verify.example.com")
+
+        snap = _snap_dict(
+            url="https://verify.example.com/login",
+            text="Sign in to continue",
+            fields=[
+                {"selector": "#email", "input_type": "email", "label": "Email"},
+                {"selector": "#pass", "input_type": "text", "label": "Password"},
+            ],
+            buttons=[
+                {"selector": "#btn", "text": "Sign In", "enabled": True, "type": "button"},
+            ],
+        )
+        # Post-login snapshot still looks like a login page
+        still_login = _snap_dict(
+            url="https://verify.example.com/login",
+            text="sign in — invalid password",
+        )
+        bridge.fill.return_value = MagicMock(success=True)
+        bridge.get_snapshot.return_value = still_login
+
+        with patch.object(orchestrator.accounts, "mark_login_success") as mock_mark:
+            await orchestrator._handle_login(snap, "generic")
+            mock_mark.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_login_fill_failure_returns_early(self, orchestrator, bridge):
+        """TimeoutError on email fill → returns snapshot without clicking sign-in."""
+        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
+            orchestrator.accounts.create_account("timeout.example.com")
+
+        snap = _snap_dict(
+            url="https://timeout.example.com/login",
+            text="Sign in",
+            fields=[
+                {"selector": "#email", "input_type": "email", "label": "Email"},
+                {"selector": "#pass", "input_type": "text", "label": "Password"},
+            ],
+            buttons=[
+                {"selector": "#btn", "text": "Log In", "enabled": True, "type": "button"},
+            ],
+        )
+        # email fill raises TimeoutError; password fill is fine
+        bridge.fill.side_effect = [TimeoutError("timeout"), MagicMock(success=True)]
+        bridge.get_snapshot.return_value = _snap_dict(url="https://timeout.example.com/dashboard")
+
+        result = await orchestrator._handle_login(snap, "generic")
+
+        # Should not have clicked sign-in because email fill failed
+        bridge.click.assert_not_called()
+
+
+# =========================================================================
+# Signup handler
+# =========================================================================
+
+
+class TestHandleSignup:
+    @pytest.mark.asyncio
+    async def test_signup_creates_account_fills_fields(self, orchestrator, bridge):
+        """_handle_signup creates an account and fills all profile fields."""
+        snap = _snap_dict(
+            url="https://signup.example.com/register",
+            text="Create your account",
+            fields=[
+                {"selector": "#email", "input_type": "email", "label": "Email"},
+                {"selector": "#pass", "input_type": "text", "label": "Password"},
+                {"selector": "#fname", "input_type": "text", "label": "First Name"},
+                {"selector": "#lname", "input_type": "text", "label": "Last Name"},
+                {"selector": "#phone", "input_type": "tel", "label": "Phone"},
+            ],
+            buttons=[
+                {"selector": "#create", "text": "Create Account", "enabled": True, "type": "button"},
+            ],
+        )
+        after_snap = _snap_dict(url="https://signup.example.com/verify", text="Check your email")
+        bridge.get_snapshot.return_value = after_snap
+
+        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
+            with patch("jobpulse.applicator.PROFILE", {
+                "first_name": "Yash",
+                "last_name": "Bishnoi",
+                "email": "yash@test.com",
+                "phone": "+447000000000",
+            }):
+                result = await orchestrator._handle_signup(snap, "generic")
+
+        filled_selectors = [c.args[0] for c in bridge.fill.call_args_list]
+        assert "#email" in filled_selectors
+        assert "#fname" in filled_selectors
+        assert "#lname" in filled_selectors
+        # Account should now exist for this domain
+        assert orchestrator.accounts.has_account("signup.example.com")
+
+
+# =========================================================================
+# Pre-submit gate
+# =========================================================================
+
+
+class TestPreSubmitGate:
+    @pytest.mark.asyncio
+    async def test_gate_passes_on_good_answers(self, orchestrator, bridge, cv_path):
+        """Gate passes → result is success=True with gate_score populated."""
+        form_snap = _snap_dict(
+            fields=[{"selector": "#q", "input_type": "text", "label": "Name"}],
+        )
+        confirm_snap = _snap_dict(text="Thank you for applying")
+        bridge.get_snapshot.side_effect = [
+            form_snap, form_snap,
+            confirm_snap, confirm_snap, confirm_snap,
+        ]
+        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
+        bridge.fill.return_value = MagicMock(success=True)
+
+        company_research = MagicMock()
+        with patch("jobpulse.pre_submit_gate.PreSubmitGate") as MockGate:
+            from jobpulse.pre_submit_gate import GateResult
+            MockGate.return_value.review.return_value = GateResult(passed=True, score=8.5)
+            result = await orchestrator.apply(
+                url="https://example.com",
+                platform="generic",
+                cv_path=cv_path,
+                company_research=company_research,
+            )
+
+        assert result["success"] is True
+        assert result.get("gate_score") == 8.5
+
+    @pytest.mark.asyncio
+    async def test_gate_blocks_on_low_score(self, orchestrator, bridge, cv_path):
+        """Gate returns passed=False → result includes needs_human_review."""
+        form_snap = _snap_dict(
+            fields=[{"selector": "#q", "input_type": "text", "label": "Name"}],
+        )
+        confirm_snap = _snap_dict(text="Thank you for applying")
+        bridge.get_snapshot.side_effect = [
+            form_snap, form_snap,
+            confirm_snap, confirm_snap, confirm_snap,
+        ]
+        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
+        bridge.fill.return_value = MagicMock(success=True)
+
+        company_research = MagicMock()
+        with patch("jobpulse.pre_submit_gate.PreSubmitGate") as MockGate:
+            from jobpulse.pre_submit_gate import GateResult
+            MockGate.return_value.review.return_value = GateResult(
+                passed=False, score=5.0, weaknesses=["Too generic"]
+            )
+            result = await orchestrator.apply(
+                url="https://example.com",
+                platform="generic",
+                cv_path=cv_path,
+                company_research=company_research,
+            )
+
+        assert result["success"] is False
+        assert result.get("needs_human_review") is True
+
+    def test_gate_import_error_blocks_submission(self, orchestrator):
+        """ImportError on PreSubmitGate → passed=False, fail-closed."""
+        company_research = MagicMock()
+        with patch.dict("sys.modules", {"jobpulse.pre_submit_gate": None}):
+            gate_result = orchestrator._run_pre_submit_gate(
+                custom_answers={"q1": "answer"},
+                jd_keywords=["python"],
+                company_research=company_research,
+            )
+        assert gate_result.passed is False
+
+
+# =========================================================================
+# MV3 persistence
+# =========================================================================
+
+
+class TestMV3Persistence:
+    @pytest.mark.asyncio
+    async def test_get_form_progress_recovery(self, orchestrator, bridge, cv_path):
+        """Pre-filled fields from saved progress are skipped during form fill."""
+        # Saved progress says #q1 is already filled
+        bridge.get_form_progress.return_value = {
+            "filled_fields": [{"selector": "#q1"}],
+            "current_page": 1,
+        }
+        form_snap = _snap_dict(
+            url="https://example.com/apply",
+            fields=[
+                {"selector": "#q1", "input_type": "text", "label": "Question 1"},
+                {"selector": "#q2", "input_type": "text", "label": "Question 2"},
+            ],
+        )
+        confirm_snap = _snap_dict(text="Thank you for applying")
+        bridge.get_snapshot.side_effect = [
+            form_snap, form_snap,
+            confirm_snap, confirm_snap, confirm_snap,
+        ]
+        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
+        bridge.fill.return_value = MagicMock(success=True)
+
+        await orchestrator.apply(
+            url="https://example.com/apply",
+            platform="generic",
+            cv_path=cv_path,
+            profile={"q1": "val1", "q2": "val2"},
+        )
+
+        # bridge.fill should NOT have been called for #q1 (it was pre-filled)
+        fill_selectors = [c.args[0] for c in bridge.fill.call_args_list]
+        assert "#q1" not in fill_selectors
+
+    @pytest.mark.asyncio
+    async def test_save_form_progress_after_fill(self, orchestrator, bridge, cv_path):
+        """bridge.save_form_progress is called after a successful fill action."""
+        bridge.get_form_progress.return_value = None
+        # Use an email field — state machine reliably generates a fill action for it
+        form_snap = _snap_dict(
+            url="https://example.com/apply",
+            fields=[
+                {"selector": "#email", "input_type": "email", "label": "Email"},
+            ],
+        )
+        confirm_snap = _snap_dict(text="Thank you for applying")
+        bridge.get_snapshot.side_effect = [
+            form_snap, form_snap,
+            confirm_snap, confirm_snap, confirm_snap,
+        ]
+        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
+        bridge.fill.return_value = MagicMock(success=True)
+
+        await orchestrator.apply(
+            url="https://example.com/apply",
+            platform="generic",
+            cv_path=cv_path,
+            profile={"email": "y@test.com"},
+        )
+
+        bridge.save_form_progress.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_clear_form_progress_after_verified_submit(self, orchestrator, bridge, cv_path):
+        """After verified submission, bridge.clear_form_progress is called."""
+        bridge.get_form_progress.return_value = None
+        submit_snap = _snap_dict(
+            url="https://example.com/apply",
+            fields=[],
+            buttons=[
+                {"selector": "#submit", "text": "Submit Application", "enabled": True, "type": "button"},
+            ],
+            text="Review your answers",
+        )
+        bridge.get_snapshot.side_effect = [
+            submit_snap, submit_snap,
+            submit_snap, submit_snap, submit_snap,
+        ]
+        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
+
+        # Mock _verify_submission to return verified
+        with patch.object(orchestrator, "_verify_submission", AsyncMock(return_value={"verified": True})):
+            result = await orchestrator.apply(
+                url="https://example.com/apply",
+                platform="generic",
+                cv_path=cv_path,
+            )
+
+        bridge.clear_form_progress.assert_called()
+
+
+# =========================================================================
+# Gotcha application
+# =========================================================================
+
+
+class TestGotchaApplication:
+    @pytest.mark.asyncio
+    async def test_gotcha_use_force_click_modifies_action(self, orchestrator, bridge):
+        """use_force_click solution → bridge.force_click called instead of bridge.fill."""
+        orchestrator.gotchas.store(
+            "example.com", "#tricky-btn", "click fails silently", "use_force_click"
+        )
+        # Action with type=fill but gotcha redirects to force_click
+        action = {"type": "fill", "selector": "#tricky-btn", "value": "test"}
+        modified = orchestrator._apply_gotcha_to_action(action, "use_force_click")
+        assert modified["type"] == "force_click"
+
+        await orchestrator._execute_action(modified)
+        bridge.force_click.assert_called_once_with("#tricky-btn")
+
+    @pytest.mark.asyncio
+    async def test_gotcha_use_selector_swaps_selector(self, orchestrator, bridge):
+        """use_selector:#alt solution → new selector is used in action."""
+        action = {"type": "fill", "selector": "#old", "value": "hello"}
+        modified = orchestrator._apply_gotcha_to_action(action, "use_selector:#alt-input")
+        assert modified["selector"] == "#alt-input"
+        assert modified["type"] == "fill"
+
+        await orchestrator._execute_action(modified)
+        bridge.fill.assert_called_once_with("#alt-input", "hello")
+
+    @pytest.mark.asyncio
+    async def test_gotcha_scroll_first_pre_step(self, orchestrator, bridge):
+        """scroll_first solution → bridge.scroll_to called as pre-step."""
+        await orchestrator._execute_gotcha_pre_steps("scroll_first", "#target-field")
+        bridge.scroll_to.assert_called_once_with("#target-field")
+
+
+# =========================================================================
+# Execute action — v2 action types
+# =========================================================================
+
+
+class TestExecuteActionV2Types:
+    @pytest.mark.asyncio
+    async def test_fill_radio_group_action(self, orchestrator, bridge):
+        await orchestrator._execute_action(
+            {"type": "fill_radio_group", "selector": "#radio", "value": "Yes"}
+        )
+        bridge.fill_radio_group.assert_called_once_with("#radio", "Yes")
+
+    @pytest.mark.asyncio
+    async def test_fill_custom_select_action(self, orchestrator, bridge):
+        await orchestrator._execute_action(
+            {"type": "fill_custom_select", "selector": "#cust-dd", "value": "Option B"}
+        )
+        bridge.fill_custom_select.assert_called_once_with("#cust-dd", "Option B")
+
+    @pytest.mark.asyncio
+    async def test_fill_autocomplete_action(self, orchestrator, bridge):
+        await orchestrator._execute_action(
+            {"type": "fill_autocomplete", "selector": "#ac", "value": "London"}
+        )
+        bridge.fill_autocomplete.assert_called_once_with("#ac", "London")
+
+    @pytest.mark.asyncio
+    async def test_fill_tag_input_action(self, orchestrator, bridge):
+        """fill_tag_input splits comma-separated value into list."""
+        await orchestrator._execute_action(
+            {"type": "fill_tag_input", "selector": "#tags", "value": "Python, Django, REST"}
+        )
+        bridge.fill_tag_input.assert_called_once_with("#tags", ["Python", "Django", "REST"])
+
+    @pytest.mark.asyncio
+    async def test_fill_date_action(self, orchestrator, bridge):
+        await orchestrator._execute_action(
+            {"type": "fill_date", "selector": "#dob", "value": "1995-01-15"}
+        )
+        bridge.fill_date.assert_called_once_with("#dob", "1995-01-15")

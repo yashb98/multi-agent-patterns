@@ -168,11 +168,24 @@ class ApplicationOrchestrator:
         jd_keywords: list[str],
         company_research: "CompanyResearch",
     ):
-        """Run PreSubmitGate on the filled answers. Returns GateResult (pass-open on error)."""
+        """Run PreSubmitGate on the filled answers.
+
+        Fail-closed on import/setup errors (blocks submission).
+        Pass-open only on transient runtime errors during review (with score=0).
+        """
+        # Import outside try block — import failure = hard stop
         try:
             from jobpulse.pre_submit_gate import PreSubmitGate, GateResult
+        except ImportError as exc:
+            logger.error("PreSubmitGate import failed — blocking submission: %s", exc)
+            class _FakeGateResult:
+                passed = False
+                score = 0.0
+                weaknesses = [f"PreSubmitGate unavailable: {exc}"]
+                suggestions = ["Fix PreSubmitGate import before running pipeline"]
+            return _FakeGateResult()
 
-            # Build filled_answers: strip internal _-prefixed keys
+        try:
             filled = {
                 k: str(v)
                 for k, v in custom_answers.items()
@@ -185,9 +198,8 @@ class ApplicationOrchestrator:
                 company_research=company_research,
             )
         except Exception as exc:
-            logger.warning("PreSubmitGate error — passing by default: %s", exc)
-            from jobpulse.pre_submit_gate import GateResult
-            return GateResult(passed=True, score=0.0)
+            logger.warning("PreSubmitGate runtime error — passing with score=0: %s", exc)
+            return GateResult(passed=True, score=0.0, weaknesses=[f"Gate error: {exc}"])
 
     async def _navigate_to_form(
         self, url: str, platform: str, steps: list[dict]
@@ -346,22 +358,53 @@ class ApplicationOrchestrator:
         email, password = self.accounts.get_credentials(domain)
         logger.info("Logging into %s", domain)
 
+        filled_email = False
+        filled_password = False
         for field in snapshot.get("fields", []):
             label = field.get("label", "").lower()
             ftype = field.get("type", "")
-            if ftype == "email" or "email" in label:
-                await self.bridge.fill(field["selector"], email)
-            elif ftype == "password" or "password" in label:
-                await self.bridge.fill(field["selector"], password)
+            try:
+                if ftype == "email" or "email" in label:
+                    await self.bridge.fill(field["selector"], email)
+                    filled_email = True
+                elif ftype == "password" or "password" in label:
+                    await self.bridge.fill(field["selector"], password)
+                    filled_password = True
+            except (TimeoutError, ConnectionError) as exc:
+                logger.warning("Login fill failed for %s: %s", field.get("selector"), exc)
 
-        import re
+        if not filled_email or not filled_password:
+            logger.warning("Login: could not fill email=%s password=%s for %s", filled_email, filled_password, domain)
+            return snapshot
+
+        import re as _re
+        clicked = False
         for btn in snapshot.get("buttons", []):
-            if btn.get("enabled") and re.search(r"(sign\s*in|log\s*in|login)", btn.get("text", ""), re.IGNORECASE):
+            if btn.get("enabled") and _re.search(r"(sign\s*in|log\s*in|login)", btn.get("text", ""), _re.IGNORECASE):
                 await self.bridge.click(btn["selector"])
+                clicked = True
                 break
 
+        if not clicked:
+            logger.warning("Login: no sign-in button found for %s", domain)
+            return snapshot
+
+        # Wait for page transition after login click
+        await asyncio.sleep(2.0)
+        post_login = self._as_dict(await self.bridge.get_snapshot())
+
+        # Verify login succeeded — if we're still on the login page, don't mark success
+        post_url = post_login.get("url", "").lower()
+        post_text = post_login.get("page_text_preview", "").lower()
+        still_login = any(
+            kw in post_text for kw in ("sign in", "log in", "invalid", "incorrect", "wrong password")
+        ) and "login" in post_url
+        if still_login:
+            logger.warning("Login appears to have failed for %s — not marking success", domain)
+            return post_login
+
         self.accounts.mark_login_success(domain)
-        return self._as_dict(await self.bridge.get_snapshot())
+        return post_login
 
     async def _handle_signup(self, snapshot: dict, platform: str) -> dict:
         from jobpulse.applicator import PROFILE
@@ -456,7 +499,7 @@ class ApplicationOrchestrator:
 
         # MV3 recovery: check if we have saved progress from a service worker restart
         current_url = snapshot.get("url", "") if isinstance(snapshot, dict) else getattr(snapshot, "url", "")
-        saved_progress = None
+        filled_selectors: set[str] = set()
         if current_url:
             try:
                 saved_progress = await self.bridge.get_form_progress(current_url)
@@ -464,9 +507,7 @@ class ApplicationOrchestrator:
                     filled_selectors = {f["selector"] for f in saved_progress.get("filled_fields", [])}
                     logger.info("MV3 recovery: resuming with %d pre-filled fields", len(filled_selectors))
             except (TimeoutError, ConnectionError):
-                filled_selectors = set()
-        else:
-            filled_selectors = set()
+                pass  # filled_selectors already initialized as empty set
 
         # Load known gotchas for this domain (learned from Ralph Loop + manual fixes)
         domain = self._extract_domain(current_url) if current_url else platform
@@ -509,14 +550,22 @@ class ApplicationOrchestrator:
                 if sel and sel in filled_selectors:
                     logger.debug("  Skipping pre-filled field %s (MV3 recovery)", str(sel)[:60])
                     continue
-                # Apply known gotchas — if we have a learned workaround for this selector, use it
+                # Apply known gotchas — modify action based on learned workaround
                 gotcha = domain_gotchas.get(str(sel))
                 if gotcha:
-                    logger.info("  Applying gotcha for %s: %s", str(sel)[:40], gotcha["solution"][:60])
+                    solution = gotcha["solution"]
+                    logger.info("  Applying gotcha for %s: %s", str(sel)[:40], solution[:60])
                     self.gotchas.record_usage(domain, str(sel))
+                    action = self._apply_gotcha_to_action(action, solution)
+                    # Re-read type after gotcha modification
+                    atype = getattr(action, "type", None) or (action.get("type", "?") if isinstance(action, dict) else "?")
+                    sel = getattr(action, "selector", None) or (action.get("selector", "?") if isinstance(action, dict) else "?")
 
                 logger.info("  Action %d/%d: %s → %s", i + 1, len(actions), atype, str(sel)[:60])
                 try:
+                    # Pre-action gotcha steps (scroll, wait)
+                    if gotcha:
+                        await self._execute_gotcha_pre_steps(gotcha["solution"], str(sel))
                     await self._execute_action_with_retry(action, tg_stream=tg_stream)
                     # Track filled field for MV3 persistence
                     if sel and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date", "check"):
@@ -593,6 +642,44 @@ class ApplicationOrchestrator:
             snapshot = self._as_dict(await self.bridge.get_snapshot())
 
         return {"success": False, "error": f"Exhausted {MAX_FORM_PAGES} pages", "screenshot": last_screenshot}
+
+    @staticmethod
+    def _apply_gotcha_to_action(action: Any, solution: str) -> Any:
+        """Modify an action based on a gotcha solution string.
+
+        Solution formats:
+            use_force_click              — change action type to force_click
+            scroll_first                 — handled in pre-steps (no action change)
+            wait_before:<ms>             — handled in pre-steps (no action change)
+            use_selector:<new_selector>  — swap selector
+        """
+        if solution.startswith("use_selector:"):
+            new_selector = solution[len("use_selector:"):]
+            if hasattr(action, "model_copy"):
+                return action.model_copy(update={"selector": new_selector})
+            elif isinstance(action, dict):
+                return {**action, "selector": new_selector}
+        elif solution == "use_force_click":
+            if hasattr(action, "model_copy"):
+                return action.model_copy(update={"type": "force_click"})
+            elif isinstance(action, dict):
+                return {**action, "type": "force_click"}
+        # scroll_first, wait_before — handled in _execute_gotcha_pre_steps
+        return action
+
+    async def _execute_gotcha_pre_steps(self, solution: str, selector: str) -> None:
+        """Execute pre-action steps from a gotcha solution (scroll, wait)."""
+        if "scroll_first" in solution:
+            try:
+                await self.bridge.scroll_to(selector)
+            except (TimeoutError, ConnectionError):
+                logger.debug("Gotcha scroll_to failed for %s", selector[:40])
+        if solution.startswith("wait_before:"):
+            try:
+                wait_ms = int(solution.split(":")[1])
+                await asyncio.sleep(wait_ms / 1000.0)
+            except (ValueError, IndexError):
+                await asyncio.sleep(1.0)
 
     async def _execute_action(self, action: Any, tg_stream: Any = None):
         if hasattr(action, "model_dump"):
