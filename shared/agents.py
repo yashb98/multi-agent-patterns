@@ -45,14 +45,12 @@ from shared.context_compression import (  # noqa: F401
     compress_research_notes,
     count_tokens,
     truncate_messages_to_fit,
-    check_context_budget,
     count_messages_tokens,
 )
 from shared.agentic_loop import (  # noqa: F401
     AgentError,
     AGENT_TOOLS,
     register_agent_tool,
-    run_agentic_loop,
 )
 from shared.llm_retry import resilient_llm_call  # noqa: F401
 from shared.streaming import smart_llm_call  # noqa: F401
