@@ -41,26 +41,6 @@ async def test_close_when_not_connected():
 
 
 @pytest.mark.asyncio
-async def test_fill_stubs_raise():
-    """Fill method stubs raise NotImplementedError."""
-    driver = PlaywrightDriver()
-    stub_methods = [
-        ("fill", ("sel", "val")),
-        ("click", ("sel",)),
-        ("select_option", ("sel", "val")),
-        ("check_box", ("sel", True)),
-        ("fill_radio", ("sel", "val")),
-        ("fill_date", ("sel", "val")),
-        ("fill_autocomplete", ("sel", "val")),
-        ("fill_contenteditable", ("sel", "val")),
-        ("upload_file", ("sel", "path")),
-    ]
-    for method_name, args in stub_methods:
-        with pytest.raises(NotImplementedError):
-            await getattr(driver, method_name)(*args)
-
-
-@pytest.mark.asyncio
 async def test_navigate_calls_page_goto():
     """Navigate uses page.goto + networkidle."""
     driver = PlaywrightDriver()
@@ -117,3 +97,128 @@ async def test_scan_validation_errors():
     result = await driver.scan_validation_errors()
     assert result["success"] is True
     assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_fill_returns_verified():
+    """fill() reads back value and verifies."""
+    driver = PlaywrightDriver()
+    mock_el = MagicMock()
+    mock_el.scroll_into_view_if_needed = AsyncMock()
+    mock_el.fill = AsyncMock()
+    mock_el.evaluate = AsyncMock(return_value="John Doe")
+    mock_page = MagicMock()
+    mock_page.query_selector = AsyncMock(return_value=mock_el)
+    driver._page = mock_page
+
+    result = await driver.fill("#name", "John Doe")
+    assert result["success"] is True
+    assert result["value_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_fill_element_not_found():
+    driver = PlaywrightDriver()
+    mock_page = MagicMock()
+    mock_page.query_selector = AsyncMock(return_value=None)
+    driver._page = mock_page
+    result = await driver.fill("#missing", "val")
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_click_success():
+    driver = PlaywrightDriver()
+    mock_el = MagicMock()
+    mock_el.scroll_into_view_if_needed = AsyncMock()
+    mock_el.click = AsyncMock()
+    mock_page = MagicMock()
+    mock_page.query_selector = AsyncMock(return_value=mock_el)
+    driver._page = mock_page
+    result = await driver.click("#btn")
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_box_verifies():
+    driver = PlaywrightDriver()
+    mock_el = MagicMock()
+    mock_el.check = AsyncMock()
+    mock_el.is_checked = AsyncMock(return_value=True)
+    mock_page = MagicMock()
+    mock_page.query_selector = AsyncMock(return_value=mock_el)
+    driver._page = mock_page
+    result = await driver.check_box("#cb", True)
+    assert result["success"] is True
+    assert result["value_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_fill_date_verifies():
+    driver = PlaywrightDriver()
+    mock_el = MagicMock()
+    mock_el.scroll_into_view_if_needed = AsyncMock()
+    mock_el.fill = AsyncMock()
+    mock_el.evaluate = AsyncMock(return_value="2026-04-07")
+    mock_page = MagicMock()
+    mock_page.query_selector = AsyncMock(return_value=mock_el)
+    driver._page = mock_page
+    result = await driver.fill_date("#dob", "2026-04-07")
+    assert result["success"] is True
+    assert result["value_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_upload_file():
+    driver = PlaywrightDriver()
+    mock_el = MagicMock()
+    mock_el.set_input_files = AsyncMock()
+    mock_page = MagicMock()
+    mock_page.query_selector = AsyncMock(return_value=mock_el)
+    driver._page = mock_page
+    result = await driver.upload_file("#file", "/tmp/cv.pdf")
+    assert result["success"] is True
+    assert result["value_set"] == "/tmp/cv.pdf"
+
+
+def test_fuzzy_match_exact():
+    from jobpulse.playwright_driver import _fuzzy_match
+    assert _fuzzy_match("United Kingdom", ["France", "United Kingdom", "Germany"]) == "United Kingdom"
+
+def test_fuzzy_match_startswith():
+    from jobpulse.playwright_driver import _fuzzy_match
+    assert _fuzzy_match("United", ["France", "United Kingdom", "Germany"]) == "United Kingdom"
+
+def test_fuzzy_match_contains():
+    from jobpulse.playwright_driver import _fuzzy_match
+    assert _fuzzy_match("Kingdom", ["France", "United Kingdom", "Germany"]) == "United Kingdom"
+
+def test_fuzzy_match_none():
+    from jobpulse.playwright_driver import _fuzzy_match
+    assert _fuzzy_match("Spain", ["France", "United Kingdom"]) is None
+
+@pytest.mark.asyncio
+async def test_with_retry_succeeds_first_try():
+    from jobpulse.playwright_driver import _with_retry
+    call_count = 0
+    async def fn():
+        nonlocal call_count
+        call_count += 1
+        return {"success": True}
+    result = await _with_retry(fn)
+    assert result["success"] is True
+    assert call_count == 1
+
+@pytest.mark.asyncio
+async def test_with_retry_retries_on_failure():
+    from jobpulse.playwright_driver import _with_retry
+    call_count = 0
+    async def fn():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise RuntimeError("fail")
+        return {"success": True}
+    result = await _with_retry(fn, max_retries=2, delay_ms=10)
+    assert result["success"] is True
+    assert call_count == 3
