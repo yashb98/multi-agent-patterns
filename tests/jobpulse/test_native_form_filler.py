@@ -749,3 +749,130 @@ async def test_click_navigation_none_found():
 
     result = await filler._click_navigation(dry_run=False)
     assert result == ""
+
+
+# ── fill() — main loop ──
+
+
+@pytest.mark.asyncio
+async def test_fill_single_page_success():
+    filler = _make_filler()
+
+    fields = [
+        {"label": "Email", "type": "text", "value": "", "required": True},
+        {"label": "Resume", "type": "file", "locator": AsyncMock()},
+    ]
+
+    with patch.object(filler, "_scan_fields", return_value=fields), \
+         patch.object(filler, "_is_confirmation_page", return_value=False), \
+         patch.object(filler, "_map_fields", return_value={"Email": "test@test.com"}), \
+         patch.object(filler, "_fill_by_label", return_value={"success": True}), \
+         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
+         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch.object(filler, "_is_submit_page", return_value=False), \
+         patch.object(filler, "_click_navigation", return_value="submitted"), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+
+        result = await filler.fill(
+            platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
+            profile={"email": "test@test.com"}, custom_answers={}, dry_run=False,
+        )
+
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_fill_dry_run_stops():
+    filler = _make_filler()
+
+    fields = [{"label": "Name", "type": "text", "value": "", "required": True}]
+
+    with patch.object(filler, "_scan_fields", return_value=fields), \
+         patch.object(filler, "_is_confirmation_page", return_value=False), \
+         patch.object(filler, "_map_fields", return_value={"Name": "John"}), \
+         patch.object(filler, "_fill_by_label", return_value={"success": True}), \
+         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
+         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch.object(filler, "_is_submit_page", return_value=True), \
+         patch.object(filler, "_review_form", return_value={"pass": True}), \
+         patch.object(filler, "_click_navigation", return_value="dry_run_stop"), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+
+        result = await filler.fill(
+            platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
+            profile={}, custom_answers={}, dry_run=True,
+        )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_fill_confirmation_page():
+    filler = _make_filler()
+
+    with patch.object(filler, "_scan_fields", return_value=[]), \
+         patch.object(filler, "_is_confirmation_page", return_value=True), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+
+        result = await filler.fill(
+            platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
+            profile={}, custom_answers={}, dry_run=False,
+        )
+
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_fill_no_nav_button():
+    filler = _make_filler()
+
+    fields = [{"label": "Name", "type": "text", "value": "", "required": True}]
+
+    with patch.object(filler, "_scan_fields", return_value=fields), \
+         patch.object(filler, "_is_confirmation_page", return_value=False), \
+         patch.object(filler, "_map_fields", return_value={"Name": "John"}), \
+         patch.object(filler, "_fill_by_label", return_value={"success": True}), \
+         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
+         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch.object(filler, "_is_submit_page", return_value=False), \
+         patch.object(filler, "_click_navigation", return_value=""), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+
+        result = await filler.fill(
+            platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
+            profile={}, custom_answers={}, dry_run=False,
+        )
+
+    assert result["success"] is False
+    assert "No navigation button" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_fill_calls_screening_for_unresolved():
+    """fill() calls _screen_questions for unresolved non-file fields."""
+    filler = _make_filler()
+
+    fields = [
+        {"label": "Email", "type": "text", "value": "", "required": True},
+        {"label": "Work auth?", "type": "radio", "options": ["Yes", "No"]},
+    ]
+
+    with patch.object(filler, "_scan_fields", return_value=fields), \
+         patch.object(filler, "_is_confirmation_page", return_value=False), \
+         patch.object(filler, "_map_fields", return_value={"Email": "a@b.com"}), \
+         patch.object(filler, "_screen_questions", return_value={"Work auth?": "Yes"}) as mock_screen, \
+         patch.object(filler, "_fill_by_label", return_value={"success": True}), \
+         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
+         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch.object(filler, "_is_submit_page", return_value=False), \
+         patch.object(filler, "_click_navigation", return_value="submitted"), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+
+        result = await filler.fill(
+            platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
+            profile={"email": "a@b.com"}, custom_answers={}, dry_run=False,
+        )
+
+    mock_screen.assert_called_once()
+    assert result["success"] is True

@@ -417,3 +417,99 @@ class NativeFormFiller:
                 return "next"
 
         return ""
+
+    # ── Public Interface ──
+
+    async def fill(
+        self,
+        platform: str,
+        cv_path: str | None,
+        cl_path: str | None,
+        profile: dict,
+        custom_answers: dict,
+        dry_run: bool,
+    ) -> dict:
+        """Fill an application form using native Playwright locators + LLM.
+
+        Per-page loop:
+        1. Scan fields via role-based locators
+        2. Detect confirmation page -> done
+        3. LLM Call 1: map profile -> field values
+        4. LLM Call 2: screening questions (optional, for unresolved fields)
+        5. Fill each field by label (DOM order)
+        6. Upload files (deterministic)
+        7. Auto-check consent boxes
+        8. Anti-detection timing
+        9. Pre-submit review on final page (LLM Call 3)
+        10. Click next/submit
+        """
+        for page_num in range(1, MAX_FORM_PAGES + 1):
+            # 1. Scan fields
+            fields = await self._scan_fields()
+
+            # 2. Confirmation page?
+            if await self._is_confirmation_page():
+                return {"success": True, "pages_filled": page_num}
+
+            # 3. LLM Call 1: map fields
+            mapping = await self._map_fields(
+                fields, profile, custom_answers, platform,
+            )
+
+            # 4. LLM Call 2: screening for unresolved non-file fields
+            unresolved = [
+                f for f in fields
+                if f["label"] not in mapping and f["type"] != "file"
+            ]
+            if unresolved:
+                screening = await self._screen_questions(
+                    unresolved, custom_answers.get("_job_context"),
+                )
+                mapping.update(screening)
+
+            # 5. Fill each field by label
+            for label, value in mapping.items():
+                await self._fill_by_label(label, value)
+
+            # 6. File uploads
+            await self._upload_files(cv_path, cl_path)
+
+            # 7. Consent boxes
+            await self._check_consent()
+
+            # 8. Anti-detection timing
+            min_time = _PLATFORM_MIN_PAGE_TIME.get(platform, 5.0)
+            await asyncio.sleep(min_time * random.uniform(0.8, 1.2))
+
+            # 9. Pre-submit review on final page
+            if await self._is_submit_page():
+                if dry_run:
+                    return {
+                        "success": True, "dry_run": True,
+                        "pages_filled": page_num,
+                    }
+                review = await self._review_form()
+                if not review.get("pass"):
+                    logger.warning(
+                        "Pre-submit review failed: %s", review.get("issues"),
+                    )
+
+            # 10. Click next/submit
+            clicked = await self._click_navigation(dry_run)
+            if clicked == "submitted":
+                return {"success": True, "pages_filled": page_num}
+            if clicked == "dry_run_stop":
+                return {
+                    "success": True, "dry_run": True,
+                    "pages_filled": page_num,
+                }
+            if not clicked:
+                return {
+                    "success": False,
+                    "error": f"No navigation button on page {page_num}",
+                }
+
+        return {
+            "success": False,
+            "error": f"Exhausted {MAX_FORM_PAGES} form pages",
+        }
