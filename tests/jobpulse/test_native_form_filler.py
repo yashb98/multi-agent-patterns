@@ -360,3 +360,113 @@ async def test_map_fields_includes_options():
     assert result == {"Country": "UK"}
     prompt = mock_openai.return_value.chat.completions.create.call_args[1]["messages"][0]["content"]
     assert "USA" in prompt
+
+
+# ── _screen_questions (LLM Call 2) ──
+
+
+@pytest.mark.asyncio
+async def test_screen_questions_basic():
+    filler = _make_filler()
+    unresolved = [
+        {"label": "Are you authorized to work in the UK?", "type": "radio",
+         "options": ["Yes", "No"]},
+        {"label": "Expected salary", "type": "text"},
+    ]
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = (
+        '{"Are you authorized to work in the UK?": "Yes", "Expected salary": "50000"}'
+    )
+
+    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        result = await filler._screen_questions(unresolved, "SWE at Acme")
+
+    assert result["Are you authorized to work in the UK?"] == "Yes"
+    assert result["Expected salary"] == "50000"
+
+
+@pytest.mark.asyncio
+async def test_screen_questions_includes_options():
+    filler = _make_filler()
+    unresolved = [
+        {"label": "Years of experience", "type": "select",
+         "options": ["0-1", "2-3", "4-5", "6+"]},
+    ]
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = '{"Years of experience": "2-3"}'
+
+    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        result = await filler._screen_questions(unresolved, "Data Analyst")
+
+    prompt = mock_openai.return_value.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert "0-1" in prompt
+
+
+# ── _review_form (LLM Call 3) ──
+
+import base64
+
+
+@pytest.mark.asyncio
+async def test_review_form_pass():
+    page = MagicMock()
+    page.screenshot = AsyncMock(return_value=b"\x89PNG fake")
+    filler = _make_filler(page_mock=page)
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = '{"pass": true}'
+
+    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        result = await filler._review_form()
+
+    assert result["pass"] is True
+
+
+@pytest.mark.asyncio
+async def test_review_form_fail_with_issues():
+    page = MagicMock()
+    page.screenshot = AsyncMock(return_value=b"\x89PNG fake")
+    filler = _make_filler(page_mock=page)
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = (
+        '{"pass": false, "issues": ["Phone empty", "Wrong country"]}'
+    )
+
+    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        result = await filler._review_form()
+
+    assert result["pass"] is False
+    assert len(result["issues"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_review_form_sends_image():
+    """Screenshot is sent as base64 image_url in the LLM message."""
+    page = MagicMock()
+    page.screenshot = AsyncMock(return_value=b"\x89PNG test")
+    filler = _make_filler(page_mock=page)
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = '{"pass": true}'
+
+    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        await filler._review_form()
+
+    messages = mock_openai.return_value.chat.completions.create.call_args[1]["messages"]
+    content = messages[0]["content"]
+    assert isinstance(content, list)
+    image_parts = [p for p in content if p.get("type") == "image_url"]
+    assert len(image_parts) == 1

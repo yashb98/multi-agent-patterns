@@ -249,3 +249,69 @@ class NativeFormFiller:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         return json.loads(raw)
+
+    async def _screen_questions(
+        self, unresolved_fields: list[dict], job_context: str | None,
+    ) -> dict:
+        """LLM Call 2: answer screening questions not mapped from profile.
+
+        Only called when _map_fields left non-file fields unresolved.
+        Returns {"label": "answer"} dict.
+        """
+        questions = []
+        for f in unresolved_fields:
+            opts = f.get("options", "free text")
+            questions.append(f"Q: {f['label']} Options: {opts}")
+
+        prompt = (
+            f"Answer these screening questions for a job application.\n"
+            f"Context: {job_context or 'Not provided'}\n\n"
+            f"{chr(10).join(questions)}\n\n"
+            f'Return JSON {{"label": "answer"}}. Be truthful.'
+        )
+
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            max_tokens=2000,
+            temperature=0.0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
+
+    async def _review_form(self) -> dict:
+        """LLM Call 3: screenshot-based pre-submit review of the filled form.
+
+        Returns {"pass": true} or {"pass": false, "issues": [...]}.
+        """
+        screenshot_bytes = await self._page.screenshot(type="png")
+        b64 = base64.b64encode(screenshot_bytes).decode()
+
+        prompt = (
+            "Review this filled application form. Any empty required fields, "
+            'wrong values, or mismatches? Return {"pass": true} or '
+            '{"pass": false, "issues": [...]}'
+        )
+
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            max_tokens=1000,
+            temperature=0.0,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/png;base64,{b64}",
+                    }},
+                ],
+            }],
+        )
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
