@@ -78,18 +78,24 @@ def _is_critical_field(selector: str, label: str = "") -> bool:
 class ApplicationOrchestrator:
     def __init__(
         self,
-        bridge: Any,
+        bridge=None,
+        driver=None,
+        engine: str = "extension",
         account_manager: AccountManager | None = None,
         gmail_verifier: GmailVerifier | None = None,
         navigation_learner: NavigationLearner | None = None,
     ):
-        self.bridge = bridge
+        # Support both old bridge= and new driver= parameter
+        self.driver = driver or bridge
+        # Keep self.bridge as alias for backward compat
+        self.bridge = self.driver
+        self.engine = engine
         self.accounts = account_manager or AccountManager()
         self.gmail = gmail_verifier or GmailVerifier()
         self.learner = navigation_learner or NavigationLearner()
-        self.analyzer = PageAnalyzer(bridge)
-        self.cookie_dismisser = CookieBannerDismisser(bridge)
-        self.sso = SSOHandler(bridge)
+        self.analyzer = PageAnalyzer(self.driver)
+        self.cookie_dismisser = CookieBannerDismisser(self.driver)
+        self.sso = SSOHandler(self.driver)
         self.gotchas = GotchasDB()
 
     @staticmethod
@@ -129,7 +135,8 @@ class ApplicationOrchestrator:
         # into the bridge cache so _navigate_to_form skips the initial URL load but
         # still handles JD→form transitions (click apply, login, SSO, etc.).
         if pre_navigated_snapshot is not None:
-            self.bridge._snapshot = self._to_page_snapshot(pre_navigated_snapshot)
+            if hasattr(self.driver, '_snapshot'):
+                self.driver._snapshot = self._to_page_snapshot(pre_navigated_snapshot)
         nav_result = await self._navigate_to_form(
             url, platform, navigation_steps,
             skip_initial_navigate=pre_navigated_snapshot is not None,
@@ -240,15 +247,15 @@ class ApplicationOrchestrator:
         """
         if not skip_initial_navigate:
             try:
-                await self.bridge.navigate(url)
+                await self.driver.navigate(url)
             except (TimeoutError, ConnectionError):
                 logger.info("Navigate lost (MV3 restart) — waiting for extension to reconnect")
                 await asyncio.sleep(5)
-        snapshot = self._as_dict(await self.bridge.get_snapshot(force_refresh=True))
+        snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
         if not snapshot or not snapshot.get("url"):
             # Still no snapshot — wait longer
             await asyncio.sleep(5)
-            snapshot = self._as_dict(await self.bridge.get_snapshot(force_refresh=True))
+            snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 
         # Try learned sequence first
         domain = self._extract_domain(url)
@@ -270,7 +277,7 @@ class ApplicationOrchestrator:
                         sso = self.sso.detect_sso(snapshot)
                         if sso and sso.get("provider") == provider:
                             await self.sso.click_sso(sso)
-                            snapshot = self._as_dict(await self.bridge.get_snapshot())
+                            snapshot = self._as_dict(await self.driver.get_snapshot())
                         else:
                             logger.warning("Replay: SSO provider %s not found, falling through", provider)
                             replay_ok = False
@@ -285,7 +292,7 @@ class ApplicationOrchestrator:
                         break
                     # Dismiss any new cookie banners after each replay step
                     await self.cookie_dismisser.dismiss(snapshot)
-                    snapshot = self._as_dict(await self.bridge.get_snapshot())
+                    snapshot = self._as_dict(await self.driver.get_snapshot())
                 except Exception as replay_exc:
                     logger.warning("Replay step failed (action=%s): %s — falling through to fresh detection", action, replay_exc)
                     replay_ok = False
@@ -301,8 +308,9 @@ class ApplicationOrchestrator:
 
         # Dismiss cookie banner
         await self.cookie_dismisser.dismiss(snapshot)
-        snapshot = self._as_dict(await self.bridge.get_snapshot())
+        snapshot = self._as_dict(await self.driver.get_snapshot())
 
+        apply_attempts = 0
         for step in range(MAX_NAVIGATION_STEPS):
             page_type = await self.analyzer.detect(snapshot)
             logger.info("Navigation step %d: %s", step + 1, page_type)
@@ -311,34 +319,48 @@ class ApplicationOrchestrator:
                 return {"page_type": page_type, "snapshot": snapshot}
 
             if page_type == PageType.JOB_DESCRIPTION:
-                # Use wait_for_apply: polls DOM for up to 10s for apply button to render
-                # LinkedIn SPA renders Easy Apply lazily after initial page load
+                apply_attempts += 1
+                if apply_attempts > 3:
+                    logger.warning("Apply button clicked %d times without modal — aborting", apply_attempts - 1)
+                    return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
                 import asyncio
-                try:
-                    result = await self.bridge.wait_for_apply(timeout_ms=10000)
-                    if isinstance(result, dict):
-                        snapshot = self._as_dict(await self.bridge.get_snapshot())
-                        waited = result.get("waited_ms", 0)
-                        diag = result.get("apply_diagnostics", [])
-                        if diag and isinstance(diag, list):
-                            logger.info(
-                                "wait_for_apply: %dms, %d elements with 'apply' text: %s",
-                                waited, len(diag),
-                                [d.get("text", "")[:40] for d in diag[:5]],
-                            )
-                        else:
-                            logger.warning("wait_for_apply: %dms, NO elements with 'apply' text found", waited)
-                except (TimeoutError, ConnectionError, TypeError, AttributeError):
-                    logger.warning("wait_for_apply unavailable — using cached snapshot")
+                current_url = snapshot.get("url", "") if isinstance(snapshot, dict) else ""
 
-                snapshot = await self._click_apply_button(snapshot)
-                steps.append({"page_type": "job_description", "action": "click_apply"})
+                # LinkedIn shortcut: navigate directly to /apply/ URL (avoids modal click issues)
+                if "linkedin.com/jobs/view/" in current_url and "/apply" not in current_url:
+                    apply_url = current_url.split("?")[0].rstrip("/") + "/apply/"
+                    logger.info("LinkedIn shortcut: navigating directly to %s", apply_url)
+                    await self.driver.navigate(apply_url)
+                    await asyncio.sleep(5)
+                    snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                    steps.append({"page_type": "job_description", "action": "linkedin_direct_apply"})
+                else:
+                    # Use wait_for_apply: polls DOM for up to 10s for apply button to render
+                    try:
+                        result = await self.driver.wait_for_apply(timeout_ms=10000)
+                        if isinstance(result, dict):
+                            snapshot = self._as_dict(await self.driver.get_snapshot())
+                            waited = result.get("waited_ms", 0)
+                            diag = result.get("apply_diagnostics", [])
+                            if diag and isinstance(diag, list):
+                                logger.info(
+                                    "wait_for_apply: %dms, %d elements with 'apply' text: %s",
+                                    waited, len(diag),
+                                    [d.get("text", "")[:40] for d in diag[:5]],
+                                )
+                            else:
+                                logger.warning("wait_for_apply: %dms, NO elements with 'apply' text found", waited)
+                    except (TimeoutError, ConnectionError, TypeError, AttributeError):
+                        logger.warning("wait_for_apply unavailable — using cached snapshot")
+
+                    snapshot = await self._click_apply_button(snapshot)
+                    steps.append({"page_type": "job_description", "action": "click_apply"})
 
             elif page_type == PageType.LOGIN_FORM:
                 sso = self.sso.detect_sso(snapshot)
                 if sso:
                     await self.sso.click_sso(sso)
-                    snapshot = self._as_dict(await self.bridge.get_snapshot())
+                    snapshot = self._as_dict(await self.driver.get_snapshot())
                     steps.append({"page_type": "login_form", "action": f"sso_{sso['provider']}"})
                 else:
                     snapshot = await self._handle_login(snapshot, platform)
@@ -355,15 +377,15 @@ class ApplicationOrchestrator:
             elif page_type == PageType.UNKNOWN:
                 apply_btn = self._find_apply_button(snapshot)
                 if apply_btn:
-                    await self.bridge.click(apply_btn["selector"])
-                    snapshot = self._as_dict(await self.bridge.get_snapshot())
+                    await self.driver.click(apply_btn["selector"])
+                    snapshot = self._as_dict(await self.driver.get_snapshot())
                     steps.append({"page_type": "unknown", "action": "click_apply_guess"})
                 else:
                     return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
             # Dismiss any new cookie banners after navigation
             await self.cookie_dismisser.dismiss(snapshot)
-            snapshot = self._as_dict(await self.bridge.get_snapshot())
+            snapshot = self._as_dict(await self.driver.get_snapshot())
 
         return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
@@ -389,9 +411,9 @@ class ApplicationOrchestrator:
         apply_matches = []
         for btn in buttons:
             text = btn.get("text", "")
-            if not btn.get("enabled"):
+            if btn.get("enabled") is False:
                 continue
-            if "save" in text.lower():
+            if text.strip().lower() == "save":
                 continue
             if len(text) > 50:
                 continue
@@ -404,29 +426,35 @@ class ApplicationOrchestrator:
             logger.warning("No apply button found in snapshot")
             return snapshot
 
+        # Rank matches: "Easy Apply" / "Apply Now" are strongest signals,
+        # weaker matches like "I'm interested" only used as last resort.
+        strong_pattern = re.compile(r"easy\s*apply|apply\s*(now|for)", re.IGNORECASE)
+        strong = [b for b in apply_matches if strong_pattern.search(b.get("text", ""))]
+        ranked = strong if strong else apply_matches
+
         # Strategy: if the match is a link with href, navigate directly (most reliable)
         # This avoids target="_blank" new-tab issues entirely
-        for btn in apply_matches:
+        for btn in ranked:
             href = btn.get("href", "")
             if href and href.startswith("http"):
                 logger.info("Apply link found: '%s' → navigating to %s", btn["text"][:40], href[:100])
-                await self.bridge.navigate(href)
+                await self.driver.navigate(href)
                 await asyncio.sleep(3)
-                return self._as_dict(await self.bridge.get_snapshot())
+                return self._as_dict(await self.driver.get_snapshot())
 
         # Fallback: click the button directly (Easy Apply modals, non-link buttons)
-        btn = apply_matches[0]
+        btn = ranked[0]
         logger.info("Clicking apply button: '%s' via %s", btn["text"][:60], btn["selector"])
         try:
-            await self.bridge.click(btn["selector"])
+            await self.driver.click(btn["selector"])
         except (TimeoutError, Exception) as exc:
             logger.warning("Click timed out (%s) — trying force_click", exc)
             try:
-                await self.bridge.force_click(btn["selector"])
+                await self.driver.force_click(btn["selector"])
             except Exception:
                 pass
         await asyncio.sleep(3)
-        return self._as_dict(await self.bridge.get_snapshot(force_refresh=True))
+        return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 
     async def _handle_login(self, snapshot: dict, platform: str) -> dict:
         domain = self._extract_domain(snapshot.get("url", ""))
@@ -434,8 +462,8 @@ class ApplicationOrchestrator:
         if not self.accounts.has_account(domain):
             signup_btn = self._find_signup_link(snapshot)
             if signup_btn:
-                await self.bridge.click(signup_btn["selector"])
-                return self._as_dict(await self.bridge.get_snapshot())
+                await self.driver.click(signup_btn["selector"])
+                return self._as_dict(await self.driver.get_snapshot())
             return snapshot
 
         email, password = self.accounts.get_credentials(domain)
@@ -448,10 +476,10 @@ class ApplicationOrchestrator:
             ftype = field.get("type", "")
             try:
                 if ftype == "email" or "email" in label:
-                    await self.bridge.fill(field["selector"], email)
+                    await self.driver.fill(field["selector"], email)
                     filled_email = True
                 elif ftype == "password" or "password" in label:
-                    await self.bridge.fill(field["selector"], password)
+                    await self.driver.fill(field["selector"], password)
                     filled_password = True
             except (TimeoutError, ConnectionError) as exc:
                 logger.warning("Login fill failed for %s: %s", field.get("selector"), exc)
@@ -464,7 +492,7 @@ class ApplicationOrchestrator:
         clicked = False
         for btn in snapshot.get("buttons", []):
             if btn.get("enabled") and _re.search(r"(sign\s*in|log\s*in|login)", btn.get("text", ""), _re.IGNORECASE):
-                await self.bridge.click(btn["selector"])
+                await self.driver.click(btn["selector"])
                 clicked = True
                 break
 
@@ -474,7 +502,7 @@ class ApplicationOrchestrator:
 
         # Wait for page transition after login click
         await asyncio.sleep(2.0)
-        post_login = self._as_dict(await self.bridge.get_snapshot())
+        post_login = self._as_dict(await self.driver.get_snapshot())
 
         # Verify login succeeded — if we're still on the login page, don't mark success
         post_url = post_login.get("url", "").lower()
@@ -502,25 +530,25 @@ class ApplicationOrchestrator:
             sel = field.get("selector", "")
 
             if ftype == "email" or "email" in label:
-                await self.bridge.fill(sel, email)
+                await self.driver.fill(sel, email)
             elif ftype == "password":
-                await self.bridge.fill(sel, password)
+                await self.driver.fill(sel, password)
             elif "first" in label:
-                await self.bridge.fill(sel, PROFILE.get("first_name", ""))
+                await self.driver.fill(sel, PROFILE.get("first_name", ""))
             elif "last" in label:
-                await self.bridge.fill(sel, PROFILE.get("last_name", ""))
+                await self.driver.fill(sel, PROFILE.get("last_name", ""))
             elif "name" in label and "user" not in label:
-                await self.bridge.fill(sel, f"{PROFILE.get('first_name', '')} {PROFILE.get('last_name', '')}".strip())
+                await self.driver.fill(sel, f"{PROFILE.get('first_name', '')} {PROFILE.get('last_name', '')}".strip())
             elif "phone" in label or ftype == "tel":
-                await self.bridge.fill(sel, PROFILE.get("phone", ""))
+                await self.driver.fill(sel, PROFILE.get("phone", ""))
 
         import re
         for btn in snapshot.get("buttons", []):
             if btn.get("enabled") and re.search(r"(create|sign\s*up|register|join|submit)", btn.get("text", ""), re.IGNORECASE):
-                await self.bridge.click(btn["selector"])
+                await self.driver.click(btn["selector"])
                 break
 
-        return self._as_dict(await self.bridge.get_snapshot())
+        return self._as_dict(await self.driver.get_snapshot())
 
     async def _handle_email_verification(self, snapshot: dict, platform: str, return_url: str) -> dict:
         domain = self._extract_domain(snapshot.get("url", ""))
@@ -531,13 +559,13 @@ class ApplicationOrchestrator:
             logger.warning("Verification email not received for %s", domain)
             return snapshot
 
-        await self.bridge.navigate(link)
-        self._as_dict(await self.bridge.get_snapshot())
+        await self.driver.navigate(link)
+        self._as_dict(await self.driver.get_snapshot())
         self.accounts.mark_verified(domain)
 
         logger.info("Returning to application: %s", return_url[:80])
-        await self.bridge.navigate(return_url)
-        return self._as_dict(await self.bridge.get_snapshot())
+        await self.driver.navigate(return_url)
+        return self._as_dict(await self.driver.get_snapshot())
 
     @staticmethod
     def _to_page_snapshot(snapshot: dict) -> PageSnapshot:
@@ -585,7 +613,7 @@ class ApplicationOrchestrator:
         filled_selectors: set[str] = set()
         if current_url:
             try:
-                saved_progress = await self.bridge.get_form_progress(current_url)
+                saved_progress = await self.driver.get_form_progress(current_url)
                 if saved_progress:
                     filled_selectors = {f["selector"] for f in saved_progress.get("filled_fields", [])}
                     logger.info("MV3 recovery: resuming with %d pre-filled fields", len(filled_selectors))
@@ -594,7 +622,7 @@ class ApplicationOrchestrator:
 
         # Load known gotchas for this domain (learned from Ralph Loop + manual fixes)
         domain = self._extract_domain(current_url) if current_url else platform
-        domain_gotchas = {g["selector_pattern"]: g for g in self.gotchas.lookup_domain(domain)}
+        domain_gotchas = {g["selector_pattern"]: g for g in self.gotchas.lookup_domain(domain, engine=self.engine)}
         if domain_gotchas:
             logger.info("Loaded %d gotchas for domain %s", len(domain_gotchas), domain)
 
@@ -675,7 +703,7 @@ class ApplicationOrchestrator:
                     if sel and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date", "fill_combobox", "fill_contenteditable", "check"):
                         filled_selectors.add(sel)
                         try:
-                            await self.bridge.save_form_progress(current_url, {
+                            await self.driver.save_form_progress(current_url, {
                                 "filled_fields": [{"selector": s} for s in filled_selectors],
                                 "current_page": page_num,
                             })
@@ -693,7 +721,7 @@ class ApplicationOrchestrator:
                         fallback_val = action.get("value", "") if isinstance(action, dict) else getattr(action, "value", "")
                         logger.info("  Fallback: retrying %s → plain fill for %s", atype, str(sel)[:60])
                         try:
-                            await self.bridge.fill(str(sel), fallback_val)
+                            await self.driver.fill(str(sel), fallback_val)
                             filled_selectors.add(sel)
                             continue  # Fallback succeeded
                         except Exception:
@@ -705,7 +733,7 @@ class ApplicationOrchestrator:
                     logger.warning("  Action %d/%d failed: %s — %r", i + 1, len(actions), atype, exc)
 
             try:
-                screenshot_bytes = await self.bridge.screenshot()
+                screenshot_bytes = await self.driver.screenshot()
             except (TimeoutError, ConnectionError):
                 screenshot_bytes = None
                 logger.warning("Screenshot failed after form page %d", page_num)
@@ -722,7 +750,7 @@ class ApplicationOrchestrator:
 
             # Auto-check consent boxes before any navigation
             try:
-                await self.bridge.check_consent_boxes()
+                await self.driver.check_consent_boxes()
             except (TimeoutError, ConnectionError):
                 pass  # Non-critical — proceed without
 
@@ -731,7 +759,7 @@ class ApplicationOrchestrator:
                     return {"success": True, "dry_run": True, "screenshot": last_screenshot, "pages_filled": page_num}
                 # ── Pre-submit validation gate ──
                 try:
-                    validation = await self.bridge.scan_validation_errors()
+                    validation = await self.driver.scan_validation_errors()
                     if isinstance(validation, dict) and validation.get("has_errors"):
                         errors = validation.get("errors", [])
                         logger.warning(
@@ -756,7 +784,7 @@ class ApplicationOrchestrator:
                     [b.model_dump() if hasattr(b, 'model_dump') else b for b in current_buttons]
                 )
                 if submit_btn:
-                    await self.bridge.click(submit_btn["selector"])
+                    await self.driver.click(submit_btn["selector"])
                     # Verify submission actually went through
                     verification = await self._verify_submission()
                     if verification.get("verified"):
@@ -764,7 +792,7 @@ class ApplicationOrchestrator:
                         # Clear MV3 progress — application complete
                         if current_url:
                             try:
-                                await self.bridge.clear_form_progress(current_url)
+                                await self.driver.clear_form_progress(current_url)
                             except (TimeoutError, ConnectionError):
                                 pass
                         return {"success": True, "verified": True, "screenshot": last_screenshot, "pages_filled": page_num}
@@ -774,7 +802,7 @@ class ApplicationOrchestrator:
             else:
                 # Pre-navigation check: scan for validation errors / unfilled required fields
                 try:
-                    validation = await self.bridge.scan_validation_errors()
+                    validation = await self.driver.scan_validation_errors()
                     if isinstance(validation, dict) and validation.get("has_errors"):
                         errors = validation.get("errors", [])
                         logger.warning(
@@ -784,7 +812,7 @@ class ApplicationOrchestrator:
                         )
                         # Re-scan fields and re-fill missing ones
                         retry_snapshot = self._to_page_snapshot(
-                            self._as_dict(await self.bridge.get_snapshot(force_refresh=True))
+                            self._as_dict(await self.driver.get_snapshot(force_refresh=True))
                         )
                         empty_required = [
                             f for f in retry_snapshot.fields
@@ -817,10 +845,10 @@ class ApplicationOrchestrator:
                     [b.model_dump() if hasattr(b, 'model_dump') else b for b in current_buttons]
                 )
                 if next_btn:
-                    await self.bridge.click(next_btn["selector"])
+                    await self.driver.click(next_btn["selector"])
 
             prev_snapshot = snapshot
-            snapshot = self._as_dict(await self.bridge.get_snapshot())
+            snapshot = self._as_dict(await self.driver.get_snapshot())
 
         return {"success": False, "error": f"Exhausted {MAX_FORM_PAGES} pages", "screenshot": last_screenshot}
 
@@ -852,7 +880,7 @@ class ApplicationOrchestrator:
         """Execute pre-action steps from a gotcha solution (scroll, wait)."""
         if "scroll_first" in solution:
             try:
-                await self.bridge.scroll_to(selector)
+                await self.driver.scroll_to(selector)
             except (TimeoutError, ConnectionError):
                 logger.debug("Gotcha scroll_to failed for %s", selector[:40])
         if solution.startswith("wait_before:"):
@@ -929,7 +957,7 @@ class ApplicationOrchestrator:
         ]
         for f in combobox_fields:
             try:
-                options = await self.bridge.reveal_options(f.selector, timeout_ms=8000)
+                options = await self.driver.reveal_options(f.selector, timeout_ms=8000)
                 if options:
                     f.options = options
                     logger.info("  Revealed %d options for %s: %s",
@@ -993,37 +1021,37 @@ class ApplicationOrchestrator:
             confidence = action.get("confidence", 1.0)
 
         if atype == "fill":
-            await self.bridge.fill(selector, value)
+            await self.driver.fill(selector, value)
         elif atype == "upload":
-            await self.bridge.upload(selector, Path(file_path) if file_path else file_path)
+            await self.driver.upload(selector, Path(file_path) if file_path else file_path)
         elif atype == "click":
-            await self.bridge.click(selector)
+            await self.driver.click(selector)
         elif atype == "select":
-            await self.bridge.select_option(selector, value)
+            await self.driver.select_option(selector, value)
         elif atype == "check":
-            await self.bridge.check(selector, value.lower() in ("true", "yes", "1", "checked") if value else True)
+            await self.driver.check(selector, value.lower() in ("true", "yes", "1", "checked") if value else True)
         # v2 action types
         elif atype == "fill_radio_group":
-            await self.bridge.fill_radio_group(selector, value)
+            await self.driver.fill_radio_group(selector, value)
         elif atype == "fill_custom_select":
-            await self.bridge.fill_custom_select(selector, value)
+            await self.driver.fill_custom_select(selector, value)
         elif atype == "fill_autocomplete":
-            await self.bridge.fill_autocomplete(selector, value)
+            await self.driver.fill_autocomplete(selector, value)
         elif atype == "fill_tag_input":
             values = [v.strip() for v in value.split(",") if v.strip()] if value else []
-            await self.bridge.fill_tag_input(selector, values)
+            await self.driver.fill_tag_input(selector, values)
         elif atype == "fill_date":
-            await self.bridge.fill_date(selector, value)
+            await self.driver.fill_date(selector, value)
         elif atype == "fill_combobox":
-            await self.bridge.fill_combobox(selector, value)
+            await self.driver.fill_combobox(selector, value)
         elif atype == "fill_contenteditable":
-            await self.bridge.fill_contenteditable(selector, value)
+            await self.driver.fill_contenteditable(selector, value)
         elif atype == "scroll_to":
-            await self.bridge.scroll_to(selector)
+            await self.driver.scroll_to(selector)
         elif atype == "force_click":
-            await self.bridge.force_click(selector)
+            await self.driver.force_click(selector)
         elif atype == "check_consent_boxes":
-            await self.bridge.check_consent_boxes(selector or None)
+            await self.driver.check_consent_boxes(selector or None)
 
         # Stream field progress to Telegram in real-time
         if tg_stream is not None and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date"):
@@ -1055,7 +1083,7 @@ class ApplicationOrchestrator:
                 # Post-fill validation for fill actions
                 if atype in ("fill", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date", "fill_combobox") and selector:
                     try:
-                        rescan = await self.bridge.rescan_after_fill(selector)
+                        rescan = await self.driver.rescan_after_fill(selector)
                         errors = rescan.get("validation_errors", [])
                         if errors:
                             logger.warning("Validation error after %s: %s", atype, errors)
@@ -1075,7 +1103,7 @@ class ApplicationOrchestrator:
     async def _verify_submission(self) -> dict:
         """Wait for and verify the confirmation page after submit click."""
         await asyncio.sleep(3.0)
-        snapshot = await self.bridge.get_snapshot(force_refresh=True)
+        snapshot = await self.driver.get_snapshot(force_refresh=True)
         if not snapshot:
             return {"verified": False, "reason": "no_snapshot"}
 
