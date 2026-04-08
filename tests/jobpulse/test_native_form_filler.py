@@ -302,3 +302,61 @@ async def test_fill_by_label_placeholder_fallback():
 
     assert result["success"] is True
     page.get_by_placeholder.assert_called_once()
+
+
+# ── _map_fields (LLM Call 1) ──
+
+
+@pytest.mark.asyncio
+async def test_map_fields_basic():
+    """Maps profile data to form fields via LLM."""
+    filler = _make_filler()
+    fields = [
+        {"label": "Email", "type": "text", "value": "", "required": True},
+        {"label": "Phone", "type": "text", "value": "", "required": False},
+        {"label": "Resume", "type": "file"},
+    ]
+    profile = {"email": "test@example.com", "phone": "+44123456789"}
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = '{"Email": "test@example.com", "Phone": "+44123456789"}'
+
+    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        result = await filler._map_fields(fields, profile, {}, "greenhouse")
+
+    assert result == {"Email": "test@example.com", "Phone": "+44123456789"}
+
+
+@pytest.mark.asyncio
+async def test_map_fields_skips_file_fields():
+    """File fields are excluded from the LLM prompt."""
+    filler = _make_filler()
+    fields = [
+        {"label": "Resume", "type": "file"},
+    ]
+
+    result = await filler._map_fields(fields, {}, {}, "linkedin")
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_map_fields_includes_options():
+    """Dropdown options are passed in the prompt."""
+    filler = _make_filler()
+    fields = [
+        {"label": "Country", "type": "select", "options": ["USA", "UK"], "value": ""},
+    ]
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = '{"Country": "UK"}'
+
+    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        result = await filler._map_fields(fields, {}, {}, "greenhouse")
+
+    assert result == {"Country": "UK"}
+    prompt = mock_openai.return_value.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert "USA" in prompt

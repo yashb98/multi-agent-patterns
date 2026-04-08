@@ -201,3 +201,51 @@ class NativeFormFiller:
 
         verified = value[:10].lower() in actual.lower() if actual else False
         return {"success": True, "value_set": value, "value_verified": verified}
+
+    # ── LLM Calls ──
+
+    async def _map_fields(
+        self, fields: list[dict], profile: dict,
+        custom_answers: dict, platform: str,
+    ) -> dict:
+        """LLM Call 1: map profile data to form field labels.
+
+        Returns {"label": "value"} for each field the LLM can fill.
+        Skips file upload fields. Marks already-filled fields in the prompt.
+        """
+        field_descriptions = []
+        for f in fields:
+            if f["type"] == "file":
+                continue
+            desc = f"- {f['label']} ({f['type']})"
+            if f.get("options"):
+                desc += f" options: {f['options'][:10]}"
+            if f.get("value"):
+                desc += f" [already filled: {f['value']}]"
+            if f.get("required"):
+                desc += " *required"
+            field_descriptions.append(desc)
+
+        if not field_descriptions:
+            return {}
+
+        prompt = (
+            f'Map profile data to form fields. Return JSON {{"label": "value"}}.\n'
+            f"Skip already-filled fields. Skip file upload fields.\n\n"
+            f"Fields:\n{chr(10).join(field_descriptions)}\n\n"
+            f"Profile: {json.dumps(profile)}\n"
+            f"Platform: {platform}\n"
+            f"Known answers: {json.dumps(custom_answers)}"
+        )
+
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            max_tokens=2000,
+            temperature=0.0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
