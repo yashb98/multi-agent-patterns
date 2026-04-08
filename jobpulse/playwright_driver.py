@@ -103,6 +103,11 @@ class PlaywrightDriver:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
 
+    @property
+    def page(self) -> "Page | None":
+        """Expose the Playwright Page for native locator access."""
+        return self._page
+
     async def _move_mouse_to(self, el) -> None:
         """Move mouse to element along a Bezier curve."""
         box = await el.bounding_box()

@@ -33,6 +33,12 @@ def test_playwright_driver_init():
     assert driver._page is None
 
 
+def test_page_property_before_connect():
+    """page property returns None before connect()."""
+    driver = PlaywrightDriver()
+    assert driver.page is None
+
+
 @pytest.mark.asyncio
 async def test_close_when_not_connected():
     """Close is safe when never connected."""
