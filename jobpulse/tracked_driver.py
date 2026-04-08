@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 
 from shared.logging_config import get_logger
@@ -95,3 +96,71 @@ class ABTracker:
                 "fields_verified": r[2] or 0, "applications": o[0] or 0,
                 "submit_success": o[1] or 0,
             }
+
+
+class TrackedDriver:
+    """Transparent wrapper that logs every driver call to ABTracker.
+
+    Usage: TrackedDriver(PlaywrightDriver(), engine="playwright", application_id="app_123")
+    """
+
+    def __init__(self, inner, engine: str, application_id: str, db_path: str | None = None):
+        self._inner = inner
+        self._engine = engine
+        self._app_id = application_id
+        self._tracker = ABTracker(db_path=db_path)
+        self._platform: str | None = None
+
+    def set_platform(self, platform: str) -> None:
+        """Set the current platform for tagging events."""
+        self._platform = platform
+
+    async def _tracked_call(self, action: str, method, *args, **kwargs):
+        """Call the inner driver method and log the result to ABTracker."""
+        start = time.monotonic()
+        result = await method(*args, **kwargs)
+        duration = int((time.monotonic() - start) * 1000)
+        selector = args[0] if args else kwargs.get("selector")
+        self._tracker.log_field(
+            application_id=self._app_id, engine=self._engine,
+            platform=self._platform, action=action, selector=selector,
+            success=result.get("success", False),
+            value_verified=result.get("value_verified"),
+            duration_ms=duration, error=result.get("error"),
+            retry_count=result.get("retry_count", 0),
+        )
+        return result
+
+    async def fill(self, selector, value, **kw):
+        return await self._tracked_call("fill", self._inner.fill, selector, value, **kw)
+
+    async def click(self, selector):
+        return await self._tracked_call("click", self._inner.click, selector)
+
+    async def select_option(self, selector, value):
+        return await self._tracked_call("select", self._inner.select_option, selector, value)
+
+    async def check_box(self, selector, checked):
+        return await self._tracked_call("checkbox", self._inner.check_box, selector, checked)
+
+    async def fill_radio(self, selector, value):
+        return await self._tracked_call("radio", self._inner.fill_radio, selector, value)
+
+    async def fill_date(self, selector, value):
+        return await self._tracked_call("date", self._inner.fill_date, selector, value)
+
+    async def fill_autocomplete(self, selector, value):
+        return await self._tracked_call("autocomplete", self._inner.fill_autocomplete, selector, value)
+
+    async def fill_contenteditable(self, selector, value):
+        return await self._tracked_call("contenteditable", self._inner.fill_contenteditable, selector, value)
+
+    async def upload_file(self, selector, path):
+        return await self._tracked_call("upload", self._inner.upload_file, selector, path)
+
+    # Pass-through (no tracking needed for non-fill operations)
+    async def navigate(self, url): return await self._inner.navigate(url)
+    async def screenshot(self): return await self._inner.screenshot()
+    async def get_snapshot(self, **kw): return await self._inner.get_snapshot(**kw)
+    async def scan_validation_errors(self): return await self._inner.scan_validation_errors()
+    async def close(self): return await self._inner.close()
