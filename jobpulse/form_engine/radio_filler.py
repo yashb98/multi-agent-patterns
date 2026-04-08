@@ -92,10 +92,12 @@ async def fill_radio_group(
             if label == match:
                 await radio.scroll_into_view_if_needed()
                 await radio.click()
+                actual_checked = await radio.is_checked()
                 logger.debug("radio_filler: selected '%s' in %s", match, group_selector)
                 return FillResult(
                     success=True, selector=group_selector,
                     value_attempted=value, value_set=match,
+                    value_verified=actual_checked,
                 )
 
         return FillResult(

@@ -79,10 +79,12 @@ async def fill_date(
         if input_type == "date":
             # Native date inputs always use YYYY-MM-DD internally
             await el.fill(value)
+            actual = await el.evaluate("el => el.value || ''")
             logger.debug("date_filler: native date %s = %s", selector, value)
             return FillResult(
                 success=True, selector=selector,
                 value_attempted=value, value_set=value,
+                value_verified=(actual == value),
             )
 
         # Text-based date field — format according to placeholder or override
@@ -96,10 +98,12 @@ async def fill_date(
         # Press Tab to trigger validation/confirm
         await page.keyboard.press("Tab")
 
+        actual = await el.evaluate("el => el.value || ''")
         logger.debug("date_filler: text date %s = %s (format=%s)", selector, formatted, date_format)
         return FillResult(
             success=True, selector=selector,
             value_attempted=value, value_set=formatted,
+            value_verified=(formatted[:4] in actual),
         )
 
     except Exception as exc:

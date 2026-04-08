@@ -45,6 +45,7 @@ async def fill_tag_input(
         return FillResult(
             success=True, selector=selector,
             value_attempted=str(values), value_set=str(added),
+            value_verified=(len(added) > 0),
         )
 
     except Exception as exc:
@@ -95,6 +96,7 @@ async def fill_native_multi_select(
         return FillResult(
             success=True, selector=selector,
             value_attempted=str(values), value_set=str(matched),
+            value_verified=(len(matched) > 0),
         )
 
     except Exception as exc:

@@ -65,10 +65,12 @@ async def fill_checkbox(
         else:
             await el.uncheck()
 
+        actual = await el.is_checked()
         logger.debug("checkbox: %s set to %s", selector, should_check)
         return FillResult(
             success=True, selector=selector,
             value_attempted=str(should_check), value_set=str(should_check),
+            value_verified=(actual == should_check),
         )
 
     except Exception as exc:

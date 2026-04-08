@@ -20,6 +20,7 @@ async def test_fill_text_basic():
     el.get_attribute = AsyncMock(return_value=None)
     el.fill = AsyncMock()
     el.scroll_into_view_if_needed = AsyncMock()
+    el.evaluate = AsyncMock(return_value="test@example.com")
     page.query_selector = AsyncMock(return_value=el)
 
     result = await fill_text(page, "#email", "test@example.com")
@@ -36,6 +37,7 @@ async def test_fill_text_respects_maxlength():
     el.get_attribute = AsyncMock(side_effect=lambda name: "10" if name == "maxlength" else None)
     el.fill = AsyncMock()
     el.scroll_into_view_if_needed = AsyncMock()
+    el.evaluate = AsyncMock(return_value="This is a ")
     page.query_selector = AsyncMock(return_value=el)
 
     result = await fill_text(page, "#short", "This is a very long text that exceeds the limit")
@@ -52,6 +54,7 @@ async def test_fill_text_clears_prefilled():
     el.get_attribute = AsyncMock(side_effect=lambda name: "old value" if name == "value" else None)
     el.fill = AsyncMock()
     el.scroll_into_view_if_needed = AsyncMock()
+    el.evaluate = AsyncMock(return_value="New Value")
     page.query_selector = AsyncMock(return_value=el)
 
     result = await fill_text(page, "#name", "New Value", clear_first=True)
@@ -79,6 +82,7 @@ async def test_fill_textarea_basic():
     el.get_attribute = AsyncMock(return_value=None)
     el.fill = AsyncMock()
     el.scroll_into_view_if_needed = AsyncMock()
+    el.evaluate = AsyncMock(return_value="My cover letter text here")
     page.query_selector = AsyncMock(return_value=el)
 
     result = await fill_textarea(page, "#cover", "My cover letter text here")

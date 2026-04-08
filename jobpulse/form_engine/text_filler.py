@@ -49,10 +49,14 @@ async def fill_text(
         await el.scroll_into_view_if_needed()
         await el.fill(fill_value)
 
+        actual = await el.evaluate("el => el.value || ''")
+        verified = actual == fill_value or fill_value[:10] in actual
+
         logger.debug("text_filler: filled %s (%d chars)", selector, len(fill_value))
         return FillResult(
             success=True, selector=selector,
             value_attempted=value, value_set=fill_value,
+            value_verified=verified,
         )
 
     except Exception as exc:

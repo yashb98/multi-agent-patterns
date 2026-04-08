@@ -21,6 +21,7 @@ async def test_fill_native_date():
     el.get_attribute = AsyncMock(side_effect=lambda name: "date" if name == "type" else None)
     el.fill = AsyncMock()
     el.scroll_into_view_if_needed = AsyncMock()
+    el.evaluate = AsyncMock(return_value="2026-05-01")
     page.query_selector = AsyncMock(return_value=el)
 
     result = await fill_date(page, "#start_date", "2026-05-01")

@@ -22,6 +22,7 @@ async def test_fill_native_select_exact_match():
     page.select_option = AsyncMock(return_value=["United Kingdom"])
     page.query_selector = AsyncMock(return_value=el)
     page.eval_on_selector_all = AsyncMock(return_value=["United Kingdom", "United States"])
+    page.eval_on_selector = AsyncMock(return_value="United Kingdom")
     page.wait_for_timeout = AsyncMock()
 
     result = await fill_select(page, "#country", "United Kingdom")

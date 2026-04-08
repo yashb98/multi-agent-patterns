@@ -25,6 +25,7 @@ async def test_fill_field_by_type_text():
     el.get_attribute = AsyncMock(return_value=None)
     el.fill = AsyncMock()
     el.scroll_into_view_if_needed = AsyncMock()
+    el.evaluate = AsyncMock(return_value="test@example.com")
     page.query_selector = AsyncMock(return_value=el)
 
     result = await fill_field_by_type(page, field, "test@example.com")
@@ -98,6 +99,7 @@ async def test_fill_field_by_type_date():
     el.get_attribute = AsyncMock(side_effect=lambda name: "date" if name == "type" else None)
     el.fill = AsyncMock()
     el.scroll_into_view_if_needed = AsyncMock()
+    el.evaluate = AsyncMock(return_value="2026-05-01")
     page.query_selector = AsyncMock(return_value=el)
 
     result = await fill_field_by_type(page, field, "2026-05-01")

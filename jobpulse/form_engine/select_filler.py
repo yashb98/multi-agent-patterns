@@ -102,10 +102,14 @@ async def fill_select(
             )
 
         await page.select_option(selector, label=match)
+        verified_text = await page.eval_on_selector(
+            selector, "el => el.options[el.selectedIndex]?.text?.trim() || ''"
+        )
         logger.debug("select_filler: filled %s with '%s'", selector, match)
         return FillResult(
             success=True, selector=selector,
             value_attempted=value, value_set=match,
+            value_verified=(_normalize(verified_text) == _normalize(match)),
         )
 
     except Exception as exc:
@@ -184,6 +188,7 @@ async def fill_custom_select(
         return FillResult(
             success=True, selector=trigger_selector,
             value_attempted=value, value_set=match,
+            value_verified=True,
         )
 
     except Exception as exc:
