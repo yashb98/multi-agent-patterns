@@ -37,6 +37,7 @@ class FillResult:
     value_set: str | None = None
     error: str | None = None
     skipped: bool = False
+    value_verified: bool = False
 
 
 @dataclass

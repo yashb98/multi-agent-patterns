@@ -49,6 +49,20 @@ def test_fill_result_skipped():
     assert r.skipped is True
 
 
+def test_fill_result_has_value_verified():
+    from jobpulse.form_engine.models import FillResult
+
+    r = FillResult(success=True, selector="#email", value_attempted="a@b.com")
+    assert r.value_verified is False  # default
+
+
+def test_fill_result_value_verified_set():
+    from jobpulse.form_engine.models import FillResult
+
+    r = FillResult(success=True, selector="#email", value_attempted="a@b.com", value_verified=True)
+    assert r.value_verified is True
+
+
 def test_field_info_basic():
     from jobpulse.form_engine.models import FieldInfo, InputType
 
