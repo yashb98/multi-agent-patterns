@@ -876,3 +876,69 @@ async def test_fill_calls_screening_for_unresolved():
 
     mock_screen.assert_called_once()
     assert result["success"] is True
+
+
+# ── Orchestrator integration ──
+
+from jobpulse.application_orchestrator import ApplicationOrchestrator
+
+
+@pytest.mark.asyncio
+async def test_fill_application_routes_to_native_filler():
+    """_fill_application creates NativeFormFiller when engine='playwright'."""
+    driver = AsyncMock()
+    driver.page = MagicMock()
+    orch = ApplicationOrchestrator(driver=driver, engine="playwright")
+
+    with patch("jobpulse.application_orchestrator.NativeFormFiller") as MockFiller:
+        mock_instance = AsyncMock()
+        mock_instance.fill = AsyncMock(return_value={"success": True, "pages_filled": 1})
+        MockFiller.return_value = mock_instance
+
+        result = await orch._fill_application(
+            platform="greenhouse",
+            snapshot={"url": "https://example.com", "fields": [], "buttons": []},
+            cv_path="/tmp/cv.pdf",
+            cover_letter_path=None,
+            profile={"email": "test@test.com"},
+            custom_answers={},
+            overrides=None,
+            dry_run=False,
+            form_intelligence=None,
+        )
+
+    MockFiller.assert_called_once_with(page=driver.page, driver=driver)
+    mock_instance.fill.assert_called_once()
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_fill_application_extension_still_uses_state_machine():
+    """_fill_application uses state machine when engine='extension'."""
+    driver = AsyncMock()
+    driver.page = None
+    driver.get_form_progress = AsyncMock(return_value=None)
+    orch = ApplicationOrchestrator(driver=driver, engine="extension")
+
+    # Snapshot that triggers CONFIRMATION in state machine
+    snapshot = {
+        "url": "https://example.com",
+        "title": "Apply",
+        "fields": [],
+        "buttons": [{"text": "Submit", "selector": "#submit", "type": "submit", "enabled": True}],
+        "page_text_preview": "Thank you for applying! Your application has been received.",
+    }
+
+    result = await orch._fill_application(
+        platform="greenhouse",
+        snapshot=snapshot,
+        cv_path="/tmp/cv.pdf",
+        cover_letter_path=None,
+        profile={},
+        custom_answers={},
+        overrides=None,
+        dry_run=False,
+        form_intelligence=None,
+    )
+
+    assert result.get("success") is True

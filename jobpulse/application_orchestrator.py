@@ -29,6 +29,7 @@ from jobpulse.navigation_learner import NavigationLearner
 from jobpulse.page_analyzer import PageAnalyzer
 from jobpulse.form_engine.gotchas import GotchasDB
 from jobpulse.sso_handler import SSOHandler
+from jobpulse.native_form_filler import NativeFormFiller
 from jobpulse.state_machines import (
     ApplicationState,
     find_next_button,
@@ -323,7 +324,6 @@ class ApplicationOrchestrator:
                 if apply_attempts > 3:
                     logger.warning("Apply button clicked %d times without modal — aborting", apply_attempts - 1)
                     return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
-                import asyncio
                 current_url = snapshot.get("url", "") if isinstance(snapshot, dict) else ""
 
                 # LinkedIn shortcut: navigate directly to /apply/ URL (avoids modal click issues)
@@ -390,8 +390,6 @@ class ApplicationOrchestrator:
         return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
     async def _click_apply_button(self, snapshot: dict) -> dict:
-        import re
-        import asyncio
         apply_pattern = re.compile(
             r"(easy\s*apply|apply\W*(now|for\s*this|on\s*company)?"
             r"|start\s*application"
@@ -599,7 +597,22 @@ class ApplicationOrchestrator:
         self, platform, snapshot, cv_path, cover_letter_path, profile,
         custom_answers, overrides, dry_run, form_intelligence,
     ) -> dict:
-        """Multi-page form filling via state machine."""
+        """Multi-page form filling — branches by engine.
+
+        engine='playwright': NativeFormFiller (locators + LLM)
+        engine='extension': state machine + snapshots (original path)
+        """
+        if self.engine == "playwright":
+            filler = NativeFormFiller(page=self.driver.page, driver=self.driver)
+            return await filler.fill(
+                platform=platform,
+                cv_path=str(cv_path) if cv_path else None,
+                cl_path=str(cover_letter_path) if cover_letter_path else None,
+                profile=profile or {},
+                custom_answers=custom_answers or {},
+                dry_run=dry_run,
+            )
+
         machine = get_state_machine(platform)
         prev_snapshot = None
         stuck_count = 0
