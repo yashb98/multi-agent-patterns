@@ -65,6 +65,60 @@ async def scan_for_errors(page) -> list[ValidationError]:
                 error_message=text.strip(),
             ))
 
+    # Strategy 3: Elements with error-related CSS classes
+    error_class_els = await page.query_selector_all(
+        ".error:not([role='alert']), .field-error, .invalid-feedback, "
+        ".form-error, .input-error, .validation-error"
+    )
+    for el in error_class_els:
+        text = await el.text_content()
+        if text and text.strip() and len(text.strip()) < 200:
+            errors.append(ValidationError(
+                field_selector=".error",
+                error_message=text.strip(),
+            ))
+
+    # Strategy 4: aria-errormessage — element references an error message by ID
+    errormsg_els = await page.query_selector_all("[aria-errormessage]")
+    for el in errormsg_els:
+        err_id = await el.get_attribute("aria-errormessage")
+        if err_id:
+            err_el = await page.query_selector(f"#{err_id}")
+            if err_el:
+                text = await err_el.text_content()
+                if text and text.strip():
+                    el_id = await el.get_attribute("id") or ""
+                    errors.append(ValidationError(
+                        field_selector=f"#{el_id}" if el_id else "[aria-errormessage]",
+                        error_message=text.strip(),
+                    ))
+
+    # Strategy 5: ATS-specific error patterns
+    ats_selectors = [
+        "[data-automation-id*='error']",           # Workday
+        ".application-field--error",                # Greenhouse
+        ".application-error",                       # Lever
+        "[class*='ErrorMessage']",                  # iCIMS / generic React
+    ]
+    for sel in ats_selectors:
+        ats_els = await page.query_selector_all(sel)
+        for el in ats_els:
+            text = await el.text_content()
+            if text and text.strip():
+                errors.append(ValidationError(
+                    field_selector=sel,
+                    error_message=text.strip(),
+                ))
+
+    # Deduplicate by error message
+    seen: set[str] = set()
+    unique_errors: list[ValidationError] = []
+    for err in errors:
+        if err.error_message not in seen:
+            seen.add(err.error_message)
+            unique_errors.append(err)
+    errors = unique_errors
+
     logger.debug("validation: found %d errors on page", len(errors))
     return errors
 
