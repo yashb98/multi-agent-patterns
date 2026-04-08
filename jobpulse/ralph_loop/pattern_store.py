@@ -51,6 +51,7 @@ class FixPattern:
     source: str = "production"   # "test" | "production" | "manual"
     confirmed: bool = True
     occurrence_count: int = 1
+    engine: str = "extension"    # "extension" | "playwright"
 
     @property
     def payload(self) -> dict:
@@ -122,7 +123,8 @@ class PatternStore:
                 source TEXT NOT NULL DEFAULT 'production',
                 confirmed BOOLEAN NOT NULL DEFAULT 1,
                 occurrence_count INTEGER NOT NULL DEFAULT 1,
-                UNIQUE(platform, step_name, error_signature)
+                engine TEXT NOT NULL DEFAULT 'extension',
+                UNIQUE(platform, step_name, error_signature, engine)
             );
 
             CREATE TABLE IF NOT EXISTS apply_attempts (
@@ -157,11 +159,13 @@ class PatternStore:
             ("source", "ALTER TABLE fix_patterns ADD COLUMN source TEXT NOT NULL DEFAULT 'production'"),
             ("confirmed", "ALTER TABLE fix_patterns ADD COLUMN confirmed BOOLEAN NOT NULL DEFAULT 1"),
             ("occurrence_count", "ALTER TABLE fix_patterns ADD COLUMN occurrence_count INTEGER NOT NULL DEFAULT 1"),
+            ("engine", "ALTER TABLE fix_patterns ADD COLUMN engine TEXT NOT NULL DEFAULT 'extension'"),
         ]
         for col_name, ddl in migrations:
             if col_name not in existing_cols:
                 conn.execute(ddl)
                 logger.info("Migrated fix_patterns: added column %s", col_name)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fix_engine ON fix_patterns(engine)")
         conn.commit()
         conn.close()
 
@@ -176,6 +180,7 @@ class PatternStore:
         fix_payload: dict,
         confidence: float = 0.5,
         source: str | None = None,
+        engine: str = "extension",
     ) -> FixPattern:
         """Save or update a fix pattern. Upserts on (platform, step_name, error_signature).
 
@@ -195,7 +200,7 @@ class PatternStore:
             raise ValueError(f"Unknown fix_type: {fix_type}. Must be one of {FIX_TYPES}")
 
         fix_id = hashlib.sha256(
-            f"{platform}:{step_name}:{error_signature}".encode()
+            f"{platform}:{step_name}:{error_signature}:{engine}".encode()
         ).hexdigest()[:16]
         now_iso = datetime.now(timezone.utc).isoformat()
         payload_json = json.dumps(fix_payload)
@@ -216,13 +221,13 @@ class PatternStore:
             conn.execute(
                 """INSERT INTO fix_patterns
                    (id, platform, step_name, error_signature, fix_type, fix_payload,
-                    confidence, created_at, source, confirmed, occurrence_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    confidence, created_at, source, confirmed, occurrence_count, engine)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fix_id, platform, step_name, error_signature, fix_type,
                     payload_json, confidence, now_iso,
-                    source, confirmed, occurrence_count,
+                    source, confirmed, occurrence_count, engine,
                 ),
             )
         else:
@@ -285,19 +290,21 @@ class PatternStore:
             source=source,
             confirmed=confirmed,
             occurrence_count=occurrence_count,
+            engine=engine,
         )
 
     def get_fix(
         self, platform: str, step_name: str, error_signature: str,
+        engine: str = "extension",
     ) -> FixPattern | None:
-        """Look up a specific fix by (platform, step, signature)."""
+        """Look up a specific fix by (platform, step, signature, engine)."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """SELECT * FROM fix_patterns
                WHERE platform = ? AND step_name = ? AND error_signature = ?
-               AND superseded_by IS NULL""",
-            (platform, step_name, error_signature),
+               AND engine = ? AND superseded_by IS NULL""",
+            (platform, step_name, error_signature, engine),
         ).fetchone()
         conn.close()
         if row is None:
@@ -306,17 +313,31 @@ class PatternStore:
 
     def get_fixes_for_platform(
         self, platform: str, min_success_rate: float = 0.0,
+        engine: str | None = None,
     ) -> list[FixPattern]:
-        """Get all active (non-superseded) fixes for a platform."""
+        """Get all active (non-superseded) fixes for a platform.
+
+        If engine is specified, only fixes for that engine are returned.
+        If engine is None, fixes for all engines are returned.
+        """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """SELECT * FROM fix_patterns
-               WHERE platform = ? AND superseded_by IS NULL
-               AND success_rate >= ?
-               ORDER BY success_rate DESC, confidence DESC""",
-            (platform, min_success_rate),
-        ).fetchall()
+        if engine is not None:
+            rows = conn.execute(
+                """SELECT * FROM fix_patterns
+                   WHERE platform = ? AND superseded_by IS NULL
+                   AND success_rate >= ? AND engine = ?
+                   ORDER BY success_rate DESC, confidence DESC""",
+                (platform, min_success_rate, engine),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM fix_patterns
+                   WHERE platform = ? AND superseded_by IS NULL
+                   AND success_rate >= ?
+                   ORDER BY success_rate DESC, confidence DESC""",
+                (platform, min_success_rate),
+            ).fetchall()
         conn.close()
         return [self._row_to_fix(r) for r in rows]
 
@@ -572,4 +593,5 @@ class PatternStore:
             source=row["source"] if "source" in keys else "production",
             confirmed=bool(row["confirmed"]) if "confirmed" in keys else True,
             occurrence_count=row["occurrence_count"] if "occurrence_count" in keys else 1,
+            engine=row["engine"] if "engine" in keys else "extension",
         )

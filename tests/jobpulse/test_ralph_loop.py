@@ -836,3 +836,140 @@ class TestPatternStoreIsolation:
         db = str(tmp_path / "safe.db")
         store = PatternStore(db)
         assert "data/ralph_patterns.db" not in store.db_path
+
+
+# ---------------------------------------------------------------------------
+# PatternStore — engine column: per-engine isolation and defaults
+# ---------------------------------------------------------------------------
+
+class TestPatternStoreEngineColumn:
+    def test_engine_tag_isolates_fixes_by_engine(self, tmp_path):
+        """Same error + platform/step but different engines produce separate fixes."""
+        store = PatternStore(str(tmp_path / "patterns.db"))
+
+        store.save_fix(
+            "greenhouse", "fill_email", "sig1", "selector_override",
+            {"selector": "#email-new"}, engine="extension",
+        )
+        store.save_fix(
+            "greenhouse", "fill_email", "sig1", "selector_override",
+            {"selector": "#email-pw"}, engine="playwright",
+        )
+
+        ext_fixes = store.get_fixes_for_platform("greenhouse", engine="extension")
+        pw_fixes = store.get_fixes_for_platform("greenhouse", engine="playwright")
+
+        assert len(ext_fixes) == 1
+        assert ext_fixes[0].engine == "extension"
+        assert len(pw_fixes) == 1
+        assert pw_fixes[0].engine == "playwright"
+
+    def test_engine_default_is_extension(self, tmp_path):
+        """Engine defaults to 'extension' for backward compatibility."""
+        store = PatternStore(str(tmp_path / "patterns.db"))
+        fix = store.save_fix("lever", "fill_name", "sig2", "selector_override", {"s": "#name"})
+        assert fix.engine == "extension"
+
+    def test_get_fix_filters_by_engine(self, tmp_path):
+        """get_fix returns the correct fix for each engine."""
+        store = PatternStore(str(tmp_path / "patterns.db"))
+
+        store.save_fix(
+            "gh", "step1", "sig1", "selector_override",
+            {"s": "#a"}, engine="extension",
+        )
+        store.save_fix(
+            "gh", "step1", "sig1", "selector_override",
+            {"s": "#b"}, engine="playwright",
+        )
+
+        ext = store.get_fix("gh", "step1", "sig1", engine="extension")
+        pw = store.get_fix("gh", "step1", "sig1", engine="playwright")
+
+        assert ext is not None
+        assert pw is not None
+        assert ext.engine == "extension"
+        assert pw.engine == "playwright"
+        assert json.loads(ext.fix_payload)["s"] == "#a"
+        assert json.loads(pw.fix_payload)["s"] == "#b"
+
+    def test_get_fixes_for_platform_no_engine_filter_returns_all(self, tmp_path):
+        """get_fixes_for_platform with engine=None returns fixes for all engines."""
+        store = PatternStore(str(tmp_path / "patterns.db"))
+
+        store.save_fix("lever", "step_a", "sig_x", "selector_override",
+                       {"s": "#ext"}, engine="extension")
+        store.save_fix("lever", "step_b", "sig_y", "selector_override",
+                       {"s": "#pw"}, engine="playwright")
+
+        all_fixes = store.get_fixes_for_platform("lever", engine=None)
+        assert len(all_fixes) == 2
+        engines = {f.engine for f in all_fixes}
+        assert engines == {"extension", "playwright"}
+
+    def test_get_fix_wrong_engine_returns_none(self, tmp_path):
+        """get_fix returns None when engine doesn't match."""
+        store = PatternStore(str(tmp_path / "patterns.db"))
+        store.save_fix("gh", "step1", "sig1", "selector_override",
+                       {"s": "#a"}, engine="extension")
+
+        result = store.get_fix("gh", "step1", "sig1", engine="playwright")
+        assert result is None
+
+    def test_engine_stored_in_db_row(self, tmp_path):
+        """engine value is persisted and read back correctly from the DB."""
+        db_path = str(tmp_path / "patterns.db")
+        store = PatternStore(db_path)
+        store.save_fix("workday", "fill_phone", "sig3", "field_remap",
+                       {"field_label": "Phone", "profile_key": "phone"}, engine="playwright")
+
+        # Re-open the store (fresh connection) and verify engine value persists
+        store2 = PatternStore(db_path)
+        fixes = store2.get_fixes_for_platform("workday", engine="playwright")
+        assert len(fixes) == 1
+        assert fixes[0].engine == "playwright"
+
+    def test_engine_migration_adds_column_to_old_db(self, tmp_path):
+        """Migration correctly adds engine column with default 'extension' to old DBs."""
+        import sqlite3 as _sqlite3
+        db_path = str(tmp_path / "old.db")
+
+        # Simulate an old DB without the engine column
+        conn = _sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE fix_patterns (
+                id TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                step_name TEXT NOT NULL,
+                error_signature TEXT NOT NULL,
+                fix_type TEXT NOT NULL,
+                fix_payload TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.5,
+                times_applied INTEGER DEFAULT 0,
+                times_succeeded INTEGER DEFAULT 0,
+                success_rate REAL DEFAULT 0.0,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                superseded_by TEXT,
+                source TEXT NOT NULL DEFAULT 'production',
+                confirmed BOOLEAN NOT NULL DEFAULT 1,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(platform, step_name, error_signature)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO fix_patterns
+            (id, platform, step_name, error_signature, fix_type, fix_payload,
+             confidence, created_at)
+            VALUES ('abc123', 'lever', 'fill_name', 'sig_old', 'selector_override',
+                    '{"s": "#old"}', 0.8, '2026-01-01T00:00:00+00:00')
+        """)
+        conn.commit()
+        conn.close()
+
+        # Opening via PatternStore should run migration and add the engine column
+        store = PatternStore(db_path)
+        fixes = store.get_fixes_for_platform("lever")
+        assert len(fixes) == 1
+        # Old row defaults to 'extension'
+        assert fixes[0].engine == "extension"
