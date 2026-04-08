@@ -315,3 +315,42 @@ class NativeFormFiller:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         return json.loads(raw)
+
+    # ── Deterministic Helpers ──
+
+    async def _upload_files(
+        self, cv_path: str | None, cl_path: str | None,
+    ) -> None:
+        """Upload CV and cover letter to file inputs (deterministic, no LLM).
+
+        Matches by label keyword. Skips autofill/drag-and-drop inputs.
+        Uploads CV at most once (deduplication).
+        """
+        file_inputs = await self._page.locator("input[type='file']").all()
+        cv_uploaded = False
+
+        for fi in file_inputs:
+            label = await self._get_accessible_name(fi)
+            label_lower = label.lower()
+
+            if "autofill" in label_lower or "drag and drop" in label_lower:
+                continue
+
+            if "cover" in label_lower and cl_path:
+                await fi.set_input_files(str(cl_path))
+            elif cv_path and not cv_uploaded:
+                await fi.set_input_files(str(cv_path))
+                cv_uploaded = True
+
+    async def _check_consent(self) -> None:
+        """Auto-check unchecked consent/terms/privacy checkboxes."""
+        consent_keywords = [
+            "agree", "consent", "terms", "privacy", "accept", "acknowledge",
+        ]
+        checkboxes = await self._page.get_by_role("checkbox").all()
+
+        for cb in checkboxes:
+            label = await self._get_accessible_name(cb)
+            if any(kw in label.lower() for kw in consent_keywords):
+                if not await cb.is_checked():
+                    await cb.check()

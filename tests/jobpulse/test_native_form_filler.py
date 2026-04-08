@@ -470,3 +470,124 @@ async def test_review_form_sends_image():
     assert isinstance(content, list)
     image_parts = [p for p in content if p.get("type") == "image_url"]
     assert len(image_parts) == 1
+
+
+# ── _upload_files ──
+
+
+@pytest.mark.asyncio
+async def test_upload_files_cv_only():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    fi = AsyncMock()
+    fi.set_input_files = AsyncMock()
+
+    file_locator = MagicMock()
+    file_locator.all = AsyncMock(return_value=[fi])
+    page.locator = MagicMock(return_value=file_locator)
+
+    with patch.object(filler, "_get_accessible_name", return_value="Upload Resume"):
+        await filler._upload_files("/tmp/cv.pdf", None)
+
+    fi.set_input_files.assert_called_once_with("/tmp/cv.pdf")
+
+
+@pytest.mark.asyncio
+async def test_upload_files_cv_and_cl():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    fi_cv = AsyncMock()
+    fi_cv.set_input_files = AsyncMock()
+    fi_cl = AsyncMock()
+    fi_cl.set_input_files = AsyncMock()
+
+    file_locator = MagicMock()
+    file_locator.all = AsyncMock(return_value=[fi_cv, fi_cl])
+    page.locator = MagicMock(return_value=file_locator)
+
+    labels = iter(["Upload Resume", "Upload Cover Letter"])
+    with patch.object(filler, "_get_accessible_name", side_effect=lambda _: next(labels)):
+        await filler._upload_files("/tmp/cv.pdf", "/tmp/cl.pdf")
+
+    fi_cv.set_input_files.assert_called_once_with("/tmp/cv.pdf")
+    fi_cl.set_input_files.assert_called_once_with("/tmp/cl.pdf")
+
+
+@pytest.mark.asyncio
+async def test_upload_files_skips_autofill():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    fi = AsyncMock()
+    fi.set_input_files = AsyncMock()
+
+    file_locator = MagicMock()
+    file_locator.all = AsyncMock(return_value=[fi])
+    page.locator = MagicMock(return_value=file_locator)
+
+    with patch.object(filler, "_get_accessible_name", return_value="Autofill from resume"):
+        await filler._upload_files("/tmp/cv.pdf", None)
+
+    fi.set_input_files.assert_not_called()
+
+
+# ── _check_consent ──
+
+
+@pytest.mark.asyncio
+async def test_check_consent_checks_unchecked():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    cb = AsyncMock()
+    cb.is_checked = AsyncMock(return_value=False)
+    cb.check = AsyncMock()
+
+    checkbox_group = AsyncMock()
+    checkbox_group.all = AsyncMock(return_value=[cb])
+    page.get_by_role = MagicMock(return_value=checkbox_group)
+
+    with patch.object(filler, "_get_accessible_name", return_value="I agree to the terms"):
+        await filler._check_consent()
+
+    cb.check.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_check_consent_skips_non_consent():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    cb = AsyncMock()
+    cb.is_checked = AsyncMock(return_value=False)
+    cb.check = AsyncMock()
+
+    checkbox_group = AsyncMock()
+    checkbox_group.all = AsyncMock(return_value=[cb])
+    page.get_by_role = MagicMock(return_value=checkbox_group)
+
+    with patch.object(filler, "_get_accessible_name", return_value="Subscribe to newsletter"):
+        await filler._check_consent()
+
+    cb.check.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_consent_skips_already_checked():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    cb = AsyncMock()
+    cb.is_checked = AsyncMock(return_value=True)
+    cb.check = AsyncMock()
+
+    checkbox_group = AsyncMock()
+    checkbox_group.all = AsyncMock(return_value=[cb])
+    page.get_by_role = MagicMock(return_value=checkbox_group)
+
+    with patch.object(filler, "_get_accessible_name", return_value="I accept privacy policy"):
+        await filler._check_consent()
+
+    cb.check.assert_not_called()
