@@ -136,6 +136,7 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
         Intent.SCAN_JOBS, Intent.SHOW_JOBS, Intent.APPROVE_JOBS, Intent.REJECT_JOB,
         Intent.JOB_DETAIL, Intent.JOB_STATS, Intent.SEARCH_CONFIG,
         Intent.PAUSE_JOBS, Intent.RESUME_JOBS,
+        Intent.ENGINE_STATS, Intent.ENGINE_COMPARE, Intent.ENGINE_LEARNING, Intent.ENGINE_RESET,
     }
     if intent in SIMPLE_INTENTS:
         return [{"agent": intent.value, "priority": 1, "description": f"Direct: {intent.value}"}]
@@ -381,6 +382,8 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         _handle_scan_jobs, _handle_show_jobs, _handle_approve_jobs,
         _handle_reject_job, _handle_job_stats, _handle_search_config,
         _handle_pause_jobs, _handle_resume_jobs, _handle_job_detail,
+        _handle_engine_stats, _handle_engine_compare, _handle_engine_learning,
+        _handle_engine_reset,
     )
 
     # Direct agent mapping
@@ -427,6 +430,11 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         Intent.PAUSE_JOBS.value: _handle_pause_jobs,
         Intent.RESUME_JOBS.value: _handle_resume_jobs,
         Intent.JOB_DETAIL.value: _handle_job_detail,
+        # A/B engine dashboard
+        Intent.ENGINE_STATS.value: _handle_engine_stats,
+        Intent.ENGINE_COMPARE.value: _handle_engine_compare,
+        Intent.ENGINE_LEARNING.value: _handle_engine_learning,
+        Intent.ENGINE_RESET.value: _handle_engine_reset,
     }
 
     # Briefing sub-agents (collect phases)

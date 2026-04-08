@@ -376,5 +376,36 @@
     "start job search",
     "search for new opportunities",
     "run job scanner"
+  ],
+  "engine_stats": [
+    "job engine stats",
+    "engine comparison",
+    "ab results",
+    "a/b engine results",
+    "engine stats 14",
+    "engine stats last 7 days",
+    "show engine stats"
+  ],
+  "engine_compare": [
+    "engine compare greenhouse",
+    "compare engines",
+    "engine compare linkedin",
+    "per platform breakdown",
+    "compare engine greenhouse",
+    "platform engine breakdown"
+  ],
+  "engine_learning": [
+    "engine learning",
+    "engine learning curve",
+    "engine trend",
+    "engine progress",
+    "learning curve engines"
+  ],
+  "engine_reset": [
+    "engine reset",
+    "reset ab data",
+    "clear engine tracking",
+    "reset engine data",
+    "clear ab tracking"
   ]
 }

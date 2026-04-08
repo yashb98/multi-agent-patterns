@@ -121,6 +121,10 @@ def dispatch(cmd: ParsedCommand) -> str:
         Intent.PAUSE_JOBS: _handle_pause_jobs,
         Intent.RESUME_JOBS: _handle_resume_jobs,
         Intent.JOB_DETAIL: _handle_job_detail,
+        Intent.ENGINE_STATS: _handle_engine_stats,
+        Intent.ENGINE_COMPARE: _handle_engine_compare,
+        Intent.ENGINE_LEARNING: _handle_engine_learning,
+        Intent.ENGINE_RESET: _handle_engine_reset,
     }
 
     handler = handlers.get(cmd.intent)
@@ -815,6 +819,26 @@ def _handle_resume_jobs(cmd: ParsedCommand) -> str:
 def _handle_job_detail(cmd: ParsedCommand) -> str:
     from jobpulse.job_autopilot import get_job_detail
     return get_job_detail(cmd.args)
+
+
+def _handle_engine_stats(cmd: ParsedCommand) -> str:
+    from jobpulse import ab_dashboard
+    return ab_dashboard.engine_stats(cmd.args)
+
+
+def _handle_engine_compare(cmd: ParsedCommand) -> str:
+    from jobpulse import ab_dashboard
+    return ab_dashboard.engine_compare(cmd.args)
+
+
+def _handle_engine_learning(cmd: ParsedCommand) -> str:
+    from jobpulse import ab_dashboard
+    return ab_dashboard.engine_learning(cmd.args)
+
+
+def _handle_engine_reset(cmd: ParsedCommand) -> str:
+    from jobpulse import ab_dashboard
+    return ab_dashboard.engine_reset(cmd.args)
 
 
 def _handle_unknown(cmd: ParsedCommand) -> str:

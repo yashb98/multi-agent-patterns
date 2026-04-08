@@ -59,6 +59,10 @@ class Intent(str, Enum):
     RESUME_JOBS = "resume_jobs"
     JOB_DETAIL = "job_detail"
     SCAN_JOBS = "scan_jobs"
+    ENGINE_STATS = "engine_stats"
+    ENGINE_COMPARE = "engine_compare"
+    ENGINE_LEARNING = "engine_learning"
+    ENGINE_RESET = "engine_reset"
     UNKNOWN = "unknown"
 
 
@@ -220,6 +224,23 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     (Intent.SHOW_JOBS, [
         r"^(jobs?|show jobs?|new jobs?|available jobs?|what.?s available)\s*$",
         r"(pending|review)\s*jobs?\s*$",
+    ]),
+    (Intent.ENGINE_STATS, [
+        r"(engine|ab|a/b|a-b)\s*(stats?|results?|comparison|compare)\s*(\d+)?",
+        r"job engine stats?",
+    ]),
+    (Intent.ENGINE_COMPARE, [
+        r"engine compare\s*(.*)",
+        r"compare engines?\s*(.*)",
+        r"per.?platform\s*(breakdown)?",
+    ]),
+    (Intent.ENGINE_LEARNING, [
+        r"engine learning",
+        r"engine (curve|trend|progress)",
+    ]),
+    (Intent.ENGINE_RESET, [
+        r"engine reset",
+        r"(clear|reset)\s*(ab|a/b|engine)\s*(data|tracking)?",
     ]),
     # Briefing
     (Intent.BRIEFING, [
