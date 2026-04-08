@@ -9,79 +9,82 @@ The Playwright native pipeline spec proposed role-based locators and accessible-
 
 ## Architecture: Strategy Pattern
 
-**Hard constraint: every file ≤ 60-80 lines.** This keeps each file fully readable in one context window and enforces single-responsibility at a granular level.
+**Grouping principle: each file has exactly ONE reason to change.** Files are grouped by "what changes together", not by arbitrary line count. Target: 60-120 lines per file, 25 files total.
 
 ```
 extension/
-├── content.js                          — Thin bootstrap: namespace init, message dispatcher (~70 lines)
-├── core/
-│   ├── delay.js                        — delay(), sleep utilities (~15 lines)
-│   ├── scroll.js                       — smartScroll(), scrollTo() (~30 lines)
-│   ├── retry.js                        — withRetry() wrapper (~25 lines)
-│   ├── native_value.js                 — setNativeValue(), verifyFieldValue() (~40 lines)
-│   ├── visibility.js                   — isFieldVisible() (~30 lines)
-│   ├── selector.js                     — resolveSelector() inc. shadow DOM (~30 lines)
-│   ├── fuzzy.js                        — normalizeText(), fuzzyMatchOption(), ABBREVIATIONS (~45 lines)
-│   ├── timing.js                       — BehaviorProfile, calibration listeners, getFieldGap(), getTypingDelay() (~65 lines)
-│   ├── cursor_core.js                  — ensureCursor(), hideCursor(), cursorClickFlash(), highlightElement() (~60 lines)
-│   ├── cursor_move.js                  — moveCursorTo(), bezierCurve() (~55 lines)
-│   └── events.js                       — dispatchMouseEvents(), dispatchKeyEvents() — shared event helpers (~40 lines)
-├── scanners/
-│   ├── field_context.js                — extractFieldContext() — exhaustive DOM label extraction (~70 lines)
-│   ├── field_info.js                   — extractFieldInfo() — build FieldInfo from element (~75 lines)
-│   ├── deep_scan.js                    — deepScan() — recursive DOM + shadow DOM + iframe (~45 lines)
-│   ├── form_groups.js                  — scanFormGroups() — fieldset/group scanning (~70 lines)
-│   ├── label_core.js                   — getAccessibleName(), buildLocatorHint(), clean() (~55 lines)
-│   ├── label_scan.js                   — LabelScanner.scan() — role-based field discovery (~75 lines)
-│   └── label_scan_custom.js            — scanRadioGroups(), scanComboboxes(), scanContentEditable() (~60 lines)
-├── fillers/
-│   ├── fill_text.js                    — fillField() — human-like char-by-char typing (~70 lines)
-│   ├── fill_contenteditable.js         — fillContentEditable() — execCommand typing (~50 lines)
-│   ├── fill_select.js                  — selectOption() — native <select> fuzzy match (~50 lines)
-│   ├── fill_checkbox.js                — checkBox() (~20 lines)
-│   ├── fill_radio.js                   — fillRadioGroup() — label-aware radio selection (~75 lines)
-│   ├── fill_combobox.js                — fillCombobox() — open dropdown, search, select (~80 lines)
-│   ├── fill_custom_select.js           — fillCustomSelect() — trigger + option panel (~70 lines)
-│   ├── fill_autocomplete.js            — fillAutocomplete() — type + suggestion pick (~55 lines)
-│   ├── fill_tag_input.js               — fillTagInput() — multi-value with Enter (~30 lines)
-│   ├── fill_date.js                    — fillDate() — format detection + native setter (~55 lines)
-│   ├── fill_upload.js                  — uploadFile() — DataTransfer API (~20 lines)
-│   ├── fill_actions.js                 — clickElement(), forceClick(), scrollTo(), waitForSelector() (~70 lines)
-│   ├── consent.js                      — checkConsentBoxes() (~40 lines)
-│   ├── validation.js                   — scanValidationErrors() — 5-strategy error scan (~75 lines)
-│   ├── rescan.js                       — rescanAfterFill() (~40 lines)
-│   ├── reveal_options.js               — revealOptions() — click dropdown, capture options, close (~65 lines)
-│   ├── label_find.js                   — findByLabel() — 4-strategy element lookup by accessible name (~60 lines)
-│   ├── label_fill.js                   — fillByLabel() — router to type-specific sub-fillers (~50 lines)
-│   ├── label_fill_text.js              — textByLabel(), contentEditableByLabel() (~55 lines)
-│   ├── label_fill_select.js            — selectByLabel(), comboboxByLabel(), radioByLabel() (~70 lines)
-│   └── label_fill_check.js             — checkByLabel(), uploadByLabel() (~30 lines)
-├── detectors/
-│   ├── snapshot_builder.js             — buildSnapshot() — assemble PageSnapshot (~70 lines)
-│   ├── snapshot_buttons.js             — extractButtons() — button/link scanning (~60 lines)
-│   ├── snapshot_meta.js                — detectModal(), detectProgress(), pageStability() (~40 lines)
-│   ├── job_cards.js                    — extractJobCards() — Indeed/Greenhouse/generic card parsing (~75 lines)
-│   ├── jd_text.js                      — extractJDText() — platform-specific JD extraction (~35 lines)
-│   ├── verification.js                 — detectVerificationWall() — CAPTCHA/block detection (~35 lines)
-│   ├── native_page.js                  — isConfirmationPage(), isSubmitPage(), hasUnfilledRequired() (~45 lines)
-│   └── native_nav.js                   — detectNavigationButton(), detectProgress() (~50 lines)
+├── content.js                    (~70)  — Message dispatcher + MutationObserver + strategy router
+│
+├── core/                         — Pure utilities, zero knowledge of scanning or filling
+│   ├── dom.js                    (~90)  — delay, smartScroll, withRetry, isFieldVisible, resolveSelector
+│   │                                      Changes when: DOM interaction primitives change
+│   ├── form.js                   (~80)  — setNativeValue, verifyFieldValue, normalizeText, fuzzyMatchOption
+│   │                                      Changes when: form value handling or matching logic changes
+│   ├── timing.js                 (~65)  — BehaviorProfile, calibration listeners, getFieldGap, getTypingDelay
+│   │                                      Changes when: anti-detection timing or typing speed changes
+│   └── cursor.js                 (~80)  — ensureCursor, moveCursorTo, bezierCurve, clickFlash, highlight
+│                                          Changes when: visual feedback appearance or animation changes
+│
+├── scanners/                     — Read-only field discovery, never mutate DOM
+│   ├── field_context.js          (~100) — extractFieldContext (exhaustive DOM label extraction)
+│   │                                      Changes when: label extraction heuristics change
+│   ├── field_info.js             (~95)  — extractFieldInfo (build FieldInfo + CSS selector from element)
+│   │                                      Changes when: FieldInfo schema or selector-building changes
+│   ├── scan_dom.js               (~110) — deepScan (recursive DOM/shadow/iframe) + scanFormGroups
+│   │                                      Changes when: DOM traversal strategy or form group detection changes
+│   └── label_scan.js             (~100) — getAccessibleName, buildLocatorHint, scan() for all field types
+│                                          Changes when: accessible name extraction or label strategy adds field types
+│
+├── fillers/                      — DOM mutation, one file per form control family
+│   ├── fill_text.js              (~120) — fillField + fillContentEditable (char-by-char typing)
+│   │                                      Changes when: text input or rich text interaction changes
+│   ├── fill_select.js            (~110) — selectOption + checkBox + checkConsentBoxes
+│   │                                      Changes when: native select/checkbox interaction changes
+│   ├── fill_radio.js             (~80)  — fillRadioGroup (label-aware radio selection)
+│   │                                      Changes when: radio group detection or selection changes
+│   ├── fill_combobox.js          (~120) — fillCombobox + revealOptions (shared option-finding logic)
+│   │                                      Changes when: custom dropdown open/search/select logic changes
+│   ├── fill_dropdown.js          (~110) — fillCustomSelect + fillAutocomplete
+│   │                                      Changes when: trigger-based dropdown or type-ahead interaction changes
+│   ├── fill_simple.js            (~100) — fillTagInput + fillDate + uploadFile
+│   │                                      Changes when: tag/date/file input handling changes
+│   ├── fill_actions.js           (~80)  — clickElement, forceClick, scrollTo, waitForSelector
+│   │                                      Changes when: click/scroll/wait interaction changes
+│   ├── fill_validate.js          (~120) — scanValidationErrors + rescanAfterFill
+│   │                                      Changes when: error detection strategies change
+│   ├── label_fill.js             (~80)  — findByLabel + fillByLabel router + textByLabel + checkByLabel
+│   │                                      Changes when: label-based element lookup or text/check fill changes
+│   └── label_fill_choice.js      (~70)  — selectByLabel + comboboxByLabel + radioByLabel
+│                                          Changes when: label-based choice control interaction changes
+│
+├── detectors/                    — Read-only page analysis
+│   ├── snapshot.js               (~110) — buildSnapshot + button extraction + modal/progress/stability
+│   │                                      Changes when: PageSnapshot schema or page state detection changes
+│   ├── job_extract.js            (~100) — extractJobCards + extractJDText
+│   │                                      Changes when: job listing page structure changes (Indeed, Greenhouse, etc.)
+│   ├── verification.js           (~35)  — detectVerificationWall (CAPTCHA/block detection, shared by both strategies)
+│   │                                      Changes when: new CAPTCHA types appear
+│   └── native.js                 (~80)  — isConfirmationPage, isSubmitPage, detectNavigationButton, detectProgress
+│                                          Changes when: page classification or navigation button detection changes
+│
 ├── ai/
-│   └── gemini.js                       — analyzeFieldLocally(), writeShortAnswer() (~55 lines)
+│   └── gemini.js                 (~55)  — analyzeFieldLocally, writeShortAnswer (Gemini Nano, Chrome built-in)
+│                                          Changes when: local AI prompts or API changes
 ├── persistence/
-│   └── form_progress.js                — saveFormProgress(), getFormProgress(), clearFormProgress() (~45 lines)
-├── legacy/
-│   └── message_handler.js              — Legacy switch cases for all selector-only actions (~75 lines)
-├── background.js                       — Unchanged
-├── protocol.js                         — Add new label-based message types
-├── config.js                           — Unchanged
-├── scanner.js                          — Unchanged (job scanning, not form scanning)
-├── job_queue.js                        — Unchanged
-├── phase_engine.js                     — Unchanged
-├── native_bridge.js                    — Unchanged
-└── manifest.json                       — Update content_scripts to load all modules
+│   └── form_progress.js          (~45)  — saveFormProgress, getFormProgress, clearFormProgress
+│                                          Changes when: MV3 state persistence strategy changes
+│
+├── background.js                 — Unchanged (WebSocket, command dispatch, tab tracking)
+├── protocol.js                   — Add new label-based message types
+├── config.js                     — Unchanged (search config, rate limits, phase thresholds)
+├── scanner.js                    — Unchanged (job scanning alarms, not form scanning)
+├── job_queue.js                  — Unchanged (IndexedDB job queue)
+├── phase_engine.js               — Unchanged (automation phase graduation)
+├── native_bridge.js              — Unchanged (Python backend HTTP API)
+└── manifest.json                 — Update content_scripts to load all modules
 ```
 
-**Total: 42 content-script files, each ≤ 80 lines.** Every file has one clear purpose and can be read in full without scrolling.
+**Total: 25 content-script files.** Each has one clear reason to change, documented in the tree above.
 
 ### SOLID Principles Applied
 
@@ -119,29 +122,21 @@ window.JobPulse.fillers = window.JobPulse.fillers || {};
 window.JobPulse.fillers.label = { fillByLabel, selectByLabel, checkByLabel };
 ```
 
-**manifest.json** loads files in dependency order (core → scanners → fillers → detectors → ai → persistence → legacy → dispatcher):
+**manifest.json** loads files in dependency order (core → scanners → fillers → detectors → ai → persistence → dispatcher):
 ```json
 "content_scripts": [{
   "js": [
-    "core/delay.js", "core/scroll.js", "core/retry.js", "core/native_value.js",
-    "core/visibility.js", "core/selector.js", "core/fuzzy.js", "core/timing.js",
-    "core/events.js", "core/cursor_core.js", "core/cursor_move.js",
-    "scanners/field_context.js", "scanners/field_info.js", "scanners/deep_scan.js",
-    "scanners/form_groups.js", "scanners/label_core.js", "scanners/label_scan.js",
-    "scanners/label_scan_custom.js",
-    "fillers/fill_text.js", "fillers/fill_contenteditable.js", "fillers/fill_select.js",
-    "fillers/fill_checkbox.js", "fillers/fill_radio.js", "fillers/fill_combobox.js",
-    "fillers/fill_custom_select.js", "fillers/fill_autocomplete.js",
-    "fillers/fill_tag_input.js", "fillers/fill_date.js", "fillers/fill_upload.js",
-    "fillers/fill_actions.js", "fillers/consent.js", "fillers/validation.js",
-    "fillers/rescan.js", "fillers/reveal_options.js",
-    "fillers/label_find.js", "fillers/label_fill.js", "fillers/label_fill_text.js",
-    "fillers/label_fill_select.js", "fillers/label_fill_check.js",
-    "detectors/snapshot_builder.js", "detectors/snapshot_buttons.js",
-    "detectors/snapshot_meta.js", "detectors/job_cards.js", "detectors/jd_text.js",
-    "detectors/verification.js", "detectors/native_page.js", "detectors/native_nav.js",
+    "core/dom.js", "core/form.js", "core/timing.js", "core/cursor.js",
+    "scanners/field_context.js", "scanners/field_info.js", "scanners/scan_dom.js",
+    "scanners/label_scan.js",
+    "fillers/fill_text.js", "fillers/fill_select.js", "fillers/fill_radio.js",
+    "fillers/fill_combobox.js", "fillers/fill_dropdown.js", "fillers/fill_simple.js",
+    "fillers/fill_actions.js", "fillers/fill_validate.js",
+    "fillers/label_fill.js", "fillers/label_fill_choice.js",
+    "detectors/snapshot.js", "detectors/job_extract.js",
+    "detectors/verification.js", "detectors/native.js",
     "ai/gemini.js", "persistence/form_progress.js",
-    "legacy/message_handler.js", "content.js"
+    "content.js"
   ]
 }]
 ```
@@ -339,88 +334,62 @@ Both strategies run through the same extension, same Chrome profile, same anti-d
 
 ## Migration Map
 
-Pure extraction from current `content.js` monolith — zero behavioral changes to selector path. Each destination file stays ≤ 80 lines.
+Pure extraction from current `content.js` monolith — zero behavioral changes to selector path. Each file grouped by "what changes together".
 
-### core/ — Utilities (extracted from lines 1-530)
+### core/ — Utilities (extracted from content.js lines 1-530)
 
-| Source | Destination | ~Lines |
-|---|---|---|
-| `delay()` | `core/delay.js` | 15 |
-| `smartScroll()` | `core/scroll.js` | 30 |
-| `withRetry()` | `core/retry.js` | 25 |
-| `setNativeValue()`, `verifyFieldValue()` | `core/native_value.js` | 40 |
-| `isFieldVisible()` | `core/visibility.js` | 30 |
-| `resolveSelector()` | `core/selector.js` | 30 |
-| `normalizeText()`, `fuzzyMatchOption()`, `ABBREVIATIONS` | `core/fuzzy.js` | 45 |
-| `behaviorProfile`, calibration, `getFieldGap()` | `core/timing.js` | 65 |
-| `ensureCursor()`, `hideCursor()`, `cursorClickFlash()`, `highlightElement()` | `core/cursor_core.js` | 60 |
-| `moveCursorTo()`, `bezierCurve()` | `core/cursor_move.js` | 55 |
-| Mouse/keyboard event dispatch helpers (extracted from fill functions) | `core/events.js` | 40 |
+| Destination | Contains | ~Lines | Changes when |
+|---|---|---|---|
+| `core/dom.js` | `delay()`, `smartScroll()`, `withRetry()`, `isFieldVisible()`, `resolveSelector()` | 90 | DOM interaction primitives change |
+| `core/form.js` | `setNativeValue()`, `verifyFieldValue()`, `normalizeText()`, `fuzzyMatchOption()`, `ABBREVIATIONS` | 80 | Form value handling or matching logic changes |
+| `core/timing.js` | `behaviorProfile`, calibration listeners, `getFieldGap()`, `getTypingDelay()` | 65 | Anti-detection timing or typing speed changes |
+| `core/cursor.js` | `ensureCursor()`, `moveCursorTo()`, `bezierCurve()`, `cursorClickFlash()`, `highlightElement()`, `hideCursor()` | 80 | Visual feedback appearance or animation changes |
 
 ### scanners/ — Field Discovery (extracted from lines 133-816)
 
-| Source | Destination | ~Lines |
-|---|---|---|
-| `extractFieldContext()` | `scanners/field_context.js` | 70 |
-| `extractFieldInfo()` | `scanners/field_info.js` | 75 |
-| `deepScan()` (recursive DOM/shadow/iframe) | `scanners/deep_scan.js` | 45 |
-| `scanFormGroups()` | `scanners/form_groups.js` | 70 |
+| Destination | Contains | ~Lines | Changes when |
+|---|---|---|---|
+| `scanners/field_context.js` | `extractFieldContext()` — exhaustive DOM walk for labels | 100 | Label extraction heuristics change |
+| `scanners/field_info.js` | `extractFieldInfo()` — build FieldInfo + CSS selector from element | 95 | FieldInfo schema or selector-building logic changes |
+| `scanners/scan_dom.js` | `deepScan()` + `scanFormGroups()` — recursive DOM/shadow/iframe traversal | 110 | DOM traversal strategy or form group detection changes |
 
 ### fillers/ — Form Filling (extracted from lines 968-1952)
 
-| Source | Destination | ~Lines |
-|---|---|---|
-| `fillField()` (text inputs) | `fillers/fill_text.js` | 70 |
-| `fillContentEditable()` | `fillers/fill_contenteditable.js` | 50 |
-| `selectOption()` | `fillers/fill_select.js` | 50 |
-| `checkBox()` | `fillers/fill_checkbox.js` | 20 |
-| `fillRadioGroup()` | `fillers/fill_radio.js` | 75 |
-| `fillCombobox()` | `fillers/fill_combobox.js` | 80 |
-| `fillCustomSelect()` | `fillers/fill_custom_select.js` | 70 |
-| `fillAutocomplete()` | `fillers/fill_autocomplete.js` | 55 |
-| `fillTagInput()` | `fillers/fill_tag_input.js` | 30 |
-| `fillDate()` | `fillers/fill_date.js` | 55 |
-| `uploadFile()` | `fillers/fill_upload.js` | 20 |
-| `clickElement()`, `forceClick()`, `scrollTo()`, `waitForSelector()` | `fillers/fill_actions.js` | 70 |
-| `checkConsentBoxes()` | `fillers/consent.js` | 40 |
-| `scanValidationErrors()` | `fillers/validation.js` | 75 |
-| `rescanAfterFill()` | `fillers/rescan.js` | 40 |
-| `revealOptions()` | `fillers/reveal_options.js` | 65 |
+| Destination | Contains | ~Lines | Changes when |
+|---|---|---|---|
+| `fillers/fill_text.js` | `fillField()` + `fillContentEditable()` | 120 | Text input or rich text typing interaction changes |
+| `fillers/fill_select.js` | `selectOption()` + `checkBox()` + `checkConsentBoxes()` | 110 | Native select, checkbox, or consent interaction changes |
+| `fillers/fill_radio.js` | `fillRadioGroup()` | 80 | Radio group detection or selection changes |
+| `fillers/fill_combobox.js` | `fillCombobox()` + `revealOptions()` (shared option-finding logic) | 120 | Custom dropdown open/search/select logic changes |
+| `fillers/fill_dropdown.js` | `fillCustomSelect()` + `fillAutocomplete()` | 110 | Trigger-based dropdown or type-ahead interaction changes |
+| `fillers/fill_simple.js` | `fillTagInput()` + `fillDate()` + `uploadFile()` | 100 | Tag, date, or file input handling changes |
+| `fillers/fill_actions.js` | `clickElement()`, `forceClick()`, `scrollTo()`, `waitForSelector()` | 80 | Click, scroll, or wait interaction changes |
+| `fillers/fill_validate.js` | `scanValidationErrors()` + `rescanAfterFill()` | 120 | Error detection strategies change |
 
 ### detectors/ — Page Analysis (extracted from lines 823-2158)
 
-| Source | Destination | ~Lines |
-|---|---|---|
-| `buildSnapshot()` | `detectors/snapshot_builder.js` | 70 |
-| Button/link extraction from `buildSnapshot()` | `detectors/snapshot_buttons.js` | 60 |
-| Modal/progress/stability from `buildSnapshot()` | `detectors/snapshot_meta.js` | 40 |
-| `extractJobCards()` | `detectors/job_cards.js` | 75 |
-| `extractJDText()` | `detectors/jd_text.js` | 35 |
-| `detectVerificationWall()` | `detectors/verification.js` | 35 |
+| Destination | Contains | ~Lines | Changes when |
+|---|---|---|---|
+| `detectors/snapshot.js` | `buildSnapshot()` + button extraction + modal/progress/stability | 110 | PageSnapshot schema or page state detection changes |
+| `detectors/job_extract.js` | `extractJobCards()` + `extractJDText()` | 100 | Job listing page structure changes (Indeed, Greenhouse, etc.) |
+| `detectors/verification.js` | `detectVerificationWall()` (shared by both strategies) | 35 | New CAPTCHA types appear |
 
 ### Other (extracted from lines 1955-2520)
 
-| Source | Destination | ~Lines |
-|---|---|---|
-| `analyzeFieldLocally()`, `writeShortAnswer()` | `ai/gemini.js` | 55 |
-| `saveFormProgress()`, `getFormProgress()`, `clearFormProgress()` | `persistence/form_progress.js` | 45 |
-| Legacy switch statement cases | `legacy/message_handler.js` | 75 |
-| MutationObserver + load event + dispatcher | `content.js` | 70 |
+| Destination | Contains | ~Lines | Changes when |
+|---|---|---|---|
+| `ai/gemini.js` | `analyzeFieldLocally()`, `writeShortAnswer()` | 55 | Local AI prompts or Chrome AI API changes |
+| `persistence/form_progress.js` | `saveFormProgress()`, `getFormProgress()`, `clearFormProgress()` | 45 | MV3 state persistence strategy changes |
+| `content.js` | Message dispatcher + MutationObserver + strategy router | 70 | New actions added or strategy routing changes |
 
-### New files (genuinely new code, ~500 lines total)
+### New files (genuinely new code, ~450 lines total)
 
-| File | Purpose | ~Lines |
-|---|---|---|
-| `scanners/label_core.js` | `getAccessibleName()`, `buildLocatorHint()`, `clean()` | 55 |
-| `scanners/label_scan.js` | `LabelScanner.scan()` — text, select, textarea, file, checkbox | 75 |
-| `scanners/label_scan_custom.js` | `scanRadioGroups()`, `scanComboboxes()`, `scanContentEditable()` | 60 |
-| `fillers/label_find.js` | `findByLabel()` — 4-strategy element lookup | 60 |
-| `fillers/label_fill.js` | `fillByLabel()` — router to type-specific sub-fillers | 50 |
-| `fillers/label_fill_text.js` | `textByLabel()`, `contentEditableByLabel()` | 55 |
-| `fillers/label_fill_select.js` | `selectByLabel()`, `comboboxByLabel()`, `radioByLabel()` | 70 |
-| `fillers/label_fill_check.js` | `checkByLabel()`, `uploadByLabel()` | 30 |
-| `detectors/native_page.js` | `isConfirmationPage()`, `isSubmitPage()`, `hasUnfilledRequired()` | 45 |
-| `detectors/native_nav.js` | `detectNavigationButton()`, `detectProgress()` | 50 |
+| Destination | Contains | ~Lines | Changes when |
+|---|---|---|---|
+| `scanners/label_scan.js` | `getAccessibleName()`, `buildLocatorHint()`, `scan()` for all field types | 100 | Accessible name extraction or new field types added |
+| `fillers/label_fill.js` | `findByLabel()`, `fillByLabel()` router, `textByLabel()`, `checkByLabel()` | 80 | Label-based element lookup or text/check fill changes |
+| `fillers/label_fill_choice.js` | `selectByLabel()`, `comboboxByLabel()`, `radioByLabel()` | 70 | Label-based choice control interaction changes |
+| `detectors/native.js` | `isConfirmationPage()`, `isSubmitPage()`, `detectNavigationButton()`, `detectProgress()`, `hasUnfilledRequired()` | 80 | Page classification or navigation button detection changes |
 
 ## Cost
 
