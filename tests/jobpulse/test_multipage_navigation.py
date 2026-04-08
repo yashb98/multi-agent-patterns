@@ -24,12 +24,13 @@ def test_find_next_button_save_and_continue():
     assert find_next_button(buttons)["selector"] == "#save"
 
 
-def test_find_next_button_submit_highest_priority():
+def test_find_next_button_skips_submit():
+    """find_next_button skips Submit — that's find_submit_button's job."""
     buttons = [
         {"text": "Next", "enabled": True, "selector": "#next"},
         {"text": "Submit Application", "enabled": True, "selector": "#submit"},
     ]
-    assert find_next_button(buttons)["selector"] == "#submit"
+    assert find_next_button(buttons)["selector"] == "#next"
 
 
 def test_find_next_button_review_over_next():

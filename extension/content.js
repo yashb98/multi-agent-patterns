@@ -413,15 +413,17 @@ function bezierCurve(x0, y0, x1, y1, steps = 18) {
  * Example: "#my-component>>input.email"
  */
 function resolveSelector(selector) {
-  if (selector.includes(">>")) {
-    const parts = selector.split(">>");
+  // Fix invalid CSS: #<digit>... → [id="..."] (CSS forbids # + digit)
+  const fixed = selector.replace(/#(\d[^\s\[>+~,]*)/g, (_, id) => `[id="${id}"]`);
+  if (fixed.includes(">>")) {
+    const parts = fixed.split(">>");
     let el = document.querySelector(parts[0].trim());
     for (let i = 1; i < parts.length && el; i++) {
       el = (el.shadowRoot || el).querySelector(parts[i].trim());
     }
     return el;
   }
-  return document.querySelector(selector);
+  return document.querySelector(fixed);
 }
 
 /**
@@ -568,7 +570,7 @@ function extractFieldInfo(el, iframeIndex) {
   let selector = "";
   if (el.id) {
     // Use attribute selector for IDs with special chars (React uses :r4: etc)
-    selector = /[:#.\[\]]/.test(el.id) ? `[id="${el.id}"]` : `#${el.id}`;
+    selector = /[:#.\[\]]/.test(el.id) || /^\d/.test(el.id) ? `[id="${el.id}"]` : `#${el.id}`;
   }
   else if (el.name) selector = `${tag}[name="${el.name}"]`;
   else {
@@ -579,7 +581,7 @@ function extractFieldInfo(el, iframeIndex) {
     for (let depth = 0; ancestor && depth < 8; depth++, ancestor = ancestor.parentElement) {
       let anchorSel = "";
       if (ancestor.id) {
-        anchorSel = /[:#.\[\]]/.test(ancestor.id) ? `[id="${ancestor.id}"]` : `#${ancestor.id}`;
+        anchorSel = /[:#.\[\]]/.test(ancestor.id) || /^\d/.test(ancestor.id) ? `[id="${ancestor.id}"]` : `#${ancestor.id}`;
       } else if (ancestor.getAttribute("data-zcqa")) {
         anchorSel = `[data-zcqa="${ancestor.getAttribute("data-zcqa")}"]`;
       } else if (ancestor.getAttribute("data-field")) {
@@ -1185,7 +1187,7 @@ async function selectOption(selector, value) {
     if (matched) {
       el.value = matched.value;
       el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { success: true, value_set: match };
+      return { success: true, value_set: match, value_verified: verifyFieldValue(el, match) };
     }
   }
 
@@ -1193,7 +1195,7 @@ async function selectOption(selector, value) {
     if (normalizeText(opt.value) === normalizeText(value)) {
       el.value = opt.value;
       el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { success: true, value_set: opt.text };
+      return { success: true, value_set: opt.text, value_verified: verifyFieldValue(el, opt.text) };
     }
   }
 
@@ -1213,7 +1215,7 @@ async function checkBox(selector, shouldCheck) {
   const want = shouldCheck === "true" || shouldCheck === true;
   if (el.checked !== want) el.click();
 
-  return { success: true, value_set: String(el.checked) };
+  return { success: true, value_set: String(el.checked), value_verified: el.checked === want };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1295,7 +1297,7 @@ async function fillRadioGroup(groupSelector, value) {
     await delay(getFieldGap(match));
     target.click();
     matched.radio.dispatchEvent(new Event("change", { bubbles: true }));
-    return { success: true, value_set: match };
+    return { success: true, value_set: match, value_verified: matched.radio.checked };
   }
 
   return { success: false, error: "Match found but click failed" };
@@ -1367,7 +1369,7 @@ async function fillCustomSelect(triggerSelector, value) {
     matched.el.scrollIntoView({ block: "nearest" });
     await delay(200);
     matched.el.click();
-    return { success: true, value_set: match };
+    return { success: true, value_set: match, value_verified: true };
   }
 
   return { success: false, error: "Match found but click failed" };
@@ -1417,7 +1419,7 @@ async function fillAutocomplete(selector, value) {
           || sugText.toLowerCase().includes(value.toLowerCase().substring(0, 5)))) {
         sug.click();
         await delay(300);
-        return { success: true, value_set: sugText };
+        return { success: true, value_set: sugText, value_verified: true };
       }
     }
 
@@ -1426,7 +1428,7 @@ async function fillAutocomplete(selector, value) {
       const firstText = firstSug.textContent.trim();
       firstSug.click();
       await delay(300);
-      return { success: true, value_set: firstText, used_first_suggestion: true };
+      return { success: true, value_set: firstText, used_first_suggestion: true, value_verified: true };
     }
   }
 
@@ -1437,7 +1439,7 @@ async function fillAutocomplete(selector, value) {
   await delay(200);
   el.dispatchEvent(new Event("blur", { bubbles: true }));
 
-  return { success: true, value_set: value, no_suggestions: true };
+  return { success: true, value_set: value, no_suggestions: true, value_verified: el.value === value };
 }
 
 /**
@@ -1455,19 +1457,42 @@ async function fillCombobox(selector, value) {
 
   await smartScroll(el);
 
-  // Click the combobox trigger to open the dropdown
-  el.click();
-  el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-  el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  await delay(800);
+  // ── Open the dropdown ──
+  // Try the element itself, then walk up to find the widget wrapper (Lyte, MUI, etc.)
+  const clickTargets = [el];
 
-  // Also try clicking any inner trigger (arrow button, input, etc.)
-  const innerTrigger = el.querySelector("input, [class*='trigger'], [class*='arrow'], [class*='toggle'], button");
-  if (innerTrigger) {
-    innerTrigger.click();
-    innerTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await delay(800);
+  // Walk up to find wrapper elements (ZohoRecruit uses lyte-dropdown, etc.)
+  let parent = el.parentElement;
+  for (let depth = 0; depth < 5 && parent; depth++) {
+    const tag = parent.tagName.toLowerCase();
+    const cls = parent.className || "";
+    if (tag.startsWith("lyte-") || cls.includes("dropdown") || cls.includes("select") ||
+        parent.getAttribute("role") === "combobox" || parent.getAttribute("role") === "listbox") {
+      clickTargets.push(parent);
+      break;
+    }
+    parent = parent.parentElement;
+  }
+
+  // Also try inner triggers
+  const innerTrigger = el.querySelector("input, [class*='trigger'], [class*='arrow'], [class*='toggle'], button, lyte-icon");
+  if (innerTrigger) clickTargets.push(innerTrigger);
+
+  for (const target of clickTargets) {
+    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    target.click();
+  }
+  await delay(400);
+
+  // If element is an input, focus + clear + type to trigger search dropdown
+  const inputEl = el.tagName === "INPUT" ? el : el.querySelector("input");
+  if (inputEl) {
+    inputEl.focus();
+    setNativeValue(inputEl, "");
+    inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+    await delay(150);
   }
 
   // Search the ENTIRE document for floating dropdown panels with options
@@ -1492,6 +1517,12 @@ async function fillCombobox(selector, value) {
   const valueLower = value.toLowerCase().trim();
   let allOptions = [];
 
+  // Placeholder values to skip — these are not real options
+  const PLACEHOLDER_VALUES = new Set([
+    "-none-", "none", "loading", "-none- loading", "select", "select...",
+    "choose", "please select", "-- select --", "---", "--", "",
+  ]);
+
   for (const optSel of optionSelectors) {
     const opts = document.querySelectorAll(optSel);
     if (opts.length === 0) continue;
@@ -1499,38 +1530,79 @@ async function fillCombobox(selector, value) {
     for (const opt of opts) {
       const text = opt.textContent.trim();
       if (!text || text.length > 200) continue;
+      // Skip placeholder options
+      if (PLACEHOLDER_VALUES.has(text.toLowerCase())) continue;
       allOptions.push({ el: opt, text });
 
       // Exact match
       if (text.toLowerCase() === valueLower) {
         await moveCursorTo(opt);
         cursorClickFlash();
+        opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
         opt.click();
-        opt.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        await delay(500);
-        return { success: true, value_set: text, match: "exact" };
+        await delay(200);
+        return { success: true, value_set: text, match: "exact", value_verified: true };
       }
     }
 
-    // Partial match — option contains our value or vice versa
-    for (const opt of opts) {
-      const text = opt.textContent.trim();
-      if (!text) continue;
-      if (text.toLowerCase().includes(valueLower) || valueLower.includes(text.toLowerCase())) {
+    // Partial match — option starts with our value or contains it
+    for (const { el: opt, text } of allOptions) {
+      const textLower = text.toLowerCase();
+      // Prefer "starts with" over "contains"
+      if (textLower.startsWith(valueLower) || valueLower.startsWith(textLower) ||
+          textLower.includes(valueLower) || valueLower.includes(textLower)) {
         await moveCursorTo(opt);
         cursorClickFlash();
+        opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
         opt.click();
-        opt.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        await delay(500);
-        return { success: true, value_set: text, match: "partial" };
+        await delay(200);
+        return { success: true, value_set: text, match: "partial", value_verified: true };
       }
     }
+
+    // If we found real options, break — don't search other selectors
+    if (allOptions.length > 0) break;
   }
 
   // If we found options but none matched, report what was available
   if (allOptions.length > 0) {
     const available = allOptions.slice(0, 20).map(o => o.text);
     return { success: false, error: "No matching option", available_options: available, wanted: value };
+  }
+
+  // Retry: click again with more delay — dropdown may need a second click
+  for (const target of clickTargets) {
+    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    target.click();
+  }
+  await delay(600);
+
+  // Check for options again after retry
+  for (const optSel of optionSelectors) {
+    const opts = document.querySelectorAll(optSel);
+    for (const opt of opts) {
+      const text = opt.textContent.trim();
+      if (!text || text.length > 200 || PLACEHOLDER_VALUES.has(text.toLowerCase())) continue;
+      if (text.toLowerCase() === valueLower ||
+          text.toLowerCase().startsWith(valueLower) ||
+          text.toLowerCase().includes(valueLower) ||
+          valueLower.includes(text.toLowerCase())) {
+        await moveCursorTo(opt);
+        cursorClickFlash();
+        opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        opt.click();
+        await delay(200);
+        return { success: true, value_set: text, match: "retry_click", value_verified: true };
+      }
+    }
   }
 
   // No options found — try typing into any input inside the combobox
@@ -1543,9 +1615,9 @@ async function fillCombobox(selector, value) {
       setNativeValue(innerInput, innerInput.value + char);
       innerInput.dispatchEvent(new Event("input", { bubbles: true }));
       innerInput.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
-      await delay(80);
+      await delay(30);
     }
-    await delay(1000);
+    await delay(300);
 
     // Check for suggestions again
     for (const optSel of optionSelectors) {
@@ -1557,7 +1629,7 @@ async function fillCombobox(selector, value) {
           cursorClickFlash();
           opt.click();
           await delay(500);
-          return { success: true, value_set: text, match: "typed_then_selected" };
+          return { success: true, value_set: text, match: "typed_then_selected", value_verified: true };
         }
       }
       if (opts.length > 0) {
@@ -1567,7 +1639,7 @@ async function fillCombobox(selector, value) {
         cursorClickFlash();
         first.click();
         await delay(500);
-        return { success: true, value_set: firstText, match: "typed_first_option" };
+        return { success: true, value_set: firstText, match: "typed_first_option", value_verified: true };
       }
     }
   }
@@ -1599,7 +1671,7 @@ async function fillTagInput(selector, values) {
     added.push(val);
   }
 
-  return { success: true, value_set: added.join(", "), count: added.length };
+  return { success: true, value_set: added.join(", "), count: added.length, value_verified: added.length > 0 };
 }
 
 async function fillDate(selector, isoDate) {
@@ -1610,6 +1682,7 @@ async function fillDate(selector, isoDate) {
 
   const inputType = (el.getAttribute("type") || "text").toLowerCase();
 
+  // Native date input
   if (inputType === "date") {
     const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype, "value"
@@ -1617,33 +1690,56 @@ async function fillDate(selector, isoDate) {
     nativeInputValueSetter.call(el, isoDate);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    return { success: true, value_set: isoDate };
+    return { success: true, value_set: isoDate, value_verified: el.value === isoDate };
   }
 
+  // Detect date format from placeholder, aria-label, or parent context
   const placeholder = (el.getAttribute("placeholder") || "").toLowerCase();
+  const ariaLabel = (el.getAttribute("aria-label") || "").toLowerCase();
+  const parentText = (el.closest("[class*='date']")?.textContent || "").toLowerCase();
+  const formatHint = placeholder || ariaLabel || parentText;
   let formatted = isoDate;
   try {
     const [y, m, d] = isoDate.split("-");
-    if (placeholder.includes("dd/mm")) {
+    if (formatHint.includes("dd/mm")) {
       formatted = `${d}/${m}/${y}`;
-    } else if (placeholder.includes("mm/dd")) {
+    } else if (formatHint.includes("mm/dd")) {
       formatted = `${m}/${d}/${y}`;
+    } else if (formatHint.includes("dd-mm")) {
+      formatted = `${d}-${m}-${y}`;
+    } else if (formatHint.includes("mm-dd")) {
+      formatted = `${m}-${d}-${y}`;
     }
   } catch (_) { /* keep ISO format */ }
 
+  // Try native value setter first (works with React/Vue/Lyte controlled inputs)
   el.focus();
-  el.value = "";
+  setNativeValue(el, formatted);
   el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  await delay(200);
 
-  for (const char of formatted) {
-    el.value += char;
+  // If value didn't stick, try character-by-character typing
+  if (!el.value || el.value !== formatted) {
+    setNativeValue(el, "");
     el.dispatchEvent(new Event("input", { bubbles: true }));
-    await delay(80 + Math.random() * 40);
+    for (const char of formatted) {
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
+      setNativeValue(el, el.value + char);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
+      await delay(60 + Math.random() * 30);
+    }
   }
+
   el.dispatchEvent(new Event("change", { bubbles: true }));
   el.dispatchEvent(new Event("blur", { bubbles: true }));
 
-  return { success: true, value_set: formatted };
+  // Dismiss any date picker popup that appeared
+  document.body.click();
+  await delay(100);
+
+  return { success: true, value_set: formatted, value_verified: el.value.includes(formatted.substring(0, 4)) };
 }
 
 async function scrollTo(selector) {
@@ -2071,7 +2167,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   (async () => {
     let result;
+    try {
     switch (action) {
+      case "ping":
+        result = { success: true, alive: true };
+        break;
       case "get_snapshot":
         result = buildSnapshot();
         break;
@@ -2150,19 +2250,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         result = await withRetry(() => fillRadioGroup(payload.selector, payload.value));
         break;
       case "fill_custom_select":
-        result = await withRetry(() => fillCustomSelect(payload.selector, payload.value));
+        result = await fillCustomSelect(payload.selector, payload.value);
         break;
       case "fill_autocomplete":
         result = await withRetry(() => fillAutocomplete(payload.selector, payload.value));
         break;
       case "fill_combobox":
-        result = await withRetry(() => fillCombobox(payload.selector, payload.value));
+        result = await fillCombobox(payload.selector, payload.value);
         break;
       case "fill_tag_input":
         result = await withRetry(() => fillTagInput(payload.selector, payload.values || []));
         break;
       case "fill_date":
-        result = await withRetry(() => fillDate(payload.selector, payload.value));
+        result = await fillDate(payload.selector, payload.value);
         break;
       case "scroll_to":
         result = await scrollTo(payload.selector);
@@ -2189,6 +2289,74 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ? await fillContentEditable(ceEl, payload.value)
             : { success: false, error: "Element not found: " + payload.selector };
         });
+        break;
+      }
+      case "reveal_options": {
+        // Click a combobox/dropdown to reveal its options, capture them, then close
+        const revealEl = resolveSelector(payload.selector);
+        if (!revealEl) {
+          result = { success: false, error: "Element not found: " + payload.selector };
+        } else {
+          try {
+            // Click to open
+            const targets = [revealEl];
+            let p = revealEl.parentElement;
+            for (let d = 0; d < 5 && p; d++, p = p.parentElement) {
+              const tag = p.tagName.toLowerCase();
+              const cls = p.className || "";
+              if (tag.startsWith("lyte-") || cls.includes("dropdown") || cls.includes("select") ||
+                  p.getAttribute("role") === "combobox" || p.getAttribute("role") === "listbox") {
+                targets.push(p);
+                break;
+              }
+            }
+            const innerTrig = revealEl.querySelector("input, [class*='trigger'], [class*='arrow'], button, lyte-icon");
+            if (innerTrig) targets.push(innerTrig);
+
+            for (const t of targets) {
+              t.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+              t.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+              t.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+              t.click();
+            }
+            await delay(350);
+
+            // Collect all visible options from any floating panel
+            const optSelectors = [
+              "[role='option']", "[role='listbox'] li", "lyte-drop-box li",
+              ".lyte-dropdown-items li", ".cxDropdownMenuList li",
+              "[class*='dropdown'] li", "[class*='dropdown'] [class*='option']",
+              "[class*='menu'] li[class*='option']", "[class*='listbox'] li",
+              "ul[class*='select'] li", ".select-options li",
+            ];
+            const REVEAL_PLACEHOLDERS = new Set([
+              "-none-", "none", "loading", "-none- loading", "select", "select...",
+              "choose", "please select", "-- select --", "---", "--", "",
+            ]);
+            const options = [];
+            const seen = new Set();
+            for (const sel of optSelectors) {
+              for (const opt of document.querySelectorAll(sel)) {
+                const text = opt.textContent.trim();
+                if (text && text.length < 200 && !seen.has(text) &&
+                    !REVEAL_PLACEHOLDERS.has(text.toLowerCase())) {
+                  seen.add(text);
+                  options.push(text);
+                }
+              }
+              if (options.length > 0) break;
+            }
+
+            // Close the dropdown
+            document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+            revealEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+            await delay(100);
+
+            result = { success: true, options, selector: payload.selector };
+          } catch (err) {
+            result = { success: false, error: "reveal_options error: " + (err.message || String(err)) };
+          }
+        }
         break;
       }
       case "scan_form_groups":
@@ -2218,8 +2386,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         clearFormProgress(payload.url || location.href);
         result = { success: true };
         break;
+      case "element_bounds": {
+        // Return the bounding rect of a specific element (for cropping screenshots)
+        const boundsEl = resolveSelector(payload.selector);
+        if (!boundsEl) {
+          result = { success: false, error: "Element not found: " + payload.selector };
+        } else {
+          await smartScroll(boundsEl);
+          await delay(200);
+          const rect = boundsEl.getBoundingClientRect();
+          result = {
+            success: true,
+            bounds: {
+              x: Math.round(rect.x * devicePixelRatio),
+              y: Math.round(rect.y * devicePixelRatio),
+              width: Math.round(rect.width * devicePixelRatio),
+              height: Math.round(rect.height * devicePixelRatio),
+            },
+            dpr: devicePixelRatio,
+          };
+        }
+        break;
+      }
       default:
         result = { success: false, error: "Unknown action: " + action };
+    }
+    } catch (err) {
+      result = { success: false, error: "Content script error: " + (err.message || String(err)) };
     }
     sendResponse(result);
   })();

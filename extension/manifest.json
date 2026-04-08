@@ -11,7 +11,8 @@
     "tabs",
     "nativeMessaging",
     "alarms",
-    "offscreen"
+    "offscreen",
+    "debugger"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

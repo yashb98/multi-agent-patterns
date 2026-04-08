@@ -174,10 +174,14 @@ def extract_location(text: str) -> str:
     if m:
         loc = m.group(1).strip()
         # Strip trailing parenthetical like "(Hybrid)" from the label value
-        # but keep "(Hybrid)" if it's part of the full value — per spec test
-        # "Location: London, UK (Hybrid)" → "London, UK"
-        # Strip trailing parenthetical only
         loc = re.sub(r"\s*\([^)]*\)\s*$", "", loc).strip()
+        # Truncate at common JD delimiters that indicate content bleed
+        for delim in ["·", "•", " - Design", " - Build", ". "]:
+            if delim in loc:
+                loc = loc.split(delim)[0].strip()
+        # Safety cap — location should never exceed 50 chars
+        if len(loc) > 50:
+            loc = loc[:50].rsplit(",", 1)[0].strip()
         return loc
 
     # 2. "Remote, UK" or similar at start of text / as a standalone phrase

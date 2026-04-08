@@ -32,6 +32,7 @@ from jobpulse.sso_handler import SSOHandler
 from jobpulse.state_machines import (
     ApplicationState,
     find_next_button,
+    find_submit_button,
     get_state_machine,
     is_page_stuck,
 )
@@ -56,10 +57,22 @@ _PLATFORM_MIN_PAGE_TIME: dict[str, float] = {
 _CRITICAL_FIELD_PATTERNS = ("email", "name", "first", "last", "resume", "cv", "phone")
 
 
-def _is_critical_field(selector: str) -> bool:
-    """Check if a field is critical (missing it = worthless application)."""
-    sel_lower = selector.lower()
-    return any(p in sel_lower for p in _CRITICAL_FIELD_PATTERNS)
+def _is_critical_field(selector: str, label: str = "") -> bool:
+    """Check if a field is critical (missing it = worthless application).
+
+    Checks the field label first, then falls back to a cleaned selector
+    that strips CSS attribute syntax (e.g., ``[name='...']``) to avoid
+    false positives where ``name`` in ``[name=...]`` triggers a match.
+    """
+    # Prefer the semantic label (set by form analyzer)
+    if label:
+        label_lower = label.lower()
+        if any(p in label_lower for p in _CRITICAL_FIELD_PATTERNS):
+            return True
+    # Strip CSS attribute selectors like [name='...'] to avoid false positives
+    import re as _re
+    cleaned = _re.sub(r"\[.*?\]", "", selector).lower()
+    return any(p in cleaned for p in _CRITICAL_FIELD_PATTERNS)
 
 
 class ApplicationOrchestrator:
@@ -99,14 +112,28 @@ class ApplicationOrchestrator:
         form_intelligence: Any | None = None,
         jd_keywords: list[str] | None = None,
         company_research: "CompanyResearch | None" = None,
+        pre_navigated_snapshot: dict | None = None,
     ) -> dict:
-        """Full application flow: navigate → account → verify → fill → submit."""
+        """Full application flow: navigate → account → verify → fill → submit.
+
+        If *pre_navigated_snapshot* is provided, Phase 1 navigation is skipped
+        and the snapshot is used directly (avoids double-navigation which kills
+        the MV3 service worker connection).
+        """
         profile = profile or {}
         custom_answers = custom_answers or {}
         navigation_steps: list[dict] = []
 
         # Phase 1: Navigate to application form
-        nav_result = await self._navigate_to_form(url, platform, navigation_steps)
+        # If caller already navigated (pre_navigated_snapshot), inject the snapshot
+        # into the bridge cache so _navigate_to_form skips the initial URL load but
+        # still handles JD→form transitions (click apply, login, SSO, etc.).
+        if pre_navigated_snapshot is not None:
+            self.bridge._snapshot = self._to_page_snapshot(pre_navigated_snapshot)
+        nav_result = await self._navigate_to_form(
+            url, platform, navigation_steps,
+            skip_initial_navigate=pre_navigated_snapshot is not None,
+        )
         page_type = nav_result["page_type"]
 
         if page_type == PageType.VERIFICATION_WALL:
@@ -202,11 +229,26 @@ class ApplicationOrchestrator:
             return GateResult(passed=True, score=0.0, weaknesses=[f"Gate error: {exc}"])
 
     async def _navigate_to_form(
-        self, url: str, platform: str, steps: list[dict]
+        self, url: str, platform: str, steps: list[dict],
+        skip_initial_navigate: bool = False,
     ) -> dict:
-        """Navigate through redirect chain to reach application form."""
-        await self.bridge.navigate(url)
-        snapshot = self._as_dict(await self.bridge.get_snapshot())
+        """Navigate through redirect chain to reach application form.
+
+        If *skip_initial_navigate* is True, the caller has already loaded the
+        page and injected the snapshot into the bridge cache — we skip the
+        initial ``bridge.navigate(url)`` to avoid a redundant MV3 restart.
+        """
+        if not skip_initial_navigate:
+            try:
+                await self.bridge.navigate(url)
+            except (TimeoutError, ConnectionError):
+                logger.info("Navigate lost (MV3 restart) — waiting for extension to reconnect")
+                await asyncio.sleep(5)
+        snapshot = self._as_dict(await self.bridge.get_snapshot(force_refresh=True))
+        if not snapshot or not snapshot.get("url"):
+            # Still no snapshot — wait longer
+            await asyncio.sleep(5)
+            snapshot = self._as_dict(await self.bridge.get_snapshot(force_refresh=True))
 
         # Try learned sequence first
         domain = self._extract_domain(url)
@@ -330,22 +372,30 @@ class ApplicationOrchestrator:
         import asyncio
         apply_pattern = re.compile(
             r"(easy\s*apply|apply\W*(now|for\s*this|on\s*company)?"
-            r"|start\s*application|submit\s*application"
+            r"|start\s*application"
             r"|i.?m\s*interested|submit\s*interest)",
             re.IGNORECASE,
         )
+        # "Submit Application" is the FORM submit — never click it during navigation
+        submit_pattern = re.compile(r"submit\s*(my\s*)?application", re.IGNORECASE)
 
         buttons = snapshot.get("buttons", [])
         button_texts = [b.get("text", "")[:60] for b in buttons]
         logger.info("Apply button search: %d buttons found — %s", len(buttons), button_texts[:10])
 
         # Find apply buttons — collect all matches, prefer ones with href
+        # Reject long text (>50 chars) — those are info labels, not buttons
+        # Never match "Submit Application" — that's the form submit, not apply start
         apply_matches = []
         for btn in buttons:
             text = btn.get("text", "")
             if not btn.get("enabled"):
                 continue
             if "save" in text.lower():
+                continue
+            if len(text) > 50:
+                continue
+            if submit_pattern.search(text):
                 continue
             if apply_pattern.search(text):
                 apply_matches.append(btn)
@@ -367,9 +417,16 @@ class ApplicationOrchestrator:
         # Fallback: click the button directly (Easy Apply modals, non-link buttons)
         btn = apply_matches[0]
         logger.info("Clicking apply button: '%s' via %s", btn["text"][:60], btn["selector"])
-        await self.bridge.click(btn["selector"])
-        await asyncio.sleep(2)
-        return self._as_dict(await self.bridge.get_snapshot())
+        try:
+            await self.bridge.click(btn["selector"])
+        except (TimeoutError, Exception) as exc:
+            logger.warning("Click timed out (%s) — trying force_click", exc)
+            try:
+                await self.bridge.force_click(btn["selector"])
+            except Exception:
+                pass
+        await asyncio.sleep(3)
+        return self._as_dict(await self.bridge.get_snapshot(force_refresh=True))
 
     async def _handle_login(self, snapshot: dict, platform: str) -> dict:
         domain = self._extract_domain(snapshot.get("url", ""))
@@ -560,12 +617,21 @@ class ApplicationOrchestrator:
             else:
                 stuck_count = 0
 
-            actions = machine.get_actions(
-                state, page_snapshot, profile=profile, custom_answers=custom_answers,
-                cv_path=str(cv_path) if cv_path else "",
-                cl_path=str(cover_letter_path) if cover_letter_path else None,
-                form_intelligence=form_intelligence,
-            )
+            # ── Two-phase fill for screening questions ──
+            if state == ApplicationState.SCREENING_QUESTIONS:
+                actions = await self._two_phase_fill(
+                    page_snapshot, machine, profile, custom_answers,
+                    cv_path=str(cv_path) if cv_path else "",
+                    cl_path=str(cover_letter_path) if cover_letter_path else None,
+                    form_intelligence=form_intelligence,
+                )
+            else:
+                actions = machine.get_actions(
+                    state, page_snapshot, profile=profile, custom_answers=custom_answers,
+                    cv_path=str(cv_path) if cv_path else "",
+                    cl_path=str(cover_letter_path) if cover_letter_path else None,
+                    form_intelligence=form_intelligence,
+                )
 
             # If LLM returned no actions (page has fields but they're navigation/search),
             # try clicking the apply button — we may still be on the job listing page
@@ -606,7 +672,7 @@ class ApplicationOrchestrator:
                         await self._execute_gotcha_pre_steps(gotcha["solution"], str(sel))
                     await self._execute_action_with_retry(action, tg_stream=tg_stream)
                     # Track filled field for MV3 persistence
-                    if sel and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date", "check"):
+                    if sel and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date", "fill_combobox", "fill_contenteditable", "check"):
                         filled_selectors.add(sel)
                         try:
                             await self.bridge.save_form_progress(current_url, {
@@ -616,7 +682,24 @@ class ApplicationOrchestrator:
                         except (TimeoutError, ConnectionError):
                             pass  # Non-critical — best effort
                 except (TimeoutError, ConnectionError) as exc:
-                    if _is_critical_field(str(sel)):
+                    field_label = ""
+                    if isinstance(action, dict):
+                        field_label = action.get("label", "")
+                    elif hasattr(action, "label"):
+                        field_label = getattr(action, "label", "")
+
+                    # Fallback: if fill_combobox/fill_date failed, retry as plain fill
+                    if atype in ("fill_combobox", "fill_date", "fill_custom_select"):
+                        fallback_val = action.get("value", "") if isinstance(action, dict) else getattr(action, "value", "")
+                        logger.info("  Fallback: retrying %s → plain fill for %s", atype, str(sel)[:60])
+                        try:
+                            await self.bridge.fill(str(sel), fallback_val)
+                            filled_selectors.add(sel)
+                            continue  # Fallback succeeded
+                        except Exception:
+                            logger.warning("  Fallback fill also failed for %s", str(sel)[:40])
+
+                    if _is_critical_field(str(sel), label=str(field_label)):
                         logger.error("  Critical field %s failed — aborting page", sel)
                         return {"success": False, "error": f"Critical field failed: {sel}", "screenshot": last_screenshot}
                     logger.warning("  Action %d/%d failed: %s — %r", i + 1, len(actions), atype, exc)
@@ -649,7 +732,7 @@ class ApplicationOrchestrator:
                 # ── Pre-submit validation gate ──
                 try:
                     validation = await self.bridge.scan_validation_errors()
-                    if validation.get("has_errors"):
+                    if isinstance(validation, dict) and validation.get("has_errors"):
                         errors = validation.get("errors", [])
                         logger.warning(
                             "Pre-submit validation errors (%d): %s",
@@ -669,7 +752,7 @@ class ApplicationOrchestrator:
                     logger.warning("Validation scan failed (non-blocking): %s", exc)
                 # Use CURRENT page_snapshot (not stale snapshot variable)
                 current_buttons = page_snapshot.buttons if hasattr(page_snapshot, 'buttons') else snapshot.get("buttons", [])
-                submit_btn = find_next_button(
+                submit_btn = find_submit_button(
                     [b.model_dump() if hasattr(b, 'model_dump') else b for b in current_buttons]
                 )
                 if submit_btn:
@@ -689,6 +772,45 @@ class ApplicationOrchestrator:
                         logger.warning("Submit rejected: %s", verification)
                         # Don't return — let the loop continue to re-detect state
             else:
+                # Pre-navigation check: scan for validation errors / unfilled required fields
+                try:
+                    validation = await self.bridge.scan_validation_errors()
+                    if isinstance(validation, dict) and validation.get("has_errors"):
+                        errors = validation.get("errors", [])
+                        logger.warning(
+                            "Validation errors before Next (%d): %s",
+                            len(errors),
+                            [e.get("error_message", "")[:60] for e in errors[:5]],
+                        )
+                        # Re-scan fields and re-fill missing ones
+                        retry_snapshot = self._to_page_snapshot(
+                            self._as_dict(await self.bridge.get_snapshot(force_refresh=True))
+                        )
+                        empty_required = [
+                            f for f in retry_snapshot.fields
+                            if f.required and not f.current_value and f.input_type != "file"
+                        ]
+                        if empty_required:
+                            logger.info("Re-filling %d empty required fields", len(empty_required))
+                            retry_actions = machine.get_actions(
+                                state, retry_snapshot, profile=profile,
+                                custom_answers=custom_answers,
+                                cv_path=str(cv_path) if cv_path else "",
+                                cl_path=str(cover_letter_path) if cover_letter_path else None,
+                                form_intelligence=form_intelligence,
+                            )
+                            for ra in retry_actions:
+                                ra_sel = getattr(ra, "selector", "")
+                                if ra_sel in filled_selectors:
+                                    continue
+                                try:
+                                    await self._execute_action_with_retry(ra, tg_stream=tg_stream)
+                                    filled_selectors.add(ra_sel)
+                                except (TimeoutError, ConnectionError):
+                                    pass
+                except (TimeoutError, ConnectionError):
+                    pass  # Non-critical — try clicking Next anyway
+
                 # Use CURRENT page_snapshot for next button
                 current_buttons = page_snapshot.buttons if hasattr(page_snapshot, 'buttons') else snapshot.get("buttons", [])
                 next_btn = find_next_button(
@@ -740,6 +862,117 @@ class ApplicationOrchestrator:
             except (ValueError, IndexError):
                 await asyncio.sleep(1.0)
 
+    async def _two_phase_fill(
+        self,
+        page_snapshot,
+        machine,
+        profile: dict,
+        custom_answers: dict,
+        cv_path: str = "",
+        cl_path: str | None = None,
+        form_intelligence: object | None = None,
+    ) -> list:
+        """Two-phase form fill: deterministic + click-to-reveal + LLM.
+
+        Phase 1: Pattern-match known fields (name, email, phone, etc.) — instant, free
+        Phase 2: Click comboboxes to reveal real options, then LLM for remaining fields
+        Phase 3: Append file uploads (state machine handles these)
+        """
+        from jobpulse.form_analyzer import (
+            deterministic_fill,
+            analyze_remaining_fields,
+            _PLACEHOLDER_VALUES,
+        )
+        from jobpulse.ext_models import Action
+
+        job_context = custom_answers.get("_job_context")
+        context_dict = job_context if isinstance(job_context, dict) else None
+
+        # Strip placeholder values
+        for f in page_snapshot.fields:
+            if f.current_value and f.current_value.strip().lower() in _PLACEHOLDER_VALUES:
+                f.current_value = ""
+
+        # ── Phase 1: Deterministic fill ──
+        det_actions = deterministic_fill(
+            page_snapshot, job_context=context_dict, platform=machine.platform,
+        )
+
+        # Sort deterministic actions in ascending DOM order (top-to-bottom)
+        field_order_map = {f.selector: idx for idx, f in enumerate(page_snapshot.fields)}
+        det_actions.sort(key=lambda a: field_order_map.get(a.selector, 9999))
+        det_selectors = {a.selector for a in det_actions}
+
+        # Execute deterministic actions immediately (in DOM order)
+        for i, action in enumerate(det_actions):
+            sel = action.selector
+            logger.info("  Phase1 %d/%d: %s → %s", i + 1, len(det_actions), action.type, sel[:40])
+            try:
+                await self._execute_action(action)
+            except Exception as exc:
+                logger.warning("  Phase1 action failed: %s — %s", sel[:40], exc)
+            await asyncio.sleep(0.15)
+
+        # ── Phase 2: Click-to-reveal for remaining comboboxes ──
+        remaining = [
+            f for f in page_snapshot.fields
+            if f.selector not in det_selectors
+            and f.input_type != "file"
+            and (not f.current_value or f.current_value.strip().lower() in _PLACEHOLDER_VALUES)
+        ]
+
+        # Click each combobox to reveal real options
+        combobox_fields = [
+            f for f in remaining
+            if f.input_type in ("search_autocomplete", "combobox", "custom_select")
+            or f.attributes.get("role") == "combobox"
+        ]
+        for f in combobox_fields:
+            try:
+                options = await self.bridge.reveal_options(f.selector, timeout_ms=8000)
+                if options:
+                    f.options = options
+                    logger.info("  Revealed %d options for %s: %s",
+                                len(options), f.selector[:40], options[:5])
+            except Exception as exc:
+                logger.debug("  reveal_options failed for %s: %s", f.selector[:40], exc)
+
+        # ── Phase 2b: LLM for remaining fields (now with real options) ──
+        llm_actions = []
+        if remaining:
+            llm_actions = analyze_remaining_fields(
+                page_snapshot, remaining,
+                job_context=context_dict, platform=machine.platform,
+            )
+
+        # ── Phase 3: Append file uploads (deduplicated — one CV, one CL max) ──
+        all_fill_selectors = det_selectors | {a.selector for a in llm_actions}
+        upload_actions = []
+        cv_uploaded = False
+        cl_uploaded = False
+        for field in page_snapshot.fields:
+            if field.input_type == "file" and field.selector not in all_fill_selectors:
+                label = field.label.lower()
+                if "autofill" in label or "drag and drop" in label or "easyresume" in field.selector:
+                    continue
+                if "cover" in label and cl_path and not cl_uploaded:
+                    upload_actions.append(Action(type="upload", selector=field.selector, file_path=cl_path))
+                    cl_uploaded = True
+                elif cv_path and not cv_uploaded and "cover" not in label:
+                    upload_actions.append(Action(type="upload", selector=field.selector, file_path=cv_path))
+                    cv_uploaded = True
+
+        # Combine: deterministic already executed, return LLM + uploads for orchestrator to execute
+        combined = llm_actions + upload_actions
+
+        # Sort in DOM order
+        field_order = {f.selector: idx for idx, f in enumerate(page_snapshot.fields)}
+        combined.sort(key=lambda a: field_order.get(a.selector, 9999))
+
+        logger.info("Two-phase fill: %d det (done) + %d llm + %d uploads = %d remaining",
+                     len(det_actions), len(llm_actions), len(upload_actions), len(combined))
+        return combined
+
     async def _execute_action(self, action: Any, tg_stream: Any = None):
         if hasattr(action, "model_dump"):
             # Pydantic Action model
@@ -781,6 +1014,10 @@ class ApplicationOrchestrator:
             await self.bridge.fill_tag_input(selector, values)
         elif atype == "fill_date":
             await self.bridge.fill_date(selector, value)
+        elif atype == "fill_combobox":
+            await self.bridge.fill_combobox(selector, value)
+        elif atype == "fill_contenteditable":
+            await self.bridge.fill_contenteditable(selector, value)
         elif atype == "scroll_to":
             await self.bridge.scroll_to(selector)
         elif atype == "force_click":
@@ -816,7 +1053,7 @@ class ApplicationOrchestrator:
                 await self._execute_action(action, tg_stream=tg_stream)
 
                 # Post-fill validation for fill actions
-                if atype in ("fill", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date") and selector:
+                if atype in ("fill", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date", "fill_combobox") and selector:
                     try:
                         rescan = await self.bridge.rescan_after_fill(selector)
                         errors = rescan.get("validation_errors", [])

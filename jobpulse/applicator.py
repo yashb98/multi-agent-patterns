@@ -34,7 +34,7 @@ WORK_AUTH: dict[str, object] = {
 # Applicant profile — used to pre-fill standard form fields
 PROFILE: dict[str, str] = {
     "first_name": "Yash",
-    "last_name": "B",
+    "last_name": "Bishnoi",
     "email": "bishnoiyash274@gmail.com",
     "phone": "07909445288",
     "linkedin": "https://linkedin.com/in/yash-bishnoi-2ab36a1a5",

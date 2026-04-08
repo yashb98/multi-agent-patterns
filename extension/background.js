@@ -20,6 +20,49 @@ let ws = null;
 let connectionState = "disconnected"; // "disconnected" | "connecting" | "connected"
 const WS_URL = "ws://localhost:8765";
 
+// Track the tab we're actively working on — when an apply link opens a new tab,
+// we auto-adopt it so getActiveTab() follows the navigation seamlessly.
+let trackedTabId = null;
+
+// ═══════════════════════════════════════════════════════════════
+// New-tab follower — catches apply links that open in new tabs
+// ═══════════════════════════════════════════════════════════════
+
+chrome.tabs.onCreated.addListener(async (newTab) => {
+  // Only follow new tabs when we're connected to Python (i.e. actively automating)
+  if (connectionState !== "connected" || !trackedTabId) return;
+
+  // Small delay — pendingUrl may not be set instantly
+  await new Promise((r) => setTimeout(r, 300));
+
+  // Re-query to get the updated tab info (pendingUrl, openerTabId)
+  try {
+    const tab = await chrome.tabs.get(newTab.id);
+    const url = tab.pendingUrl || tab.url || "";
+
+    // Only adopt tabs opened by our tracked tab (openerTabId) or if URL looks like an ATS
+    const isFromTracked = tab.openerTabId === trackedTabId;
+    const isAtsUrl = /greenhouse|lever|workday|ashby|smartrecruiters|icims|successfactors|taleo|bamboohr|jazz|breezy|recruitee|applytojob|jobs\.jobvite/i.test(url);
+
+    if (isFromTracked || isAtsUrl) {
+      console.log(`[JobPulse] New tab detected (from tracked=${isFromTracked}, ats=${isAtsUrl}): ${url.substring(0, 80)}`);
+      // Switch focus to the new tab and start tracking it
+      trackedTabId = tab.id;
+      await chrome.tabs.update(tab.id, { active: true });
+      // Ensure content script is injected after page loads
+      chrome.tabs.onUpdated.addListener(function injectOnLoad(tabId, info) {
+        if (tabId === tab.id && info.status === "complete") {
+          chrome.tabs.onUpdated.removeListener(injectOnLoad);
+          ensureContentScript(tab.id).catch(() => {});
+        }
+      });
+    }
+  } catch (e) {
+    // Tab may have been closed already
+    console.warn("[JobPulse] Failed to inspect new tab:", e.message);
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════
 // Heartbeat — keeps service worker + WebSocket alive
 // ═══════════════════════════════════════════════════════════════
@@ -67,6 +110,9 @@ function scheduleReconnect() {
  * Closes any existing connection first. On failure, schedules a retry.
  */
 function connect() {
+  // Prevent concurrent connect() calls (onInstalled + startup + alarm can race)
+  if (connectionState === "connecting" || connectionState === "connected") return;
+
   if (ws) {
     try { ws.close(); } catch (_) { /* ignore close errors */ }
     ws = null;
@@ -76,31 +122,33 @@ function connect() {
   broadcastStatus();
   console.log("[JobPulse] Connecting to", WS_URL);
 
-  ws = new WebSocket(WS_URL);
+  const socket = new WebSocket(WS_URL);
+  ws = socket;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket) return; // Stale — another connect() replaced us
     connectionState = "connected";
     broadcastStatus();
     startHeartbeat();
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    socket.send(JSON.stringify({ type: "extension_hello" }));
     console.log("[JobPulse] Connected to Python backend");
   };
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (ws === socket) ws = null;
     connectionState = "disconnected";
     broadcastStatus();
     stopHeartbeat();
-    ws = null;
     console.log("[JobPulse] Disconnected — will retry in 3s");
     scheduleReconnect();
   };
 
-  ws.onerror = (err) => {
+  socket.onerror = (err) => {
     console.error("[JobPulse] WebSocket error:", err);
+    if (ws === socket) ws = null;
     connectionState = "disconnected";
     broadcastStatus();
-    ws = null;
-    // onclose usually fires after onerror, but schedule just in case
     scheduleReconnect();
   };
 
@@ -153,7 +201,83 @@ async function handlePythonCommand(cmd) {
   try {
     // --- Navigate: update active tab URL, wait for content script snapshot ---
     if (action === "navigate") {
+      const navTab = await getActiveTab();
+      trackedTabId = navTab.id;  // Start tracking this tab for new-tab detection
       await handleNavigate(id, payload.url);
+      return;
+    }
+
+    // --- Real click via DevTools Protocol (chrome.debugger) ---
+    // Moves the mouse along a Bezier curve to (x, y), then clicks.
+    // Uses real Input.dispatchMouseEvent for every curve point.
+    if (action === "real_click") {
+      const tab = await getActiveTab();
+      const { x, y, fromX, fromY } = payload;
+      try {
+        await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+
+        // Starting point: last known position, or random viewport edge
+        const startX = fromX ?? (Math.random() * 200 + 50);
+        const startY = fromY ?? (Math.random() * 200 + 50);
+
+        // Generate Bezier curve points for human-like trajectory
+        const points = _bezierCurve(startX, startY, x, y, 14 + Math.floor(Math.random() * 6));
+
+        // Move along the curve with varying speed (slow start, fast middle, slow end)
+        for (let i = 0; i < points.length; i++) {
+          await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchMouseEvent", {
+            type: "mouseMoved", x: points[i].x, y: points[i].y, button: "none",
+          });
+          const t = i / points.length;
+          const delayMs = 6 + 18 * (1 - Math.abs(2 * t - 1)) + Math.random() * 4;
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+
+        // Final move to exact target
+        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchMouseEvent", {
+          type: "mouseMoved", x, y, button: "none",
+        });
+        await new Promise(r => setTimeout(r, 30 + Math.random() * 40));
+
+        // Click with human-like press/release timing
+        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchMouseEvent", {
+          type: "mousePressed", x, y, button: "left", clickCount: 1,
+        });
+        await new Promise(r => setTimeout(r, 40 + Math.random() * 60));
+        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchMouseEvent", {
+          type: "mouseReleased", x, y, button: "left", clickCount: 1,
+        });
+
+        await chrome.debugger.detach({ tabId: tab.id });
+        sendToPython({ id, type: "result", payload: { success: true } });
+      } catch (err) {
+        try { await chrome.debugger.detach({ tabId: tab.id }); } catch (_) {}
+        sendToPython({ id, type: "result", payload: { success: false, error: err.message } });
+      }
+      return;
+    }
+
+    // --- Real type via DevTools Protocol ---
+    if (action === "real_type") {
+      const tab = await getActiveTab();
+      const { text } = payload;
+      try {
+        await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+        for (const char of text) {
+          await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+            type: "keyDown", text: char, key: char, code: `Key${char.toUpperCase()}`,
+          });
+          await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+            type: "keyUp", key: char, code: `Key${char.toUpperCase()}`,
+          });
+          await new Promise(r => setTimeout(r, 50 + Math.random() * 80));
+        }
+        await chrome.debugger.detach({ tabId: tab.id });
+        sendToPython({ id, type: "result", payload: { success: true } });
+      } catch (err) {
+        try { await chrome.debugger.detach({ tabId: tab.id }); } catch (_) {}
+        sendToPython({ id, type: "result", payload: { success: false, error: err.message } });
+      }
       return;
     }
 
@@ -166,10 +290,37 @@ async function handlePythonCommand(cmd) {
       return;
     }
 
+    // --- Element screenshot: capture tab + crop to element bounds ---
+    if (action === "element_screenshot") {
+      const tab = await getActiveTab();
+      // Step 1: Get element bounds from content script
+      const bounds = await chrome.tabs.sendMessage(tab.id, {
+        id, action: "element_bounds", payload: { selector: payload.selector },
+      });
+      if (!bounds || !bounds.success) {
+        sendToPython({ id, type: "result", payload: { success: false, error: "Element not found: " + payload.selector } });
+        return;
+      }
+      // Step 2: Capture full tab
+      const dataUrl2 = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+      const fullBase64 = dataUrl2.replace(/^data:image\/png;base64,/, "");
+      // Step 3: Crop using OffscreenCanvas
+      const b = bounds.bounds;
+      const imgBlob = await fetch(dataUrl2).then(r => r.blob());
+      const imgBitmap = await createImageBitmap(imgBlob);
+      const canvas = new OffscreenCanvas(b.width, b.height);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(imgBitmap, b.x, b.y, b.width, b.height, 0, 0, b.width, b.height);
+      const croppedBlob = await canvas.convertToBlob({ type: "image/png" });
+      const arrayBuf = await croppedBlob.arrayBuffer();
+      const croppedBase64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuf)));
+      sendToPython({ id, type: "result", payload: { success: true, data: croppedBase64 } });
+      return;
+    }
+
     // --- Get snapshot: request fresh page scan from content script ---
     if (action === "get_snapshot") {
       const tab = await getActiveTab();
-      await ensureContentScript(tab.id);
       const response = await chrome.tabs.sendMessage(tab.id, { id, action: "get_snapshot", payload: {} });
       sendToPython({ id, type: "result", payload: response || { success: false, error: "No response" } });
       return;
@@ -185,7 +336,6 @@ async function handlePythonCommand(cmd) {
 
     // --- All other actions: forward to content script ---
     const tab = await getActiveTab();
-    await ensureContentScript(tab.id);
     const response = await chrome.tabs.sendMessage(tab.id, { id, action, payload });
     sendToPython({
       id,
@@ -210,52 +360,57 @@ async function handlePythonCommand(cmd) {
  */
 async function handleNavigate(cmdId, url) {
   const tab = await getActiveTab();
-  let resolved = false;
 
-  // Source 1: content script sends navigation snapshot after page load
+  // Respond BEFORE navigating — chrome.tabs.update() can restart the
+  // MV3 service worker, killing the WebSocket and dropping any response
+  // sent after navigation starts.
+  sendToPython({ id: cmdId, type: "result", payload: { success: true, snapshot: null } });
+
+  // Now trigger navigation (may restart service worker)
+  await chrome.tabs.update(tab.id, { url });
+
+  // Best-effort: push snapshot to Python once page loads (passive update)
+  let pushed = false;
+
   const navListener = (msg) => {
-    if (!resolved && msg.type === "navigation" && msg.payload?.snapshot) {
-      resolved = true;
+    if (!pushed && msg.type === "navigation" && msg.payload?.snapshot) {
+      pushed = true;
       chrome.runtime.onMessage.removeListener(navListener);
-      sendToPython({ id: cmdId, type: "result", payload: { success: true, snapshot: msg.payload.snapshot } });
+      // Send as a passive navigation event — not tied to cmdId
+      sendToPython({ id: "", type: "navigation", payload: msg.payload });
     }
   };
   chrome.runtime.onMessage.addListener(navListener);
 
-  // Source 2: tab reports "complete" → request snapshot from content script
   const tabListener = async (tabId, changeInfo) => {
-    if (tabId === tab.id && changeInfo.status === "complete" && !resolved) {
+    if (tabId === tab.id && changeInfo.status === "complete" && !pushed) {
       chrome.tabs.onUpdated.removeListener(tabListener);
-      await new Promise((r) => setTimeout(r, 2000)); // Let DOM settle
-      if (resolved) return;
+      await new Promise((r) => setTimeout(r, 1500)); // Let DOM settle
+      if (pushed) return;
       try {
+        await ensureContentScript(tab.id);
         const snapshot = await chrome.tabs.sendMessage(tab.id, {
           id: cmdId, action: "get_snapshot", payload: {},
         });
-        if (!resolved && snapshot) {
-          resolved = true;
+        if (!pushed && snapshot) {
+          pushed = true;
           chrome.runtime.onMessage.removeListener(navListener);
-          sendToPython({ id: cmdId, type: "result", payload: { success: true, snapshot } });
+          sendToPython({ id: "", type: "navigation", payload: { snapshot } });
         }
       } catch (_) {
-        // Content script not ready yet — timeout will catch it
+        // Content script not ready — Python will poll via get_snapshot
       }
     }
   };
   chrome.tabs.onUpdated.addListener(tabListener);
 
-  // Source 3: timeout fallback
+  // Cleanup listeners after 20s to prevent memory leaks
   setTimeout(() => {
-    if (!resolved) {
-      resolved = true;
+    if (!pushed) {
       chrome.runtime.onMessage.removeListener(navListener);
       chrome.tabs.onUpdated.removeListener(tabListener);
-      sendToPython({ id: cmdId, type: "result", payload: { success: true, snapshot: null } });
     }
-  }, 15_000);
-
-  // Trigger the navigation
-  await chrome.tabs.update(tab.id, { url });
+  }, 20_000);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -269,10 +424,21 @@ function sendToPython(msg) {
   }
 }
 
-/** Get the currently active tab. Throws if no tab is focused. */
+/** Get the currently active tab. Prefers the tracked tab if it still exists. */
 async function getActiveTab() {
+  // If we're tracking a specific tab (e.g. after a new-tab-follow), use it
+  if (trackedTabId) {
+    try {
+      const tab = await chrome.tabs.get(trackedTabId);
+      if (tab) return tab;
+    } catch (_) {
+      // Tab was closed — fall through to query
+      trackedTabId = null;
+    }
+  }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) throw new Error("No active tab");
+  trackedTabId = tab.id;
   return tab;
 }
 
@@ -283,10 +449,14 @@ async function getActiveTab() {
  */
 async function ensureContentScript(tabId) {
   try {
-    // Ping the content script — if it responds, it's already loaded
-    await chrome.tabs.sendMessage(tabId, { action: "get_snapshot", payload: {} });
+    // Lightweight ping — do NOT use get_snapshot (too slow on complex pages).
+    // Just check if the content script's message listener is alive.
+    await Promise.race([
+      chrome.tabs.sendMessage(tabId, { action: "ping", payload: {} }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("ping timeout")), 3000)),
+    ]);
   } catch (_) {
-    // Content script not loaded — inject it
+    // Content script not loaded or stale — inject fresh copy
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -332,15 +502,70 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// Bezier curve — shared by real_click for human-like mouse movement
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Generate points along a cubic Bezier curve with randomized control
+ * points. Creates natural-looking mouse trajectories with curvature
+ * and slight overshoot — identical algorithm to content.js visual cursor.
+ */
+function _bezierCurve(x0, y0, x1, y1, steps = 18) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+
+  const perpX = -dy / (distance || 1);
+  const perpY = dx / (distance || 1);
+  const curvature = (Math.random() - 0.5) * distance * 0.3;
+  const overshoot = 1.0 + (Math.random() * 0.08 - 0.02);
+
+  const cp1x = x0 + dx * 0.3 + perpX * curvature;
+  const cp1y = y0 + dy * 0.3 + perpY * curvature;
+  const cp2x = x0 + dx * 0.7 * overshoot + perpX * curvature * 0.3;
+  const cp2y = y0 + dy * 0.7 * overshoot + perpY * curvature * 0.3;
+
+  const points = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    const x = u*u*u*x0 + 3*u*u*t*cp1x + 3*u*t*t*cp2x + t*t*t*x1;
+    const y = u*u*u*y0 + 3*u*u*t*cp1y + 3*u*t*t*cp2y + t*t*t*y1;
+    points.push({ x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 });
+  }
+  return points;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Startup — auto-connect on install, reload, and service worker wake
 // ═══════════════════════════════════════════════════════════════
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[JobPulse] Extension installed/reloaded");
+  // Create a persistent alarm to keep service worker alive (MV3 kills idle workers after 30s)
+  chrome.alarms.create("ws-keepalive", { periodInMinutes: 0.4 }); // ~24s — well within 30s idle limit
   connect();
 });
 
+// Alarm handler: reconnect WS if dead, send keepalive if alive
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "ws-keepalive") {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.log("[JobPulse] Alarm: WS dead, reconnecting...");
+      connect();
+    } else {
+      ws.send(JSON.stringify({ type: "ping" }));
+    }
+  }
+});
+
 // Service worker woke up (may be fresh start or after idle timeout)
+// Also ensure alarm exists (survives service worker restarts)
+chrome.alarms.get("ws-keepalive", (existing) => {
+  if (!existing) {
+    chrome.alarms.create("ws-keepalive", { periodInMinutes: 0.4 });
+  }
+});
 connect();
 
 // Side panel: open on action click for dashboard access
@@ -350,29 +575,25 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => 
 // Extension-Driven Pipeline — Scanning, Alarms, Phase Engine
 // ═══════════════════════════════════════════════════════════════
 
-// Dynamic imports (ES module not needed — load on demand to avoid startup cost)
-let _scannerModule = null;
-let _jobQueueModule = null;
-let _phaseModule = null;
-let _bridgeModule = null;
+// Static imports — MV3 service workers forbid dynamic import()
+import * as _scannerModule from './scanner.js';
+import * as _jobQueueModule from './job_queue.js';
+import * as _phaseModule from './phase_engine.js';
+import * as _bridgeModule from './native_bridge.js';
 
-async function getScanner() {
-  if (!_scannerModule) _scannerModule = await import('./scanner.js');
+function getScanner() {
   return _scannerModule;
 }
 
-async function getJobQueue() {
-  if (!_jobQueueModule) _jobQueueModule = await import('./job_queue.js');
+function getJobQueue() {
   return _jobQueueModule;
 }
 
-async function getPhaseEngine() {
-  if (!_phaseModule) _phaseModule = await import('./phase_engine.js');
+function getPhaseEngine() {
   return _phaseModule;
 }
 
-async function getNativeBridge() {
-  if (!_bridgeModule) _bridgeModule = await import('./native_bridge.js');
+function getNativeBridge() {
   return _bridgeModule;
 }
 

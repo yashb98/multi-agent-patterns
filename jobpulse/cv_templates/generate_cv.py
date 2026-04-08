@@ -14,7 +14,7 @@ from pathlib import Path
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT, TA_RIGHT
 from reportlab.lib.colors import HexColor
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
 from reportlab.pdfbase import pdfmetrics
@@ -351,13 +351,13 @@ def generate_cv_pdf(
     sec_s = ParagraphStyle('S', fontName=F, fontSize=11, spaceBefore=6, spaceAfter=1,
                            leading=13, textColor=HEADER_COLOR, leftIndent=0)
     body_s = ParagraphStyle('B', fontName=F, fontSize=SZ, spaceAfter=1,
-                            leading=LN, textColor=TEXT_COLOR, alignment=TA_JUSTIFY,
+                            leading=LN, textColor=TEXT_COLOR, alignment=TA_LEFT,
                             leftIndent=0)
     right_s = ParagraphStyle('R', fontName=F, fontSize=SZ, alignment=TA_RIGHT,
                              spaceAfter=1, leading=LN, textColor=TEXT_COLOR)
     bullet_s = ParagraphStyle('Bu', fontName=F, fontSize=SZ, leftIndent=8,
                               firstLineIndent=-8, spaceAfter=1, leading=LN,
-                              textColor=TEXT_COLOR, alignment=TA_JUSTIFY)
+                              textColor=TEXT_COLOR, alignment=TA_LEFT)
     sr = ParagraphStyle('Sr', fontName=F, fontSize=SZ, alignment=TA_RIGHT,
                         spaceAfter=0, leading=LN, textColor=TEXT_COLOR)
     it = ParagraphStyle('I', fontName=F, fontSize=SZ, spaceAfter=1,
@@ -365,7 +365,7 @@ def generate_cv_pdf(
     center_s = ParagraphStyle('Cn', fontName=F, fontSize=SZ, alignment=TA_CENTER,
                               spaceAfter=1, leading=LN, textColor=LINK_COLOR)
     comm_s = ParagraphStyle('Co', fontName=F, fontSize=SZ, spaceAfter=2,
-                            leading=LN, textColor=TEXT_COLOR, alignment=TA_JUSTIFY)
+                            leading=LN, textColor=TEXT_COLOR, alignment=TA_LEFT)
 
     # --- Helpers ---
     def B(t): return f'<b>{t}</b>'
@@ -398,9 +398,9 @@ def generate_cv_pdf(
         el.append(t)
 
     skill_label_s = ParagraphStyle('SL', fontName=F, fontSize=SZ, leading=LN,
-                                    textColor=TEXT_COLOR, alignment=TA_JUSTIFY)
+                                    textColor=TEXT_COLOR, alignment=TA_LEFT)
     skill_val_s = ParagraphStyle('SV', fontName=F, fontSize=SZ, leading=LN,
-                                 textColor=TEXT_COLOR, alignment=TA_JUSTIFY)
+                                 textColor=TEXT_COLOR, alignment=TA_LEFT)
 
     def skill_row(label, vals):
         t = Table([[Paragraph(B(label), skill_label_s), Paragraph(vals, skill_val_s)]],
@@ -437,7 +437,7 @@ def generate_cv_pdf(
     tag = tagline or 'MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | AI/ML | NLP | System Design'
     el.append(Paragraph(tag, tag_s))
     el.append(Paragraph(
-        f'UK | {IDENTITY["phone"]} | '
+        f'{location} | {IDENTITY["phone"]} | '
         f'{L("mailto:" + IDENTITY["email"], "Email")} | '
         f'{L(IDENTITY["linkedin"], "LinkedIn")} | '
         f'{L(IDENTITY["github"], "GitHub")} | '

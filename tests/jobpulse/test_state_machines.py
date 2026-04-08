@@ -272,13 +272,14 @@ class TestWorkdayDetection:
 
 
 class TestFindNextButton:
-    def test_submit_highest_priority(self):
+    def test_submit_skipped_by_find_next(self):
+        """find_next_button skips Submit — that's find_submit_button's job."""
         buttons = [
             {"text": "Next", "selector": "#next", "enabled": True},
             {"text": "Submit Application", "selector": "#submit", "enabled": True},
         ]
         btn = find_next_button(buttons)
-        assert btn["selector"] == "#submit"
+        assert btn["selector"] == "#next"
 
     def test_review_over_continue(self):
         buttons = [
@@ -286,7 +287,8 @@ class TestFindNextButton:
             {"text": "Review & Submit", "selector": "#review", "enabled": True},
         ]
         btn = find_next_button(buttons)
-        assert btn["selector"] == "#review"
+        # "Review & Submit" matches _SUBMIT_BUTTON so it's skipped; Continue returned
+        assert btn["selector"] == "#cont"
 
     def test_save_and_continue(self):
         buttons = [

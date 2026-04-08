@@ -19,7 +19,9 @@ _VISION_THRESHOLD = 0.6
 
 # --- Button patterns ---
 _APPLY_BUTTONS = re.compile(
-    r"^(easy\s*apply|apply\s*(now|for\s*this)?|submit\s*application|start\s*application|apply\s*for\s*(this\s*)?job|apply\s*on\s*company\s*website)$",
+    r"^(easy\s*apply|apply\s*(now|for\s*this)?|submit\s*application|start\s*application"
+    r"|apply\s*for\s*(this\s*)?job|apply\s*on\s*company\s*website"
+    r"|i.?m\s*interested|submit\s*interest)$",
     re.IGNORECASE,
 )
 _LOGIN_BUTTONS = re.compile(r"^(sign\s*in|log\s*in|login)$", re.IGNORECASE)
@@ -57,7 +59,8 @@ _JOB_VIEW_URLS = re.compile(
     r"|boards\.greenhouse\.io/.+/jobs/"
     r"|jobs\.lever\.co/.+/"
     r"|indeed\.com/viewjob"
-    r"|\.myworkdayjobs\.com/",
+    r"|\.myworkdayjobs\.com/"
+    r"|\.zohorecruit\.\w+/jobs/",
     re.IGNORECASE,
 )
 
@@ -73,7 +76,7 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     verification_wall = snapshot.get("verification_wall")
 
     button_texts = [b.get("text", "") for b in buttons]
-    field_types = [f.get("type", "") for f in fields]
+    field_types = [f.get("input_type", "") for f in fields]
     field_labels = [f.get("label", "") for f in fields]
 
     # 1. Verification wall (CAPTCHA) — highest priority
@@ -116,11 +119,12 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     # 7. URL hint — known job view page patterns (SPA may not have apply button in DOM yet)
     # MUST come before the generic "3+ fields = application" rule because
     # LinkedIn job pages have search/nav fields that trigger false positives.
-    if url and _JOB_VIEW_URLS.search(url) and not has_application_fields:
+    # But if form has file inputs or many fields, it's an application form, not JD.
+    has_file_input = snapshot.get("has_file_inputs", False)
+    if url and _JOB_VIEW_URLS.search(url) and not has_application_fields and not has_file_input and len(fields) <= 5:
         return PageType.JOB_DESCRIPTION, 0.7
 
     # 8. Application form: form fields (contact, resume, screening)
-    has_file_input = snapshot.get("has_file_inputs", False)
     if has_application_fields or has_file_input:
         return PageType.APPLICATION_FORM, 0.85
     if len(fields) >= 3:

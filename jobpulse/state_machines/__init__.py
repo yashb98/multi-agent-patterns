@@ -84,8 +84,16 @@ class PlatformStateMachine:
         """Heuristic state detection based on visible fields."""
         labels_lower = [f.label.lower() for f in snapshot.fields]
 
-        # File inputs = resume upload
-        if snapshot.has_file_inputs or any(f.input_type == "file" for f in snapshot.fields):
+        has_file = snapshot.has_file_inputs or any(f.input_type == "file" for f in snapshot.fields)
+        non_file_fields = [f for f in snapshot.fields if f.input_type != "file"]
+
+        # Mixed form (file inputs + 3+ other fields) → treat as screening so
+        # the full-page LLM analyzer handles ALL fields including uploads
+        if has_file and len(non_file_fields) >= 3:
+            return ApplicationState.SCREENING_QUESTIONS
+
+        # Pure file upload (no other meaningful fields)
+        if has_file:
             return ApplicationState.RESUME_UPLOAD
 
         # Contact fields
@@ -126,7 +134,20 @@ class PlatformStateMachine:
         if state == ApplicationState.RESUME_UPLOAD:
             return self._actions_resume_upload(snapshot, cv_path, cl_path)
         if state == ApplicationState.SCREENING_QUESTIONS:
-            return self._actions_screening(snapshot, profile, custom_answers, form_intelligence)
+            actions = self._actions_screening(snapshot, profile, custom_answers, form_intelligence)
+            # Append file upload actions — LLM can't emit these (no local path)
+            filled_selectors = {a.selector for a in actions}
+            for field in snapshot.fields:
+                if field.input_type == "file" and field.selector not in filled_selectors:
+                    label = field.label.lower()
+                    # Skip autofill/parser upload fields — only upload to real CV/resume fields
+                    if "autofill" in label or "drag and drop" in label or "easyresume" in field.selector:
+                        continue
+                    if "cover" in label and cl_path:
+                        actions.append(Action(type="upload", selector=field.selector, file_path=cl_path))
+                    elif cv_path:
+                        actions.append(Action(type="upload", selector=field.selector, file_path=cv_path))
+            return actions
         if state == ApplicationState.SUBMIT:
             return self._actions_submit(snapshot)
         return []
@@ -236,14 +257,20 @@ class PlatformStateMachine:
 
             if field.input_type in ("select", "custom_select"):
                 actions.append(Action(type="select", selector=field.selector, value=answer))
-            elif field.input_type == "search_autocomplete":
+            elif field.input_type in ("search_autocomplete",):
                 actions.append(Action(type="fill_autocomplete", selector=field.selector, value=answer))
+            elif field.input_type == "combobox":
+                actions.append(Action(type="fill_combobox", selector=field.selector, value=answer))
             elif field.input_type == "radio":
                 actions.append(Action(type="fill_radio_group", selector=field.selector, value=answer))
             elif field.input_type == "checkbox":
                 actions.append(Action(type="check", selector=field.selector, value=answer))
             elif field.input_type == "date":
                 actions.append(Action(type="fill_date", selector=field.selector, value=answer))
+            elif field.input_type == "rich_text":
+                actions.append(Action(type="fill_contenteditable", selector=field.selector, value=answer))
+            elif field.input_type == "tag_input":
+                actions.append(Action(type="fill_tag_input", selector=field.selector, value=answer))
             else:
                 actions.append(Action(type="fill", selector=field.selector, value=answer))
 
@@ -463,13 +490,15 @@ def get_state_machine(platform: str) -> PlatformStateMachine:
 import re as _re
 
 _BUTTON_PRIORITY = [
-    (_re.compile(r"submit\s*(application|my\s*application)?", _re.IGNORECASE), 100),
     (_re.compile(r"review(\s+(&|and)\s+submit)?", _re.IGNORECASE), 90),
     (_re.compile(r"save\s*(and|&)\s*(continue|next|proceed)", _re.IGNORECASE), 70),
     (_re.compile(r"continue", _re.IGNORECASE), 60),
     (_re.compile(r"next(\s*step)?", _re.IGNORECASE), 50),
     (_re.compile(r"proceed", _re.IGNORECASE), 40),
 ]
+
+# Submit button — only used in SUBMIT state, never for page navigation
+_SUBMIT_BUTTON = _re.compile(r"submit\s*(application|my\s*application)?", _re.IGNORECASE)
 
 _PROGRESS_PATTERNS = [
     _re.compile(r"step\s+(\d+)\s+(?:of|/)\s+(\d+)", _re.IGNORECASE),
@@ -479,12 +508,18 @@ _PROGRESS_PATTERNS = [
 
 
 def find_next_button(buttons: list[dict]) -> dict | None:
-    """Find highest-priority navigation button (Submit > Review > Continue > Next)."""
+    """Find highest-priority navigation button (Review > Continue > Next).
+
+    Never returns Submit — that's only for find_submit_button().
+    """
     candidates: list[tuple[dict, int]] = []
     for btn in buttons:
         if not btn.get("enabled", True):
             continue
         text = btn.get("text", "")
+        # Skip submit buttons — those are handled by find_submit_button only
+        if _SUBMIT_BUTTON.search(text):
+            continue
         for pattern, priority in _BUTTON_PRIORITY:
             if pattern.search(text):
                 candidates.append((btn, priority))
@@ -493,6 +528,17 @@ def find_next_button(buttons: list[dict]) -> dict | None:
         return None
     candidates.sort(key=lambda x: x[1], reverse=True)
     return candidates[0][0]
+
+
+def find_submit_button(buttons: list[dict]) -> dict | None:
+    """Find the Submit Application button — only for final submission."""
+    for btn in buttons:
+        if not btn.get("enabled", True):
+            continue
+        text = btn.get("text", "")
+        if _SUBMIT_BUTTON.search(text):
+            return btn
+    return None
 
 
 def detect_progress(page_text: str) -> tuple[int, int] | None:

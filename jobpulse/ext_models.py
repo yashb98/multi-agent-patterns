@@ -42,25 +42,10 @@ class NavigationStep(BaseModel):
 
 class FieldInfo(BaseModel):
     """A form field detected on the page."""
+    model_config = {"extra": "ignore"}
 
     selector: str
-    input_type: Literal[
-        "text",
-        "textarea",
-        "select",
-        "radio",
-        "checkbox",
-        "file",
-        "date",
-        "email",
-        "number",
-        "tel",
-        "custom_select",
-        "search_autocomplete",
-        "multi_select",
-        "toggle",
-        "rich_text",
-    ]
+    input_type: str  # Dynamic — content script detects type from DOM
     label: str
     required: bool = False
     current_value: str = ""
@@ -77,15 +62,21 @@ class FieldInfo(BaseModel):
     help_text: str = ""
     error_text: str = ""
     aria_describedby: str = ""
+    # v3: exhaustive DOM context — all surrounding text for LLM analysis
+    dom_context: str = ""
+    label_sources: list[str] = []
 
 
 class ButtonInfo(BaseModel):
     """A button or submit element on the page."""
+    model_config = {"extra": "ignore"}
 
     selector: str
     text: str
     type: str = "button"
     enabled: bool = True
+    href: str = ""
+    target: str = ""
 
 
 class FormGroup(BaseModel):
@@ -132,31 +123,40 @@ class ExtCommand(BaseModel):
 
     id: str
     action: Literal[
+        # Core browser actions (handled by background.js)
         "navigate",
+        "screenshot",
+        "get_snapshot",
+        "close_tab",
+        "real_click",
+        "real_type",
+        # Core form actions (forwarded to content.js)
         "fill",
         "click",
         "upload",
-        "screenshot",
         "select",
         "check",
-        "scroll",
-        "wait",
-        "close_tab",
         "analyze_field",
-        "get_snapshot",
-        # v2 actions
+        "force_click",
+        "scroll_to",
+        "wait_for_selector",
+        "wait_for_apply",
+        # v2 form engine
         "fill_radio_group",
         "fill_custom_select",
         "fill_autocomplete",
+        "fill_combobox",
         "fill_tag_input",
         "fill_date",
-        "scroll_to",
-        "wait_for_selector",
-        "get_field_context",
-        "scan_form_groups",
+        "fill_contenteditable",
         "check_consent_boxes",
-        "force_click",
+        "scan_form_groups",
         "rescan_after_fill",
+        "scan_validation_errors",
+        # Page analysis
+        "scan_jd",
+        "scan_cards",
+        "get_field_context",
         # MV3 state persistence
         "save_form_progress",
         "get_form_progress",
@@ -175,9 +175,11 @@ class ExtResponse(BaseModel):
 
 class FillResult(BaseModel):
     """Result of a field fill operation."""
+    model_config = {"extra": "ignore"}
 
     success: bool
     value_set: str = ""
+    value_verified: bool = True
     error: str = ""
 
 
@@ -189,7 +191,7 @@ class Action(BaseModel):
         # v2 action types
         "fill_radio_group", "fill_custom_select", "fill_autocomplete",
         "fill_tag_input", "fill_date", "scroll_to", "force_click",
-        "check_consent_boxes",
+        "check_consent_boxes", "fill_combobox", "fill_contenteditable",
     ]
     selector: str = ""
     value: str | None = None

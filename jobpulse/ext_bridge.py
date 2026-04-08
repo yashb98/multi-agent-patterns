@@ -64,6 +64,7 @@ class ExtensionBridge:
         self._server: Server | None = None
         self._ws: ServerConnection | None = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._pending_cmds: dict[str, str] = {}  # cmd_id → raw JSON (for re-send on reconnect)
         self._snapshot: PageSnapshot | None = None
         self._connected: asyncio.Event = asyncio.Event()
         self._relay_clients: set[ServerConnection] = set()
@@ -98,6 +99,7 @@ class ExtensionBridge:
             if not fut.done():
                 fut.cancel()
         self._pending.clear()
+        self._pending_cmds.clear()
         logger.info("Extension bridge stopped")
 
     async def wait_for_connection(self, timeout: float = 30.0) -> bool:
@@ -157,6 +159,32 @@ class ExtensionBridge:
                 msg_type: str = msg.get("type", "")
                 msg_id: str = msg.get("id", "")
 
+                # ── Extension hello — explicit identification ──
+                if msg_type == "extension_hello":
+                    if is_relay:
+                        continue  # Relay clients can't become extensions
+                    # Close old extension connection if different socket
+                    if self._ws is not None and self._ws is not ws:
+                        try:
+                            await self._ws.close()
+                        except Exception:
+                            pass
+                    self._ws = ws
+                    self._connected.set()
+                    assumed_extension = True
+                    logger.info("Extension identified via hello from %s", ws.remote_address)
+                    await self._notify_relays_extension_status(True)
+                    # Re-forward any pending commands to the new connection
+                    if self._pending_cmds:
+                        logger.info("Re-forwarding %d pending commands to reconnected extension", len(self._pending_cmds))
+                        for _cmd_id, _cmd_json in list(self._pending_cmds.items()):
+                            if _cmd_id in self._pending:
+                                try:
+                                    await ws.send(_cmd_json)
+                                except Exception:
+                                    pass
+                    continue
+
                 # ── Relay client handshake ──
                 if msg_type == "relay_hello":
                     is_relay = True
@@ -189,6 +217,7 @@ class ExtensionBridge:
                         self._pending[cmd_id] = fut
 
                         assert self._ws is not None
+                        self._pending_cmds[cmd_id] = cmd_json
                         await self._ws.send(cmd_json)
 
                         timeout_ms = msg.get("timeout_ms", 30000)
@@ -197,6 +226,7 @@ class ExtensionBridge:
                             await ws.send(json.dumps({"id": msg_id, "type": "result", "payload": result}))
                         except TimeoutError:
                             self._pending.pop(cmd_id, None)
+                            self._pending_cmds.pop(cmd_id, None)
                             await ws.send(json.dumps({"id": msg_id, "type": "error", "payload": {"error": "timeout"}}))
                     elif msg_type == "get_snapshot":
                         snap = self._snapshot
@@ -218,22 +248,39 @@ class ExtensionBridge:
                     assumed_extension = True
                     logger.info("Extension reconnected from %s", ws.remote_address)
                     await self._notify_relays_extension_status(True)
+                    # Re-forward pending commands to the reconnected extension
+                    if self._pending_cmds:
+                        logger.info("Re-forwarding %d pending commands after reconnect", len(self._pending_cmds))
+                        for _cmd_id, _cmd_json in list(self._pending_cmds.items()):
+                            if _cmd_id in self._pending:
+                                try:
+                                    await ws.send(_cmd_json)
+                                except Exception:
+                                    pass
 
                 if msg_type == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
                     continue
 
-                # Content script events — update cached snapshot
+                # Content script events — update cached snapshot + forward to relays
                 if msg_type in ("mutation", "navigation"):
                     snap_data = msg.get("payload", {}).get("snapshot")
                     if snap_data:
                         self._snapshot = PageSnapshot(**snap_data)
+                        # Forward to all relay clients so their _snapshot updates too
+                        relay_msg = json.dumps({"type": msg_type, "payload": {"snapshot": snap_data}})
+                        for relay_ws in list(self._relay_clients):
+                            try:
+                                await relay_ws.send(relay_msg)
+                            except Exception:
+                                pass
                     continue
 
                 # Response to a pending command
                 if msg_id and msg_id in self._pending:
                     if msg_type == "result":
                         fut = self._pending.pop(msg_id)
+                        self._pending_cmds.pop(msg_id, None)
                         if not fut.done():
                             fut.set_result(msg.get("payload", {}))
                     continue
@@ -296,17 +343,16 @@ class ExtensionBridge:
     async def navigate(self, url: str, timeout_ms: int = 30000) -> PageSnapshot:
         """Navigate to URL and return a PageSnapshot.
 
-        Handles MV3 service worker restarts during navigation:
-        1. Sends navigate command (may timeout if service worker restarts)
-        2. Waits for reconnection if needed
-        3. Polls for snapshot from content script events
-        4. Falls back to requesting snapshot directly
+        Flow:
+        1. Send navigate command — returns immediately (snapshot=null).
+        2. Background.js pushes snapshot passively once page loads.
+        3. Poll via get_snapshot if passive push hasn't arrived.
         """
         self._snapshot = None  # Clear cache — we want a fresh snapshot
 
         try:
-            result = await self._send_command("navigate", {"url": url}, timeout_ms=timeout_ms)
-            snap_data = result.get("snapshot")
+            result = await self._send_command("navigate", {"url": url}, timeout_ms=8000)
+            snap_data = result.get("snapshot") if isinstance(result, dict) else None
             if snap_data:
                 self._snapshot = PageSnapshot(**snap_data)
         except (TimeoutError, ConnectionError):
@@ -314,26 +360,26 @@ class ExtensionBridge:
 
         # Wait for reconnection if service worker restarted
         if not self.connected:
-            await self.wait_for_connection(timeout=15)
+            await self.wait_for_connection(timeout=10)
 
-        # Poll for snapshot from content script events (navigation/mutation)
-        for _ in range(10):
+        # Wait for passive snapshot from navigation/mutation events
+        # (background.js pushes these after page load)
+        for _ in range(5):
             if self._snapshot is not None:
                 break
             await asyncio.sleep(1)
 
-        # Last resort: request snapshot directly from content script
-        # After MV3 restart, content script may need time to inject + page to render
+        # Active poll via get_snapshot if passive push didn't arrive
         if self._snapshot is None and self.connected:
             for attempt in range(5):
                 try:
-                    result = await self._send_command("get_snapshot", timeout_ms=8000)
-                    if result:
+                    result = await self._send_command("get_snapshot", timeout_ms=5000)
+                    if isinstance(result, dict) and result.get("url"):
                         self._snapshot = PageSnapshot(**result)
                         break
                 except (TimeoutError, ConnectionError):
                     logger.debug("get_snapshot attempt %d failed, retrying...", attempt + 1)
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(2)
 
         if self._snapshot is None:
             raise RuntimeError("No snapshot received after navigation")
@@ -553,6 +599,31 @@ class ExtensionBridge:
             {"selector": selector, "value": value},
             timeout_ms=timeout_ms,
         )
+
+    async def fill_combobox(
+        self, selector: str, value: str, timeout_ms: int = 15000
+    ) -> dict[str, Any]:
+        """Fill a combobox/custom dropdown by clicking open and selecting option."""
+        return await self._send_command(
+            "fill_combobox",
+            {"selector": selector, "value": value},
+            timeout_ms=timeout_ms,
+        )
+
+    async def scan_jd(self, timeout_ms: int = 8000) -> str:
+        """Extract job description text from the current page.
+
+        Returns the JD text string, or empty string if extraction fails.
+        Content script tries platform-specific selectors (LinkedIn, Indeed,
+        Greenhouse, Lever, Workday) then falls back to generic extraction.
+        """
+        result = await self._send_command("scan_jd", {}, timeout_ms=timeout_ms)
+        return result.get("jd_text", "")
+
+    async def close_tab(self, timeout_ms: int = 5000) -> bool:
+        """Close the current active tab."""
+        result = await self._send_command("close_tab", {}, timeout_ms=timeout_ms)
+        return bool(result.get("success", False))
 
     async def get_snapshot(self, force_refresh: bool = False) -> PageSnapshot | None:
         """Return the latest page snapshot.
