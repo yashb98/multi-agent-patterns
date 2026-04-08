@@ -57,4 +57,9 @@ function getFieldGap(labelText) {
   return 1200 + Math.random() * 500;
 }
 
-window.JobPulse.timing = { behaviorProfile, getFieldGap };
+function getTypingDelay() {
+  return behaviorProfile.avg_typing_speed *
+    (1 + (Math.random() - 0.5) * behaviorProfile.typing_variance);
+}
+
+window.JobPulse.timing = { behaviorProfile, getFieldGap, getTypingDelay };
