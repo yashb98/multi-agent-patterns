@@ -847,6 +847,16 @@ def approve_jobs(args: str) -> str:
     if not pending:
         return "No jobs pending review. Run a scan first."
 
+    # Parse engine override: "approve 3 pw" or "approve 3 ext"
+    parts = args.strip().split()
+    engine_override = "extension"
+    if len(parts) >= 2 and parts[-1].lower() in ("pw", "playwright"):
+        engine_override = "playwright"
+        args = " ".join(parts[:-1])
+    elif len(parts) >= 2 and parts[-1].lower() in ("ext", "extension"):
+        engine_override = "extension"
+        args = " ".join(parts[:-1])
+
     # Parse args
     args = args.strip().lower()
     if args == "all":
@@ -901,6 +911,7 @@ def approve_jobs(args: str) -> str:
                 cv_path=cv_path or Path("/dev/null"),
                 cover_letter_path=cover_letter_path,
                 custom_answers=None,
+                engine=engine_override,
             )
 
             applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")

@@ -66,14 +66,14 @@ def select_adapter(ats_platform: str | None) -> BaseATSAdapter:
     return get_adapter(ats_platform)
 
 
-def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
+def _call_fill_and_submit(adapter: BaseATSAdapter, engine: str = "extension", **kwargs: Any) -> dict:
     """Call adapter.fill_and_submit(), handling the async ExtensionAdapter.
 
     ExtensionAdapter.fill_and_submit() is async — we dispatch the coroutine
     to the bridge's event loop (running on a background thread) so WebSocket
     calls stay on the correct loop.
     """
-    result = adapter.fill_and_submit(**kwargs)
+    result = adapter.fill_and_submit(engine=engine, **kwargs)
     if inspect.isawaitable(result):
         # Check if the adapter has a bridge with its own event loop (extension mode)
         bridge = getattr(adapter, "bridge", None)
@@ -109,6 +109,7 @@ def apply_job(
     custom_answers: dict | None = None,
     overrides: dict | None = None,
     dry_run: bool = False,
+    engine: str = "extension",
 ) -> dict:
     """Submit a job application via the appropriate ATS adapter.
 
@@ -265,6 +266,7 @@ def apply_job(
         custom_answers=merged_answers,
         overrides=overrides,
         dry_run=dry_run,
+        engine=engine,
     )
 
     # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
@@ -308,6 +310,7 @@ def apply_job(
             custom_answers=merged_answers,
             overrides=overrides,
             dry_run=dry_run,
+            engine=engine,
         )
         # Tag the result so downstream knows this was an external redirect
         result["external_redirect"] = True

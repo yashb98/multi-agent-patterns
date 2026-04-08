@@ -71,6 +71,7 @@ class ExtensionAdapter(BaseATSAdapter):
         custom_answers: dict | None = None,
         overrides: dict[str, Any] | None = None,
         dry_run: bool = False,
+        engine: str = "extension",
     ) -> dict:
         """Main entry point — delegates to ApplicationOrchestrator."""
         from jobpulse.application_orchestrator import ApplicationOrchestrator
@@ -83,7 +84,7 @@ class ExtensionAdapter(BaseATSAdapter):
 
         fi = FormIntelligence(bridge=self.bridge)
 
-        orchestrator = ApplicationOrchestrator(bridge=self.bridge)
+        orchestrator = ApplicationOrchestrator(bridge=self.bridge, engine=engine)
         result = await orchestrator.apply(
             url=url,
             platform=platform,

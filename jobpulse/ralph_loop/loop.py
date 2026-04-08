@@ -157,6 +157,7 @@ def ralph_apply_sync(
     db_path: str | None = None,
     dry_run: bool = False,
     iteration_callback: Any | None = None,
+    engine: str = "extension",
 ) -> dict:
     """Self-healing apply loop (sync).
 
@@ -218,6 +219,7 @@ def ralph_apply_sync(
                 custom_answers=custom_answers,
                 overrides=overrides,
                 dry_run=dry_run,
+                engine=engine,
             )
             # If external redirect happened on iteration 1, update URL and platform
             # so subsequent iterations target the external ATS directly.
@@ -250,6 +252,7 @@ def ralph_apply_sync(
                     custom_answers=merged_answers,
                     overrides=overrides,
                     dry_run=dry_run,
+                    engine=engine,
                 )
             except Exception as exc:
                 result = {"success": False, "screenshot": None, "error": str(exc)}

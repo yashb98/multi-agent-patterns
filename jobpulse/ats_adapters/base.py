@@ -26,6 +26,7 @@ class BaseATSAdapter(ABC):
         custom_answers: dict,
         overrides: dict[str, Any] | None = None,
         dry_run: bool = False,
+        engine: str = "extension",
     ) -> dict:
         """Fill form and submit.
 
