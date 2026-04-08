@@ -12,8 +12,9 @@ def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
         logger.info(
-            "Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, ralph-test, ext-bridge, test"
+            "Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, ralph-test, ext-bridge, chrome-pw, test"
         )
+        logger.info("  python -m jobpulse.runner chrome-pw     # Launch Chrome with CDP for Playwright engine")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -376,6 +377,33 @@ def main():
             asyncio.run(_run_bridge())
         except KeyboardInterrupt:
             logger.info("Extension bridge stopped")
+
+    elif command == "chrome-pw":
+        import subprocess
+
+        profile_dir = os.path.expanduser("~/.chrome-playwright-profile")
+        chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        port = os.environ.get("PLAYWRIGHT_CDP_PORT", "9222")
+
+        if not os.path.exists(chrome_path):
+            print(f"Chrome not found at {chrome_path}")
+            sys.exit(1)
+
+        print(f"Launching Chrome with CDP on port {port}")
+        print(f"Profile: {profile_dir}")
+        print("First run: log into ATS platforms manually. Sessions persist.")
+
+        subprocess.Popen(
+            [
+                chrome_path,
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={profile_dir}",
+                "--no-first-run",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"Chrome launched. Playwright can connect at http://localhost:{port}")
 
     else:
         logger.error("Unknown command: %s", command)
