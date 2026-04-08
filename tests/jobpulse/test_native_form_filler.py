@@ -171,3 +171,134 @@ async def test_scan_fields_checkbox():
     assert len(fields) == 1
     assert fields[0]["type"] == "checkbox"
     assert fields[0]["checked"] is False
+
+
+# ── _fill_by_label ──
+
+
+@pytest.mark.asyncio
+async def test_fill_by_label_text_input():
+    """Fills a text field found by label."""
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    el = AsyncMock()
+    el.evaluate = AsyncMock(return_value="input")
+    el.get_attribute = AsyncMock(return_value=None)
+    el.fill = AsyncMock()
+    el.input_value = AsyncMock(return_value="john@example.com")
+
+    label_locator = MagicMock()
+    label_locator.count = AsyncMock(return_value=1)
+    label_locator.first = el
+
+    page.get_by_label = MagicMock(return_value=label_locator)
+
+    with patch.object(filler, "_smart_scroll", new_callable=AsyncMock), \
+         patch.object(filler, "_move_mouse_to", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler._fill_by_label("Email", "john@example.com")
+
+    assert result["success"] is True
+    el.fill.assert_called_once_with("john@example.com")
+
+
+@pytest.mark.asyncio
+async def test_fill_by_label_select():
+    """Fills a select field found by label."""
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    el = AsyncMock()
+    el.evaluate = AsyncMock(side_effect=["select", "United States"])
+    el.get_attribute = AsyncMock(return_value=None)
+    el.select_option = AsyncMock()
+
+    label_locator = MagicMock()
+    label_locator.count = AsyncMock(return_value=1)
+    label_locator.first = el
+
+    page.get_by_label = MagicMock(return_value=label_locator)
+
+    with patch.object(filler, "_smart_scroll", new_callable=AsyncMock), \
+         patch.object(filler, "_move_mouse_to", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler._fill_by_label("Country", "United States")
+
+    assert result["success"] is True
+    el.select_option.assert_called_once_with(label="United States")
+
+
+@pytest.mark.asyncio
+async def test_fill_by_label_not_found():
+    """Returns error when no field matches label or placeholder."""
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    empty_locator = MagicMock()
+    empty_locator.count = AsyncMock(return_value=0)
+
+    page.get_by_label = MagicMock(return_value=empty_locator)
+    page.get_by_placeholder = MagicMock(return_value=empty_locator)
+
+    with patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler._fill_by_label("Nonexistent", "value")
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_fill_by_label_checkbox():
+    """Checks a checkbox found by label."""
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    el = AsyncMock()
+    el.evaluate = AsyncMock(return_value="input")
+    el.get_attribute = AsyncMock(return_value="checkbox")
+    el.check = AsyncMock()
+    el.is_checked = AsyncMock(return_value=True)
+
+    label_locator = MagicMock()
+    label_locator.count = AsyncMock(return_value=1)
+    label_locator.first = el
+
+    page.get_by_label = MagicMock(return_value=label_locator)
+
+    with patch.object(filler, "_smart_scroll", new_callable=AsyncMock), \
+         patch.object(filler, "_move_mouse_to", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler._fill_by_label("I agree", "yes")
+
+    assert result["success"] is True
+    el.check.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fill_by_label_placeholder_fallback():
+    """Falls back to placeholder when label locator finds nothing."""
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    el = AsyncMock()
+    el.evaluate = AsyncMock(return_value="input")
+    el.get_attribute = AsyncMock(return_value=None)
+    el.fill = AsyncMock()
+    el.input_value = AsyncMock(return_value="test")
+
+    empty_locator = MagicMock()
+    empty_locator.count = AsyncMock(return_value=0)
+
+    placeholder_locator = MagicMock()
+    placeholder_locator.count = AsyncMock(return_value=1)
+    placeholder_locator.first = el
+
+    page.get_by_label = MagicMock(return_value=empty_locator)
+    page.get_by_placeholder = MagicMock(return_value=placeholder_locator)
+
+    with patch.object(filler, "_smart_scroll", new_callable=AsyncMock), \
+         patch.object(filler, "_move_mouse_to", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler._fill_by_label("Search", "test")
+
+    assert result["success"] is True
+    page.get_by_placeholder.assert_called_once()

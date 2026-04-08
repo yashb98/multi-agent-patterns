@@ -133,3 +133,71 @@ class NativeFormFiller:
             fields.append({"label": label, "type": "file", "locator": loc})
 
         return fields
+
+    # ── Human-Like Behavior (delegates to driver) ──
+
+    async def _smart_scroll(self, el: Any) -> None:
+        """Scroll element into view with human-like delay."""
+        if hasattr(self._driver, '_smart_scroll'):
+            await self._driver._smart_scroll(el)
+        else:
+            await el.scroll_into_view_if_needed()
+
+    async def _move_mouse_to(self, el: Any) -> None:
+        """Move mouse to element with Bezier curve."""
+        if hasattr(self._driver, '_move_mouse_to'):
+            await self._driver._move_mouse_to(el)
+
+    # ── Fill By Label ──
+
+    async def _fill_by_label(self, label: str, value: str) -> dict:
+        """Fill a single form field using Playwright's label-based locator.
+
+        Tries get_by_label first, falls back to get_by_placeholder.
+        Handles text, select, checkbox, and radio input types.
+        Returns {"success": bool, "value_set": str, "value_verified": bool}.
+        """
+        page = self._page
+        await asyncio.sleep(_get_field_gap(label))
+
+        # Try label-based locator first
+        locator = page.get_by_label(label, exact=False)
+
+        if not await locator.count():
+            locator = page.get_by_placeholder(label, exact=False)
+
+        if not await locator.count():
+            logger.warning("No field found for label '%s'", label)
+            return {"success": False, "error": f"No field for '{label}'"}
+
+        el = locator.first
+        await self._smart_scroll(el)
+        await self._move_mouse_to(el)
+
+        tag = await el.evaluate("el => el.tagName.toLowerCase()")
+        input_type = await el.get_attribute("type") or ""
+
+        if tag == "select":
+            await el.select_option(label=value)
+        elif input_type == "checkbox":
+            if value.lower() in ("true", "yes", "1"):
+                await el.check()
+            else:
+                await el.uncheck()
+        elif input_type == "radio":
+            await page.get_by_label(value).check()
+        else:
+            await el.fill(value)
+
+        # Post-fill verification
+        if tag == "select":
+            actual = await el.evaluate(
+                "el => el.options[el.selectedIndex]?.text?.trim() || ''"
+            )
+        elif input_type in ("checkbox", "radio"):
+            actual = str(await el.is_checked())
+        else:
+            actual = await el.input_value()
+
+        verified = value[:10].lower() in actual.lower() if actual else False
+        return {"success": True, "value_set": value, "value_verified": verified}
