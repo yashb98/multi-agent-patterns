@@ -105,10 +105,14 @@ async def test_fill_returns_verified():
     driver = PlaywrightDriver()
     mock_el = MagicMock()
     mock_el.scroll_into_view_if_needed = AsyncMock()
+    mock_el.bounding_box = AsyncMock(return_value={"x": 100, "y": 200, "width": 200, "height": 40})
     mock_el.fill = AsyncMock()
     mock_el.evaluate = AsyncMock(return_value="John Doe")
     mock_page = MagicMock()
     mock_page.query_selector = AsyncMock(return_value=mock_el)
+    mock_page.viewport_size = {"width": 1280, "height": 720}
+    mock_page.mouse = MagicMock()
+    mock_page.mouse.move = AsyncMock()
     driver._page = mock_page
 
     result = await driver.fill("#name", "John Doe")
@@ -131,9 +135,13 @@ async def test_click_success():
     driver = PlaywrightDriver()
     mock_el = MagicMock()
     mock_el.scroll_into_view_if_needed = AsyncMock()
+    mock_el.bounding_box = AsyncMock(return_value={"x": 50, "y": 100, "width": 120, "height": 36})
     mock_el.click = AsyncMock()
     mock_page = MagicMock()
     mock_page.query_selector = AsyncMock(return_value=mock_el)
+    mock_page.viewport_size = {"width": 1280, "height": 720}
+    mock_page.mouse = MagicMock()
+    mock_page.mouse.move = AsyncMock()
     driver._page = mock_page
     result = await driver.click("#btn")
     assert result["success"] is True
@@ -222,3 +230,37 @@ async def test_with_retry_retries_on_failure():
     result = await _with_retry(fn, max_retries=2, delay_ms=10)
     assert result["success"] is True
     assert call_count == 3
+
+
+def test_bezier_points_short_distance():
+    """Very short distance returns just the endpoint."""
+    from jobpulse.playwright_driver import _bezier_points
+    points = _bezier_points(100, 100, 102, 101)
+    assert len(points) == 1
+    assert points[0] == (102, 101)
+
+
+def test_bezier_points_generates_curve():
+    """Normal distance generates multiple curve points."""
+    from jobpulse.playwright_driver import _bezier_points
+    points = _bezier_points(0, 0, 500, 500)
+    assert len(points) == 15
+    # End point should be close to target
+    assert abs(points[-1][0] - 500) < 1
+    assert abs(points[-1][1] - 500) < 1
+
+
+def test_field_gap_scales_with_length():
+    from jobpulse.playwright_driver import _get_field_gap
+    short = _get_field_gap("Name")
+    medium = _get_field_gap("Please enter your full legal name")
+    long = _get_field_gap("Please provide the complete legal name as it appears on your government-issued identification document")
+    assert short < medium < long
+
+
+def test_scroll_delay_scales_with_distance():
+    from jobpulse.playwright_driver import _scroll_delay
+    near = _scroll_delay(20)
+    mid = _scroll_delay(200)
+    far = _scroll_delay(500)
+    assert near < mid < far
