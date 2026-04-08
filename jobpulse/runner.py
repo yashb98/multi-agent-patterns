@@ -297,6 +297,7 @@ def main():
         max_iters = 5
         count = 3
         platforms_csv = None
+        engine = "extension"
 
         for i, arg in enumerate(args):
             if arg == "--platform" and i + 1 < len(args):
@@ -307,6 +308,8 @@ def main():
                 max_iters = int(args[i + 1])
             elif arg == "--count" and i + 1 < len(args):
                 count = int(args[i + 1])
+            elif arg == "--engine" and i + 1 < len(args):
+                engine = args[i + 1]
 
         if is_live:
             # Live mode: scrape fresh URLs and test each
@@ -332,8 +335,8 @@ def main():
                 )
                 sys.exit(1)
 
-            print(f"Running Ralph Loop dry-run test on {platform}: {url[:60]}")
-            result = ralph_test_run(platform=platform, url=url, max_iterations=max_iters)
+            print(f"Running Ralph Loop dry-run test on {platform} (engine={engine}): {url[:60]}")
+            result = ralph_test_run(platform=platform, url=url, max_iterations=max_iters, engine=engine)
 
             from jobpulse.ralph_loop.test_store import TestStore
 

@@ -80,20 +80,33 @@ class ExtensionAdapter(BaseATSAdapter):
         custom_answers = custom_answers or {}
 
         platform = _detect_ats_platform(url)
-        logger.info("ExtensionAdapter: applying to %s via %s (orchestrator)", url, platform)
+        logger.info("ExtensionAdapter: applying to %s via %s (engine=%s)", url, platform, engine)
 
-        fi = FormIntelligence(bridge=self.bridge)
+        # Select driver based on engine
+        if engine == "playwright":
+            from jobpulse.playwright_driver import PlaywrightDriver
+            pw_driver = PlaywrightDriver()
+            await pw_driver.connect()
+            driver = pw_driver
+        else:
+            driver = self.bridge
 
-        orchestrator = ApplicationOrchestrator(bridge=self.bridge, engine=engine)
-        result = await orchestrator.apply(
-            url=url,
-            platform=platform,
-            cv_path=cv_path,
-            cover_letter_path=cover_letter_path,
-            profile=profile,
-            custom_answers=custom_answers,
-            overrides=overrides,
-            dry_run=dry_run,
-            form_intelligence=fi,
-        )
+        fi = FormIntelligence(bridge=driver)
+
+        orchestrator = ApplicationOrchestrator(driver=driver, engine=engine)
+        try:
+            result = await orchestrator.apply(
+                url=url,
+                platform=platform,
+                cv_path=cv_path,
+                cover_letter_path=cover_letter_path,
+                profile=profile,
+                custom_answers=custom_answers,
+                overrides=overrides,
+                dry_run=dry_run,
+                form_intelligence=fi,
+            )
+        finally:
+            if engine == "playwright":
+                await driver.close()
         return result

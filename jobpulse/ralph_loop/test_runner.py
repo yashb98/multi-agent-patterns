@@ -50,6 +50,7 @@ def ralph_test_run(
     store_db_path: str | None = None,
     pattern_db_path: str | None = None,
     base_dir: Path | None = None,
+    engine: str = "extension",
 ) -> TestRunResult:
     """Run Ralph Loop in dry-run mode and record structured results.
 
@@ -111,6 +112,7 @@ def ralph_test_run(
             dry_run=True,
             db_path=pattern_db_path,
             iteration_callback=iteration_callback,
+            engine=engine,
         )
     except Exception as exc:
         logger.error("Ralph test run failed with exception: %r", exc, exc_info=True)
