@@ -354,3 +354,66 @@ class NativeFormFiller:
             if any(kw in label.lower() for kw in consent_keywords):
                 if not await cb.is_checked():
                     await cb.check()
+
+    # ── Page Detection ──
+
+    async def _is_confirmation_page(self) -> bool:
+        """Check if current page is a confirmation/thank-you page."""
+        body = await self._page.locator("body").text_content()
+        body_lower = (body or "").lower()[:2000]
+        return any(phrase in body_lower for phrase in (
+            "thank you for applying",
+            "application has been received",
+            "application submitted",
+            "successfully submitted",
+        ))
+
+    async def _is_submit_page(self) -> bool:
+        """Check if current page has a visible submit button (final page)."""
+        for name in ["Submit Application", "Submit", "Apply"]:
+            btn = self._page.get_by_role("button", name=name, exact=False)
+            if await btn.count() and await btn.first.is_visible():
+                return True
+        return False
+
+    # ── Navigation ──
+
+    async def _click_navigation(self, dry_run: bool) -> str:
+        """Find and click the next/submit button.
+
+        Returns:
+            'submitted' — clicked a submit button
+            'next' — clicked a continue/next button
+            'dry_run_stop' — submit found but dry_run=True
+            '' — no navigation button found
+        """
+        page = self._page
+        button_names = [
+            ("submit", ["Submit Application", "Submit", "Apply"]),
+            ("next", ["Save & Continue", "Continue", "Next", "Proceed"]),
+        ]
+
+        for action, names in button_names:
+            for name in names:
+                btn = page.get_by_role("button", name=name, exact=False)
+                if await btn.count() and await btn.first.is_visible():
+                    if action == "submit" and dry_run:
+                        return "dry_run_stop"
+                    await self._move_mouse_to(btn.first)
+                    await btn.first.click()
+                    await page.wait_for_load_state(
+                        "networkidle", timeout=10000,
+                    )
+                    return "submitted" if action == "submit" else "next"
+
+        # Fallback: links with submit-like text
+        for name in ["Submit", "Apply Now", "Continue"]:
+            link = page.get_by_role("link", name=name, exact=False)
+            if await link.count() and await link.first.is_visible():
+                await link.first.click()
+                await page.wait_for_load_state(
+                    "networkidle", timeout=10000,
+                )
+                return "next"
+
+        return ""

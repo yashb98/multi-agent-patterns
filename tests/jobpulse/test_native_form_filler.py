@@ -591,3 +591,161 @@ async def test_check_consent_skips_already_checked():
         await filler._check_consent()
 
     cb.check.assert_not_called()
+
+
+# ── _is_confirmation_page ──
+
+
+@pytest.mark.asyncio
+async def test_is_confirmation_page_true():
+    page = MagicMock()
+    body_locator = MagicMock()
+    body_locator.text_content = AsyncMock(
+        return_value="Thank you for applying! We will review your application."
+    )
+    page.locator = MagicMock(return_value=body_locator)
+    filler = _make_filler(page_mock=page)
+
+    assert await filler._is_confirmation_page() is True
+
+
+@pytest.mark.asyncio
+async def test_is_confirmation_page_false():
+    page = MagicMock()
+    body_locator = MagicMock()
+    body_locator.text_content = AsyncMock(
+        return_value="Please fill in your details below."
+    )
+    page.locator = MagicMock(return_value=body_locator)
+    filler = _make_filler(page_mock=page)
+
+    assert await filler._is_confirmation_page() is False
+
+
+# ── _is_submit_page ──
+
+
+@pytest.mark.asyncio
+async def test_is_submit_page_true():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    btn = MagicMock()
+    btn.count = AsyncMock(return_value=1)
+    btn.first = MagicMock()
+    btn.first.is_visible = AsyncMock(return_value=True)
+
+    def _get_by_role(role, name=None, exact=False):
+        if "Submit" in (name or ""):
+            return btn
+        empty = MagicMock()
+        empty.count = AsyncMock(return_value=0)
+        return empty
+
+    page.get_by_role = _get_by_role
+    assert await filler._is_submit_page() is True
+
+
+@pytest.mark.asyncio
+async def test_is_submit_page_false():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    empty = MagicMock()
+    empty.count = AsyncMock(return_value=0)
+    page.get_by_role = MagicMock(return_value=empty)
+
+    assert await filler._is_submit_page() is False
+
+
+# ── _click_navigation ──
+
+
+@pytest.mark.asyncio
+async def test_click_navigation_submit():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    btn = MagicMock()
+    btn.count = AsyncMock(return_value=1)
+    btn.first = MagicMock()
+    btn.first.is_visible = AsyncMock(return_value=True)
+    btn.first.click = AsyncMock()
+    page.wait_for_load_state = AsyncMock()
+
+    def _get_by_role(role, name=None, exact=False):
+        if role == "button" and name and "Submit" in name:
+            return btn
+        empty = MagicMock()
+        empty.count = AsyncMock(return_value=0)
+        return empty
+
+    page.get_by_role = _get_by_role
+
+    with patch.object(filler, "_move_mouse_to", new_callable=AsyncMock):
+        result = await filler._click_navigation(dry_run=False)
+
+    assert result == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_click_navigation_dry_run_stop():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    btn = MagicMock()
+    btn.count = AsyncMock(return_value=1)
+    btn.first = MagicMock()
+    btn.first.is_visible = AsyncMock(return_value=True)
+
+    def _get_by_role(role, name=None, exact=False):
+        if role == "button" and name and "Submit" in name:
+            return btn
+        empty = MagicMock()
+        empty.count = AsyncMock(return_value=0)
+        return empty
+
+    page.get_by_role = _get_by_role
+
+    result = await filler._click_navigation(dry_run=True)
+    assert result == "dry_run_stop"
+
+
+@pytest.mark.asyncio
+async def test_click_navigation_next():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    btn = MagicMock()
+    btn.count = AsyncMock(return_value=1)
+    btn.first = MagicMock()
+    btn.first.is_visible = AsyncMock(return_value=True)
+    btn.first.click = AsyncMock()
+    page.wait_for_load_state = AsyncMock()
+
+    def _get_by_role(role, name=None, exact=False):
+        if role == "button" and name and "Continue" in name:
+            return btn
+        empty = MagicMock()
+        empty.count = AsyncMock(return_value=0)
+        return empty
+
+    page.get_by_role = _get_by_role
+
+    with patch.object(filler, "_move_mouse_to", new_callable=AsyncMock):
+        result = await filler._click_navigation(dry_run=False)
+
+    assert result == "next"
+
+
+@pytest.mark.asyncio
+async def test_click_navigation_none_found():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    empty = MagicMock()
+    empty.count = AsyncMock(return_value=0)
+    page.get_by_role = MagicMock(return_value=empty)
+
+    result = await filler._click_navigation(dry_run=False)
+    assert result == ""
