@@ -172,10 +172,9 @@ class PlaywrightDriver:
         snapshot = await self.get_snapshot()
         return {"success": True, "snapshot": snapshot}
 
-    async def screenshot(self) -> dict:
-        """Capture visible page as base64 PNG."""
-        buf = await self._page.screenshot(type="png")
-        return {"success": True, "data": base64.b64encode(buf).decode()}
+    async def screenshot(self) -> bytes:
+        """Capture visible page as raw PNG bytes (matches ext_bridge API)."""
+        return await self._page.screenshot(type="png")
 
     async def get_snapshot(self, **kwargs) -> dict:
         """Scan DOM for form fields — returns same shape as extension snapshots."""

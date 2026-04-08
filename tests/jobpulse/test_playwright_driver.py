@@ -71,8 +71,8 @@ async def test_screenshot_returns_base64():
     driver._page = mock_page
 
     result = await driver.screenshot()
-    assert result["success"] is True
-    assert isinstance(result["data"], str)
+    assert isinstance(result, bytes)
+    assert result == b"\x89PNG\r\n\x1a\n"
 
 
 @pytest.mark.asyncio
