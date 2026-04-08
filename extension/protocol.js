@@ -32,6 +32,14 @@ const MSG = Object.freeze({
   CMD_SCAN_VALIDATION_ERRORS: "scan_validation_errors",
   CMD_FILL_CONTENTEDITABLE: "fill_contenteditable",
 
+  // Label strategy commands
+  CMD_SCAN_FIELDS: "scan_fields",
+  CMD_FILL_BY_LABEL: "fill_by_label",
+  CMD_DETECT_PAGE: "detect_page",
+  CMD_CLICK_NAVIGATION: "click_navigation",
+  CMD_CHECK_CONSENT: "check_consent",
+  CMD_UPLOAD_FILES: "upload_files",
+
   // MV3 state persistence
   CMD_SAVE_FORM_PROGRESS: "save_form_progress",
   CMD_GET_FORM_PROGRESS: "get_form_progress",
