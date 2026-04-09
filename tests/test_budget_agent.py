@@ -761,14 +761,14 @@ class TestSyncAndTotals:
 # ── Salary page creation ──
 
 class TestSalaryPage:
-    @patch("jobpulse.budget_agent._notion_api")
+    @patch("jobpulse.notion_agent._notion_api")
     def test_create_salary_page(self, mock_api, tmp_budget_db):
         from jobpulse.budget_agent import _get_or_create_salary_page
         mock_api.return_value = {"id": "fake-salary-page-id"}
         page_id = _get_or_create_salary_page(_get_period_start())
         assert page_id == "fake-salary-page-id"
 
-    @patch("jobpulse.budget_agent._notion_api")
+    @patch("jobpulse.notion_agent._notion_api")
     def test_reuses_existing_page(self, mock_api, tmp_budget_db):
         from jobpulse.budget_agent import _get_or_create_salary_page, _get_salary_week_start
         # Insert a fake page reference into work_hours
@@ -789,7 +789,7 @@ class TestSalaryPage:
 # ── _add_row_to_salary_page ──
 
 class TestAddRowToSalaryPage:
-    @patch("jobpulse.budget_agent._notion_api")
+    @patch("jobpulse.notion_agent._notion_api")
     def test_add_row(self, mock_api, tmp_budget_db):
         from jobpulse.budget_agent import _add_row_to_salary_page
         mock_api.return_value = {"results": [
@@ -805,7 +805,7 @@ class TestAddRowToSalaryPage:
 class TestConfirmSavingsWithHours:
     @patch("jobpulse.budget_agent.sync_expense_to_notion")
     @patch("jobpulse.budget_agent._update_section_totals")
-    @patch("jobpulse.budget_agent._notion_api")
+    @patch("jobpulse.notion_agent._notion_api")
     def test_savings_calculated(self, mock_api, mock_totals, mock_sync, tmp_budget_db):
         mock_api.return_value = {"results": []}
         # Insert hours directly
@@ -826,7 +826,7 @@ class TestConfirmSavingsWithHours:
 # ── _rebuild_notion_timesheet ──
 
 class TestRebuildTimesheet:
-    @patch("jobpulse.budget_agent._notion_api")
+    @patch("jobpulse.notion_agent._notion_api")
     def test_rebuild(self, mock_api, tmp_budget_db):
         from jobpulse.budget_agent import _rebuild_notion_timesheet
         mock_api.side_effect = [
@@ -853,11 +853,11 @@ class TestRebuildTimesheet:
 # ── undo_hours with pick ──
 
 class TestUndoHoursWithPick:
-    @patch("jobpulse.budget_agent._rebuild_notion_timesheet")
+    @patch("jobpulse.budget_salary._rebuild_notion_timesheet")
     @patch("jobpulse.budget_agent.sync_expense_to_notion")
     @patch("jobpulse.budget_agent._update_section_totals")
-    @patch("jobpulse.budget_agent._get_or_create_salary_page", return_value="fake-page-id")
-    @patch("jobpulse.budget_agent._add_row_to_salary_page")
+    @patch("jobpulse.budget_salary._get_or_create_salary_page", return_value="fake-page-id")
+    @patch("jobpulse.budget_salary._add_row_to_salary_page")
     def test_undo_by_pick(self, mock_row, mock_page, mock_totals, mock_sync, mock_rebuild, tmp_budget_db):
         log_hours("worked 4 hours today")
         result = undo_hours(pick=1)
