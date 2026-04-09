@@ -9,7 +9,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 base = Path(__file__).parent.parent
+sys.path.insert(0, str(base))
 load_dotenv(base / ".env")
+
+from shared.telegram_client import telegram_url
 
 token = os.getenv("TELEGRAM_BOT_TOKEN")
 chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -18,7 +21,7 @@ chat_id = os.getenv("TELEGRAM_CHAT_ID")
 def send_to_telegram(pdf_path, caption):
     result = subprocess.run(
         ["curl", "-s", "-X", "POST",
-         f"https://api.telegram.org/bot{token}/sendDocument",
+         telegram_url(token, "sendDocument"),
          "-F", f"chat_id={chat_id}",
          "-F", f"document=@{pdf_path}",
          "-F", f"caption={caption}"],

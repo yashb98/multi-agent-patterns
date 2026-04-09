@@ -32,6 +32,8 @@ sys.path.insert(0, PROJECT_DIR)
 from dotenv import load_dotenv
 load_dotenv(os.path.join(PROJECT_DIR, ".env"))
 
+from shared.telegram_client import telegram_url
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
@@ -58,7 +60,7 @@ def send_telegram(text: str) -> bool:
     try:
         result = subprocess.run(
             ["curl", "-s", "-X", "POST",
-             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+             telegram_url(TELEGRAM_BOT_TOKEN, "sendMessage"),
              "-H", "Content-Type: application/json",
              "-d", payload],
             capture_output=True, text=True, timeout=10
@@ -73,7 +75,7 @@ def get_latest_reply(after_id: int) -> str | None:
     try:
         result = subprocess.run(
             ["curl", "-s",
-             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+             telegram_url(TELEGRAM_BOT_TOKEN, "getUpdates")
              f"?offset={after_id + 1}&timeout=5"],
             capture_output=True, text=True, timeout=15
         )
@@ -94,7 +96,7 @@ def get_current_update_id() -> int:
     try:
         result = subprocess.run(
             ["curl", "-s",
-             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+             telegram_url(TELEGRAM_BOT_TOKEN, "getUpdates")
              f"?offset=-1"],
             capture_output=True, text=True, timeout=10
         )

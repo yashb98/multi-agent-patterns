@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import httpx
 
 from jobpulse.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from shared.telegram_client import telegram_url
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
@@ -26,7 +27,7 @@ logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 def _send_photo(data: bytes, caption: str) -> int:
     """Send photo to Telegram, return message_id."""
     resp = httpx.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+        telegram_url(TELEGRAM_BOT_TOKEN, "sendPhoto"),
         data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption},
         files={"photo": ("screenshot.png", data, "image/png")},
         timeout=15,
@@ -36,7 +37,7 @@ def _send_photo(data: bytes, caption: str) -> int:
 
 def _send_msg(text: str) -> None:
     httpx.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        telegram_url(TELEGRAM_BOT_TOKEN, "sendMessage"),
         data={"chat_id": TELEGRAM_CHAT_ID, "text": text},
         timeout=10,
     )
@@ -45,7 +46,7 @@ def _send_msg(text: str) -> None:
 def _drain_updates() -> int:
     """Drain pending Telegram updates, return last update_id."""
     resp = httpx.get(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+        telegram_url(TELEGRAM_BOT_TOKEN, "getUpdates"),
         params={"offset": -1},
         timeout=5,
     )
@@ -59,7 +60,7 @@ async def _wait_for_reply(last_id: int, max_wait: int = 180) -> tuple[str | None
         await asyncio.sleep(2)
         try:
             resp = httpx.get(
-                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                telegram_url(TELEGRAM_BOT_TOKEN, "getUpdates"),
                 params={"offset": last_id + 1, "timeout": 1},
                 timeout=10,
             )

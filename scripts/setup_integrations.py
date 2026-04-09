@@ -17,6 +17,9 @@ import json
 import subprocess
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared.telegram_client import telegram_url
+
 PROJECT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
@@ -37,7 +40,7 @@ def test_telegram():
     payload = json.dumps({"chat_id": chat_id, "text": "🧪 JobPulse setup test — Telegram is working!"})
     result = subprocess.run(
         ["curl", "-s", "-X", "POST",
-         f"https://api.telegram.org/bot{token}/sendMessage",
+         telegram_url(token, "sendMessage"),
          "-H", "Content-Type: application/json", "-d", payload],
         capture_output=True, text=True, timeout=15
     )

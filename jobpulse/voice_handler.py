@@ -42,7 +42,8 @@ def transcribe_voice(file_id: str, bot_token: str = None) -> str:
         file_path = file_data["result"]["file_path"]
 
         # Step 2: Download the voice file
-        download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+        from shared.telegram_client import telegram_file_url
+        download_url = telegram_file_url(token, file_path)
         audio_resp = httpx.get(download_url, timeout=30)
 
         if audio_resp.status_code != 200:

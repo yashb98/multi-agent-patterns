@@ -25,11 +25,17 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 BASE_URL = "https://api.telegram.org/bot{token}/{method}"
+FILE_URL = "https://api.telegram.org/file/bot{token}/{file_path}"
 
 
 def telegram_url(token: str, method: str) -> str:
     """Build a Telegram Bot API URL."""
     return BASE_URL.format(token=token, method=method)
+
+
+def telegram_file_url(token: str, file_path: str) -> str:
+    """Build a Telegram file download URL."""
+    return FILE_URL.format(token=token, file_path=file_path)
 
 
 def telegram_post(token: str, method: str, data: dict[str, Any] | None = None,
