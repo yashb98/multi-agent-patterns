@@ -371,8 +371,8 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                 logger.info("job_autopilot: Gate 4 BLOCKED (spam) %s @ %s — %s", listing.title, listing.company, spam.reason)
                 try:
                     flag_company_in_notion(listing.company, spam.reason, listing.platform)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Failed to flag company %s in Notion: %s", listing.company, e)
                 db.save_listing(listing)
                 db.save_application(job_id=listing.job_id, status="Blocked", match_tier="skip")
                 continue
@@ -539,8 +539,8 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
                                 update_application_page(
                                     notion_page_id, cl_drive_link=cl_link, company=lst.company,
                                 )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning("CL generation/upload failed for %s: %s", lst.company, e)
                     return cl_path
                 return _generate
 

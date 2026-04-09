@@ -327,8 +327,8 @@ Return JSON: {{"verifications": [...]}}"""
                 source_url=v.get("source", "abstract"),
                 confidence=v.get("confidence", 0.5),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to cache verified fact: %s", e)
 
     verdicts = [v.get("verdict", "UNKNOWN") for v in all_results]
     sources_used = set(v.get("source", "unknown") for v in all_results)

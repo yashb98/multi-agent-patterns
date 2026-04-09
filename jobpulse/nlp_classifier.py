@@ -66,8 +66,8 @@ def _load_examples() -> dict:
                     examples[intent].extend(phrases)
                 else:
                     examples[intent] = phrases
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug("Failed to load learned examples: %s", e)
 
     return examples
 
@@ -131,8 +131,8 @@ def _ensure_loaded():
                 _loaded = True
                 logger.info("Loaded %d cached embeddings", len(_intent_names))
                 return
-        except Exception:
-            pass
+        except (OSError, ValueError, KeyError) as e:
+            logger.debug("Embeddings cache invalid, rebuilding: %s", e)
 
     # Build fresh
     _build_embeddings()
@@ -184,8 +184,8 @@ def add_learned_example(intent: str, text: str):
     if LEARNED_FILE.exists():
         try:
             learned = json.loads(LEARNED_FILE.read_text())
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError):
+            pass  # Corrupted file — start fresh
 
     if intent not in learned:
         learned[intent] = []
@@ -219,8 +219,8 @@ def get_stats() -> dict:
     if LEARNED_FILE.exists():
         try:
             learned = json.loads(LEARNED_FILE.read_text())
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError):
+            pass  # Corrupted file — start fresh
 
     return {
         "model": "all-MiniLM-L6-v2" if _model else "not loaded",

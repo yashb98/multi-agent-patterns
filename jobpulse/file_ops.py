@@ -242,7 +242,7 @@ def system_status() -> str:
         if result.stdout.strip():
             size = result.stdout.strip().split("\t")[0]
             parts.append(f"\nData dir: {size}")
-    except Exception:
-        pass
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("Data dir size check failed: %s", e)
 
     return "System Status\n\n" + "\n".join(parts)

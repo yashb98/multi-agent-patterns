@@ -703,8 +703,8 @@ def build_digest(top_n: int = 5) -> str:
                     summary=summary,
                     arxiv_id=paper["arxiv_id"],
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("KG extraction failed for paper: %s", e)
         logger.info("KG extraction complete for %d papers", len(summaries))
 
     threading.Thread(target=_extract_bg, daemon=True).start()

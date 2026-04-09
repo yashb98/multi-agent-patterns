@@ -106,8 +106,8 @@ def detect_verification_wall(
         try:
             if page.query_selector(selector) is not None:
                 return _result(wall_type, confidence)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Selector check failed for %s: %s", selector, e)
 
     # 2. Check iframe URLs
     try:
@@ -116,8 +116,8 @@ def detect_verification_wall(
             for url_substr, wall_type, confidence in _IFRAME_PATTERNS:
                 if url_substr in frame_url:
                     return _result(wall_type, confidence)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Iframe check failed: %s", e)
 
     # 3. Get body text
     body_text = ""
@@ -126,8 +126,8 @@ def detect_verification_wall(
     except Exception:
         try:
             body_text = page.inner_text()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Body text extraction failed: %s", e)
 
     # 4. Check text patterns (case-insensitive)
     body_lower = body_text.lower()
@@ -166,8 +166,8 @@ def simulate_human_interaction(page: Any) -> None:
                 random.randint(200, 800),
                 random.randint(200, 500),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Mouse movement failed: %s", e)
 
         # Final pause
         time.sleep(random.uniform(0.5, 1.5))

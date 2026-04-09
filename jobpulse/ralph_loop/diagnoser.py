@@ -95,8 +95,8 @@ def capture_failure_context(
         screenshot_path = dest_dir / "ralph_fallback.png"
         try:
             page.screenshot(path=str(screenshot_path))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Fallback screenshot also failed: %s", e)
 
     # DOM snapshot (truncated)
     dom_snapshot_path = dest_dir / f"ralph_{step_name}_{iteration}.html"
@@ -182,8 +182,8 @@ def diagnose_with_vision(
     if context.dom_snapshot_path.exists():
         try:
             dom_html = context.dom_snapshot_path.read_text(encoding="utf-8")[:_MAX_DOM_CHARS]
-        except Exception:
-            pass
+        except OSError as e:
+            logger.debug("Failed to read DOM snapshot: %s", e)
 
     # Build user message with text + image
     text_content = (

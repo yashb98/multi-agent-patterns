@@ -122,8 +122,8 @@ class PerplexityClient:
         if cached:
             try:
                 return CompanyResearch.model_validate_json(cached)
-            except Exception:
-                pass
+            except (ValueError, KeyError):
+                pass  # Stale cache format — re-fetch
 
         model = self.MODEL_DEEP if deep else self.MODEL_FAST
 
@@ -152,8 +152,8 @@ class PerplexityClient:
         if cached:
             try:
                 return SalaryResearch.model_validate_json(cached)
-            except Exception:
-                pass
+            except (ValueError, KeyError):
+                pass  # Stale cache format — re-fetch
 
         try:
             raw = self._query(

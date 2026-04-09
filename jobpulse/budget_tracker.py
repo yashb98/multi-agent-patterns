@@ -101,8 +101,8 @@ def _load_known_stores() -> list[str]:
         try:
             extra = json.loads(KNOWN_STORES_FILE.read_text())
             stores.extend(extra)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug("Failed to load known stores: %s", e)
     return stores
 
 
@@ -112,16 +112,16 @@ def _save_new_store(store: str):
     if KNOWN_STORES_FILE.exists():
         try:
             stores = json.loads(KNOWN_STORES_FILE.read_text())
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug("Failed to read known stores: %s", e)
 
     store_lower = store.lower().strip()
     if store_lower not in [s.lower() for s in stores] and store_lower not in [s.lower() for s in DEFAULT_STORES]:
         stores.append(store_lower)
         try:
             KNOWN_STORES_FILE.write_text(json.dumps(stores, indent=2))
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning("Failed to save known stores: %s", e)
 
 
 def extract_items_and_store(description: str) -> dict:

@@ -136,8 +136,8 @@ class ASTIndexer:
                             if dec_name and "." in dec_name:
                                 self._add_edge("references", f"{file_path}::{dec_name}",
                                                qname, file_path, node.lineno)
-            except Exception:
-                continue
+            except (AttributeError, TypeError):
+                continue  # Malformed AST node
 
         # Module-level reference extraction: detect function refs in top-level
         # dicts, lists, tuples (e.g. PLATFORM_SCANNERS = {"reed": scan_reed})
@@ -217,8 +217,8 @@ class ASTIndexer:
 
                     self._add_edge("calls", caller_qname, callee, file_path,
                                    getattr(node, "lineno", 0))
-                except Exception:
-                    continue
+                except (AttributeError, TypeError):
+                    continue  # Malformed AST node
 
         # Pass 3: detect dynamic function references (dict values, list elements,
         # keyword args, positional args that are bare Names — not calls)

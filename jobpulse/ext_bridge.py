@@ -167,8 +167,8 @@ class ExtensionBridge:
                     if self._ws is not None and self._ws is not ws:
                         try:
                             await self._ws.close()
-                        except Exception:
-                            pass
+                        except Exception as _ws_err:
+                            logger.debug("WebSocket send failed: %s", _ws_err)
                     self._ws = ws
                     self._connected.set()
                     assumed_extension = True
@@ -181,8 +181,8 @@ class ExtensionBridge:
                             if _cmd_id in self._pending:
                                 try:
                                     await ws.send(_cmd_json)
-                                except Exception:
-                                    pass
+                                except Exception as _ws_err:
+                                    logger.debug("WebSocket re-forward failed: %s", _ws_err)
                     continue
 
                 # ── Relay client handshake ──
@@ -241,8 +241,8 @@ class ExtensionBridge:
                     if self._ws is not None:
                         try:
                             await self._ws.close()
-                        except Exception:
-                            pass
+                        except Exception as _ws_err:
+                            logger.debug("WebSocket send failed: %s", _ws_err)
                     self._ws = ws
                     self._connected.set()
                     assumed_extension = True
@@ -255,8 +255,8 @@ class ExtensionBridge:
                             if _cmd_id in self._pending:
                                 try:
                                     await ws.send(_cmd_json)
-                                except Exception:
-                                    pass
+                                except Exception as _ws_err:
+                                    logger.debug("WebSocket re-forward failed: %s", _ws_err)
 
                 if msg_type == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
@@ -272,8 +272,8 @@ class ExtensionBridge:
                         for relay_ws in list(self._relay_clients):
                             try:
                                 await relay_ws.send(relay_msg)
-                            except Exception:
-                                pass
+                            except Exception as _ws_err:
+                                logger.debug("Relay forward failed: %s", _ws_err)
                     continue
 
                 # Response to a pending command
@@ -307,8 +307,8 @@ class ExtensionBridge:
         for relay_ws in list(self._relay_clients):
             try:
                 await relay_ws.send(msg)
-            except Exception:
-                pass
+            except Exception as _ws_err:
+                logger.debug("Relay status notify failed: %s", _ws_err)
 
     # ─── Command transport ───────────────────────────────────────
 

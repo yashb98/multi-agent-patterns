@@ -305,8 +305,8 @@ class BlogPipeline:
                 parsed = json.loads(raw)
                 if isinstance(parsed, list):
                     flags = [str(f) for f in parsed]
-            except Exception:
-                pass
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass  # LLM returned non-JSON — flags stay empty
 
         return len(flags) == 0, flags
 

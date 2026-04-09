@@ -417,8 +417,8 @@ class RelayBridge:
                 result = await self._send_command("get_snapshot", timeout_ms=10000)
                 if result:
                     self._snapshot = PageSnapshot(**result)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Snapshot refresh via command failed: %s", e)
         if self._snapshot is None:
             # Try getting cached snapshot from bridge
             try:
@@ -431,8 +431,8 @@ class RelayBridge:
                 result = await asyncio.wait_for(fut, timeout=5)
                 if result:
                     self._snapshot = PageSnapshot(**result)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Snapshot refresh via bridge cache failed: %s", e)
         return self._snapshot
 
     async def save_form_progress(self, url: str, progress: dict[str, Any], timeout_ms: int = 5000) -> bool:

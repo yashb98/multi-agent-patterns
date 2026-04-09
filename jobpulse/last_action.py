@@ -56,8 +56,8 @@ def clear_last_action():
     """Clear the last action after it's been undone."""
     try:
         _LAST_ACTION_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except OSError as e:
+        logger.debug("Failed to clear last action file: %s", e)
 
 
 def undo_last_action() -> str:

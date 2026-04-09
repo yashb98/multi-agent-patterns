@@ -264,8 +264,8 @@ class FormNavigator:
             logger.warning("Click timed out (%s) — trying force_click", exc)
             try:
                 await self.driver.force_click(btn["selector"])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Force click also failed: %s", e)
         await asyncio.sleep(3)
         return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 

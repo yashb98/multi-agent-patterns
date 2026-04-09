@@ -233,8 +233,8 @@ def reviewer_node(state: AgentState) -> dict:
         try:
             from shared.context_compression import get_token_encoder
             encoder = get_token_encoder("gpt-4.1-mini")
-        except Exception:
-            pass
+        except (ImportError, Exception) as e:
+            logger.debug("Token encoder unavailable, skipping truncation: %s", e)
         if encoder:
             tokens = encoder.encode(research)
             research = encoder.decode(tokens[:1500]) + "\n\n[...truncated for context budget]"

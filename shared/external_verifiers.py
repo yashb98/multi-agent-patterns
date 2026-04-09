@@ -158,8 +158,8 @@ def _find_gh() -> str:
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
-    except Exception:
-        pass
+    except (subprocess.SubprocessError, OSError):
+        pass  # Fall through to default
     return "gh"  # Hope it's on PATH
 
 
