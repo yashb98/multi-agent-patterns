@@ -8,16 +8,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import math
-import os
 import random
 from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from shared.logging_config import get_logger
+from jobpulse.config import PLAYWRIGHT_CDP_URL
 
 logger = get_logger(__name__)
 
-CDP_URL = os.environ.get("PLAYWRIGHT_CDP_URL", "http://localhost:9222")
+CDP_URL = PLAYWRIGHT_CDP_URL
 
 
 async def _with_retry(fn, max_retries=2, delay_ms=500):

@@ -1,9 +1,8 @@
 """Telegram listener — polls for messages, routes to agents via Enhanced Swarm dispatcher."""
 
 import json
-import os
 from datetime import datetime
-from jobpulse.config import TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR
+from jobpulse.config import TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR, JOBPULSE_SWARM
 from jobpulse import telegram_agent
 from jobpulse.command_router import classify, Intent
 from jobpulse.healthcheck import write_heartbeat
@@ -12,7 +11,7 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 # Use Enhanced Swarm dispatcher if enabled, else flat dispatcher
-USE_SWARM = os.getenv("JOBPULSE_SWARM", "true").lower() in ("true", "1", "yes")
+USE_SWARM = JOBPULSE_SWARM
 if USE_SWARM:
     from jobpulse.swarm_dispatcher import dispatch
 else:

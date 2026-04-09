@@ -1,10 +1,12 @@
 """Multi-platform listener — starts listeners for all configured platforms."""
 
-import os
 import time
 import threading
 from shared.logging_config import get_logger
-from jobpulse.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from jobpulse.config import (
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    SLACK_BOT_TOKEN, DISCORD_BOT_TOKEN,
+)
 from jobpulse.healthcheck import write_heartbeat
 
 logger = get_logger(__name__)
@@ -45,8 +47,7 @@ def start_all():
         threads.append(("Telegram", t))
 
     # Slack
-    slack_token = os.getenv("SLACK_BOT_TOKEN", "")
-    if slack_token:
+    if SLACK_BOT_TOKEN:
         from jobpulse.platforms.slack_adapter import SlackAdapter
         adapter = SlackAdapter()
 
@@ -56,8 +57,7 @@ def start_all():
         threads.append(("Slack", t))
 
     # Discord
-    discord_token = os.getenv("DISCORD_BOT_TOKEN", "")
-    if discord_token:
+    if DISCORD_BOT_TOKEN:
         from jobpulse.platforms.discord_adapter import DiscordAdapter
         adapter = DiscordAdapter()
 

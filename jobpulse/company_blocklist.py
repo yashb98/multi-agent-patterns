@@ -7,7 +7,6 @@ and maintains a Notion database of blocked/approved/pending companies.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import date
 
@@ -83,11 +82,11 @@ def detect_spam_company(
 
 
 def _get_blocklist_db_id() -> str:
-    """Lazily load the Notion blocklist DB ID from env."""
-    db_id = os.getenv("NOTION_BLOCKLIST_DB_ID", "")
-    if not db_id:
+    """Lazily load the Notion blocklist DB ID from config."""
+    from jobpulse.config import NOTION_BLOCKLIST_DB_ID
+    if not NOTION_BLOCKLIST_DB_ID:
         logger.warning("NOTION_BLOCKLIST_DB_ID not set — blocklist features disabled")
-    return db_id
+    return NOTION_BLOCKLIST_DB_ID
 
 
 

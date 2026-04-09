@@ -1,15 +1,14 @@
 """Webhook server — replaces long-polling with push-based Telegram updates."""
 
-import os
 from fastapi import FastAPI, Request
 from shared.logging_config import get_logger
 from shared.telegram_client import telegram_url
 from jobpulse.command_router import classify
-from jobpulse.config import TELEGRAM_CHAT_ID, TELEGRAM_BOT_TOKEN
+from jobpulse.config import TELEGRAM_CHAT_ID, TELEGRAM_BOT_TOKEN, JOBPULSE_SWARM
 
 logger = get_logger(__name__)
 
-USE_SWARM = os.getenv("JOBPULSE_SWARM", "true").lower() in ("true", "1", "yes")
+USE_SWARM = JOBPULSE_SWARM
 if USE_SWARM:
     from jobpulse.swarm_dispatcher import dispatch
 else:

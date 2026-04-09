@@ -5,18 +5,16 @@ calculates tax (20%) and savings suggestion (30% of after-tax).
 """
 from __future__ import annotations
 
-import os
 import re
 from datetime import datetime, timedelta
 
 from shared.logging_config import get_logger
 from jobpulse import event_logger
+from jobpulse.config import HOURLY_RATE
 
 logger = get_logger(__name__)
 
 # ── Constants ──
-
-HOURLY_RATE = float(os.getenv("HOURLY_RATE", "13.99"))
 TAX_RATE = 0.20   # UK basic rate income tax (no NI)
 SAVINGS_RATE = 0.30  # 30% of after-tax goes to savings
 
@@ -646,7 +644,7 @@ def undo_hours(pick: int = None) -> str:
 
     # Also remove the matching salary income transaction
     # Use exact hours + rate match to avoid fuzzy LIKE collisions
-    hourly_rate = float(os.getenv("HOURLY_RATE", "13.99"))
+    hourly_rate = HOURLY_RATE
     expected_gross = round(target["hours"] * hourly_rate, 2)
     conn2 = ba._get_conn()
     conn2.execute(

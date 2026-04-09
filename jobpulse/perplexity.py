@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import sqlite3
 import time
@@ -58,7 +57,8 @@ class PerplexityClient:
     MODEL_DEEP = "sonar-pro"
 
     def __init__(self, api_key: str | None = None, cache_path: Path | None = None):
-        self.api_key = api_key or os.getenv("PERPLEXITY_API_KEY", "")
+        from jobpulse.config import PERPLEXITY_API_KEY
+        self.api_key = api_key or PERPLEXITY_API_KEY
         self._cache_path = cache_path or DATA_DIR / "perplexity_cache.db"
         if self._cache_path:
             self._init_cache()

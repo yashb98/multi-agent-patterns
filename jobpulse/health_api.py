@@ -10,12 +10,12 @@ health_router = APIRouter(prefix="/api/health")
 def get_status():
     """Overall system health: daemon heartbeat, uptime, connected platforms."""
     from jobpulse.healthcheck import check_daemon_health
-    import os
+    from jobpulse.config import TELEGRAM_BOT_TOKEN, SLACK_BOT_TOKEN, DISCORD_BOT_TOKEN
     health = check_daemon_health()
     platforms = []
-    if os.getenv("TELEGRAM_BOT_TOKEN"): platforms.append("telegram")
-    if os.getenv("SLACK_BOT_TOKEN"): platforms.append("slack")
-    if os.getenv("DISCORD_BOT_TOKEN"): platforms.append("discord")
+    if TELEGRAM_BOT_TOKEN: platforms.append("telegram")
+    if SLACK_BOT_TOKEN: platforms.append("slack")
+    if DISCORD_BOT_TOKEN: platforms.append("discord")
     return {
         "daemon": health,
         "platforms": platforms,

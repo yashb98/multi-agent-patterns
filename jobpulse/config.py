@@ -89,7 +89,7 @@ PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
 EXT_BRIDGE_HOST = os.getenv("EXT_BRIDGE_HOST", "localhost")
 EXT_BRIDGE_PORT = int(os.getenv("EXT_BRIDGE_PORT", "8765"))
 
-# Application engine mode: "extension" uses Chrome extension, "playwright" uses legacy adapters
+# Application engine mode
 APPLICATION_ENGINE = os.getenv("APPLICATION_ENGINE", "extension")
 
 # External application engine
@@ -97,6 +97,22 @@ ATS_ACCOUNT_PASSWORD = os.getenv("JOB_APPLY_PASSWORD", "")
 GMAIL_VERIFY_TIMEOUT = int(os.getenv("GMAIL_VERIFY_TIMEOUT", "120"))
 GMAIL_VERIFY_POLL_INTERVAL = int(os.getenv("GMAIL_VERIFY_POLL_INTERVAL", "5"))
 PAGE_STABLE_TIMEOUT_MS = int(os.getenv("PAGE_STABLE_TIMEOUT_MS", "3000"))
+
+# Salary / hours tracking
+HOURLY_RATE = float(os.getenv("HOURLY_RATE", "13.99"))
+
+# Dispatcher mode
+JOBPULSE_SWARM = os.getenv("JOBPULSE_SWARM", "true").lower() in ("true", "1", "yes")
+
+# Playwright CDP
+PLAYWRIGHT_CDP_URL = os.environ.get("PLAYWRIGHT_CDP_URL", "http://localhost:9222")
+PLAYWRIGHT_CDP_PORT = os.environ.get("PLAYWRIGHT_CDP_PORT", "9222")
+
+# RLM (Recursive Language Model)
+RLM_BACKEND = os.getenv("RLM_BACKEND", "openai")
+RLM_ROOT_MODEL = os.getenv("RLM_ROOT_MODEL", "gpt-4.1-mini")
+RLM_MAX_ITERATIONS = int(os.getenv("RLM_MAX_ITERATIONS", "10"))
+RLM_MAX_BUDGET = float(os.getenv("RLM_MAX_BUDGET", "0.10"))
 
 DATA_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)

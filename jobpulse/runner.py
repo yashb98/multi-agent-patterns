@@ -386,7 +386,8 @@ def main():
 
         profile_dir = os.path.expanduser("~/.chrome-playwright-profile")
         chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        port = os.environ.get("PLAYWRIGHT_CDP_PORT", "9222")
+        from jobpulse.config import PLAYWRIGHT_CDP_PORT
+        port = PLAYWRIGHT_CDP_PORT
 
         if not os.path.exists(chrome_path):
             print(f"Chrome not found at {chrome_path}")

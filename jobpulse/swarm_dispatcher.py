@@ -13,7 +13,6 @@ without changing them. It adds intelligence AROUND them.
 """
 
 import json
-import os
 import time
 from datetime import datetime
 from jobpulse.command_router import Intent, ParsedCommand
@@ -228,13 +227,13 @@ def rlm_synthesize(sections: dict, query: str) -> str | None:
 
     try:
         from rlm import RLM
-        backend = os.getenv("RLM_BACKEND", "openai")
+        from jobpulse.config import RLM_BACKEND, RLM_ROOT_MODEL, RLM_MAX_ITERATIONS, RLM_MAX_BUDGET
         rlm = RLM(
-            backend=backend,
-            backend_kwargs={"model": os.getenv("RLM_ROOT_MODEL", "gpt-4.1-mini")},
+            backend=RLM_BACKEND,
+            backend_kwargs={"model": RLM_ROOT_MODEL},
             max_depth=1,
-            max_iterations=int(os.getenv("RLM_MAX_ITERATIONS", "10")),
-            max_budget=float(os.getenv("RLM_MAX_BUDGET", "0.10")),
+            max_iterations=RLM_MAX_ITERATIONS,
+            max_budget=RLM_MAX_BUDGET,
             verbose=False,
         )
         prompt = (
