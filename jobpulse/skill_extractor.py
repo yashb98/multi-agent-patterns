@@ -204,11 +204,9 @@ def _extract_skills_llm(jd_text: str) -> dict:
 
     Truncates JD to 4000 chars. Temperature 0.0. JSON response format.
     """
-    from openai import OpenAI
+    from shared.agents import get_openai_client
 
-    from jobpulse.config import OPENAI_API_KEY
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
 
     truncated = jd_text[:4000]
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 
-from openai import OpenAI
+from shared.agents import get_openai_client
 from shared.logging_config import get_logger
 
 from jobpulse.config import OPENAI_API_KEY
@@ -49,7 +49,7 @@ async def analyze_field_screenshot(
 
     try:
         b64_image = base64.b64encode(screenshot_png).decode("ascii")
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = get_openai_client()
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",

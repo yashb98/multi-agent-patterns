@@ -446,10 +446,9 @@ def increment_processed():
 
 def extract_patterns_from_email(sender: str, subject: str, body: str, category: str) -> dict:
     """During learning phase, LLM analyzes email to extract classification patterns."""
-    from openai import OpenAI
-    from jobpulse.config import OPENAI_API_KEY
+    from shared.agents import get_openai_client
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
 
     prompt = f"""Analyze this email classification to extract reusable patterns.
 

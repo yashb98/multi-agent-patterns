@@ -617,8 +617,7 @@ def classify_transaction(description: str, amount: float, txn_type: str = "expen
 
     # Stage 3: LLM fallback
     try:
-        from openai import OpenAI
-        from jobpulse.config import OPENAI_API_KEY
+        from shared.agents import get_openai_client
 
         categories_list = """
 INCOME: Salary, Freelance, Other
@@ -626,7 +625,7 @@ FIXED EXPENSES: Rent / Mortgage, Utilities, Phone / Internet, Subscriptions, Ins
 VARIABLE: Groceries, Eating out, Transport, Shopping, Entertainment, Health, Misc
 SAVINGS: Savings, Investments, Credit card / Loan payment"""
 
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[{"role": "user", "content": f"""Classify this {txn_type} into one category:

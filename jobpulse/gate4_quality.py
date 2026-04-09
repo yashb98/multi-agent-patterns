@@ -260,8 +260,8 @@ def scrutinize_cv_llm(
         f'"verdict": "shortlist"|"maybe"|"reject"}}'
     )
 
-    import openai
-    client = openai.OpenAI()
+    from shared.agents import get_openai_client
+    client = get_openai_client()
     response = safe_openai_call(
         client,
         model="gpt-4.1-mini",

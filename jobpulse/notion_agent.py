@@ -306,8 +306,8 @@ def suggest_subtasks(big_task: str) -> list[str]:
     """Use LLM to suggest subtasks for a large task."""
     import os
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        from shared.agents import get_openai_client
+        client = get_openai_client()
 
         response = client.chat.completions.create(
             model="gpt-4.1-mini",

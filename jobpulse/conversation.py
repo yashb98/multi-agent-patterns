@@ -79,8 +79,8 @@ def chat(user_message: str) -> str:
         _history = _history[-MAX_HISTORY * 2:]
 
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        from shared.agents import get_openai_client
+        client = get_openai_client()
 
         model = os.getenv("CONVERSATION_MODEL", "gpt-4.1-mini")
 

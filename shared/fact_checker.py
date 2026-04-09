@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from openai import OpenAI
+from shared.agents import get_openai_client
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -142,8 +142,7 @@ def extract_claims(draft: str, topic: str) -> list[dict]:
 
     Returns list of dicts with: claim, type, source_needed
     """
-    from jobpulse.config import OPENAI_API_KEY
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=30.0)
+    client = get_openai_client()
 
     prompt = f"""Extract ALL verifiable factual claims from this article about "{topic}".
 
@@ -196,11 +195,10 @@ def verify_claims(claims: list[dict], sources: list[str],
         web_search: enable live web search verification
         arxiv_id: paper's arXiv ID for Semantic Scholar lookup
     """
-    from jobpulse.config import OPENAI_API_KEY
     from shared.external_verifiers import (
         semantic_scholar_lookup, verify_claim_with_s2, quality_web_verify,
     )
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=30.0)
+    client = get_openai_client()
 
     verifiable = [c for c in claims if c.get("source_needed", True) and c.get("type", "") not in SKIP_TYPES]
     if not verifiable:

@@ -9,10 +9,9 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
-from openai import OpenAI
+from shared.agents import get_openai_client
 
 from jobpulse.applicator import PROFILE, WORK_AUTH
-from jobpulse.config import OPENAI_API_KEY
 from jobpulse.job_db import JobDB
 from shared.logging_config import get_logger
 
@@ -473,7 +472,7 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
     )
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],

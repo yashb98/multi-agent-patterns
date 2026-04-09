@@ -183,8 +183,8 @@ def llm_rank_broad(papers: list[dict], top_n: int = 5) -> list[dict]:
     if not OPENAI_API_KEY:
         return papers[:top_n]
 
-    from openai import OpenAI
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    from shared.agents import get_openai_client
+    client = get_openai_client()
 
     # Send top 30 by recency (most recent = most likely to be today's papers)
     candidates = papers[:30]
@@ -351,8 +351,8 @@ def summarize_paper(paper: dict) -> str:
     if not OPENAI_API_KEY:
         return paper["abstract"][:200]
 
-    from openai import OpenAI
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    from shared.agents import get_openai_client
+    client = get_openai_client()
 
     try:
         response = client.chat.completions.create(

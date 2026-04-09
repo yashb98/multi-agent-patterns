@@ -168,8 +168,6 @@ def diagnose_with_vision(
 
     Returns parsed diagnosis dict or None on failure.
     """
-    import openai
-
     # Read screenshot as base64
     screenshot_b64 = ""
     if context.screenshot_path.exists():
@@ -217,7 +215,8 @@ def diagnose_with_vision(
         {"role": "user", "content": user_content},
     ]
 
-    client = openai.OpenAI()
+    from shared.agents import get_openai_client
+    client = get_openai_client()
     response = safe_openai_call(
         client,
         model="gpt-4.1-mini",

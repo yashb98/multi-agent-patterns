@@ -147,7 +147,7 @@ class TestExtractClaims:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = '{"claims": [{"claim": "GPT-4 scores 86.4%", "type": "benchmark", "source_needed": true}]}'
 
-        with patch("shared.fact_checker.OpenAI") as mock_client:
+        with patch("shared.fact_checker.get_openai_client") as mock_client:
             mock_client.return_value.chat.completions.create.return_value = mock_response
             claims = extract_claims("Article about GPT-4", "GPT-4")
             assert len(claims) == 1
@@ -155,7 +155,7 @@ class TestExtractClaims:
 
     def test_empty_on_error(self):
         from shared.fact_checker import extract_claims
-        with patch("shared.fact_checker.OpenAI") as mock_client:
+        with patch("shared.fact_checker.get_openai_client") as mock_client:
             mock_client.return_value.chat.completions.create.side_effect = Exception("API error")
             claims = extract_claims("Some article", "topic")
             assert claims == []
@@ -170,7 +170,7 @@ class TestVerifyClaims:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = '{"verifications": [{"claim": "scores 86.4%", "verdict": "VERIFIED", "evidence": "matches", "confidence": 0.95, "severity": "low", "fix_suggestion": null}]}'
 
-        with patch("shared.fact_checker.OpenAI") as mock_client, \
+        with patch("shared.fact_checker.get_openai_client") as mock_client, \
              patch("shared.fact_checker.get_cached_fact", return_value=None), \
              patch("shared.fact_checker.web_verify_claim", return_value={"source": None, "supports": False, "snippet": ""}), \
              patch("shared.fact_checker.cache_verified_fact"):
@@ -191,7 +191,7 @@ class TestVerifyClaims:
 
     def test_empty_on_error(self):
         from shared.fact_checker import verify_claims
-        with patch("shared.fact_checker.OpenAI") as mock_client, \
+        with patch("shared.fact_checker.get_openai_client") as mock_client, \
              patch("shared.fact_checker.get_cached_fact", return_value=None), \
              patch("shared.fact_checker.web_verify_claim", return_value={"source": None, "supports": False, "snippet": ""}):
             mock_client.return_value.chat.completions.create.side_effect = Exception("fail")
@@ -210,7 +210,7 @@ class TestVerifyClaims:
             {"claim": "claim B", "verdict": "UNVERIFIED", "evidence": "none", "confidence": -0.3, "severity": "high", "fix_suggestion": "fix it"},
         ]})
 
-        with patch("shared.fact_checker.OpenAI") as mock_client, \
+        with patch("shared.fact_checker.get_openai_client") as mock_client, \
              patch("shared.fact_checker.get_cached_fact", return_value=None), \
              patch("shared.fact_checker.web_verify_claim", return_value={"source": None, "supports": False, "snippet": ""}), \
              patch("shared.fact_checker.cache_verified_fact"):
@@ -236,7 +236,7 @@ class TestVerifyClaims:
             {"claim": "claim Y", "verdict": "Inaccurate", "evidence": "wrong", "confidence": 0.8, "severity": "high", "fix_suggestion": "fix"},
         ]})
 
-        with patch("shared.fact_checker.OpenAI") as mock_client, \
+        with patch("shared.fact_checker.get_openai_client") as mock_client, \
              patch("shared.fact_checker.get_cached_fact", return_value=None), \
              patch("shared.fact_checker.web_verify_claim", return_value={"source": None, "supports": False, "snippet": ""}), \
              patch("shared.fact_checker.cache_verified_fact"):

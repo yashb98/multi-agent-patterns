@@ -329,10 +329,9 @@ def classify_rule_based(text: str) -> Optional[ParsedCommand]:
 def classify_llm(text: str) -> ParsedCommand:
     """Use LLM to classify ambiguous messages. Fallback when rules don't match."""
     try:
-        from openai import OpenAI
-        from jobpulse.config import OPENAI_API_KEY
+        from shared.agents import get_openai_client
 
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[{"role": "user", "content": f"""Classify this Telegram message into ONE intent:

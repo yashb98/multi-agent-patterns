@@ -12,9 +12,7 @@ import json
 import re
 from typing import Any
 
-from openai import OpenAI
-
-from jobpulse.config import OPENAI_API_KEY
+from shared.agents import get_openai_client
 from shared.logging_config import get_logger
 
 from jobpulse.applicator import PROFILE, WORK_AUTH
@@ -653,7 +651,7 @@ Action types: fill, select, fill_radio_group, check, fill_date, fill_combobox, f
 Return [] if no fields should be filled."""
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             max_tokens=2000,

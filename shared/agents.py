@@ -23,11 +23,13 @@ WHY THIS SEPARATION MATTERS:
 """
 
 import json
+import os
 import re
 from datetime import datetime
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+from openai import OpenAI
 
 from shared.state import AgentState
 from shared.prompts import RESEARCHER_PROMPT, WRITER_PROMPT, REVIEWER_PROMPT
@@ -76,6 +78,19 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
         model=model,
         temperature=temperature,
         request_timeout=timeout,
+    )
+
+
+def get_openai_client(timeout: float = 30.0) -> OpenAI:
+    """Factory for raw OpenAI SDK client instances.
+
+    Centralizes all direct ``OpenAI()`` calls (previously 27 scattered copies).
+    Reads ``OPENAI_API_KEY`` from env once.  Provides a single injection
+    point for observability (Langfuse callbacks), custom base URLs, etc.
+    """
+    return OpenAI(
+        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        timeout=timeout,
     )
 
 
@@ -239,11 +254,10 @@ ARTICLE DRAFT TO REVIEW:
 Evaluate against all criteria and respond with ONLY the JSON structure
 specified in your instructions."""
 
-    llm = ChatOpenAI(
+    llm = get_llm(
         model="gpt-4.1-mini",
         temperature=0.2,
-        request_timeout=30.0,
-        model_kwargs={"response_format": {"type": "json_object"}},
+        timeout=30.0,
     )
     response = smart_llm_call(llm, [
         SystemMessage(content=REVIEWER_PROMPT),

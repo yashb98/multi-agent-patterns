@@ -140,12 +140,12 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
     import json
 
     try:
-        from openai import OpenAI
+        from shared.agents import get_openai_client
     except ImportError:
         logger.warning("OpenAI not available for vision detection")
         return PageType.UNKNOWN, 0.0
 
-    client = OpenAI()
+    client = get_openai_client()
     b64 = base64.b64encode(screenshot_bytes).decode()
 
     try:

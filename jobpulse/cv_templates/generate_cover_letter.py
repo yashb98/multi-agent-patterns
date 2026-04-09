@@ -124,10 +124,10 @@ def polish_points_llm(
     On any failure (network, bad JSON, missing key) the original *points*
     are returned unchanged — the PDF will still be generated.
     """
-    from openai import OpenAI
+    from shared.agents import get_openai_client
     from jobpulse.utils.safe_io import safe_openai_call
 
-    client = OpenAI()
+    client = get_openai_client()
 
     formatted = json.dumps(
         [{"header": h, "detail": d} for h, d in points],

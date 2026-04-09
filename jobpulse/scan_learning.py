@@ -442,8 +442,8 @@ class ScanLearningEngine:
             f'"recommendation": "specific parameter changes"}}'
         )
 
-        import openai
-        client = openai.OpenAI()
+        from shared.agents import get_openai_client
+        client = get_openai_client()
         response = safe_openai_call(
             client,
             model="gpt-4.1-mini",

@@ -8,7 +8,7 @@ import json
 import re
 from datetime import datetime
 from shared.logging_config import get_logger
-from jobpulse.config import OPENAI_API_KEY, DATA_DIR
+from jobpulse.config import DATA_DIR
 from jobpulse import event_logger
 
 logger = get_logger(__name__)
@@ -16,8 +16,8 @@ logger = get_logger(__name__)
 
 def _llm_call(system: str, user: str, max_tokens: int = 2500, temperature: float = 0.3) -> str:
     """Helper for OpenAI chat call."""
-    from openai import OpenAI
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    from shared.agents import get_openai_client
+    client = get_openai_client()
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[

@@ -55,8 +55,8 @@ def transcribe_voice(file_id: str, bot_token: str = None) -> str:
             tmp_path = tmp.name
 
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            from shared.agents import get_openai_client
+            client = get_openai_client()
             with open(tmp_path, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(
                     model="whisper-1",
@@ -100,8 +100,8 @@ def transcribe_voice_url(url: str) -> str:
             tmp_path = tmp.name
 
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            from shared.agents import get_openai_client
+            client = get_openai_client()
             with open(tmp_path, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(
                     model="whisper-1",

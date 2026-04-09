@@ -16,8 +16,7 @@ import os
 import random
 from typing import TYPE_CHECKING, Any
 
-from openai import OpenAI
-
+from shared.agents import get_openai_client
 from shared.logging_config import get_logger
 
 if TYPE_CHECKING:
@@ -238,7 +237,7 @@ class NativeFormFiller:
             f"Known answers: {json.dumps(custom_answers)}"
         )
 
-        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             max_tokens=2000,
@@ -270,7 +269,7 @@ class NativeFormFiller:
             f'Return JSON {{"label": "answer"}}. Be truthful.'
         )
 
-        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             max_tokens=2000,
@@ -296,7 +295,7 @@ class NativeFormFiller:
             '{"pass": false, "issues": [...]}'
         )
 
-        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        client = get_openai_client()
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             max_tokens=1000,

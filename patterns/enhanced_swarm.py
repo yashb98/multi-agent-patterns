@@ -295,8 +295,8 @@ Write a complete technical blog article."""
         model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
         def make_llm(temp):
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(model=model_name, temperature=temp, request_timeout=30.0)
+            from shared.agents import get_llm
+            return get_llm(model=model_name, temperature=temp, timeout=30.0)
 
         candidates = parallel_grpo_candidates(make_llm, enhanced_prompt, user_msg, temps)
         scored = [

@@ -14,7 +14,6 @@ Example evolution:
            Prioritize emails with person names. Barclays and Google are active pipelines."
 """
 
-import os
 from datetime import datetime
 from shared.logging_config import get_logger
 from jobpulse.swarm_dispatcher import get_persona, store_persona, get_experiences, get_avg_score
@@ -85,8 +84,8 @@ def _quick_evolve(agent_name: str, current_prompt: str, experiences: list,
     exp_lines = "\n".join(f"- {e['pattern']} (score: {e['score']:.1f})" for e in experiences[:5])
 
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        from shared.agents import get_openai_client
+        client = get_openai_client()
 
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -150,8 +149,8 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
         # Evaluator: score a prompt against an experience pattern
         def evaluator(prompt: str, input_text: str) -> tuple[str, float]:
             """Evaluate how well a prompt would handle this input."""
-            from openai import OpenAI
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            from shared.agents import get_openai_client
+            client = get_openai_client()
             try:
                 response = client.chat.completions.create(
                     model="gpt-4.1-mini",

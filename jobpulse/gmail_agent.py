@@ -3,8 +3,8 @@
 import json
 import base64
 from datetime import datetime
-from openai import OpenAI
-from jobpulse.config import OPENAI_API_KEY, GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
+from shared.agents import get_openai_client
+from jobpulse.config import GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
 from jobpulse import db
 from jobpulse import telegram_agent
 from jobpulse import event_logger
@@ -59,7 +59,7 @@ def _get_gmail_service():
 
 def _classify_email(subject: str, body_snippet: str) -> str:
     """Use LLM to classify an email into one of 4 categories. Uses evolved persona if available."""
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_openai_client()
 
     # Inject evolved persona learnings
     extra_context = ""
