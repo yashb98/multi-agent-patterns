@@ -23,6 +23,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from shared.db import get_db_conn
+
 DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "code_intelligence.db")
 
 # Commands that only need SQLite graph — skip full CodeIntelligence import
@@ -40,9 +42,7 @@ def _get_ci(graph_only: bool | None = None):
 
 def _get_conn():
     """Get a raw SQLite connection for graph-only queries (~1ms)."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return get_db_conn(DB_PATH, wal=False, mkdir=False)
 
 
 def _print(obj):

@@ -12,6 +12,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from shared.logging_config import get_logger
+from shared.db import get_db_conn
 from jobpulse.config import DATA_DIR
 from jobpulse.notion_agent import _notion_api
 
@@ -47,11 +48,7 @@ DEFAULT_STORES = [
 
 
 def _get_conn() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return get_db_conn(DB_PATH)
 
 
 def init_tracker_db():

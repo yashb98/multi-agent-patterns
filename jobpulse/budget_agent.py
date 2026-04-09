@@ -20,6 +20,7 @@ from jobpulse.config import NOTION_API_KEY, NOTION_PARENT_PAGE_ID, DATA_DIR
 from jobpulse.notion_agent import _notion_api
 from jobpulse import event_logger
 from shared.logging_config import get_logger
+from shared.db import get_db_conn
 
 logger = get_logger(__name__)
 
@@ -197,11 +198,7 @@ for k, v in SAVINGS_CATEGORIES.items():
 # ── SQLite Storage ──
 
 def _get_conn() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return get_db_conn(DB_PATH)
 
 
 def init_db():

@@ -4,6 +4,7 @@ import json
 import random
 from datetime import datetime
 from shared.logging_config import get_logger
+from shared.db import get_db_conn
 from jobpulse.config import DATA_DIR
 
 logger = get_logger(__name__)
@@ -12,10 +13,7 @@ AB_DB = DATA_DIR / "swarm_experience.db"
 
 
 def _get_conn():
-    conn = sqlite3.connect(str(AB_DB))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return get_db_conn(AB_DB, mkdir=False)
 
 
 def _init_ab_db():

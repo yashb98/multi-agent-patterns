@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from jobpulse.config import DATA_DIR
 from shared.logging_config import get_logger
+from shared.db import get_db_conn
 
 logger = get_logger(__name__)
 
@@ -23,11 +24,7 @@ DB_PATH = DATA_DIR / "mindgraph.db"
 
 
 def _get_conn() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return get_db_conn(DB_PATH)
 
 
 def init_process_db():

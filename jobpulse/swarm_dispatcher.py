@@ -27,16 +27,13 @@ logger = get_logger(__name__)
 
 import sqlite3
 from jobpulse.config import DATA_DIR
+from shared.db import get_db_conn
 
 EXPERIENCE_DB = DATA_DIR / "swarm_experience.db"
 
 
 def _get_exp_conn():
-    EXPERIENCE_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(EXPERIENCE_DB))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return get_db_conn(EXPERIENCE_DB)
 
 
 def _init_experience_db():

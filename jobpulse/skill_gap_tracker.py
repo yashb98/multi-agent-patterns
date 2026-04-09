@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.logging_config import get_logger
+from shared.db import get_db_conn
 from jobpulse.config import DATA_DIR
 
 logger = get_logger(__name__)
@@ -26,11 +27,7 @@ _DB_PATH = DATA_DIR / "skill_gaps.db"
 
 
 def _get_conn() -> sqlite3.Connection:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return get_db_conn(_DB_PATH)
 
 
 def _init_db() -> None:
