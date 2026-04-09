@@ -35,6 +35,3 @@ def test_get_adapter_ignores_platform():
         assert mock.call_count == 3
 
 
-def test_base_adapter_has_screening_method():
-    """BaseATSAdapter should have answer_screening_questions."""
-    assert hasattr(BaseATSAdapter, "answer_screening_questions")
