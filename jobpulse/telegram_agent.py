@@ -4,6 +4,7 @@ import json
 import subprocess
 from jobpulse.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from shared.logging_config import get_logger
+from shared.telegram_client import telegram_url
 
 logger = get_logger(__name__)
 
@@ -19,7 +20,7 @@ def send_message(text: str, chat_id: str = None) -> bool:
     try:
         result = subprocess.run(
             ["curl", "-s", "-X", "POST",
-             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+             telegram_url(TELEGRAM_BOT_TOKEN, "sendMessage"),
              "-H", "Content-Type: application/json",
              "-d", payload],
             capture_output=True, text=True, timeout=15
@@ -46,7 +47,7 @@ def get_updates(offset: int = 0, long_poll: bool = False) -> list[dict]:
     try:
         result = subprocess.run(
             ["curl", "-s",
-             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+             f"{telegram_url(TELEGRAM_BOT_TOKEN, 'getUpdates')}"
              f"?offset={offset}&timeout={timeout_param}"],
             capture_output=True, text=True, timeout=curl_timeout
         )

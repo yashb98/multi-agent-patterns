@@ -10,6 +10,7 @@
 import json
 import subprocess
 from shared.logging_config import get_logger
+from shared.telegram_client import telegram_url
 from jobpulse.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     TELEGRAM_BUDGET_BOT_TOKEN, TELEGRAM_RESEARCH_BOT_TOKEN, TELEGRAM_ALERT_BOT_TOKEN,
@@ -28,7 +29,7 @@ def _send_one(token: str, text: str, chat_id: str) -> bool:
     try:
         result = subprocess.run(
             ["curl", "-s", "-X", "POST",
-             f"https://api.telegram.org/bot{token}/sendMessage",
+             telegram_url(token, "sendMessage"),
              "-H", "Content-Type: application/json",
              "-d", payload],
             capture_output=True, text=True, timeout=15
@@ -85,7 +86,7 @@ def _get_updates(token: str, offset: int = 0, long_poll: bool = False) -> list[d
     try:
         result = subprocess.run(
             ["curl", "-s",
-             f"https://api.telegram.org/bot{token}/getUpdates"
+             f"{telegram_url(token, 'getUpdates')}"
              f"?offset={offset}&timeout={timeout_param}"],
             capture_output=True, text=True, timeout=curl_timeout
         )
@@ -137,7 +138,7 @@ def send_jobs_photo(photo_path: str, caption: str = "") -> bool:
     try:
         cmd = [
             "curl", "-s", "-X", "POST",
-            f"https://api.telegram.org/bot{token}/sendPhoto",
+            telegram_url(token, "sendPhoto"),
             "-F", f"chat_id={cid}",
             "-F", f"photo=@{photo_path}",
         ]

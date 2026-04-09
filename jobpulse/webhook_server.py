@@ -3,6 +3,7 @@
 import os
 from fastapi import FastAPI, Request
 from shared.logging_config import get_logger
+from shared.telegram_client import telegram_url
 from jobpulse.command_router import classify
 from jobpulse.config import TELEGRAM_CHAT_ID, TELEGRAM_BOT_TOKEN
 
@@ -126,7 +127,7 @@ def register_webhook(url: str):
     """Register webhook URL with Telegram API."""
     import httpx
     resp = httpx.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook",
+        telegram_url(TELEGRAM_BOT_TOKEN, "setWebhook"),
         json={"url": f"{url}/webhook/telegram"},
         timeout=15,
     )
@@ -138,7 +139,7 @@ def delete_webhook():
     """Remove webhook (switch back to polling)."""
     import httpx
     resp = httpx.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook",
+        telegram_url(TELEGRAM_BOT_TOKEN, "deleteWebhook"),
         timeout=15,
     )
     logger.info("Webhook deleted: %s", resp.json())

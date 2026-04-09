@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 from shared.logging_config import get_logger
+from shared.telegram_client import telegram_url
 
 from jobpulse.config import TELEGRAM_BOT_TOKEN, TELEGRAM_JOBS_BOT_TOKEN, TELEGRAM_JOBS_CHAT_ID
 
@@ -26,7 +27,7 @@ async def _send_telegram(text: str) -> int | None:
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"https://api.telegram.org/bot{_BOT_TOKEN}/sendMessage",
+                telegram_url(_BOT_TOKEN, "sendMessage"),
                 json={"chat_id": _CHAT_ID, "text": text, "parse_mode": "Markdown"},
                 timeout=10,
             )
@@ -44,7 +45,7 @@ async def _edit_telegram(msg_id: int, text: str) -> None:
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
-                f"https://api.telegram.org/bot{_BOT_TOKEN}/editMessageText",
+                telegram_url(_BOT_TOKEN, "editMessageText"),
                 json={
                     "chat_id": _CHAT_ID,
                     "message_id": msg_id,

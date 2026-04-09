@@ -35,6 +35,7 @@ SECURITY MODEL:
 import json
 import os
 import subprocess
+from shared.telegram_client import telegram_url
 import asyncio
 from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
@@ -371,21 +372,20 @@ class TelegramTool:
             return {"status": "error", "message": "TELEGRAM_BOT_TOKEN not set"}
         
         import urllib.request
-        base_url = f"https://api.telegram.org/bot{token}"
-        
+
         if action == "send_message":
             chat_id = params.get("chat_id", "")
             text = params.get("text", "")
-            url = f"{base_url}/sendMessage?chat_id={chat_id}&text={text}"
+            url = f"{telegram_url(token, 'sendMessage')}?chat_id={chat_id}&text={text}"
             try:
                 with urllib.request.urlopen(url, timeout=10) as resp:
                     return {"status": "success", "response": resp.read().decode()[:500]}
             except Exception as e:
                 return {"status": "error", "message": str(e)}
-        
+
         elif action == "get_updates":
             limit = params.get("limit", 10)
-            url = f"{base_url}/getUpdates?limit={limit}"
+            url = f"{telegram_url(token, 'getUpdates')}?limit={limit}"
             try:
                 with urllib.request.urlopen(url, timeout=10) as resp:
                     return {"status": "success", "updates": resp.read().decode()[:2000]}

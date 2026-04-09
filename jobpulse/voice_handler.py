@@ -6,6 +6,7 @@ import os
 import tempfile
 import httpx
 from shared.logging_config import get_logger
+from shared.telegram_client import telegram_url
 from jobpulse.config import OPENAI_API_KEY, TELEGRAM_BOT_TOKEN
 
 logger = get_logger(__name__)
@@ -29,7 +30,7 @@ def transcribe_voice(file_id: str, bot_token: str = None) -> str:
     try:
         # Step 1: Get file path from Telegram (must use the receiving bot's token)
         resp = httpx.get(
-            f"https://api.telegram.org/bot{token}/getFile",
+            telegram_url(token, "getFile"),
             params={"file_id": file_id},
             timeout=15,
         )
