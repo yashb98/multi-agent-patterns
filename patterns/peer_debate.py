@@ -55,7 +55,7 @@ from shared.agents import (
     compute_cost_summary,
 )
 from shared.prompts import WRITER_PROMPT, REVIEWER_PROMPT
-from shared.experiential_learning import ExperienceMemory, Experience
+from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.memory_layer import MemoryManager
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
@@ -66,8 +66,7 @@ logger = get_logger(__name__)
 # SQLite-backed — experiences survive process restarts and are
 # shared across debate runs (same DB as enhanced_swarm).
 
-_DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
-_experience_memory = ExperienceMemory(max_size=50, db_path=f"{_DATA_DIR}/experience_memory.db")
+_experience_memory = get_shared_experience_memory()
 _memory_manager = MemoryManager()
 
 

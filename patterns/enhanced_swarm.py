@@ -61,7 +61,7 @@ from shared.dynamic_agent_factory import (
 from shared.experiential_learning import (
     TrainingFreeGRPO,
     GRPOConfig,
-    ExperienceMemory,
+    get_shared_experience_memory,
 )
 from shared.persona_evolution import (
     PersonaEvolver,
@@ -79,8 +79,7 @@ logger = get_logger(__name__)
 # ─── GLOBAL LEARNING SYSTEMS ────────────────────────────────────
 # SQLite-backed — experiences survive process restarts.
 
-_DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
-_experience_memory = ExperienceMemory(max_size=50, db_path=f"{_DATA_DIR}/experience_memory.db")
+_experience_memory = get_shared_experience_memory()
 _optimized_prompts = {}  # Cache of optimized prompts per role+domain
 _memory_manager = MemoryManager()
 _grpo = TrainingFreeGRPO(llm=None)  # llm set lazily at first use

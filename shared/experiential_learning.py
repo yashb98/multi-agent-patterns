@@ -431,5 +431,39 @@ Format as a concise paragraph (3-4 sentences max). Focus on actionable patterns.
             lines.append(f"  Domain: {exp.domain}")
             lines.append(f"  Pattern: {exp.successful_pattern[:100]}...")
             lines.append("")
-        
+
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Shared singleton factory — used by all pattern modules
+# ---------------------------------------------------------------------------
+
+_DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
+_shared_memory: ExperienceMemory | None = None
+
+
+def get_shared_experience_memory(
+    max_size: int = 50,
+    db_path: str | None = None,
+) -> ExperienceMemory:
+    """Return (or create) the shared ExperienceMemory singleton.
+
+    All pattern modules (enhanced_swarm, peer_debate, dynamic_swarm) should
+    call this instead of constructing their own ExperienceMemory.
+
+    Args:
+        max_size: Maximum experiences to store (default 50).
+        db_path: Override DB path (use ":memory:" in tests).
+    """
+    global _shared_memory
+    if _shared_memory is None:
+        path = db_path or f"{_DATA_DIR}/experience_memory.db"
+        _shared_memory = ExperienceMemory(max_size=max_size, db_path=path)
+    return _shared_memory
+
+
+def reset_shared_experience_memory() -> None:
+    """Reset the shared singleton. Used for test isolation."""
+    global _shared_memory
+    _shared_memory = None

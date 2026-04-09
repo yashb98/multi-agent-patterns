@@ -610,6 +610,12 @@ def _ensure_loaded():
 _ci_instance = None
 
 
+def reset_ci_instance() -> None:
+    """Reset the CodeIntelligence singleton. Used for test isolation."""
+    global _ci_instance
+    _ci_instance = None
+
+
 def create_mcp_server():  # type: ignore[return]
     """Create and configure the MCP Server with 13 Code Intelligence tools.
 

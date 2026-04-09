@@ -142,12 +142,18 @@ def _get_extension_adapter() -> BaseATSAdapter:
 
 
 def get_adapter(ats_platform: str | None = None) -> BaseATSAdapter:
-    """Return the ExtensionAdapter (sole adapter).
+    """Return the extension adapter.
 
     The ats_platform parameter is retained for interface compatibility
-    but is not used for routing — all platforms go through the extension.
+    but is not used for routing.
     """
     return _get_extension_adapter()
 
 
-__all__ = ["BaseATSAdapter", "get_adapter"]
+def reset_adapter() -> None:
+    """Reset the singleton adapter. Used for test isolation."""
+    global _ext_adapter
+    _ext_adapter = None
+
+
+__all__ = ["BaseATSAdapter", "get_adapter", "reset_adapter"]
