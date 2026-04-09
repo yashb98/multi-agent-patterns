@@ -17,7 +17,6 @@ import json
 import sqlite3
 from datetime import datetime, timedelta
 from jobpulse.config import NOTION_API_KEY, NOTION_PARENT_PAGE_ID, DATA_DIR
-from jobpulse.notion_agent import _notion_api
 from jobpulse import event_logger
 from shared.logging_config import get_logger
 from shared.db import get_db_conn
@@ -27,6 +26,11 @@ from jobpulse.budget_constants import (  # noqa: F401 — re-exported for caller
     VARIABLE_EXPENSE_CATEGORIES, SAVINGS_CATEGORIES, ALL_CATEGORIES,
     PERIOD_DAYS, PERIOD_ANCHOR,
     get_period_start, get_period_end,
+)
+from jobpulse.budget_nlp import classify_transaction, parse_transaction  # noqa: F401
+from jobpulse.budget_notion import (  # noqa: F401
+    get_notion_budget_url, _update_table_row, sync_expense_to_notion,
+    _update_section_totals, _update_planned_column,
 )
 
 logger = get_logger(__name__)
@@ -107,141 +111,6 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-
-
-def get_notion_budget_url(week_start: str = None) -> str:
-    """Get the Notion URL for the budget sheet."""
-    page_id = BUDGET_PAGE_ID.replace("-", "")
-    return f"https://www.notion.so/{page_id}"
-
-
-def _update_table_row(row_id: str, col2_value: str, col3_value: str = None, col0_link: str = None):
-    """Update a table row's Actual (col 2) and optionally Notes (col 3).
-
-    If col0_link is provided, the category name (col 0) becomes a clickable link
-    to the category's detail sub-page in Notion.
-
-    IMPORTANT: We must read the existing row first to preserve col 0 (category name)
-    and col 1 (planned amount). Notion's PATCH replaces ALL cells — sending []
-    for a cell erases it.
-    """
-    # Read current row to preserve col 0 and col 1
-    current = _notion_api("GET", f"/blocks/{row_id}")
-    existing_cells = current.get("table_row", {}).get("cells", [[], [], [], []])
-
-    # If we have a link, make col 0 (category name) clickable
-    if col0_link and existing_cells and existing_cells[0]:
-        # Get the original category name text
-        orig_text = "".join(t.get("plain_text", "") for t in existing_cells[0])
-        if orig_text:
-            col0_cell = [{"type": "text", "text": {"content": orig_text, "link": {"url": col0_link}}}]
-        else:
-            col0_cell = existing_cells[0]
-    else:
-        col0_cell = existing_cells[0] if len(existing_cells) > 0 else []
-
-    cells = [
-        col0_cell,
-        existing_cells[1] if len(existing_cells) > 1 else [],  # preserve planned amount
-        [{"type": "text", "text": {"content": col2_value}}],   # update actual
-        [{"type": "text", "text": {"content": col3_value}}] if col3_value is not None
-            else (existing_cells[3] if len(existing_cells) > 3 else []),  # preserve or update notes
-    ]
-    _notion_api("PATCH", f"/blocks/{row_id}", {
-        "table_row": {"cells": cells}
-    })
-
-
-def sync_expense_to_notion(txn: dict):
-    """Update the Actual column in the correct row of your existing budget sheet."""
-    category = txn["category"]
-    row_id = ROW_IDS.get(category)
-    if not row_id:
-        print(f"[Budget] No row ID for category: {category}")
-        return
-
-    # Get current total for this category from SQLite
-    conn = _get_conn()
-    total = conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE week_start=? AND category=?",
-        (txn["week_start"], category)
-    ).fetchone()[0]
-    conn.close()
-
-    # Get the category sub-page link
-    from jobpulse.budget_tracker import get_category_page_url
-    sub_url = get_category_page_url(category, txn["week_start"])
-
-    # For Salary, also check for the timesheet page
-    if category == "Salary" and not sub_url:
-        conn2 = _get_conn()
-        from jobpulse.budget_agent import _get_salary_week_start
-        salary_week = _get_salary_week_start(datetime.strptime(txn["date"], "%Y-%m-%d"))
-        ts_row = conn2.execute(
-            "SELECT notion_page_id FROM work_hours WHERE week_start=? AND notion_page_id != '' LIMIT 1",
-            (salary_week,)
-        ).fetchone()
-        conn2.close()
-        if ts_row:
-            sub_url = f"https://www.notion.so/{ts_row['notion_page_id'].replace('-', '')}"
-
-    notes = f"Last: {txn['description']} ({txn['date']})"
-
-    # Update the Actual column + make category name a clickable link to sub-page
-    _update_table_row(row_id, f"£{total:.2f}", notes, col0_link=sub_url)
-
-    # Also update the section total row
-    _update_section_totals(txn["week_start"])
-
-
-def _update_section_totals(week_start: str = None):
-    """Recalculate and update all Total rows and the Summary table."""
-    week_start = week_start or _get_week_start()
-    conn = _get_conn()
-
-    # Section totals
-    income_total = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND type='income'",
-        (week_start,)
-    ).fetchone()[0]
-
-    fixed_total = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND section='fixed'",
-        (week_start,)
-    ).fetchone()[0]
-
-    variable_total = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND section='variable'",
-        (week_start,)
-    ).fetchone()[0]
-
-    savings_total = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE week_start=? AND type='savings'",
-        (week_start,)
-    ).fetchone()[0]
-
-    conn.close()
-
-    spending_total = fixed_total + variable_total
-    net = income_total - spending_total - savings_total
-
-    # Update Total rows
-    _update_table_row(ROW_IDS["Total income"], f"£{income_total:.2f}")
-    _update_table_row(ROW_IDS["Total fixed"], f"£{fixed_total:.2f}")
-    _update_table_row(ROW_IDS["Total variable"], f"£{variable_total:.2f}")
-    _update_table_row(ROW_IDS["Total savings + debt"], f"£{savings_total:.2f}")
-
-    # Update Summary table
-    _update_table_row(ROW_IDS["Total income (summary)"], f"£{income_total:.2f}")
-    _update_table_row(ROW_IDS["Total spending (fixed + variable)"], f"£{spending_total:.2f}")
-    _update_table_row(ROW_IDS["Total savings + debt (summary)"], f"£{savings_total:.2f}")
-
-    # Net with difference
-    _update_table_row(
-        ROW_IDS["Net (income - spending - savings/debt)"],
-        f"£{net:.2f}",
-        "✅ Positive" if net >= 0 else "⚠️ Negative"
-    )
 
 
 def add_transaction(amount: float, description: str, category: str,
@@ -369,163 +238,6 @@ def get_today_spending() -> dict:
 
 
 # ── LLM Category Classification ──
-
-def classify_transaction(description: str, amount: float, txn_type: str = "expense") -> tuple[str, str]:
-    """Classify into (section, category) with reason tracking.
-
-    4-stage pipeline:
-    1. Store→category inference first (Tesco → Groceries, overrides generic keywords)
-    2. Multi-word phrase match (longest match wins, word-boundary safe)
-    3. Single-word keyword match (word-boundary safe)
-    4. LLM fallback
-    """
-    import re
-
-    desc_lower = description.lower()
-
-    # Stage 1: Store→category inference FIRST (store is strongest signal)
-    # If someone says "drinks from tesco", Tesco = Groceries beats "drinks" = Entertainment
-    store_category_map = {
-        # Grocery stores → Groceries
-        "tesco": ("variable", "Groceries"), "aldi": ("variable", "Groceries"),
-        "lidl": ("variable", "Groceries"), "sainsbury": ("variable", "Groceries"),
-        "asda": ("variable", "Groceries"), "morrisons": ("variable", "Groceries"),
-        "waitrose": ("variable", "Groceries"), "co-op": ("variable", "Groceries"),
-        "iceland": ("variable", "Groceries"), "m&s food": ("variable", "Groceries"),
-        # Eating out stores → Eating out
-        "pret": ("variable", "Eating out"), "costa": ("variable", "Eating out"),
-        "starbucks": ("variable", "Eating out"), "greggs": ("variable", "Eating out"),
-        "mcdonald": ("variable", "Eating out"), "kfc": ("variable", "Eating out"),
-        "nando": ("variable", "Eating out"), "subway": ("variable", "Eating out"),
-        "wagamama": ("variable", "Eating out"), "wetherspoon": ("variable", "Eating out"),
-        "domino": ("variable", "Eating out"), "pizza hut": ("variable", "Eating out"),
-        # Health stores → Health
-        "boots": ("variable", "Health"), "superdrug": ("variable", "Health"),
-        "holland and barrett": ("variable", "Health"),
-        # Shopping stores → Shopping
-        "argos": ("variable", "Shopping"), "jd sports": ("variable", "Shopping"),
-        "primark": ("variable", "Shopping"), "tk maxx": ("variable", "Shopping"),
-        "next": ("variable", "Shopping"), "asos": ("variable", "Shopping"),
-        "zara": ("variable", "Shopping"),
-    }
-    for store, (section, category) in store_category_map.items():
-        if re.search(rf"\b{re.escape(store)}\b", desc_lower):
-            if txn_type == "expense":
-                return section, category
-
-    # Stage 2: Keyword match (longest-first, word-boundary safe)
-    sorted_keywords = sorted(ALL_CATEGORIES.keys(), key=len, reverse=True)
-
-    for keyword in sorted_keywords:
-        section, category = ALL_CATEGORIES[keyword]
-        if re.search(rf"\b{re.escape(keyword)}\b", desc_lower):
-            if txn_type == "income" and section == "income":
-                return section, category
-            elif txn_type == "expense" and section in ("fixed", "variable"):
-                return section, category
-            elif txn_type == "savings" and section == "savings":
-                return section, category
-            elif txn_type == "expense":
-                return section, category
-
-    # Stage 3: LLM fallback
-    try:
-        from shared.agents import get_openai_client
-
-        categories_list = """
-INCOME: Salary, Freelance, Other
-FIXED EXPENSES: Rent / Mortgage, Utilities, Phone / Internet, Subscriptions, Insurance
-VARIABLE: Groceries, Eating out, Transport, Shopping, Entertainment, Health, Misc
-SAVINGS: Savings, Investments, Credit card / Loan payment"""
-
-        client = get_openai_client()
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": f"""Classify this {txn_type} into one category:
-{categories_list}
-
-Transaction: £{amount:.2f} — "{description}"
-
-Respond with ONLY: section|category
-Example: variable|Eating out
-Example: income|Salary
-Example: fixed|Subscriptions"""}],
-            max_tokens=15, temperature=0,
-        )
-        raw = response.choices[0].message.content.strip()
-        parts = raw.split("|")
-        if len(parts) == 2:
-            llm_section = parts[0].strip().lower()
-            llm_category = parts[1].strip()
-            # Validate LLM response against real categories
-            valid_categories = set()
-            for _, (s, c) in ALL_CATEGORIES.items():
-                valid_categories.add(c)
-            if llm_category in valid_categories:
-                return llm_section, llm_category
-            # Try fuzzy match (LLM might say "Eating Out" vs "Eating out")
-            for vc in valid_categories:
-                if vc.lower() == llm_category.lower():
-                    return llm_section, vc
-            logger.warning("LLM returned invalid category: %s", llm_category)
-    except Exception as e:
-        logger.warning("LLM classify failed: %s", e)
-
-    # Default
-    if txn_type == "income":
-        return "income", "Other"
-    elif txn_type == "savings":
-        return "savings", "Savings"
-    return "variable", "Misc"
-
-
-# ── Spend/Earn Parsing ──
-
-def parse_transaction(text: str) -> dict | None:
-    """Parse natural language into {amount, description, type}.
-
-    Handles:
-      "spent 15 on lunch" → expense
-      "earned 500 freelance" → income
-      "saved 100" → savings
-      "£8.50 coffee" → expense
-      "income 2000 salary" → income
-    """
-    text = text.strip()
-
-    # Detect type from keywords
-    txn_type = "expense"
-    if re.match(r"^(earned|income|received|got paid|salary|freelance)", text, re.IGNORECASE):
-        txn_type = "income"
-        text = re.sub(r"^(earned|income|received|got paid)\s+", "", text, flags=re.IGNORECASE)
-    elif re.match(r"^(saved|saving|invest|debt|loan|repay|credit card)", text, re.IGNORECASE):
-        txn_type = "savings"
-        text = re.sub(r"^(saved|saving)\s+", "", text, flags=re.IGNORECASE)
-    else:
-        text = re.sub(r"^(spent|spend|paid|bought|got)\s+", "", text, flags=re.IGNORECASE)
-
-    # Extract amount — supports: 15, 15.99, .50, £1,000, $1,000.50
-    # First strip commas from numbers like 1,000
-    text_clean = re.sub(r"(\d),(\d{3})", r"\1\2", text)
-    match = re.search(r"[£$€]?\s*(\d*\.?\d+)", text_clean)
-    if not match:
-        return None
-
-    amount = float(match.group(1))
-    if amount <= 0 or amount > 100000:
-        return None
-
-    # Extract description
-    start = match.start()
-    if start > 0 and text[start - 1] in "£$€":
-        start -= 1
-    desc = text[:start] + " " + text[match.end():]
-    desc = re.sub(r"\s+", " ", desc).strip()
-    desc = re.sub(r"^(on|for|at|to)\s+", "", desc, flags=re.IGNORECASE)
-    desc = desc.strip() or "Unspecified"
-
-    return {"amount": amount, "description": desc, "type": txn_type}
-
 
 def log_transaction(text: str, trigger: str = "telegram_command") -> str:
     """Full pipeline: parse → classify → store → reply."""
@@ -679,22 +391,6 @@ def set_budget(text: str) -> str:
     notion_url = get_notion_budget_url()
     link_line = f"\n📎 {notion_url}" if notion_url else ""
     return f"📋 Budget set: {category} = £{amount:.2f}/period{link_line}"
-
-
-def _update_planned_column(row_id: str, amount: float):
-    """Update the Planned (col 1) column of a row, preserving all other columns."""
-    current = _notion_api("GET", f"/blocks/{row_id}")
-    existing_cells = current.get("table_row", {}).get("cells", [[], [], [], []])
-
-    cells = [
-        existing_cells[0] if len(existing_cells) > 0 else [],  # preserve category name
-        [{"type": "text", "text": {"content": f"£{amount:.2f}"}}],  # update planned
-        existing_cells[2] if len(existing_cells) > 2 else [],  # preserve actual
-        existing_cells[3] if len(existing_cells) > 3 else [],  # preserve notes
-    ]
-    _notion_api("PATCH", f"/blocks/{row_id}", {
-        "table_row": {"cells": cells}
-    })
 
 
 # ── Formatting ──

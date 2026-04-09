@@ -407,6 +407,7 @@ def tmp_budget_db(tmp_path, monkeypatch):
     db_file = tmp_path / "budget.db"
     monkeypatch.setattr("jobpulse.budget_agent.DB_PATH", db_file)
     monkeypatch.setattr("jobpulse.budget_salary.DB_PATH", db_file)
+    monkeypatch.setattr("jobpulse.budget_notion.DB_PATH", db_file)
     monkeypatch.setattr("jobpulse.budget_tracker.DB_PATH", db_file)
     init_db()
     return db_file
@@ -736,7 +737,7 @@ class TestUndoHours:
 # ── sync_expense_to_notion / _update_section_totals ──
 
 class TestSyncAndTotals:
-    @patch("jobpulse.budget_agent._notion_api")
+    @patch("jobpulse.budget_notion._notion_api")
     @patch("jobpulse.budget_tracker.get_category_page_url", return_value="")
     def test_sync_expense(self, mock_url, mock_api, tmp_budget_db):
         from jobpulse.budget_agent import sync_expense_to_notion
@@ -747,7 +748,7 @@ class TestSyncAndTotals:
                                 "description": "test", "date": "2026-04-07"})
         assert mock_api.call_count > 0
 
-    @patch("jobpulse.budget_agent._notion_api")
+    @patch("jobpulse.budget_notion._notion_api")
     def test_update_section_totals(self, mock_api, tmp_budget_db):
         from jobpulse.budget_agent import _update_section_totals
         mock_api.return_value = {"table_row": {"cells": [[], [], [], []]}}
