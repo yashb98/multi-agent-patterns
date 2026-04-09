@@ -6,7 +6,8 @@ import uuid
 from pathlib import Path
 from dataclasses import dataclass
 
-DB_PATH = Path(__file__).parent.parent / "data" / "mindgraph.db"
+from shared.paths import DATA_DIR as _DATA_DIR
+DB_PATH = _DATA_DIR / "mindgraph.db"
 
 
 def get_conn() -> sqlite3.Connection:

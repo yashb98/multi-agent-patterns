@@ -25,7 +25,8 @@ from pathlib import Path
 
 from shared.db import get_db_conn
 
-DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "code_intelligence.db")
+from shared.paths import DATA_DIR as _DATA_DIR
+DB_PATH = str(_DATA_DIR / "code_intelligence.db")
 
 # Commands that only need SQLite graph — skip full CodeIntelligence import
 GRAPH_ONLY_COMMANDS = {

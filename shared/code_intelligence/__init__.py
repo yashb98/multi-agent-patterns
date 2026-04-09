@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 
 # ─── CONFIGURATION ────────────────────────────────────────────────
 
-_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+from shared.paths import DATA_DIR as _DATA_DIR
 
 FULL_INDEX_EXTENSIONS = (".py",)
 

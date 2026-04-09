@@ -439,7 +439,8 @@ Format as a concise paragraph (3-4 sentences max). Focus on actionable patterns.
 # Shared singleton factory — used by all pattern modules
 # ---------------------------------------------------------------------------
 
-_DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
+from shared.paths import DATA_DIR as _DATA_DIR_PATH
+_DATA_DIR = str(_DATA_DIR_PATH)
 _shared_memory: ExperienceMemory | None = None
 
 

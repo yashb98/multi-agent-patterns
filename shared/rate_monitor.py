@@ -13,7 +13,8 @@ from shared.db import get_db_conn
 
 logger = get_logger(__name__)
 
-DB_PATH = Path(__file__).parent.parent / "data" / "mindgraph.db"
+from shared.paths import DATA_DIR as _DATA_DIR
+DB_PATH = _DATA_DIR / "mindgraph.db"
 
 
 def _get_conn() -> sqlite3.Connection:

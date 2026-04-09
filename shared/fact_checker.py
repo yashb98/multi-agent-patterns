@@ -17,7 +17,8 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-CACHE_DB_PATH = Path(__file__).parent.parent / "data" / "verified_facts.db"
+from shared.paths import DATA_DIR as _DATA_DIR
+CACHE_DB_PATH = _DATA_DIR / "verified_facts.db"
 
 # Claim types that need verification
 VERIFIABLE_TYPES = {"benchmark", "date", "attribution", "comparison", "technical"}
