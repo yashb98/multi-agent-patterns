@@ -15,6 +15,11 @@ from shared.logging_config import get_logger
 from shared.db import get_db_conn
 from jobpulse.config import DATA_DIR
 from jobpulse.notion_agent import _notion_api
+from jobpulse.budget_constants import (
+    BUDGET_PAGE_ID, PERIOD_DAYS,
+    INCOME_CATEGORIES, SAVINGS_CATEGORIES, FIXED_EXPENSE_CATEGORIES,
+    get_period_start, get_period_end, DB_PATH as BUDGET_DB_PATH,
+)
 
 logger = get_logger(__name__)
 
@@ -186,7 +191,6 @@ def _get_time_of_day() -> str:
 
 def _get_budget_page_id():
     """Get the main budget page ID."""
-    from jobpulse.budget_agent import BUDGET_PAGE_ID
     return BUDGET_PAGE_ID
 
 
@@ -205,15 +209,11 @@ def get_or_create_category_page(category: str, week_start: str) -> str:
     # Create new sub-page
     parent_id = _get_budget_page_id()
     try:
-        from jobpulse.budget_agent import _get_period_end
-        period_end = _get_period_end(week_start)
-    except (ValueError, ImportError):
+        period_end = get_period_end(week_start)
+    except ValueError:
         logger.error("get_or_create_category_page: invalid period_start date: %s", week_start)
         return ""
     title = f"{category} — {week_start} to {period_end}"
-
-    # Choose columns based on category type
-    from jobpulse.budget_agent import INCOME_CATEGORIES, SAVINGS_CATEGORIES, FIXED_EXPENSE_CATEGORIES
 
     # Determine which section this category belongs to
     is_variable = category in ["Groceries", "Eating out", "Transport", "Shopping", "Entertainment", "Health", "Misc"]
@@ -321,8 +321,7 @@ def add_transaction_row(category: str, week_start: str, amount: float,
     conn.close()
 
     # Get planned budget for percentage
-    from jobpulse.budget_agent import _get_conn as budget_conn
-    bconn = budget_conn()
+    bconn = get_db_conn(BUDGET_DB_PATH)
     planned_row = bconn.execute(
         "SELECT planned_amount FROM planned_budgets WHERE week_start=? AND category=?",
         (week_start, category)
@@ -418,10 +417,10 @@ def archive_current_week() -> str:
 
     Stores summary in weekly_archives, carries over planned budgets.
     """
-    from jobpulse.budget_agent import _get_period_start, _get_period_end, get_week_summary, BUDGET_PAGE_ID, PERIOD_DAYS
+    from jobpulse.budget_agent import get_week_summary
 
     now = datetime.now()
-    current_period = _get_period_start(now)
+    current_period = get_period_start(now)
 
     # Check if already archived
     conn = _get_conn()
@@ -460,7 +459,7 @@ def archive_current_week() -> str:
     conn.commit()
     conn.close()
 
-    period_end = _get_period_end(current_period)
+    period_end = get_period_end(current_period)
     logger.info("Archived period %s to %s: income=£%.2f, spending=£%.2f, net=£%.2f",
                 current_period, period_end, summary["income_total"], summary["spending_total"], summary["net"])
 
@@ -474,10 +473,8 @@ def archive_current_week() -> str:
 
 def get_weekly_comparison() -> str:
     """Compare this 28-day period vs last period spending per category."""
-    from jobpulse.budget_agent import _get_period_start, _get_period_end, PERIOD_DAYS
-
     now = datetime.now()
-    this_period = _get_period_start(now)
+    this_period = get_period_start(now)
     last_period = (datetime.strptime(this_period, "%Y-%m-%d") - timedelta(days=PERIOD_DAYS)).strftime("%Y-%m-%d")
 
     conn = _get_conn()
@@ -503,7 +500,7 @@ def get_weekly_comparison() -> str:
 
     last_map = {r["category"]: {"total": r["total"], "count": r["count"]} for r in last_data}
 
-    this_end = _get_period_end(this_period)
+    this_end = get_period_end(this_period)
     lines = [f"📊 PERIOD COMPARISON ({this_period} to {this_end} vs last period):\n"]
     total_this = 0
     total_last = 0
