@@ -638,4 +638,6 @@ def handle_blog_command_v2(paper_index: int) -> str:
         return str(e)
     except Exception as e:
         logger.error("Blog generation failed: %s", e)
-        return f"Error generating blog: {e}"
+        from shared.agent_result import DispatchError, classify_error
+        cat, retry = classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="blog_generator").to_user_message()

@@ -24,4 +24,6 @@ def create_weekly_page(trigger: str = "cron_monday") -> str:
         return digest
     except Exception as e:
         logger.error("Weekly papers digest failed: %s", e)
-        return f"Error: {e}"
+        from shared.agent_result import DispatchError, classify_error
+        cat, retry = classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="notion_papers").to_user_message()

@@ -302,19 +302,18 @@ def dispatch(cmd: ParsedCommand) -> str:
                 s["output"] = result[:300] if result else ""
             except Exception as e:
                 # Structured error propagation (Domain 5, Task 5.3)
-                from jobpulse.dispatcher import _classify_error
-                error_cat, retryable = _classify_error(e)
-                error_context = {
-                    "status": "error",
-                    "errorCategory": error_cat,
-                    "isRetryable": retryable,
-                    "agentName": agent_name,
-                    "attemptedAction": task["description"],
-                    "message": str(e),
-                }
-                results[agent_name] = json.dumps(error_context)
+                from shared.agent_result import DispatchError, classify_error
+                error_cat, retryable = classify_error(e)
+                dispatch_error = DispatchError(
+                    error_category=error_cat,
+                    message=str(e),
+                    is_retryable=retryable,
+                    agent_name=agent_name,
+                    attempted_action=task["description"],
+                )
+                results[agent_name] = dispatch_error.to_user_message()
                 s["output"] = f"Error [{error_cat}]: {e}"
-                s["metadata"] = error_context
+                s["metadata"] = dispatch_error.to_dict()
                 logger.warning("Swarm agent %s failed [%s]: %s (retryable=%s)",
                                agent_name, error_cat, e, retryable)
 

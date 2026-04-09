@@ -75,8 +75,8 @@ def build_and_send(trigger: str = "cron_morning"):
                 section_budget = "  No transactions logged this period"
             s["output"] = f"Income: £{week_summary['income_total']:.2f}, Spent: £{week_summary['spending_total']:.2f}"
         except Exception as e:
-            from jobpulse.dispatcher import _classify_error
-            error_cat, retryable = _classify_error(e)
+            from shared.agent_result import classify_error
+            error_cat, retryable = classify_error(e)
             logger.warning("Budget data unavailable [%s]: %s (retryable=%s)", error_cat, e, retryable)
             section_budget = f"  Budget data unavailable ({error_cat}: {e})"
             s["output"] = f"Budget error [{error_cat}]: {e}"

@@ -29,7 +29,9 @@ def _run_git(*args: str) -> str:
     except subprocess.TimeoutExpired:
         return "Git command timed out."
     except Exception as e:
-        return f"Error: {e}"
+        from shared.agent_result import DispatchError, classify_error
+        cat, retry = classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="git_ops").to_user_message()
 
 
 def git_status() -> str:

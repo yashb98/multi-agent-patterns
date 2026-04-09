@@ -75,13 +75,17 @@ def show_file(filepath: str, offset: int = 0, limit: int = 0) -> str:
             header = f"Directory: {resolved.relative_to(PROJECT_DIR)}\n"
             return header + "\n".join(lines)
         except Exception as e:
-            return f"Error listing directory: {e}"
+            from shared.agent_result import DispatchError, classify_error
+            cat, retry = classify_error(e)
+            return DispatchError(cat, str(e), retry, agent_name="file_ops").to_user_message()
 
     try:
         with open(resolved, "r", errors="replace") as f:
             all_lines = f.readlines()
     except Exception as e:
-        return f"Error reading file: {e}"
+        from shared.agent_result import DispatchError, classify_error
+        cat, retry = classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="file_ops").to_user_message()
 
     total = len(all_lines)
     end = min(offset + limit, total)
@@ -143,7 +147,9 @@ def show_logs(n: int = 50) -> str:
             output = output[:4000] + "\n... truncated"
         return output
     except Exception as e:
-        return f"Error reading logs: {e}"
+        from shared.agent_result import DispatchError, classify_error
+        cat, retry = classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="file_ops").to_user_message()
 
 
 def show_errors() -> str:
@@ -171,7 +177,9 @@ def show_errors() -> str:
             )
         return "\n".join(lines)
     except Exception as e:
-        return f"Error querying process trails: {e}"
+        from shared.agent_result import DispatchError, classify_error
+        cat, retry = classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="file_ops").to_user_message()
 
 
 def system_status() -> str:

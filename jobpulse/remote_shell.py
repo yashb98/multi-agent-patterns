@@ -109,4 +109,6 @@ def execute(command_str: str) -> str:
         return f"Command not found: {args[0]}"
     except Exception as e:
         logger.error("Shell error: %s", e)
-        return f"Error: {e}"
+        from shared.agent_result import DispatchError, classify_error
+        cat, retry = classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="remote_shell").to_user_message()
