@@ -363,76 +363,10 @@ def dispatch(cmd: ParsedCommand) -> str:
 
 def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str:
     """Execute a single agent by name. Maps to existing agent functions."""
-    # Import lazily to avoid circular imports
-    from jobpulse.dispatcher import (
-        _handle_show_tasks, _handle_create_tasks, _handle_calendar,
-        _handle_gmail, _handle_github, _handle_trending, _handle_briefing,
-        _handle_arxiv, _handle_complete_task, _handle_remove_task, _handle_create_event,
-        _handle_log_spend, _handle_log_income, _handle_log_savings,
-        _handle_set_budget, _handle_show_budget, _handle_help, _handle_unknown,
-        _handle_weekly_report, _handle_export,
-        _handle_conversation, _handle_clear_chat,
-        _handle_remote_shell, _handle_git_ops,
-        _handle_file_ops, _handle_system_status,
-        _handle_log_hours, _handle_show_hours, _handle_confirm_savings, _handle_undo_hours,
-        _handle_undo_budget, _handle_recurring_budget, _handle_weekly_plan,
-        _handle_scan_jobs, _handle_show_jobs, _handle_approve_jobs,
-        _handle_reject_job, _handle_job_stats, _handle_search_config,
-        _handle_pause_jobs, _handle_resume_jobs, _handle_job_detail,
-        _handle_engine_stats, _handle_engine_compare, _handle_engine_learning,
-        _handle_engine_reset,
-    )
+    from jobpulse.handler_registry import get_handler_map_by_value
+    from jobpulse.dispatcher import _handle_unknown
 
-    # Direct agent mapping
-    AGENT_MAP = {
-        Intent.SHOW_TASKS.value: _handle_show_tasks,
-        Intent.CREATE_TASKS.value: _handle_create_tasks,
-        Intent.CALENDAR.value: _handle_calendar,
-        Intent.GMAIL.value: _handle_gmail,
-        Intent.GITHUB.value: _handle_github,
-        Intent.TRENDING.value: _handle_trending,
-        Intent.BRIEFING.value: _handle_briefing,
-        Intent.ARXIV.value: _handle_arxiv,
-        Intent.COMPLETE_TASK.value: _handle_complete_task,
-        Intent.REMOVE_TASK.value: _handle_remove_task,
-        Intent.CREATE_EVENT.value: _handle_create_event,
-        Intent.LOG_SPEND.value: _handle_log_spend,
-        Intent.LOG_INCOME.value: _handle_log_income,
-        Intent.LOG_SAVINGS.value: _handle_log_savings,
-        Intent.SET_BUDGET.value: _handle_set_budget,
-        Intent.SHOW_BUDGET.value: _handle_show_budget,
-        Intent.HELP.value: _handle_help,
-        Intent.WEEKLY_REPORT.value: _handle_weekly_report,
-        Intent.EXPORT.value: _handle_export,
-        Intent.CONVERSATION.value: _handle_conversation,
-        Intent.CLEAR_CHAT.value: _handle_clear_chat,
-        Intent.REMOTE_SHELL.value: _handle_remote_shell,
-        Intent.GIT_OPS.value: _handle_git_ops,
-        Intent.FILE_OPS.value: _handle_file_ops,
-        Intent.SYSTEM_STATUS.value: _handle_system_status,
-        Intent.LOG_HOURS.value: _handle_log_hours,
-        Intent.SHOW_HOURS.value: _handle_show_hours,
-        Intent.CONFIRM_SAVINGS.value: _handle_confirm_savings,
-        Intent.UNDO_HOURS.value: _handle_undo_hours,
-        Intent.UNDO_BUDGET.value: _handle_undo_budget,
-        Intent.RECURRING_BUDGET.value: _handle_recurring_budget,
-        Intent.WEEKLY_PLAN.value: _handle_weekly_plan,
-        # Job autopilot
-        Intent.SCAN_JOBS.value: _handle_scan_jobs,
-        Intent.SHOW_JOBS.value: _handle_show_jobs,
-        Intent.APPROVE_JOBS.value: _handle_approve_jobs,
-        Intent.REJECT_JOB.value: _handle_reject_job,
-        Intent.JOB_STATS.value: _handle_job_stats,
-        Intent.SEARCH_CONFIG.value: _handle_search_config,
-        Intent.PAUSE_JOBS.value: _handle_pause_jobs,
-        Intent.RESUME_JOBS.value: _handle_resume_jobs,
-        Intent.JOB_DETAIL.value: _handle_job_detail,
-        # A/B engine dashboard
-        Intent.ENGINE_STATS.value: _handle_engine_stats,
-        Intent.ENGINE_COMPARE.value: _handle_engine_compare,
-        Intent.ENGINE_LEARNING.value: _handle_engine_learning,
-        Intent.ENGINE_RESET.value: _handle_engine_reset,
-    }
+    AGENT_MAP = get_handler_map_by_value()
 
     # Briefing sub-agents (collect phases)
     if agent_name == "gmail_collect":

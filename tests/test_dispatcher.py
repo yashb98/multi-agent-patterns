@@ -4,38 +4,21 @@ import pytest
 from unittest.mock import patch, MagicMock
 from jobpulse.command_router import Intent, ParsedCommand
 from jobpulse.dispatcher import dispatch, _handle_help, _handle_unknown
+from jobpulse.handler_registry import get_handler_map
 
 
 # ── Handler map coverage ──
 
 class TestDispatchMap:
-    """Every Intent enum value (except UNKNOWN) should have a handler."""
+    """Every Intent enum value (except UNKNOWN/STOP) should have a handler in the registry."""
 
-    @patch("jobpulse.process_logger.ProcessTrail")
-    @patch("jobpulse.dispatcher.event_logger")
-    def test_all_intents_have_handlers(self, mock_evt, mock_trail):
-        """Verify the handlers dict covers every non-UNKNOWN intent."""
-        # Build the handlers dict as the real code does
-        handlers_covered = {
-            Intent.SHOW_TASKS, Intent.CREATE_TASKS, Intent.CALENDAR,
-            Intent.GMAIL, Intent.GITHUB, Intent.TRENDING, Intent.BRIEFING,
-            Intent.ARXIV, Intent.COMPLETE_TASK, Intent.REMOVE_TASK, Intent.CREATE_EVENT,
-            Intent.LOG_SPEND, Intent.LOG_INCOME, Intent.LOG_SAVINGS,
-            Intent.SET_BUDGET, Intent.SHOW_BUDGET, Intent.HELP,
-            Intent.WEEKLY_REPORT, Intent.EXPORT,
-            Intent.CONVERSATION, Intent.CLEAR_CHAT,
-            Intent.REMOTE_SHELL, Intent.GIT_OPS,
-            Intent.FILE_OPS, Intent.SYSTEM_STATUS,
-            Intent.LOG_HOURS, Intent.SHOW_HOURS, Intent.CONFIRM_SAVINGS, Intent.UNDO_HOURS,
-            Intent.UNDO_BUDGET, Intent.RECURRING_BUDGET, Intent.WEEKLY_PLAN,
-            Intent.STOP, Intent.SHOW_JOBS, Intent.APPROVE_JOBS, Intent.REJECT_JOB,
-            Intent.JOB_STATS, Intent.SEARCH_CONFIG, Intent.PAUSE_JOBS,
-            Intent.RESUME_JOBS, Intent.JOB_DETAIL,
-            Intent.SCAN_JOBS,
-        }
-        all_intents = set(Intent) - {Intent.UNKNOWN}
-        missing = all_intents - handlers_covered
-        assert missing == set(), f"Intents missing handlers: {missing}"
+    def test_all_intents_have_handlers(self):
+        """Verify the shared handler registry covers every non-UNKNOWN intent."""
+        handler_map = get_handler_map()
+        # STOP is handled separately in dispatch() before the map lookup
+        all_intents = set(Intent) - {Intent.UNKNOWN, Intent.STOP}
+        missing = all_intents - set(handler_map.keys())
+        assert missing == set(), f"Intents missing handlers in handler_registry: {missing}"
 
 
 class TestDispatchRouting:

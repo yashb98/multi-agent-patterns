@@ -79,53 +79,8 @@ def dispatch(cmd: ParsedCommand) -> str:
         from jobpulse.last_action import undo_last_action
         return undo_last_action()
 
-    handlers = {
-        Intent.SHOW_TASKS: _handle_show_tasks,
-        Intent.CREATE_TASKS: _handle_create_tasks,
-        Intent.CALENDAR: _handle_calendar,
-        Intent.GMAIL: _handle_gmail,
-        Intent.GITHUB: _handle_github,
-        Intent.TRENDING: _handle_trending,
-        Intent.BRIEFING: _handle_briefing,
-        Intent.ARXIV: _handle_arxiv,
-        Intent.COMPLETE_TASK: _handle_complete_task,
-        Intent.REMOVE_TASK: _handle_remove_task,
-        Intent.CREATE_EVENT: _handle_create_event,
-        Intent.LOG_SPEND: _handle_log_spend,
-        Intent.LOG_INCOME: _handle_log_income,
-        Intent.LOG_SAVINGS: _handle_log_savings,
-        Intent.SET_BUDGET: _handle_set_budget,
-        Intent.SHOW_BUDGET: _handle_show_budget,
-        Intent.LOG_HOURS: _handle_log_hours,
-        Intent.SHOW_HOURS: _handle_show_hours,
-        Intent.CONFIRM_SAVINGS: _handle_confirm_savings,
-        Intent.UNDO_HOURS: _handle_undo_hours,
-        Intent.UNDO_BUDGET: _handle_undo_budget,
-        Intent.RECURRING_BUDGET: _handle_recurring_budget,
-        Intent.WEEKLY_PLAN: _handle_weekly_plan,
-        Intent.HELP: _handle_help,
-        Intent.WEEKLY_REPORT: _handle_weekly_report,
-        Intent.EXPORT: _handle_export,
-        Intent.CONVERSATION: _handle_conversation,
-        Intent.CLEAR_CHAT: _handle_clear_chat,
-        Intent.REMOTE_SHELL: _handle_remote_shell,
-        Intent.GIT_OPS: _handle_git_ops,
-        Intent.FILE_OPS: _handle_file_ops,
-        Intent.SYSTEM_STATUS: _handle_system_status,
-        Intent.SCAN_JOBS: _handle_scan_jobs,
-        Intent.SHOW_JOBS: _handle_show_jobs,
-        Intent.APPROVE_JOBS: _handle_approve_jobs,
-        Intent.REJECT_JOB: _handle_reject_job,
-        Intent.JOB_STATS: _handle_job_stats,
-        Intent.SEARCH_CONFIG: _handle_search_config,
-        Intent.PAUSE_JOBS: _handle_pause_jobs,
-        Intent.RESUME_JOBS: _handle_resume_jobs,
-        Intent.JOB_DETAIL: _handle_job_detail,
-        Intent.ENGINE_STATS: _handle_engine_stats,
-        Intent.ENGINE_COMPARE: _handle_engine_compare,
-        Intent.ENGINE_LEARNING: _handle_engine_learning,
-        Intent.ENGINE_RESET: _handle_engine_reset,
-    }
+    from jobpulse.handler_registry import get_handler_map
+    handlers = get_handler_map()
 
     handler = handlers.get(cmd.intent)
     if not handler:
