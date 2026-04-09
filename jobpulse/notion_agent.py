@@ -6,78 +6,9 @@ import subprocess
 from datetime import datetime, timedelta
 from jobpulse.config import NOTION_API_KEY, NOTION_TASKS_DB_ID, NOTION_RESEARCH_DB_ID
 from shared.logging_config import get_logger
+from jobpulse.notion_client import notion_api as _notion_api  # noqa: F401 — re-exported for existing importers
 
 logger = get_logger(__name__)
-
-
-def _notion_api(method: str, endpoint: str, data: dict = None) -> dict:
-    """Call Notion API via curl (avoids Python SSL issues).
-
-    Handles 401 (unauthorized), 429 (rate limit with retry), and other errors.
-    Returns empty dict on failure — callers must check for expected keys.
-    """
-    import time
-
-    if not NOTION_API_KEY:
-        logger.error("NOTION_API_KEY not set — skipping Notion API call to %s", endpoint)
-        return {}
-
-    cmd = ["curl", "-s", "-X", method,
-           f"https://api.notion.com/v1{endpoint}",
-           "-H", f"Authorization: Bearer {NOTION_API_KEY}",
-           "-H", "Content-Type: application/json",
-           "-H", "Notion-Version: 2022-06-28"]
-    if data:
-        cmd.extend(["-d", json.dumps(data)])
-
-    for attempt in range(3):
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-            if not result.stdout:
-                logger.warning("Notion API: empty response for %s %s", method, endpoint)
-                return {}
-
-            parsed = json.loads(result.stdout)
-
-            # Check for Notion error responses
-            if parsed.get("object") == "error":
-                status = parsed.get("status", 0)
-                msg = parsed.get("message", "unknown error")
-
-                if status == 401:
-                    logger.error("Notion API 401: unauthorized — check NOTION_API_KEY")
-                    return {}  # No retry for auth errors
-
-                if status == 429:
-                    retry_after = int(parsed.get("retry_after", 2))
-                    wait = max(retry_after, 2 * (attempt + 1))
-                    logger.warning(
-                        "Notion API 429: rate limited, retrying in %ds (attempt %d/3)",
-                        wait, attempt + 1,
-                    )
-                    time.sleep(wait)
-                    continue
-
-                logger.error("Notion API error %d: %s (endpoint: %s)", status, msg, endpoint)
-                return {}
-
-            return parsed
-
-        except json.JSONDecodeError as e:
-            logger.error("Notion API: invalid JSON response for %s: %s", endpoint, e)
-            return {}
-        except subprocess.TimeoutExpired:
-            logger.warning("Notion API timeout for %s %s (attempt %d/3)", method, endpoint, attempt + 1)
-            if attempt < 2:
-                time.sleep(2)
-                continue
-            return {}
-        except Exception as e:
-            logger.error("Notion API error: %s", e)
-            return {}
-
-    logger.error("Notion API: failed after 3 attempts for %s %s", method, endpoint)
-    return {}
 
 
 def get_today_tasks() -> list[dict]:

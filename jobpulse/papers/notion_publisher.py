@@ -2,65 +2,14 @@
 
 from __future__ import annotations
 
-import httpx
-
-from jobpulse.config import NOTION_API_KEY, NOTION_PARENT_PAGE_ID, NOTION_RESEARCH_DB_ID
+from jobpulse.config import NOTION_PARENT_PAGE_ID, NOTION_RESEARCH_DB_ID
 from jobpulse.papers.models import BlogPost, RankedPaper
+from jobpulse.notion_client import notion_api as _notion_api
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_NOTION_BASE = "https://api.notion.com/v1"
-_NOTION_VERSION = "2022-06-28"
 _BLOCK_BATCH = 100  # Notion API limit per append call
-
-
-# ---------------------------------------------------------------------------
-# Low-level helpers
-# ---------------------------------------------------------------------------
-
-
-def _notion_api(method: str, endpoint: str, body: dict | None = None) -> dict:
-    """Make an HTTP request to the Notion API.
-
-    Returns the parsed JSON response, or an empty dict on failure.
-    Uses httpx (not requests / curl) per project conventions.
-    """
-    if not NOTION_API_KEY:
-        logger.error("NOTION_API_KEY not set — skipping Notion call to %s", endpoint)
-        return {}
-
-    headers = {
-        "Authorization": f"Bearer {NOTION_API_KEY}",
-        "Content-Type": "application/json",
-        "Notion-Version": _NOTION_VERSION,
-    }
-
-    try:
-        with httpx.Client(timeout=15) as client:
-            response = client.request(
-                method=method.upper(),
-                url=f"{_NOTION_BASE}{endpoint}",
-                headers=headers,
-                json=body,
-            )
-        try:
-            from shared.rate_monitor import record_from_headers
-            record_from_headers("notion", dict(response.headers), endpoint=endpoint)
-        except Exception:
-            pass  # Non-blocking monitoring
-        data: dict = response.json()
-        if data.get("object") == "error":
-            logger.error(
-                "Notion API error %s: %s — endpoint %s",
-                data.get("status"),
-                data.get("message"),
-                endpoint,
-            )
-        return data
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Notion API request failed (%s %s): %s", method, endpoint, exc)
-        return {}
 
 
 def _text_block(text: str, block_type: str = "paragraph") -> dict:

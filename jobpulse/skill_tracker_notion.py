@@ -9,42 +9,21 @@ verified skills to the MindGraph profile via SkillGraphStore.
 from __future__ import annotations
 
 import json
-import subprocess
 from datetime import date
 from pathlib import Path
 
 from shared.logging_config import get_logger
 
-from jobpulse.config import DATA_DIR, NOTION_API_KEY, NOTION_PARENT_PAGE_ID
+from jobpulse.config import DATA_DIR, NOTION_PARENT_PAGE_ID
+from jobpulse.notion_client import notion_api as _notion_api
 
 logger = get_logger(__name__)
 
 DB_ID_CACHE_PATH = DATA_DIR / "skill_tracker_db_id.txt"
 
 
-# ---------------------------------------------------------------------------
-# Notion API helper (curl-based, same pattern as job_notion_sync.py)
-# ---------------------------------------------------------------------------
 
-
-def _notion_api(method: str, endpoint: str, data: dict | None = None) -> dict:
-    """Call Notion API via curl."""
-    cmd = [
-        "curl", "-s", "-X", method,
-        f"https://api.notion.com/v1{endpoint}",
-        "-H", f"Authorization: Bearer {NOTION_API_KEY}",
-        "-H", "Content-Type: application/json",
-        "-H", "Notion-Version: 2022-06-28",
-    ]
-    if data:
-        cmd.extend(["-d", json.dumps(data)])
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        return json.loads(result.stdout) if result.stdout else {}
-    except Exception as e:
-        logger.error("Notion API error %s %s: %s", method, endpoint, e)
-        return {}
+# _notion_api imported from jobpulse.notion_client (centralized, with retry + 401 handling)
 
 
 # ---------------------------------------------------------------------------

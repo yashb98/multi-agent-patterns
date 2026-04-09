@@ -7,12 +7,12 @@ Uses the same curl-based Notion API pattern as notion_agent.py.
 from __future__ import annotations
 
 import json
-import subprocess
 from typing import TYPE_CHECKING
 
 from shared.logging_config import get_logger
 
-from jobpulse.config import NOTION_API_KEY, NOTION_APPLICATIONS_DB_ID
+from jobpulse.config import NOTION_APPLICATIONS_DB_ID
+from jobpulse.notion_client import notion_api as _notion_api
 
 if TYPE_CHECKING:
     from datetime import date
@@ -65,24 +65,8 @@ def platform_display(platform: str) -> str:
     return PLATFORM_NAMES.get(platform, platform.title())
 
 
-def _notion_api(method: str, endpoint: str, data: dict | None = None) -> dict:
-    """Call Notion API via curl (same pattern as notion_agent.py)."""
-    cmd = [
-        "curl", "-s", "-X", method,
-        f"https://api.notion.com/v1{endpoint}",
-        "-H", f"Authorization: Bearer {NOTION_API_KEY}",
-        "-H", "Content-Type: application/json",
-        "-H", "Notion-Version: 2022-06-28",
-    ]
-    if data:
-        cmd.extend(["-d", json.dumps(data)])
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        return json.loads(result.stdout) if result.stdout else {}
-    except Exception as e:
-        logger.error("Notion API error %s %s: %s", method, endpoint, e)
-        return {}
+# _notion_api imported from jobpulse.notion_client (centralized, with retry + 401 handling)
 
 
 # ---------------------------------------------------------------------------
