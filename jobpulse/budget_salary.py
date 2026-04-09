@@ -9,8 +9,10 @@ import re
 from datetime import datetime, timedelta
 
 from shared.logging_config import get_logger
+from shared.db import get_db_conn
 from jobpulse import event_logger
 from jobpulse.config import HOURLY_RATE
+from jobpulse.budget_constants import DB_PATH, get_period_start, get_period_end
 
 logger = get_logger(__name__)
 
@@ -28,10 +30,15 @@ WORD_TO_NUM = {
 }
 
 
-# ── Helpers (imported from budget_agent at call time to avoid circular import) ──
+# ── DB + period helpers (imported directly to avoid circular dependency) ──
+
+def _get_conn():
+    """Budget SQLite connection (same DB as budget_agent)."""
+    return get_db_conn(DB_PATH)
+
 
 def _budget():
-    """Lazy import of budget_agent to avoid circular dependency."""
+    """Lazy import of budget_agent for business methods only."""
     import jobpulse.budget_agent as _ba
     return _ba
 
@@ -41,14 +48,13 @@ def _get_salary_week_start(date: datetime = None) -> str:
 
     Uses the same anchor as the budget period so budget + salary align.
     """
-    return _budget()._get_period_start(date)
+    return get_period_start(date)
 
 
 def _get_or_create_salary_page(week_start: str) -> str:
     """Get or create a Notion sub-page for this week's salary timesheet."""
-    ba = _budget()
     # Check if we already have a page for this week
-    conn = ba._get_conn()
+    conn = _get_conn()
     row = conn.execute(
         "SELECT DISTINCT notion_page_id FROM work_hours WHERE week_start=? AND notion_page_id != ''",
         (week_start,)
@@ -63,7 +69,7 @@ def _get_or_create_salary_page(week_start: str) -> str:
     from jobpulse.notion_agent import _notion_api
 
     parent_id = BUDGET_PAGE_ID
-    period_end = ba._get_period_end(week_start)
+    period_end = get_period_end(week_start)
     title = f"Salary Timesheet — {week_start} to {period_end}"
 
     data = {
@@ -111,7 +117,6 @@ def _add_row_to_salary_page(page_id: str, hours: float, rate: float, date_str: s
         return
 
     from jobpulse.notion_agent import _notion_api
-    ba = _budget()
 
     # Find the table block
     blocks = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
@@ -149,7 +154,7 @@ def _add_row_to_salary_page(page_id: str, hours: float, rate: float, date_str: s
     })
 
     # Add updated TOTAL row (use Sunday-based week to match work_hours table)
-    conn = ba._get_conn()
+    conn = _get_conn()
     salary_week = _get_salary_week_start(datetime.strptime(date_str, "%Y-%m-%d"))
     totals = conn.execute(
         "SELECT SUM(hours) as h, SUM(total_earned) as e FROM work_hours WHERE week_start=?",
@@ -345,7 +350,7 @@ def log_hours(text: str) -> str:
     page_id = _get_or_create_salary_page(week_start)
 
     # Store in SQLite
-    conn = ba._get_conn()
+    conn = _get_conn()
     conn.execute(
         "INSERT INTO work_hours (hours, hourly_rate, total_earned, date, week_start, notion_page_id, created_at) "
         "VALUES (?,?,?,?,?,?,?)",
@@ -371,7 +376,7 @@ def log_hours(text: str) -> str:
 
     # Also log as income in the main budget
     ba.add_transaction(gross, f"Salary ({hours}h)", "Salary", "income", "income")
-    ba.sync_expense_to_notion({"category": "Salary", "week_start": ba._get_week_start(target_date),
+    ba.sync_expense_to_notion({"category": "Salary", "week_start": get_period_start(target_date),
                             "description": f"Salary ({hours}h)", "date": date_str})
 
     event_logger.log_event(
@@ -407,7 +412,7 @@ def confirm_savings_transfer(week_start: str = None) -> str:
     now = datetime.now()
     week_start = week_start or _get_salary_week_start(now)
 
-    conn = ba._get_conn()
+    conn = _get_conn()
     week_totals = conn.execute(
         "SELECT SUM(total_earned) as e FROM work_hours WHERE week_start=?",
         (week_start,)
@@ -425,11 +430,11 @@ def confirm_savings_transfer(week_start: str = None) -> str:
     # Log as savings transaction
     ba.add_transaction(savings_amount, f"Period savings (30% of £{week_after_tax:.2f})",
                     "Savings", "savings", "savings")
-    ba.sync_expense_to_notion({"category": "Savings", "week_start": ba._get_week_start(now),
+    ba.sync_expense_to_notion({"category": "Savings", "week_start": get_period_start(now),
                             "description": f"Period savings", "date": now.strftime("%Y-%m-%d")})
 
     # Add "Saved" row to the Notion timesheet
-    conn2 = ba._get_conn()
+    conn2 = _get_conn()
     row = conn2.execute(
         "SELECT notion_page_id FROM work_hours WHERE week_start=? AND notion_page_id != '' LIMIT 1",
         (week_start,)
@@ -470,10 +475,8 @@ def confirm_savings_transfer(week_start: str = None) -> str:
 
 def get_hours_summary(week_start: str = None) -> str:
     """Get formatted work hours summary for the current budget period."""
-    ba = _budget()
-
     week_start = week_start or _get_salary_week_start()
-    conn = ba._get_conn()
+    conn = _get_conn()
 
     rows = conn.execute(
         "SELECT hours, hourly_rate, total_earned, date FROM work_hours "
@@ -495,7 +498,7 @@ def get_hours_summary(week_start: str = None) -> str:
     total_after_tax = round(total_gross - total_tax, 2)
     total_savings = round(total_after_tax * SAVINGS_RATE, 2)
 
-    period_end = ba._get_period_end(week_start)
+    period_end = get_period_end(week_start)
     lines = [f"⏱️ WORK HOURS ({week_start} to {period_end}):\n"]
     for r in rows:
         lines.append(f"  {r['date']} — {r['hours']:.1f}h × £{r['hourly_rate']:.2f} = £{r['total_earned']:.2f}")
@@ -508,7 +511,7 @@ def get_hours_summary(week_start: str = None) -> str:
     lines.append(f"  Remaining: £{round(total_after_tax - total_savings, 2):.2f}")
 
     page_url = ""
-    conn2 = ba._get_conn()
+    conn2 = _get_conn()
     row = conn2.execute(
         "SELECT notion_page_id FROM work_hours WHERE week_start=? AND notion_page_id != '' LIMIT 1",
         (week_start,)
@@ -530,7 +533,6 @@ def _rebuild_notion_timesheet(page_id: str, salary_week_start: str):
         return
 
     from jobpulse.notion_agent import _notion_api
-    ba = _budget()
 
     # Find the table
     blocks = _notion_api("GET", f"/blocks/{page_id}/children?page_size=100")
@@ -553,7 +555,7 @@ def _rebuild_notion_timesheet(page_id: str, salary_week_start: str):
         _notion_api("DELETE", f"/blocks/{row['id']}")
 
     # Re-add data rows from SQLite
-    conn = ba._get_conn()
+    conn = _get_conn()
     entries = conn.execute(
         "SELECT hours, hourly_rate, total_earned, date FROM work_hours "
         "WHERE week_start=? ORDER BY date",
@@ -608,7 +610,7 @@ def undo_hours(pick: int = None) -> str:
     """Show last 5 hour entries for selection, or delete a specific one by number."""
     ba = _budget()
 
-    conn = ba._get_conn()
+    conn = _get_conn()
     recent = conn.execute(
         "SELECT * FROM work_hours ORDER BY created_at DESC LIMIT 5"
     ).fetchall()
@@ -637,7 +639,7 @@ def undo_hours(pick: int = None) -> str:
 
     target = recent[pick - 1]
 
-    conn = ba._get_conn()
+    conn = _get_conn()
     conn.execute("DELETE FROM work_hours WHERE id=?", (target["id"],))
     conn.commit()
     conn.close()
@@ -646,7 +648,7 @@ def undo_hours(pick: int = None) -> str:
     # Use exact hours + rate match to avoid fuzzy LIKE collisions
     hourly_rate = HOURLY_RATE
     expected_gross = round(target["hours"] * hourly_rate, 2)
-    conn2 = ba._get_conn()
+    conn2 = _get_conn()
     conn2.execute(
         "DELETE FROM transactions WHERE id = ("
         "  SELECT id FROM transactions WHERE amount=? AND date=? AND type='income' "
@@ -660,7 +662,7 @@ def undo_hours(pick: int = None) -> str:
     # Recalculate Notion budget
     try:
         week_start = target["week_start"]
-        budget_week = ba._get_week_start(datetime.strptime(week_start, "%Y-%m-%d"))
+        budget_week = get_period_start(datetime.strptime(week_start, "%Y-%m-%d"))
         ba.sync_expense_to_notion({"category": "Salary", "week_start": budget_week,
                                 "description": "Salary (recalc)", "date": target["date"]})
         ba._update_section_totals(budget_week)

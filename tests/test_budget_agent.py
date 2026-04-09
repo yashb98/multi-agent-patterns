@@ -406,6 +406,7 @@ def tmp_budget_db(tmp_path, monkeypatch):
     """Create a temporary budget.db and patch all _get_conn to use it."""
     db_file = tmp_path / "budget.db"
     monkeypatch.setattr("jobpulse.budget_agent.DB_PATH", db_file)
+    monkeypatch.setattr("jobpulse.budget_salary.DB_PATH", db_file)
     monkeypatch.setattr("jobpulse.budget_tracker.DB_PATH", db_file)
     init_db()
     return db_file
