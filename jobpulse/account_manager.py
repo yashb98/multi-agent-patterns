@@ -11,11 +11,12 @@ from urllib.parse import urlparse
 
 from shared.logging_config import get_logger
 
+from jobpulse.config import DATA_DIR
 from jobpulse.ext_models import AccountInfo
 
 logger = get_logger(__name__)
 
-_DEFAULT_DB = "data/ats_accounts.db"
+_DEFAULT_DB = str(DATA_DIR / "ats_accounts.db")
 
 
 class AccountManager:

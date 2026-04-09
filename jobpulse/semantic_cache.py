@@ -16,9 +16,11 @@ from pathlib import Path
 
 from shared.logging_config import get_logger
 
+from jobpulse.config import DATA_DIR
+
 logger = get_logger(__name__)
 
-_DEFAULT_DB = Path("data/semantic_cache.db")
+_DEFAULT_DB = DATA_DIR / "semantic_cache.db"
 _MODEL_NAME = "all-MiniLM-L6-v2"
 
 

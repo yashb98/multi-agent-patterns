@@ -587,7 +587,8 @@ def _ensure_loaded():
 
     from shared.code_intelligence import CodeIntelligence, _is_excluded  # noqa: F811
 
-    db_path = os.environ.get("CI_DB_PATH", "data/code_intelligence.db")
+    _default_db = str(Path(__file__).resolve().parent.parent / "data" / "code_intelligence.db")
+    db_path = os.environ.get("CI_DB_PATH", _default_db)
     project_root = os.environ.get("CI_PROJECT_ROOT", str(Path.cwd()))
 
     ci = CodeIntelligence(db_path)

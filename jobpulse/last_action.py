@@ -11,7 +11,9 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_LAST_ACTION_FILE = Path(__file__).parent.parent / "data" / "last_action.json"
+from jobpulse.config import DATA_DIR
+
+_LAST_ACTION_FILE = DATA_DIR / "last_action.json"
 
 # Intents that have reversible side effects
 UNDOABLE_INTENTS = {

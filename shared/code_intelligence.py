@@ -18,6 +18,8 @@ import subprocess
 import time
 from fnmatch import fnmatch
 from pathlib import Path
+
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 from typing import Any
 
 from shared.code_graph import CodeGraph
@@ -102,7 +104,7 @@ class CodeIntelligence:
     Single DB file at db_path with WAL mode for concurrent reads.
     """
 
-    def __init__(self, db_path: str = "data/code_intelligence.db",
+    def __init__(self, db_path: str = str(_DATA_DIR / "code_intelligence.db"),
                  graph_only: bool = False):
         self.db_path = db_path
 

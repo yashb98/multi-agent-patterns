@@ -96,7 +96,7 @@ class ExperienceMemory:
         db_path: SQLite database path. Use ":memory:" for tests.
     """
 
-    def __init__(self, max_size: int = 20, db_path: str = "data/experience_memory.db"):
+    def __init__(self, max_size: int = 20, db_path: str = str(Path(__file__).resolve().parent.parent / "data" / "experience_memory.db")):
         self.max_size = max_size
         self.db_path = db_path
 

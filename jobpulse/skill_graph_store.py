@@ -19,7 +19,9 @@ from mindgraph_app.storage import get_conn, init_db, upsert_entity, upsert_relat
 # Default paths
 # ---------------------------------------------------------------------------
 
-_DEFAULT_SYNONYMS_PATH = str(Path(__file__).parent.parent / "data" / "skill_synonyms.json")
+from jobpulse.config import DATA_DIR
+
+_DEFAULT_SYNONYMS_PATH = str(DATA_DIR / "skill_synonyms.json")
 
 # ---------------------------------------------------------------------------
 # Data Classes

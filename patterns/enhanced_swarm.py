@@ -37,6 +37,8 @@ import sys
 import json
 import os
 
+from pathlib import Path
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from langgraph.graph import StateGraph, START, END
@@ -77,7 +79,8 @@ logger = get_logger(__name__)
 # ─── GLOBAL LEARNING SYSTEMS ────────────────────────────────────
 # SQLite-backed — experiences survive process restarts.
 
-_experience_memory = ExperienceMemory(max_size=50, db_path="data/experience_memory.db")
+_DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
+_experience_memory = ExperienceMemory(max_size=50, db_path=f"{_DATA_DIR}/experience_memory.db")
 _optimized_prompts = {}  # Cache of optimized prompts per role+domain
 _memory_manager = MemoryManager()
 _grpo = TrainingFreeGRPO(llm=None)  # llm set lazily at first use

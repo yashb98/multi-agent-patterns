@@ -13,9 +13,11 @@ from urllib.parse import urlparse
 
 from shared.logging_config import get_logger
 
+from jobpulse.config import DATA_DIR
+
 logger = get_logger(__name__)
 
-_DEFAULT_DB = "data/navigation_learning.db"
+_DEFAULT_DB = str(DATA_DIR / "navigation_learning.db")
 
 
 class NavigationLearner:
