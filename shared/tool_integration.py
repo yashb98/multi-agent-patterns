@@ -294,3 +294,55 @@ class ToolExecutor:
         if agent_name not in self.permissions:
             self.permissions[agent_name] = {}
         self.permissions[agent_name][tool_name] = level
+
+    def record_dispatch(
+        self,
+        intent: str,
+        agent_name: str,
+        result_summary: str,
+        success: bool,
+        error: str | None = None,
+    ) -> None:
+        """Record a dispatcher-level agent invocation in the audit log.
+
+        Called by swarm_dispatcher and dispatcher after every agent call,
+        even when agents bypass the ToolExecutor to call APIs directly.
+        This gives us a unified audit trail for every dispatch event.
+
+        Args:
+            intent: The user intent (e.g. "log_spend", "arxiv").
+            agent_name: The handler function that ran (e.g. "gmail_agent").
+            result_summary: First 200 chars of the result string.
+            success: False if the result starts with an error indicator.
+            error: Optional error string for failed dispatches.
+        """
+        self.audit.record(AuditEntry(
+            timestamp=datetime.now().strftime("%H:%M:%S"),
+            agent_name=agent_name,
+            tool_name="dispatch",
+            action=intent,
+            input_summary=intent,
+            output_summary=result_summary[:200],
+            risk_level=RiskLevel.LOW.value,
+            approved_by="system",
+            success=success,
+            error=error,
+        ))
+
+
+# ── Shared singleton ────────────────────────────────────────────────────────
+
+_shared_executor: ToolExecutor | None = None
+
+
+def get_shared_tool_executor() -> ToolExecutor:
+    """Return (or create) the shared ToolExecutor singleton.
+
+    The singleton accumulates the full audit log across all dispatches
+    in a process lifetime. Call .audit.summary() at any time to see
+    total calls, failures, and success rate.
+    """
+    global _shared_executor
+    if _shared_executor is None:
+        _shared_executor = ToolExecutor()
+    return _shared_executor

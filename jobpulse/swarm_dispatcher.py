@@ -341,6 +341,20 @@ def dispatch(cmd: ParsedCommand) -> str:
     if score > 0:
         store_experience(cmd.intent.value, f"Tasks: {[t['agent'] for t in tasks]}", score)
 
+    # Audit log — captures every dispatch regardless of whether agent used ToolExecutor
+    try:
+        from shared.tool_integration import get_shared_tool_executor
+        _is_err = not final_result or "⚠️" in final_result[:20]
+        get_shared_tool_executor().record_dispatch(
+            intent=cmd.intent.value,
+            agent_name=",".join(t["agent"] for t in tasks) or "unknown",
+            result_summary=final_result[:200] if final_result else "",
+            success=not _is_err,
+            error=final_result[:200] if _is_err else None,
+        )
+    except Exception:
+        pass  # Audit is best-effort — never block a dispatch
+
     # Record action for undo ("stop" command)
     from jobpulse.last_action import save_last_action
     save_last_action(cmd.intent.value, cmd.raw, final_result or "")

@@ -61,6 +61,20 @@ def dispatch(cmd: ParsedCommand) -> str:
             metadata={"intent": cmd.intent.value, "raw_input": cmd.raw[:200]},
         )
 
+        # Audit log — unified tool audit trail for all dispatches
+        try:
+            from shared.tool_integration import get_shared_tool_executor
+            _is_err = not result or "⚠️" in result[:20]
+            get_shared_tool_executor().record_dispatch(
+                intent=cmd.intent.value,
+                agent_name=cmd.intent.value,
+                result_summary=result[:200] if result else "",
+                success=not _is_err,
+                error=result[:200] if _is_err else None,
+            )
+        except Exception:
+            pass  # Audit is best-effort — never block a dispatch
+
         trail.finalize(result[:500] if result else "")
         return result
     except Exception as e:
