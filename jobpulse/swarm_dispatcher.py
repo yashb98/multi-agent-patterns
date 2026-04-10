@@ -336,8 +336,8 @@ def dispatch(cmd: ParsedCommand) -> str:
         else:
             final_result = "\n\n".join(f"{v}" for v in results.values() if v and not v.startswith("Error"))
 
-    # Step 4: Store experience
-    score = _score_result(final_result)
+    # Step 4: Store experience (LLM scorer kicks in for ambiguous mid-range results)
+    score = _score_result(final_result, intent=cmd.intent.value)
     if score > 0:
         store_experience(cmd.intent.value, f"Tasks: {[t['agent'] for t in tasks]}", score)
 
@@ -426,14 +426,59 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
     return _handle_unknown(cmd)
 
 
-def _score_result(result: str) -> float:
-    """Simple heuristic scoring of a result. Higher = better."""
+def _score_result(result: str, intent: str = "") -> float:
+    """Score a result using fast heuristics with LLM escalation for ambiguous cases.
+
+    Fast path (free, <1ms): obvious failures get 0, obvious successes get
+    a baseline from length + structure signals.
+
+    LLM path (~$0.0005/call): only triggered when the heuristic lands in
+    the ambiguous 2-6 range, where getting the score right matters for
+    GRPO learning quality.
+    """
     if not result:
         return 0.0
-    score = 0.0
-    score += min(len(result) / 500, 3.0)  # length (up to 3 pts)
-    if "error" in result.lower() or "failed" in result.lower():
-        score -= 2.0
-    if any(e in result for e in ["✅", "📧", "📅", "💰", "💻"]):
-        score += 1.0  # has emoji structure = formatted response
-    return max(0.0, score)
+
+    # ── Fast-path heuristics ──
+    lower = result.lower()
+    if "error" in lower or "failed" in lower or "exception" in lower:
+        return max(0.0, min(len(result) / 1000, 1.5) - 2.0)  # penalise errors hard
+
+    heuristic = 0.0
+    heuristic += min(len(result) / 500, 3.0)              # length (up to 3 pts)
+    if any(e in result for e in ["✅", "📧", "📅", "💰", "💻", "📋", "🔍"]):
+        heuristic += 1.0   # structured/formatted response
+    if "\n" in result and len(result.split("\n")) >= 3:
+        heuristic += 0.5   # multi-line = more complete answer
+    heuristic = max(0.0, heuristic)
+
+    # ── LLM escalation for ambiguous mid-range scores ──
+    if 2.0 <= heuristic <= 6.0 and intent:
+        try:
+            from shared.agents import get_llm
+            from shared.streaming import smart_llm_call
+            llm = get_llm(model="gpt-4.1-mini", temperature=0)
+            prompt = (
+                f"Rate this agent response for intent '{intent}' on a 0-10 scale.\n\n"
+                f"Criteria:\n"
+                f"- Completeness: did it fully address the request? (0-3 pts)\n"
+                f"- Accuracy: plausibly correct? (0-3 pts)\n"
+                f"- Structure: clear formatting, easy to read? (0-2 pts)\n"
+                f"- Actionability: can the user act on this? (0-2 pts)\n\n"
+                f"Response to rate:\n{result[:1500]}\n\n"
+                f"Reply with JSON only: {{\"score\": <float 0-10>, \"reason\": \"<one sentence>\"}}"
+            )
+            raw = smart_llm_call(llm, prompt)
+            import re
+            m = re.search(r'\{.*?"score"\s*:\s*([\d.]+)', raw, re.DOTALL)
+            if m:
+                llm_score = float(m.group(1))
+                logger.debug(
+                    "GRPO LLM scorer: heuristic=%.1f → llm=%.1f (intent=%s)",
+                    heuristic, llm_score, intent,
+                )
+                return max(0.0, min(10.0, llm_score))
+        except Exception as _e:
+            logger.debug("GRPO LLM scorer skipped: %s", _e)
+
+    return min(heuristic, 10.0)
