@@ -26,4 +26,8 @@ from shared.memory_layer._stores import (  # noqa: F401
 )
 from shared.memory_layer._pattern import PatternMemory  # noqa: F401
 from shared.memory_layer._router import TieredRouter  # noqa: F401
-from shared.memory_layer._manager import MemoryManager  # noqa: F401
+from shared.memory_layer._manager import (  # noqa: F401
+    MemoryManager,
+    get_shared_memory_manager,
+    reset_shared_memory_manager,
+)

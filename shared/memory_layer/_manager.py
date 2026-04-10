@@ -18,8 +18,12 @@ from shared.memory_layer._stores import (
 )
 from shared.memory_layer._pattern import PatternMemory
 from shared.memory_layer._router import TieredRouter
+from shared.paths import DATA_DIR
 
 logger = get_logger(__name__)
+
+# Default persistent storage directory — survives process restarts
+_DEFAULT_STORAGE_DIR = str(DATA_DIR / "agent_memory")
 
 
 class MemoryManager:
@@ -53,7 +57,7 @@ class MemoryManager:
         memory.learn_procedure("physics", "Always cite Nature/Science for quantum claims")
     """
 
-    def __init__(self, storage_dir: str = "/tmp/agent_memory"):
+    def __init__(self, storage_dir: str = _DEFAULT_STORAGE_DIR):
         self.storage_dir = storage_dir
         os.makedirs(storage_dir, exist_ok=True)
 
@@ -114,6 +118,17 @@ class MemoryManager:
             proc = self.procedural.format_for_prompt(domain, n=3)
             if proc:
                 sections.append(proc)
+
+        # Experiential: GRPO-learned patterns from successful past runs
+        # All agents benefit from these — they capture cross-agent winning patterns
+        try:
+            from shared.experiential_learning import get_shared_experience_memory
+            exp_mem = get_shared_experience_memory()
+            exp_context = exp_mem.format_for_prompt(domain or agent_name, n=2)
+            if exp_context:
+                sections.append(exp_context)
+        except Exception:
+            pass  # ExperienceMemory is optional — never block agent execution
 
         if not sections:
             return ""
@@ -262,3 +277,34 @@ class MemoryManager:
                     )
 
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Shared singleton factory — mirrors get_shared_experience_memory() pattern
+# ---------------------------------------------------------------------------
+
+_shared_manager: "MemoryManager | None" = None
+
+
+def get_shared_memory_manager(storage_dir: str | None = None) -> "MemoryManager":
+    """Return (or create) the shared MemoryManager singleton.
+
+    All pattern modules should call this instead of constructing their own
+    MemoryManager() — ensures all agents share the same episodic, semantic,
+    and procedural memory across a process lifetime.
+
+    Args:
+        storage_dir: Override storage path (use tmp_path in tests).
+    """
+    global _shared_manager
+    if _shared_manager is None:
+        path = storage_dir or _DEFAULT_STORAGE_DIR
+        _shared_manager = MemoryManager(storage_dir=path)
+        logger.info("Shared MemoryManager initialised at %s", path)
+    return _shared_manager
+
+
+def reset_shared_memory_manager() -> None:
+    """Reset the shared singleton. Used for test isolation."""
+    global _shared_manager
+    _shared_manager = None

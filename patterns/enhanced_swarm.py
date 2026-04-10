@@ -68,7 +68,7 @@ from shared.persona_evolution import (
     PersonaEvolutionConfig,
 )
 from shared.prompt_optimizer import PromptOptimizer
-from shared.memory_layer import MemoryManager
+from shared.memory_layer import get_shared_memory_manager
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
@@ -81,7 +81,7 @@ logger = get_logger(__name__)
 
 _experience_memory = get_shared_experience_memory()
 _optimized_prompts = {}  # Cache of optimized prompts per role+domain
-_memory_manager = MemoryManager()
+_memory_manager = get_shared_memory_manager()
 _grpo = TrainingFreeGRPO(llm=None)  # llm set lazily at first use
 
 

@@ -409,8 +409,8 @@ def fact_check_node(state: AgentState) -> dict:
 
     # ── learn_fact: store verified facts in semantic memory ──
     try:
-        from shared.memory_layer import MemoryManager
-        _mem = MemoryManager()
+        from shared.memory_layer import get_shared_memory_manager
+        _mem = get_shared_memory_manager()
         domain = topic.split()[0].lower() if topic else "general"
         for v in verifications:
             status = v.get("status", "") if isinstance(v, dict) else getattr(v, "status", "")

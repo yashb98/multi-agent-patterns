@@ -59,7 +59,7 @@ from shared.agents import (
     compute_cost_summary,
 )
 from shared.experiential_learning import Experience, get_shared_experience_memory
-from shared.memory_layer import MemoryManager
+from shared.memory_layer import get_shared_memory_manager
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
@@ -67,7 +67,7 @@ logger = get_logger(__name__)
 
 # ─── SHARED LEARNING MEMORY ───────────────────────────────────
 _experience_memory = get_shared_experience_memory()
-_memory_manager = MemoryManager()
+_memory_manager = get_shared_memory_manager()
 
 
 # ─── TASK ANALYZER NODE ─────────────────────────────────────────

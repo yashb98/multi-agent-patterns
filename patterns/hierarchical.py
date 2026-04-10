@@ -56,16 +56,16 @@ from shared.agents import (
     compute_cost_summary,
 )
 from shared.prompts import SUPERVISOR_PROMPT
-from shared.memory_layer import MemoryManager
+from shared.memory_layer import get_shared_memory_manager
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 # ─── MODULE-LEVEL MEMORY SINGLETON ──────────────────────────────
-# MemoryManager persists across invocations (episodic, semantic,
-# procedural stores survive process restarts via JSON files).
-_memory_manager = MemoryManager()
+# Shared singleton: all patterns share the same episodic/semantic/
+# procedural stores and GRPO experiences across the process lifetime.
+_memory_manager = get_shared_memory_manager()
 
 
 # ─── THE SUPERVISOR NODE ────────────────────────────────────────

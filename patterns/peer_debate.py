@@ -56,7 +56,7 @@ from shared.agents import (
 )
 from shared.prompts import WRITER_PROMPT, REVIEWER_PROMPT
 from shared.experiential_learning import Experience, get_shared_experience_memory
-from shared.memory_layer import MemoryManager
+from shared.memory_layer import get_shared_memory_manager
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
@@ -67,7 +67,7 @@ logger = get_logger(__name__)
 # shared across debate runs (same DB as enhanced_swarm).
 
 _experience_memory = get_shared_experience_memory()
-_memory_manager = MemoryManager()
+_memory_manager = get_shared_memory_manager()
 
 
 # ─── DEBATE-SPECIFIC AGENT VARIANTS ─────────────────────────────

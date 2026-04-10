@@ -17,7 +17,7 @@ from shared.persona_evolution import PersonaEvolver, PersonaEvolutionConfig
 from shared.experiential_learning import TrainingFreeGRPO, GRPOConfig, ExperienceMemory
 from shared.dynamic_agent_factory import DynamicAgentFactory, AgentTemplate
 from shared.prompt_optimizer import PromptOptimizer
-from shared.memory_layer import MemoryManager, PatternMemory, TieredRouter
+from shared.memory_layer import MemoryManager, PatternMemory, TieredRouter, get_shared_memory_manager, reset_shared_memory_manager
 
 __all__ = [
     "AgentState",
@@ -40,6 +40,8 @@ __all__ = [
     "AgentTemplate",
     "PromptOptimizer",
     "MemoryManager",
+    "get_shared_memory_manager",
+    "reset_shared_memory_manager",
     "PatternMemory",
     "TieredRouter",
 ]
