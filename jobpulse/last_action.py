@@ -119,7 +119,10 @@ def undo_last_action() -> str:
 
     except Exception as e:
         logger.error("Undo failed: %s", e)
-        return f"Undo failed: {e}"
+        from shared.agent_result import DispatchError, classify_error
+        cat, retry = classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="last_action",
+                             attempted_action="undo").to_user_message()
 
 
 def _parse_task_names(text: str) -> list[str]:

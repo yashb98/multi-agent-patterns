@@ -83,7 +83,11 @@ def resolve(approved: bool) -> str:
                 return f"{action}. {callback_result}"
         except Exception as e:
             logger.error("Approval callback error: %s", e)
-            return f"{action}, but callback failed: {e}"
+            from shared.agent_result import DispatchError, classify_error
+            cat, retry = classify_error(e)
+            err = DispatchError(cat, str(e), retry, agent_name="approval",
+                                attempted_action="execute callback")
+            return f"{action}, but callback failed: {err.message}"
 
     return f"{action}."
 

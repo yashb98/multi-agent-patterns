@@ -75,7 +75,10 @@ def execute(command_str: str) -> str:
     try:
         args = shlex.split(command_str)
     except ValueError as e:
-        return f"Parse error: {e}"
+        from shared.agent_result import DispatchError
+        return DispatchError("validation", f"Invalid command syntax: {e}",
+                             is_retryable=False, agent_name="remote_shell",
+                             attempted_action="parse command").to_user_message()
 
     logger.info("Executing: %s", command_str[:100])
 

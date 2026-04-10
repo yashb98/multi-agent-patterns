@@ -369,7 +369,8 @@ def _handle_export(cmd: ParsedCommand) -> str:
         path = export_all()
         return f"\U0001f4e6 Backup created!\n\nSaved to: {path}\n\nIncludes: databases, persona prompts, experiences, A/B tests, rate limits."
     except Exception as e:
-        return f"\u26a0\ufe0f Export failed: {e}"
+        cat, retry = _classify_error(e)
+        return DispatchError(cat, str(e), retry, agent_name="export").to_user_message()
 
 
 def _handle_remote_shell(cmd: ParsedCommand) -> str:
