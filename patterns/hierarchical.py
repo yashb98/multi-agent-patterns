@@ -57,6 +57,7 @@ from shared.agents import (
 )
 from shared.prompts import SUPERVISOR_PROMPT
 from shared.memory_layer import get_shared_memory_manager
+from shared.convergence import ConvergenceController
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
@@ -66,6 +67,7 @@ logger = get_logger(__name__)
 # Shared singleton: all patterns share the same episodic/semantic/
 # procedural stores and GRPO experiences across the process lifetime.
 _memory_manager = get_shared_memory_manager()
+_convergence = ConvergenceController()
 
 
 # ─── THE SUPERVISOR NODE ────────────────────────────────────────
@@ -141,11 +143,10 @@ def supervisor_node_rule_based(state: AgentState) -> dict:
         next_agent = "writer"
         reason = f"Accuracy failed ({state.get('accuracy_score', 0):.1f}/10), fact revision needed"
     else:
+        # Delegate final finish/continue decision to unified controller
+        convergence = _convergence.check(state)
         next_agent = "FINISH"
-        if review_passed and state.get("accuracy_passed", False):
-            reason = f"Both gates passed: quality={state.get('review_score', 0)}, accuracy={state.get('accuracy_score', 0):.1f}"
-        else:
-            reason = f"Max iterations ({iteration}) reached, accepting current draft"
+        reason = convergence.reason
     
     logger.info("Decision: %s", next_agent)
     logger.info("Reason: %s", reason)

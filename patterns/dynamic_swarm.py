@@ -60,6 +60,7 @@ from shared.agents import (
 )
 from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.memory_layer import get_shared_memory_manager
+from shared.convergence import ConvergenceController
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
@@ -68,6 +69,7 @@ logger = get_logger(__name__)
 # ─── SHARED LEARNING MEMORY ───────────────────────────────────
 _experience_memory = get_shared_experience_memory()
 _memory_manager = get_shared_memory_manager()
+_convergence = ConvergenceController()
 
 
 # ─── TASK ANALYZER NODE ─────────────────────────────────────────
@@ -345,25 +347,21 @@ def task_executor_node(state: AgentState) -> dict:
 def should_continue_swarm(state: AgentState) -> str:
     """
     After the task executor runs, decide: analyse more tasks or finish?
-    
-    If there are remaining tasks in the queue, go back to executor.
-    If the queue is empty, go to task_analyzer to re-evaluate.
-    If the task analyzer produced no tasks, we're done.
-    """
-    tasks = state.get("pending_tasks", [])
-    current = state.get("current_agent", "")
-    review_passed = state.get("review_passed", False)
-    iteration = state.get("iteration", 0)
-    
-    if review_passed and state.get("accuracy_passed", True):
-        return "finish"
 
-    if iteration >= 3:
-        return "finish"
-    
+    Convergence (dual gate + patience + max-iter) is delegated to
+    ConvergenceController. Pending-task queue logic remains here.
+    """
+    current = state.get("current_agent", "")
+    tasks = state.get("pending_tasks", [])
+
     if current == "FINISH":
         return "finish"
-    
+
+    # Use unified convergence controller
+    decision = _convergence.check(state)
+    if decision.should_stop:
+        return "finish"
+
     if tasks:
         # More tasks in queue — keep executing
         return "executor"

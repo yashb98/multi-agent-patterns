@@ -57,6 +57,7 @@ from shared.agents import (
 from shared.prompts import WRITER_PROMPT, REVIEWER_PROMPT
 from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.memory_layer import get_shared_memory_manager
+from shared.convergence import ConvergenceController
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
@@ -68,6 +69,7 @@ logger = get_logger(__name__)
 
 _experience_memory = get_shared_experience_memory()
 _memory_manager = get_shared_memory_manager()
+_convergence = ConvergenceController()
 
 
 # ─── DEBATE-SPECIFIC AGENT VARIANTS ─────────────────────────────
@@ -264,53 +266,24 @@ to feedback. The article should be better than the previous draft."""
 def convergence_check(state: AgentState) -> dict:
     """
     Evaluates whether the debate should continue or conclude.
-    
-    CONVERGENCE CRITERIA:
-    1. Score >= 7.0 (quality threshold met)
-    2. Iteration >= 3 (max rounds reached)
-    3. Score decreased from previous round (debate is hurting, not helping)
-    
-    Returns updated state with the decision.
+
+    Delegates to the shared ConvergenceController — dual gate (quality >= 8.0
+    AND accuracy >= 9.5), patience counter (no improvement for 2 rounds),
+    and max-iterations safety valve (3 rounds).
     """
     logger.info("CONVERGENCE CHECK")
 
     score = state.get("review_score", 0)
-    passed = state.get("review_passed", False)
+    accuracy_score = state.get("accuracy_score", 0)
     iteration = state.get("iteration", 0)
 
-    logger.info("Current score: %s/10", score)
-    logger.info("Passed threshold: %s", passed)
-    logger.info("Debate round: %d", iteration)
-    
-    accuracy_passed = state.get("accuracy_passed", False)
-    accuracy_score = state.get("accuracy_score", 0)
+    decision_obj = _convergence.check(state)
+    decision = "finish" if decision_obj.should_stop else "continue"
+    reason = decision_obj.reason
 
-    # Dual gate: quality AND accuracy must pass
-    quality_ok = passed and score >= 8.0
-    accuracy_ok = accuracy_passed
-
-    should_continue = (
-        (not quality_ok or not accuracy_ok)
-        and iteration < 3
-        and score < 9.0
-    )
-
-    if should_continue:
-        if quality_ok and not accuracy_ok:
-            decision = "continue"
-            reason = f"Quality passed ({score}/10) but accuracy failed ({accuracy_score:.1f}/10)"
-        else:
-            decision = "continue"
-            reason = f"Score {score}/10 below threshold, round {iteration}/3"
-    elif quality_ok and accuracy_ok:
-        decision = "finish"
-        reason = f"Both gates passed: quality={score}/10, accuracy={accuracy_score:.1f}/10"
-    else:
-        decision = "finish"
-        reason = f"Max rounds reached. Final score: {score}/10, accuracy: {accuracy_score:.1f}/10"
-    
-    logger.info("Decision: %s", decision)
-    logger.info("Reason: %s", reason)
+    logger.info("Current score: %s/10 | accuracy: %s/10 | round: %d",
+                score, accuracy_score, iteration)
+    logger.info("Decision: %s — %s", decision, reason)
 
     # Extract experiential learning from high-scoring debate rounds
     if score >= 7.0:

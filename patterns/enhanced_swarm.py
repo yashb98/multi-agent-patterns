@@ -69,6 +69,7 @@ from shared.persona_evolution import (
 )
 from shared.prompt_optimizer import PromptOptimizer
 from shared.memory_layer import get_shared_memory_manager
+from shared.convergence import ConvergenceController
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
@@ -83,6 +84,7 @@ _experience_memory = get_shared_experience_memory()
 _optimized_prompts = {}  # Cache of optimized prompts per role+domain
 _memory_manager = get_shared_memory_manager()
 _grpo = TrainingFreeGRPO(llm=None)  # llm set lazily at first use
+_convergence = ConvergenceController()  # Shared convergence controller
 
 
 # ─── ENHANCED NODE FUNCTIONS ─────────────────────────────────────
@@ -366,36 +368,35 @@ def enhanced_reviewer_node(state: AgentState) -> dict:
 
 
 def enhanced_convergence(state: AgentState) -> dict:
-    """Enhanced convergence with experience-aware thresholds."""
-    score = state.get("review_score", 0)
-    passed = state.get("review_passed", False)
+    """Enhanced convergence — delegates to ConvergenceController.
+
+    Preserves the adaptive threshold: if the system has accumulated enough
+    experience, the quality bar rises to push for better outputs over time.
+    The controller handles dual-gate, patience, and max-iterations logic.
+    """
+    score = state.get("review_score", 0.0)
+    accuracy_score = state.get("accuracy_score", 0.0)
     iteration = state.get("iteration", 0)
-    
-    # Adaptive threshold based on accumulated experience
-    base_threshold = 7.0
+
+    # Adaptive threshold: raise bar when we have enough historical experience
     if len(_experience_memory) > 5:
-        # We have enough experience — raise the bar slightly
         avg_historical = sum(
             e.score for e in _experience_memory.experiences
         ) / len(_experience_memory)
-        threshold = max(base_threshold, avg_historical * 0.9)
+        adaptive_threshold = max(_convergence.quality_threshold, avg_historical * 0.9)
+        # Temporarily clone controller with raised threshold for this check
+        from shared.convergence import ConvergenceController
+        checker = ConvergenceController(quality_threshold=adaptive_threshold)
+        checker._score_history = list(_convergence._score_history)
     else:
-        threshold = base_threshold
-    
-    accuracy_passed = state.get("accuracy_passed", False)
-    accuracy_score = state.get("accuracy_score", 0)
+        checker = _convergence
 
-    should_continue = (
-        (not passed or not accuracy_passed)
-        and score < threshold
-        and iteration < 3
-    )
-
-    decision = "continue" if should_continue else "finish"
+    decision_obj = checker.check(state)
+    decision = "finish" if decision_obj.should_stop else "continue"
 
     logger.info(
-        "Convergence: quality=%.1f, accuracy=%.1f, threshold=%.1f, iter=%d -> %s",
-        score, accuracy_score, threshold, iteration, decision,
+        "Convergence: quality=%.1f, accuracy=%.1f, iter=%d -> %s (%s)",
+        score, accuracy_score, iteration, decision, decision_obj.reason,
     )
 
     # Learn procedure from high-scoring convergence
@@ -403,8 +404,8 @@ def enhanced_convergence(state: AgentState) -> dict:
         _memory_manager.learn_procedure(
             domain="writing",
             strategy=(
-                f"Enhanced swarm convergence: GRPO group sampling with adaptive threshold "
-                f"{threshold:.1f}. Score {score}/10 at iteration {iteration}."
+                f"Enhanced swarm convergence: GRPO group sampling. "
+                f"Score {score:.1f}/10 at iteration {iteration}. {decision_obj.reason}"
             ),
             context=state.get("topic", "")[:200],
             score=score,
@@ -412,7 +413,7 @@ def enhanced_convergence(state: AgentState) -> dict:
         )
     _memory_manager.record_step(
         "convergence",
-        f"Enhanced convergence: {decision}, score={score:.1f}, threshold={threshold:.1f}",
+        f"Enhanced convergence: {decision}, score={score:.1f}",
         score=score,
     )
 
@@ -420,7 +421,7 @@ def enhanced_convergence(state: AgentState) -> dict:
     from shared.state import prune_state
     result = {
         "current_agent": decision,
-        "agent_history": [f"Convergence: {decision} (threshold: {threshold:.1f})"]
+        "agent_history": [f"Convergence: {decision} ({decision_obj.outcome.value})"]
     }
     result.update(prune_state(state))
     return result
