@@ -260,11 +260,11 @@ def scrutinize_cv_llm(
         f'"verdict": "shortlist"|"maybe"|"reject"}}'
     )
 
-    from shared.agents import get_openai_client
+    from shared.agents import get_openai_client, get_model_name
     client = get_openai_client()
     response = safe_openai_call(
         client,
-        model="gpt-4.1-mini",
+        model=get_model_name(),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         caller="gate4_llm_scrutiny",

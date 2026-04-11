@@ -204,7 +204,7 @@ def _extract_skills_llm(jd_text: str) -> dict:
 
     Truncates JD to 4000 chars. Temperature 0.0. JSON response format.
     """
-    from shared.agents import get_openai_client
+    from shared.agents import get_openai_client, get_model_name
 
     client = get_openai_client()
 
@@ -222,7 +222,7 @@ def _extract_skills_llm(jd_text: str) -> dict:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": truncated},

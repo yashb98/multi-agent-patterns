@@ -84,11 +84,12 @@ def _quick_evolve(agent_name: str, current_prompt: str, experiences: list,
     exp_lines = "\n".join(f"- {e['pattern']} (score: {e['score']:.1f})" for e in experiences[:5])
 
     try:
-        from shared.agents import get_openai_client
+        from shared.agents import get_openai_client, get_model_name, is_local_llm
         client = get_openai_client()
 
+        _result_preview = current_result[:2000] if is_local_llm() else current_result[:500]
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{
                 "role": "user",
                 "content": f"""Evolve this agent prompt based on learned experiences.
@@ -100,7 +101,7 @@ RECENT SUCCESSFUL PATTERNS:
 {exp_lines}
 
 LATEST RESULT (score {score:.1f}):
-{current_result[:500]}
+{_result_preview}
 
 Rules:
 1. Keep the core instructions intact
@@ -110,7 +111,7 @@ Rules:
 
 Return ONLY the evolved prompt text. No explanation."""
             }],
-            max_tokens=300,
+            max_tokens=800 if is_local_llm() else 300,
             temperature=0.3,
         )
 
@@ -149,11 +150,11 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
         # Evaluator: score a prompt against an experience pattern
         def evaluator(prompt: str, input_text: str) -> tuple[str, float]:
             """Evaluate how well a prompt would handle this input."""
-            from shared.agents import get_openai_client
+            from shared.agents import get_openai_client, get_model_name, is_local_llm
             client = get_openai_client()
             try:
                 response = client.chat.completions.create(
-                    model="gpt-4.1-mini",
+                    model=get_model_name(),
                     messages=[
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": f"Process this: {input_text}"},
@@ -165,7 +166,7 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
 
                 # Score: ask LLM to rate the output
                 score_resp = client.chat.completions.create(
-                    model="gpt-4.1-mini",
+                    model=get_model_name(),
                     messages=[{
                         "role": "user",
                         "content": (
@@ -176,7 +177,7 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
                             f"Return ONLY a number 0-10."
                         ),
                     }],
-                    max_tokens=5,
+                    max_tokens=20 if is_local_llm() else 5,
                     temperature=0,
                 )
                 try:

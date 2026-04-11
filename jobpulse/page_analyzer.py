@@ -140,7 +140,7 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
     import json
 
     try:
-        from shared.agents import get_openai_client
+        from shared.agents import get_openai_client, get_model_name, is_local_llm
     except ImportError:
         logger.warning("OpenAI not available for vision detection")
         return PageType.UNKNOWN, 0.0
@@ -150,7 +150,7 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[
                 {
                     "role": "system",
@@ -176,7 +176,7 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
                     ],
                 },
             ],
-            max_tokens=100,
+            max_tokens=300 if is_local_llm() else 100,
             temperature=0,
         )
         text = response.choices[0].message.content.strip()

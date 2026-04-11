@@ -306,11 +306,11 @@ def suggest_subtasks(big_task: str) -> list[str]:
     """Use LLM to suggest subtasks for a large task."""
     import os
     try:
-        from shared.agents import get_openai_client
+        from shared.agents import get_openai_client, get_model_name, is_local_llm
         client = get_openai_client()
 
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{
                 "role": "user",
                 "content": f"""Break this task into 2-5 small, actionable subtasks.
@@ -320,7 +320,7 @@ Task: {big_task}
 
 Return ONLY the subtasks, one per line, no numbering or bullets. Keep each under 8 words."""
             }],
-            max_tokens=150,
+            max_tokens=400 if is_local_llm() else 150,
             temperature=0.3,
         )
 

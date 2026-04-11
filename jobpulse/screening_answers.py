@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
-from shared.agents import get_openai_client
+from shared.agents import get_openai_client, get_model_name, is_local_llm
 
 from jobpulse.applicator import PROFILE, WORK_AUTH
 from jobpulse.job_db import JobDB
@@ -474,9 +474,9 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
+            max_tokens=600 if is_local_llm() else 200,
             temperature=0.4,
         )
         answer = response.choices[0].message.content.strip()

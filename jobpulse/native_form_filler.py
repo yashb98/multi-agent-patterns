@@ -16,7 +16,7 @@ import os
 import random
 from typing import TYPE_CHECKING, Any
 
-from shared.agents import get_openai_client
+from shared.agents import get_openai_client, get_model_name
 from shared.logging_config import get_logger
 
 if TYPE_CHECKING:
@@ -239,7 +239,7 @@ class NativeFormFiller:
 
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             max_tokens=2000,
             temperature=0.0,
             messages=[{"role": "user", "content": prompt}],
@@ -271,7 +271,7 @@ class NativeFormFiller:
 
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             max_tokens=2000,
             temperature=0.0,
             messages=[{"role": "user", "content": prompt}],
@@ -297,7 +297,7 @@ class NativeFormFiller:
 
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             max_tokens=1000,
             temperature=0.0,
             messages=[{

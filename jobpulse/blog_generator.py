@@ -16,10 +16,10 @@ logger = get_logger(__name__)
 
 def _llm_call(system: str, user: str, max_tokens: int = 2500, temperature: float = 0.3) -> str:
     """Helper for OpenAI chat call."""
-    from shared.agents import get_openai_client
+    from shared.agents import get_openai_client, get_model_name, is_local_llm
     client = get_openai_client()
     response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+        model=get_model_name(),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -296,6 +296,8 @@ def generate_diagram(notes: str, paper: dict) -> str:
 
     Returns mermaid code string.
     """
+    from shared.agents import is_local_llm
+
     system = """You generate Mermaid.js diagrams for AI research papers.
 Create a clear, readable flowchart showing the method's architecture or workflow.
 Use meaningful labels. Keep it under 15 nodes. Use colors for different components."""
@@ -303,7 +305,7 @@ Use meaningful labels. Keep it under 15 nodes. Use colors for different componen
     user = f"""Paper: {paper['title']}
 
 Research notes:
-{notes[:1500]}
+{notes[:4000] if is_local_llm() else notes[:1500]}
 
 Generate a Mermaid.js flowchart diagram showing the paper's main method or architecture.
 Return ONLY the mermaid code (no fences, no explanation):
