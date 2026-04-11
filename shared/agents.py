@@ -71,7 +71,8 @@ logger = get_logger(__name__)
 # unchanged because ChatOpenAI and OpenAI SDK both support base_url.
 
 _LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai").lower()
-_OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+_OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+_OLLAMA_BASE_URL = _OLLAMA_HOST.rstrip("/") + "/v1"
 _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gemma4:31b")
 
 
