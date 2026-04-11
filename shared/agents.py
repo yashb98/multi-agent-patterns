@@ -60,7 +60,20 @@ from shared.streaming import smart_llm_call  # noqa: F401
 logger = get_logger(__name__)
 
 
-# ─── LLM INITIALISATION ─────────────────────────────────────────
+# ─── LLM PROVIDER CONFIG ───────────────────────────────────────
+#
+# LLM_PROVIDER=local   → Ollama (gemma4:31b via OpenAI-compatible API)
+# LLM_PROVIDER=openai  → OpenAI API (gpt-4.1-mini, default)
+#
+# When provider is "local", get_llm() and get_openai_client() point at
+# Ollama's OpenAI-compatible endpoint (http://localhost:11434/v1).
+# All downstream code (smart_llm_call, patterns, dispatchers) works
+# unchanged because ChatOpenAI and OpenAI SDK both support base_url.
+
+_LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai").lower()
+_OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+_LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gemma4:31b")
+
 
 def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
             timeout: float = 30.0):
@@ -72,8 +85,22 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
     - Writer: medium temperature (0.7) for creative prose
     - Reviewer: low temperature (0.2) for consistent scoring
 
+    When LLM_PROVIDER=local, routes to Ollama's OpenAI-compatible API.
+    The ``model`` parameter is overridden by LOCAL_LLM_MODEL unless the
+    caller explicitly passes a model name that doesn't match the default.
+
     timeout: seconds before the HTTP request is aborted (default 30s).
     """
+    if _LLM_PROVIDER == "local":
+        # Use local model unless caller explicitly requested a specific model
+        effective_model = _LOCAL_MODEL if model == "gpt-4.1-mini" else model
+        return ChatOpenAI(
+            model=effective_model,
+            temperature=temperature,
+            request_timeout=timeout,
+            openai_api_base=_OLLAMA_BASE_URL,
+            openai_api_key="ollama",  # Ollama doesn't require a real key
+        )
     return ChatOpenAI(
         model=model,
         temperature=temperature,
@@ -85,9 +112,14 @@ def get_openai_client(timeout: float = 30.0) -> OpenAI:
     """Factory for raw OpenAI SDK client instances.
 
     Centralizes all direct ``OpenAI()`` calls (previously 27 scattered copies).
-    Reads ``OPENAI_API_KEY`` from env once.  Provides a single injection
-    point for observability (Langfuse callbacks), custom base URLs, etc.
+    When LLM_PROVIDER=local, points at Ollama's OpenAI-compatible endpoint.
     """
+    if _LLM_PROVIDER == "local":
+        return OpenAI(
+            api_key="ollama",
+            base_url=_OLLAMA_BASE_URL,
+            timeout=timeout,
+        )
     return OpenAI(
         api_key=os.environ.get("OPENAI_API_KEY", ""),
         timeout=timeout,

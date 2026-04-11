@@ -108,9 +108,17 @@ JOBPULSE_SWARM = os.getenv("JOBPULSE_SWARM", "true").lower() in ("true", "1", "y
 PLAYWRIGHT_CDP_URL = os.environ.get("PLAYWRIGHT_CDP_URL", "http://localhost:9222")
 PLAYWRIGHT_CDP_PORT = os.environ.get("PLAYWRIGHT_CDP_PORT", "9222")
 
+# Local LLM provider (shared with shared/agents.py)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "gemma4:31b")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
 # RLM (Recursive Language Model)
-RLM_BACKEND = os.getenv("RLM_BACKEND", "openai")
-RLM_ROOT_MODEL = os.getenv("RLM_ROOT_MODEL", "gpt-4.1-mini")
+# When LLM_PROVIDER=local, auto-switch RLM to use Ollama backend + local model
+_rlm_default_backend = "openai" if LLM_PROVIDER != "local" else "openai"
+_rlm_default_model = "gpt-4.1-mini" if LLM_PROVIDER != "local" else LOCAL_LLM_MODEL
+RLM_BACKEND = os.getenv("RLM_BACKEND", _rlm_default_backend)
+RLM_ROOT_MODEL = os.getenv("RLM_ROOT_MODEL", _rlm_default_model)
 RLM_MAX_ITERATIONS = int(os.getenv("RLM_MAX_ITERATIONS", "10"))
 RLM_MAX_BUDGET = float(os.getenv("RLM_MAX_BUDGET", "0.10"))
 

@@ -82,7 +82,11 @@ def chat(user_message: str) -> str:
         from shared.agents import get_openai_client
         client = get_openai_client()
 
-        model = os.getenv("CONVERSATION_MODEL", "gpt-4.1-mini")
+        _default_model = "gpt-4.1-mini"
+        model = os.getenv("CONVERSATION_MODEL", _default_model)
+        # When using local LLM, swap the default model for the local one
+        if os.getenv("LLM_PROVIDER", "openai").lower() == "local" and model == _default_model:
+            model = os.getenv("LOCAL_LLM_MODEL", "gemma4:31b")
 
         messages = [{"role": "system", "content": _build_system_prompt()}]
         messages.extend(_history)

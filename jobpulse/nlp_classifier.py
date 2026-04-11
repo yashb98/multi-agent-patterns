@@ -36,18 +36,78 @@ _loaded = False
 _learned_count = 0
 
 
+import os
+
+# Embedding provider toggle:
+#   EMBEDDING_PROVIDER=local  → Ollama nomic-embed-text:v1.5 (no API cost, fast)
+#   EMBEDDING_PROVIDER=local-st → sentence-transformers all-MiniLM-L6-v2 (original)
+#   EMBEDDING_PROVIDER=openai → OpenAI embeddings (if you ever want cloud)
+_EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "local").lower()
+_OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+_LOCAL_EMBED_MODEL = os.environ.get("LOCAL_EMBED_MODEL", "nomic-embed-text:v1.5")
+
+
+class _OllamaEmbedder:
+    """Wraps Ollama's /api/embeddings endpoint with a sentence-transformers-like API."""
+
+    def __init__(self, model: str, base_url: str):
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self._dim = None
+
+    def encode(self, texts: list[str], show_progress_bar: bool = False,
+               normalize_embeddings: bool = True) -> np.ndarray:
+        """Embed a list of texts via Ollama. Returns numpy array (N x D)."""
+        import urllib.request
+        import json as _json
+
+        embeddings = []
+        for text in texts:
+            payload = _json.dumps({"model": self.model, "prompt": text}).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}/api/embeddings",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = _json.loads(resp.read())
+            embeddings.append(data["embedding"])
+
+        arr = np.array(embeddings, dtype=np.float32)
+
+        if normalize_embeddings:
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1, norms)
+            arr = arr / norms
+
+        return arr
+
+
 def _load_model():
-    """Load the sentence-transformer model (once, lazy)."""
+    """Load the embedding model (once, lazy).
+
+    When EMBEDDING_PROVIDER=local, uses Ollama nomic-embed-text:v1.5.
+    When EMBEDDING_PROVIDER=local-st, uses sentence-transformers (original).
+    """
     global _model
     if _model is not None:
         return _model
-    try:
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
-        logger.info("Loaded NLP model: all-MiniLM-L6-v2")
-    except Exception as e:
-        logger.warning("Failed to load NLP model: %s", e)
-        _model = None
+
+    if _EMBEDDING_PROVIDER == "local":
+        try:
+            _model = _OllamaEmbedder(model=_LOCAL_EMBED_MODEL, base_url=_OLLAMA_BASE_URL)
+            logger.info("Loaded NLP embedding model: %s (Ollama)", _LOCAL_EMBED_MODEL)
+        except Exception as e:
+            logger.warning("Failed to load Ollama embedder: %s", e)
+            _model = None
+    else:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _model = SentenceTransformer("all-MiniLM-L6-v2")
+            logger.info("Loaded NLP model: all-MiniLM-L6-v2")
+        except Exception as e:
+            logger.warning("Failed to load NLP model: %s", e)
+            _model = None
     return _model
 
 
