@@ -1,0 +1,30 @@
+# JobPulse Telegram Daemon — systemd user service (Linux)
+#
+# Install:  scripts/install_daemon.sh install
+# Status:   scripts/install_daemon.sh status
+# Logs:     journalctl --user -u jobpulse -f
+#
+# This is the Linux equivalent of com.jobpulse.daemon.plist (macOS).
+
+[Unit]
+Description=JobPulse Telegram Multi-Bot Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# __PYTHON__ and __PROJECT_DIR__ are replaced by install_daemon.sh at install time
+ExecStart=__PYTHON__ -m jobpulse.runner multi-bot
+WorkingDirectory=__PROJECT_DIR__
+Restart=on-failure
+RestartSec=5
+
+# Environment — .env is loaded by Python (dotenv), but PATH needs the right Python
+Environment=PATH=__PYTHON_BIN__:/usr/local/bin:/usr/bin:/bin
+
+# Logging
+StandardOutput=append:__PROJECT_DIR__/logs/daemon-stdout.log
+StandardError=append:__PROJECT_DIR__/logs/daemon-stderr.log
+
+[Install]
+WantedBy=default.target

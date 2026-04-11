@@ -12,8 +12,18 @@ python -m jobpulse.runner multi-bot       # Start all 5 bots
 python -m jobpulse.runner stop            # Stop all daemons
 ```
 
+## Daemon Management (cross-platform)
+```
+./scripts/install_daemon.sh install    # Auto-detects macOS (launchctl) vs Linux (systemd)
+./scripts/install_daemon.sh status     # Check if running
+./scripts/install_daemon.sh restart    # Restart
+./scripts/install_daemon.sh logs       # Tail logs
+./scripts/install_daemon.sh uninstall  # Remove
+```
+
 ## Log Locations
-- Daemon stdout/stderr: check launchctl logs on macOS
+- Linux: `journalctl --user -u jobpulse -f`
+- macOS: `tail -f logs/daemon-stdout.log`
 - Agent process trails: http://localhost:8000/processes.html
 - Error log: http://localhost:8000/health.html → errors section
 - Budget transactions: data/budget.db

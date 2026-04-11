@@ -11,6 +11,7 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent.parent
 PYTHON = sys.executable
+PYTHON_BIN_DIR = str(Path(PYTHON).parent)
 RUNNER = f"cd {PROJECT_DIR} && {PYTHON} -m jobpulse.runner"
 
 CRONTAB = f"""# ══════════════════════════════════════════════════════════
@@ -18,8 +19,9 @@ CRONTAB = f"""# ═════════════════════�
 # Primary: local daemon + cron | Backup: GitHub Actions
 # ══════════════════════════════════════════════════════════
 
-# PATH for homebrew (gh, node, vercel, etc.)
-PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+# PATH includes the Python interpreter's directory + standard system paths
+# (works on both macOS and Linux — /opt/homebrew only exists on macOS)
+PATH={PYTHON_BIN_DIR}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin
 
 # ── DAILY ──
 
@@ -84,6 +86,11 @@ PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 
 def main():
+    # Save Python path for restart_daemon.sh to use
+    python_path_file = PROJECT_DIR / ".python_path"
+    python_path_file.write_text(PYTHON)
+    print(f"Saved Python path: {PYTHON} → {python_path_file}")
+
     print("Installing JobPulse crontab...\n")
     print(CRONTAB)
 
