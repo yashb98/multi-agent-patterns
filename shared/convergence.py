@@ -42,9 +42,13 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+import os as _os
+_is_local = _os.environ.get("LLM_PROVIDER", "openai") == "local"
+
 # ── Thresholds (from .claude/rules/patterns.md) ─────────────────────────────
 QUALITY_THRESHOLD = 8.0    # review_score must reach this
 ACCURACY_THRESHOLD = 9.5   # accuracy_score must reach this
+_DEFAULT_MAX_ITER = 5 if _is_local else 3  # more iterations when compute is free
 
 
 class Outcome(str, Enum):
@@ -90,7 +94,7 @@ class ConvergenceController:
         self,
         quality_threshold: float = QUALITY_THRESHOLD,
         accuracy_threshold: float = ACCURACY_THRESHOLD,
-        max_iterations: int = 3,
+        max_iterations: int = _DEFAULT_MAX_ITER,
         patience: int = 2,
         min_improvement: float = 0.3,
     ):

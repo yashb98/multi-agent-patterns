@@ -72,16 +72,23 @@ class Experience:
         self.last_accessed = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+import os as _os
+_is_local = _os.environ.get("LLM_PROVIDER", "openai") == "local"
+
+
 @dataclass
 class GRPOConfig:
     """Configuration for Training-Free GRPO."""
-    group_size: int = 4           # Number of completions per group
-    top_k: int = 2                # How many top completions to learn from
+    group_size: int = 6 if _is_local else 4        # More candidates when compute is free
+    top_k: int = 3 if _is_local else 2             # Learn from more top completions
     max_experiences: int = 20     # Max experiences to store
     experiences_per_prompt: int = 3  # How many to inject into each prompt
     temperature_spread: list = field(
-        default_factory=lambda: [0.3, 0.5, 0.7, 0.9]
-    )  # Different temperatures for diversity
+        default_factory=lambda: (
+            [0.2, 0.3, 0.5, 0.6, 0.7, 0.9] if _is_local
+            else [0.3, 0.5, 0.7, 0.9]
+        )
+    )  # More temperature diversity when compute is free
 
 
 class ExperienceMemory:
