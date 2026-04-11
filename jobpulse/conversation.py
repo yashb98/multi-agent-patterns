@@ -79,14 +79,10 @@ def chat(user_message: str) -> str:
         _history = _history[-MAX_HISTORY * 2:]
 
     try:
-        from shared.agents import get_openai_client
+        from shared.agents import get_openai_client, get_model_name
         client = get_openai_client()
 
-        _default_model = "gpt-4.1-mini"
-        model = os.getenv("CONVERSATION_MODEL", _default_model)
-        # When using local LLM, swap the default model for the local one
-        if os.getenv("LLM_PROVIDER", "openai").lower() == "local" and model == _default_model:
-            model = os.getenv("LOCAL_LLM_MODEL", "gemma4:31b")
+        model = os.getenv("CONVERSATION_MODEL", get_model_name())
 
         messages = [{"role": "system", "content": _build_system_prompt()}]
         messages.extend(_history)

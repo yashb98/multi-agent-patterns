@@ -74,6 +74,24 @@ _LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai").lower()
 _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 _OLLAMA_BASE_URL = _OLLAMA_HOST.rstrip("/") + "/v1"
 _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gemma4:31b")
+_is_local = _LLM_PROVIDER == "local"
+
+
+def is_local_llm() -> bool:
+    """True when LLM_PROVIDER=local (Ollama). Use for conditional limits."""
+    return _is_local
+
+
+def get_model_name(default: str = "gpt-4.1-mini") -> str:
+    """Return the effective model name for raw OpenAI SDK calls.
+
+    When LLM_PROVIDER=local, returns LOCAL_LLM_MODEL (e.g. gemma4:31b).
+    When LLM_PROVIDER=openai, returns the provided default.
+
+    Use this whenever calling client.chat.completions.create(model=...)
+    with a client from get_openai_client().
+    """
+    return _LOCAL_MODEL if _is_local else default
 
 
 def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
