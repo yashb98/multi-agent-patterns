@@ -183,18 +183,20 @@ def llm_rank_broad(papers: list[dict], top_n: int = 5) -> list[dict]:
     if not OPENAI_API_KEY:
         return papers[:top_n]
 
-    from shared.agents import get_openai_client
+    from shared.agents import get_openai_client, get_model_name, is_local_llm
     client = get_openai_client()
+    _local = is_local_llm()
 
     # Send top 30 by recency (most recent = most likely to be today's papers)
     candidates = papers[:30]
 
+    _abs_len = 800 if _local else 400
     paper_texts = []
     for i, p in enumerate(candidates):
         paper_texts.append(
             f"{i+1}. \"{p['title']}\"\n"
             f"   Categories: {', '.join(p['categories'][:3])}\n"
-            f"   Abstract: {p['abstract'][:400]}"
+            f"   Abstract: {p['abstract'][:_abs_len]}"
         )
 
     prompt = f"""You are an AI research curator for a daily digest. Your audience is
@@ -219,9 +221,9 @@ Return ONLY a JSON array. Compute overall as: (novelty*0.3 + significance*0.25 +
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1200,
+            max_tokens=2400 if _local else 1200,
             temperature=0,
         )
         raw = response.choices[0].message.content.strip()
@@ -351,12 +353,14 @@ def summarize_paper(paper: dict) -> str:
     if not OPENAI_API_KEY:
         return paper["abstract"][:200]
 
-    from shared.agents import get_openai_client
+    from shared.agents import get_openai_client, get_model_name, is_local_llm
     client = get_openai_client()
+    _local = is_local_llm()
 
+    _abs_limit = len(paper['abstract']) if _local else 1000
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{"role": "user", "content": f"""Summarize this AI paper for a practitioner in 3-4 sentences:
 
 1. WHAT: What does the paper propose/discover? (1 sentence)
@@ -365,8 +369,8 @@ def summarize_paper(paper: dict) -> str:
 4. USE: One practical way someone could apply this today (1 sentence, start with "Practical takeaway:")
 
 Title: {paper['title']}
-Abstract: {paper['abstract'][:1000]}"""}],
-            max_tokens=250,
+Abstract: {paper['abstract'][:_abs_limit]}"""}],
+            max_tokens=800 if _local else 250,
             temperature=0.3,
         )
         return response.choices[0].message.content.strip()
@@ -804,12 +808,8 @@ def send_daily_digest(trigger: str = "cron_morning"):
     """Build digest and send to Telegram research bot."""
     digest = build_digest()
 
-    # Send to research bot if available, else main bot
-    try:
-        from jobpulse.telegram_bots import send_research
-        success = send_research(digest)
-    except ImportError:
-        success = telegram_agent.send_message(digest)
+    from jobpulse.telegram_bots import send_with_retry, send_research
+    success = send_with_retry(send_research, digest, retries=2, label="arxiv_digest")
 
     logger.info("arXiv digest %s (%d chars)", "sent" if success else "FAILED", len(digest))
     return success

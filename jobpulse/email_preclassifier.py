@@ -11,8 +11,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from shared.logging_config import get_logger
+from shared.agents import is_local_llm, get_model_name
 
 logger = get_logger(__name__)
+_is_local_llm = is_local_llm()
 
 RULES_PATH = Path(__file__).parent.parent / "data" / "gmail_preclassifier_rules.json"
 LEARNED_RULES_PATH = Path(__file__).parent.parent / "data" / "gmail_learned_rules.json"
@@ -82,7 +84,7 @@ def _check_sender_other(sender_lower: str, rules: dict) -> PreClassification:
                     "sender_signal": f"{rule['pattern']} → known non-recruiter pattern",
                     "reasoning": f"Sender matches auto-OTHER pattern: {rule['pattern']}"
                 },
-                skip_llm=rule["confidence"] >= 0.9,
+                skip_llm=False if _is_local_llm else rule["confidence"] >= 0.9,
                 flagged_for_review=rule["confidence"] < 0.9,
             )
     return None
@@ -101,7 +103,7 @@ def _check_domain_other(sender_lower: str, rules: dict) -> PreClassification:
                     "sender_signal": f"{rule['pattern']} → known newsletter/notification domain",
                     "reasoning": f"Sender domain matches auto-OTHER: {rule['pattern']}"
                 },
-                skip_llm=rule["confidence"] >= 0.9,
+                skip_llm=False if _is_local_llm else rule["confidence"] >= 0.9,
                 flagged_for_review=rule["confidence"] < 0.9,
             )
     return None
@@ -120,7 +122,7 @@ def _check_subject_other(subject_lower: str, rules: dict) -> PreClassification:
                     "sender_signal": None,
                     "reasoning": f"Subject matches auto-OTHER pattern: {rule['pattern']}"
                 },
-                skip_llm=rule["confidence"] >= 0.9,
+                skip_llm=False if _is_local_llm else rule["confidence"] >= 0.9,
                 flagged_for_review=rule["confidence"] < 0.9,
             )
     return None
@@ -205,7 +207,7 @@ def _check_rejected_dual(subject_lower: str, body_lower: str, rules: dict) -> Pr
                     "sender_signal": None,
                     "reasoning": f"Dual subject+body rejection pattern: {rule['name']}"
                 },
-                skip_llm=rule["confidence"] >= 0.9,
+                skip_llm=False if _is_local_llm else rule["confidence"] >= 0.9,
                 flagged_for_review=True,  # Always flag rejections for review
             )
     return None
@@ -233,7 +235,7 @@ def _check_selected_dual(subject_lower: str, body_lower: str, rules: dict) -> Pr
                     "sender_signal": None,
                     "reasoning": f"Dual subject+body selection pattern: {rule['name']}"
                 },
-                skip_llm=rule["confidence"] >= 0.9,
+                skip_llm=False if _is_local_llm else rule["confidence"] >= 0.9,
                 flagged_for_review=True,  # Always flag selections for review
             )
     return None
@@ -254,7 +256,7 @@ def _check_learned_rules(sender_lower: str, subject_lower: str, body_lower: str)
                     "sender_signal": f"Learned from {rule.get('matches', 0)} examples",
                     "reasoning": f"Learned sender rule: {rule['pattern']} → {rule['category']}"
                 },
-                skip_llm=rule["confidence"] >= 0.9,
+                skip_llm=False if _is_local_llm else rule["confidence"] >= 0.9,
                 flagged_for_review=rule["confidence"] < 0.85,
             )
 
@@ -274,7 +276,7 @@ def _check_learned_rules(sender_lower: str, subject_lower: str, body_lower: str)
                     "sender_signal": None,
                     "reasoning": f"Learned subject rule: {pattern} → {rule['category']}"
                 },
-                skip_llm=rule["confidence"] >= 0.9,
+                skip_llm=False if _is_local_llm else rule["confidence"] >= 0.9,
                 flagged_for_review=rule["confidence"] < 0.85,
             )
 
@@ -471,9 +473,9 @@ Respond in JSON only."""
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=300,
+            max_tokens=600 if _is_local_llm else 300,
             temperature=0,
             response_format={"type": "json_object"},
         )

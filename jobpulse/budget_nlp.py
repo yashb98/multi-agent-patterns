@@ -72,7 +72,7 @@ def classify_transaction(description: str, amount: float, txn_type: str = "expen
 
     # Stage 3: LLM fallback
     try:
-        from shared.agents import get_openai_client
+        from shared.agents import get_openai_client, get_model_name, is_local_llm
 
         categories_list = """
 INCOME: Salary, Freelance, Other
@@ -82,7 +82,7 @@ SAVINGS: Savings, Investments, Credit card / Loan payment"""
 
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{"role": "user", "content": f"""Classify this {txn_type} into one category:
 {categories_list}
 
@@ -92,7 +92,7 @@ Respond with ONLY: section|category
 Example: variable|Eating out
 Example: income|Salary
 Example: fixed|Subscriptions"""}],
-            max_tokens=15, temperature=0,
+            max_tokens=60 if is_local_llm() else 15, temperature=0,
         )
         raw = response.choices[0].message.content.strip()
         parts = raw.split("|")

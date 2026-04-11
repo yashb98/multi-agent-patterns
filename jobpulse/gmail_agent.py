@@ -3,7 +3,7 @@
 import json
 import base64
 from datetime import datetime
-from shared.agents import get_openai_client
+from shared.agents import get_openai_client, get_model_name, is_local_llm
 from jobpulse.config import GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
 from jobpulse import db
 from jobpulse import telegram_agent
@@ -79,15 +79,15 @@ REJECTED — unfortunately, regret to inform, not selected, decided not to proce
 OTHER — newsletters, promotions, social media, receipts, anything NOT about job applications
 
 Email subject: {subject}
-Email body (first 500 chars): {body_snippet[:500]}
+Email body (first {2000 if is_local_llm() else 500} chars): {body_snippet[:2000] if is_local_llm() else body_snippet[:500]}
 
 Respond with ONLY the category name. Nothing else."""
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=20,
+            max_tokens=80 if is_local_llm() else 20,
             temperature=0,
         )
         category = response.choices[0].message.content.strip().upper()

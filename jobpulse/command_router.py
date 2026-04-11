@@ -329,11 +329,11 @@ def classify_rule_based(text: str) -> Optional[ParsedCommand]:
 def classify_llm(text: str) -> ParsedCommand:
     """Use LLM to classify ambiguous messages. Fallback when rules don't match."""
     try:
-        from shared.agents import get_openai_client
+        from shared.agents import get_openai_client, get_model_name, is_local_llm
 
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{"role": "user", "content": f"""Classify this Telegram message into ONE intent:
 
 CREATE_TASKS — user wants to add tasks/todos
@@ -375,7 +375,7 @@ UNKNOWN — doesn't match any of the above
 Message: "{text}"
 
 Respond with ONLY the intent name. Nothing else."""}],
-            max_tokens=15,
+            max_tokens=60 if is_local_llm() else 15,
             temperature=0,
         )
         intent_str = response.choices[0].message.content.strip().upper()

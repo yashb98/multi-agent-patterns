@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from shared.agents import get_openai_client
+from shared.agents import get_openai_client, get_model_name, is_local_llm
+
+_is_local = is_local_llm()
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -157,15 +159,15 @@ For each claim, classify its type:
 - "definition": standard definitions (e.g., "RAG stands for...") — mark source_needed=false
 
 ARTICLE:
-{draft[:4000]}
+{draft[:12000] if _is_local else draft[:4000]}
 
 Return JSON: {{"claims": [{{"claim": "exact text", "type": "benchmark|date|...", "source_needed": true|false}}]}}"""
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=get_model_name(),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000,
+            max_tokens=3000 if _is_local else 1000,
             temperature=0,
             response_format={"type": "json_object"},
         )
@@ -245,14 +247,15 @@ def verify_claims(claims: list[dict], sources: list[str],
             llm_claims.append(c)
 
     # Build source context for LLM verification
-    source_text = "\n\n".join(sources[:5]) if sources else ""
+    _src_limit = 15 if _is_local else 5
+    source_text = "\n\n".join(sources[:_src_limit]) if sources else ""
     if paper_abstract:
         source_text = f"PAPER ABSTRACT:\n{paper_abstract}\n\n{source_text}"
 
     # Enrich with quality web search for web-routed claims
     if web_search and llm_claims:
         web_context = []
-        for c in llm_claims[:5]:
+        for c in llm_claims[:15 if _is_local else 5]:
             route = route_claim_to_verifier(c)
             if route in ("web", "abstract_then_web"):
                 web_result = quality_web_verify(c["claim"])
@@ -265,7 +268,7 @@ def verify_claims(claims: list[dict], sources: list[str],
         if web_context:
             source_text += "\n\nWEB SEARCH RESULTS:\n" + "\n\n".join(web_context)
 
-    source_text = source_text[:6000]
+    source_text = source_text[:16000 if _is_local else 6000]
 
     # LLM verification for remaining claims
     llm_results = []
@@ -297,9 +300,9 @@ Return JSON: {{"verifications": [...]}}"""
 
         try:
             response = client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model=get_model_name(),
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1500,
+                max_tokens=4000 if _is_local else 1500,
                 temperature=0,
                 response_format={"type": "json_object"},
             )
