@@ -296,7 +296,7 @@ async function handlePythonCommand(cmd) {
       // Step 1: Get element bounds from content script
       const bounds = await chrome.tabs.sendMessage(tab.id, {
         id, action: "element_bounds", payload: { selector: payload.selector },
-      });
+      }, { frameId: 0 });
       if (!bounds || !bounds.success) {
         sendToPython({ id, type: "result", payload: { success: false, error: "Element not found: " + payload.selector } });
         return;
@@ -321,7 +321,7 @@ async function handlePythonCommand(cmd) {
     // --- Get snapshot: request fresh page scan from content script ---
     if (action === "get_snapshot") {
       const tab = await getActiveTab();
-      const response = await chrome.tabs.sendMessage(tab.id, { id, action: "get_snapshot", payload: {} });
+      const response = await chrome.tabs.sendMessage(tab.id, { id, action: "get_snapshot", payload: {} }, { frameId: 0 });
       sendToPython({ id, type: "result", payload: response || { success: false, error: "No response" } });
       return;
     }
@@ -336,7 +336,7 @@ async function handlePythonCommand(cmd) {
 
     // --- All other actions: forward to content script ---
     const tab = await getActiveTab();
-    const response = await chrome.tabs.sendMessage(tab.id, { id, action, payload });
+    const response = await chrome.tabs.sendMessage(tab.id, { id, action, payload }, { frameId: 0 });
     sendToPython({
       id,
       type: "result",
@@ -391,7 +391,7 @@ async function handleNavigate(cmdId, url) {
         await ensureContentScript(tab.id);
         const snapshot = await chrome.tabs.sendMessage(tab.id, {
           id: cmdId, action: "get_snapshot", payload: {},
-        });
+        }, { frameId: 0 });
         if (!pushed && snapshot) {
           pushed = true;
           chrome.runtime.onMessage.removeListener(navListener);
@@ -452,7 +452,7 @@ async function ensureContentScript(tabId) {
     // Lightweight ping — do NOT use get_snapshot (too slow on complex pages).
     // Just check if the content script's message listener is alive.
     await Promise.race([
-      chrome.tabs.sendMessage(tabId, { action: "ping", payload: {} }),
+      chrome.tabs.sendMessage(tabId, { action: "ping", payload: {} }, { frameId: 0 }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("ping timeout")), 3000)),
     ]);
   } catch (_) {

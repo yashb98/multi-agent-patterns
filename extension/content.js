@@ -898,7 +898,7 @@ function buildSnapshot() {
         selector,
         text: text.substring(0, 100),
         type: el.type || (tag === "a" ? "link" : "button"),
-        enabled: !el.disabled && !el.getAttribute("aria-disabled"),
+        enabled: !el.disabled && el.getAttribute("aria-disabled") !== "true",
       };
       // For links: include href so Python can navigate directly instead of clicking
       if (tag === "a" && el.href) {
