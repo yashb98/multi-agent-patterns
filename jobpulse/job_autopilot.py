@@ -219,6 +219,20 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         step_output=f"{total_found} raw jobs found",
     )
 
+    # --- Step 2a: Liveness check — filter expired postings ---
+    try:
+        from jobpulse.job_scanner import check_liveness_batch
+        alive_listings, expired_listings = check_liveness_batch(raw_jobs)
+        if expired_listings:
+            logger.info("Liveness: filtered %d expired postings", len(expired_listings))
+        trail.log_step(
+            "api_call", "Liveness check",
+            step_output=f"{len(alive_listings)} alive, {len(expired_listings)} expired",
+        )
+        raw_jobs = alive_listings
+    except Exception as exc:
+        logger.warning("job_autopilot: liveness check failed: %s — continuing with all jobs", exc)
+
     # --- Step 2b: Gate 0 — title relevance filter ---
     from jobpulse.recruiter_screen import gate0_title_relevance
     search_config = load_search_config()
@@ -1151,12 +1165,46 @@ def update_search_config(args: str) -> str:
 def check_follow_ups() -> str:
     """Check for applications due for follow-up today.
 
-    Queries the DB for Applied applications where follow_up_date == today.
-    Sends a Telegram reminder if any are found.
+    Uses followup_tracker for urgency-based prioritisation when available,
+    falls back to DB-based follow_up_date query.
 
     Returns:
         Summary string.
     """
+    # Try followup_tracker for richer urgency-based report
+    try:
+        from jobpulse.followup_tracker import compute_urgency, get_followup_count, format_followup_report, FollowUpEntry
+        db = JobDB()
+        applied = db.get_applications_by_status("Applied")
+        entries = []
+        for app in applied:
+            applied_date_str = app.get("applied_at") or app.get("created_at", "")
+            if not applied_date_str:
+                continue
+            applied_date = date.fromisoformat(applied_date_str[:10])
+            job_id = app.get("job_id", "")
+            count = get_followup_count(job_id)
+            urgency = compute_urgency("applied", applied_date, count)
+            if urgency in ("overdue", "urgent"):
+                entries.append(FollowUpEntry(
+                    job_id=job_id,
+                    company=app.get("company", "N/A"),
+                    role=app.get("title", "N/A"),
+                    status="applied",
+                    urgency=urgency,
+                    next_followup_date=None,
+                    days_until_next=(date.today() - applied_date).days,
+                    followup_count=count,
+                ))
+        if entries:
+            msg = format_followup_report(entries)
+            send_jobs(msg)
+            logger.info("job_autopilot: check_follow_ups — %d urgent/overdue entries", len(entries))
+            return msg
+    except Exception as exc:
+        logger.debug("job_autopilot: followup_tracker failed, falling back: %s", exc)
+
+    # Fallback: DB-based follow_up_date query
     db = JobDB()
     today = date.today()
     due = db.get_follow_ups_due(today)

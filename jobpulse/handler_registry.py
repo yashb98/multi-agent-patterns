@@ -42,6 +42,7 @@ def _build_handler_map() -> dict[Intent, Callable[["ParsedCommand"], str]]:
         _handle_pause_jobs, _handle_resume_jobs, _handle_job_detail,
         _handle_engine_stats, _handle_engine_compare, _handle_engine_learning,
         _handle_engine_reset,
+        _handle_job_patterns, _handle_follow_ups, _handle_interview_prep,
     )
 
     return {
@@ -90,6 +91,9 @@ def _build_handler_map() -> dict[Intent, Callable[["ParsedCommand"], str]]:
         Intent.ENGINE_COMPARE: _handle_engine_compare,
         Intent.ENGINE_LEARNING: _handle_engine_learning,
         Intent.ENGINE_RESET: _handle_engine_reset,
+        Intent.JOB_PATTERNS: _handle_job_patterns,
+        Intent.FOLLOW_UPS: _handle_follow_ups,
+        Intent.INTERVIEW_PREP: _handle_interview_prep,
     }
 
 

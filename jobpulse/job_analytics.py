@@ -162,3 +162,58 @@ def get_enhanced_job_stats(db_path: str | None = None) -> str:
     lines.append(f"Blocked: {gates['blocked']} | Skipped: {gates['skipped']}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Rejection pattern analysis
+# ---------------------------------------------------------------------------
+
+def get_rejection_patterns(days: int = 30, db_path: str | None = None) -> str:
+    """Query recent applications and generate a rejection pattern report for Telegram."""
+    con = _connect(db_path)
+    cutoff = _cutoff_iso(days)
+    try:
+        rows = con.execute(
+            "SELECT job_id, status, match_tier, ats_score, notes, created_at "
+            "FROM applications WHERE created_at >= ?",
+            (cutoff,),
+        ).fetchall()
+    finally:
+        con.close()
+
+    if not rows:
+        return "No applications in the last {days} days to analyze."
+
+    applications = [dict(r) for r in rows]
+
+    try:
+        from jobpulse.rejection_analyzer import generate_full_report
+        report = generate_full_report(applications)
+    except Exception as exc:
+        logger.error("get_rejection_patterns: generate_full_report failed: %s", exc)
+        return f"Failed to generate rejection analysis: {exc}"
+
+    # Format for Telegram
+    lines = ["\U0001f50d Rejection Pattern Analysis\n"]
+
+    funnel = report.get("funnel", {})
+    if funnel:
+        lines.append("\U0001f4ca Funnel:")
+        for stage, count in funnel.items():
+            lines.append(f"  {stage}: {count}")
+        lines.append("")
+
+    blockers = report.get("blocker_frequency", {})
+    if blockers:
+        lines.append("\U0001f6a7 Top Blockers:")
+        for blocker, count in sorted(blockers.items(), key=lambda x: x[1], reverse=True)[:5]:
+            lines.append(f"  {blocker}: {count}")
+        lines.append("")
+
+    recs = report.get("recommendations", [])
+    if recs:
+        lines.append("\U0001f4a1 Recommendations:")
+        for rec in recs[:5]:
+            lines.append(f"  \u2022 {rec}")
+
+    return "\n".join(lines)

@@ -63,6 +63,9 @@ class Intent(str, Enum):
     ENGINE_COMPARE = "engine_compare"
     ENGINE_LEARNING = "engine_learning"
     ENGINE_RESET = "engine_reset"
+    JOB_PATTERNS = "job_patterns"
+    FOLLOW_UPS = "follow_ups"
+    INTERVIEW_PREP = "interview_prep"
     UNKNOWN = "unknown"
 
 
@@ -242,6 +245,21 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"engine reset",
         r"(clear|reset)\s*(ab|a/b|engine)\s*(data|tracking)?",
     ]),
+    (Intent.JOB_PATTERNS, [
+        r"(rejection|reject)\s*(pattern|analysis|reason|why)",
+        r"why.+(rejected|failing|blocked)",
+        r"(application|job)\s*(failure|block)\s*analysis",
+    ]),
+    (Intent.FOLLOW_UPS, [
+        r"^(check\s+)?follow.?ups?\s*$",
+        r"(pending|due|any)\s+follow.?ups?",
+        r"who should i follow up",
+    ]),
+    (Intent.INTERVIEW_PREP, [
+        r"(interview\s+prep|prepare for interview)",
+        r"(star|behavioral)\s+stories?\s+(for|about)",
+        r"help me prepare for\s+(.+)",
+    ]),
     # Briefing
     (Intent.BRIEFING, [
         r"(briefing|morning update|daily update|send briefing|full report|summary of today)",
@@ -370,6 +388,9 @@ SEARCH_CONFIG — user wants to modify job search settings (e.g., "search: add t
 PAUSE_JOBS — user wants to pause the job autopilot
 RESUME_JOBS — user wants to resume the job autopilot
 JOB_DETAIL — user wants details on a specific job number
+JOB_PATTERNS — user wants rejection pattern analysis, why applications are failing
+FOLLOW_UPS — user wants to check pending follow-ups for job applications
+INTERVIEW_PREP — user wants interview preparation, STAR stories, or behavioral prep for a company
 UNKNOWN — doesn't match any of the above
 
 Message: "{text}"

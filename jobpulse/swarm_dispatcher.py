@@ -133,6 +133,7 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
         Intent.JOB_DETAIL, Intent.JOB_STATS, Intent.SEARCH_CONFIG,
         Intent.PAUSE_JOBS, Intent.RESUME_JOBS,
         Intent.ENGINE_STATS, Intent.ENGINE_COMPARE, Intent.ENGINE_LEARNING, Intent.ENGINE_RESET,
+        Intent.JOB_PATTERNS, Intent.FOLLOW_UPS, Intent.INTERVIEW_PREP,
     }
     if intent in SIMPLE_INTENTS:
         return [{"agent": intent.value, "priority": 1, "description": f"Direct: {intent.value}"}]

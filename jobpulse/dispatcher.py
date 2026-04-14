@@ -758,6 +758,47 @@ def _handle_engine_reset(cmd: ParsedCommand) -> str:
     return ab_dashboard.engine_reset(cmd.args)
 
 
+def _handle_job_patterns(cmd: ParsedCommand) -> str:
+    from jobpulse.job_analytics import get_rejection_patterns
+    return get_rejection_patterns()
+
+
+def _handle_follow_ups(cmd: ParsedCommand) -> str:
+    from jobpulse.job_autopilot import check_follow_ups
+    return check_follow_ups()
+
+
+def _handle_interview_prep(cmd: ParsedCommand) -> str:
+    import re
+    from jobpulse.interview_prep import generate_prep_report, format_prep_telegram
+    from jobpulse.job_db import JobDB
+
+    args = cmd.args.strip()
+    if not args:
+        return "Usage: interview prep <company> or interview prep <job number>"
+
+    # Try to parse as job number
+    m = re.match(r"^(\d+)$", args)
+    if m:
+        db = JobDB()
+        pending = db.get_applications_by_status("Applied")
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(pending):
+            job = pending[idx]
+            report = generate_prep_report(
+                company=job.get("company", ""),
+                role=job.get("title", ""),
+                skills=job.get("matched_skills", []),
+                projects=job.get("matched_projects", []),
+            )
+            return format_prep_telegram(report)
+        return f"Job #{m.group(1)} not found in applied applications."
+
+    # Treat args as company name
+    report = generate_prep_report(company=args, role="", skills=[], projects=[])
+    return format_prep_telegram(report)
+
+
 def _handle_unknown(cmd: ParsedCommand) -> str:
     """Suggest the closest matching command when intent is unknown."""
     text = cmd.raw.lower().strip()

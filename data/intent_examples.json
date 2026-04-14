@@ -407,5 +407,29 @@
     "clear engine tracking",
     "reset engine data",
     "clear ab tracking"
+  ],
+  "job_patterns": [
+    "show rejection patterns",
+    "why am I getting rejected",
+    "application failure analysis",
+    "what is blocking my applications",
+    "rejection reasons",
+    "why are my applications failing"
+  ],
+  "follow_ups": [
+    "check follow ups",
+    "any follow ups needed",
+    "who should I follow up with",
+    "pending follow ups",
+    "follow up reminders",
+    "due follow ups"
+  ],
+  "interview_prep": [
+    "prepare for interview",
+    "interview prep for",
+    "help me prepare for interview",
+    "STAR stories for",
+    "behavioral interview prep",
+    "interview preparation"
   ]
 }

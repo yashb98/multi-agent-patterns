@@ -666,6 +666,18 @@ def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:
                 exc,
             )
 
+    # ATS API scanning (Greenhouse, Lever, Ashby)
+    try:
+        from jobpulse.ats_api_scanner import scan_ats_api
+
+        raw_config = json.loads(_CONFIG_PATH.read_text(encoding="utf-8")) if _CONFIG_PATH.exists() else {}
+        for entry in raw_config.get("ats_companies", []):
+            ats_results = scan_ats_api(entry["url"], entry["name"])
+            all_jobs.extend(ats_results)
+            logger.info("scan_platforms: ATS %s returned %d jobs", entry["name"], len(ats_results))
+    except Exception as exc:
+        logger.warning("scan_platforms: ATS API scanning failed: %s", exc)
+
     logger.info("scan_platforms: total raw jobs collected = %d", len(all_jobs))
     return all_jobs
 
@@ -683,6 +695,34 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def check_liveness_batch(listings: list[dict], timeout: float = 15.0) -> tuple[list[dict], list[dict]]:
+    """Check liveness of job URLs via HTTP. Returns (alive, expired)."""
+    from jobpulse.liveness_checker import classify_liveness
+
+    alive, expired = [], []
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        for listing in listings:
+            url = listing.get("url", "")
+            if not url:
+                alive.append(listing)
+                continue
+            try:
+                resp = client.get(url)
+                result = classify_liveness(
+                    status=resp.status_code,
+                    final_url=str(resp.url),
+                    body_text=resp.text[:5000],
+                    apply_controls=[],
+                )
+                if result.status == "expired":
+                    expired.append({**listing, "liveness": result.reason})
+                else:
+                    alive.append(listing)
+            except httpx.HTTPError:
+                alive.append(listing)
+    return alive, expired
 
 
 def _url_encode(text: str) -> str:
