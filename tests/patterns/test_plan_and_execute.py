@@ -74,3 +74,116 @@ class TestStepExecutorNode:
         assert len(result["completed_steps"]) == 1
         assert result["completed_steps"][0]["output"] == "Step output here"
         assert result["completed_steps"][0]["success"] is True
+
+
+class TestEvaluatorNode:
+    def test_evaluator_returns_continue_when_steps_remain(self):
+        from patterns.plan_and_execute import evaluator_node, create_initial_state, Step, StepResult
+        import time as _time
+
+        state = create_initial_state("test")
+        state["plan"] = [
+            Step(goal="A", expected_output="out", dependencies=[], delegate_to=None),
+            Step(goal="B", expected_output="out", dependencies=[], delegate_to=None),
+        ]
+        state["completed_steps"] = [StepResult(step_index=0, output="result A", success=True)]
+        state["current_step_index"] = 1
+        state["start_time"] = _time.time()
+
+        result = evaluator_node(state)
+        assert result.get("eval_decision") == "continue"
+
+    def test_evaluator_returns_synthesize_when_all_done(self):
+        from patterns.plan_and_execute import evaluator_node, create_initial_state, Step, StepResult
+        import time as _time
+
+        state = create_initial_state("test")
+        state["plan"] = [Step(goal="A", expected_output="out", dependencies=[], delegate_to=None)]
+        state["completed_steps"] = [StepResult(step_index=0, output="result", success=True)]
+        state["current_step_index"] = 1
+        state["start_time"] = _time.time()
+
+        result = evaluator_node(state)
+        assert result.get("eval_decision") == "synthesize"
+
+    def test_evaluator_returns_synthesize_on_timeout(self):
+        from patterns.plan_and_execute import evaluator_node, create_initial_state, Step, StepResult, TOTAL_TIMEOUT_S
+        import time as _time
+
+        state = create_initial_state("test")
+        state["plan"] = [
+            Step(goal="A", expected_output="out", dependencies=[], delegate_to=None),
+            Step(goal="B", expected_output="out", dependencies=[], delegate_to=None),
+        ]
+        state["completed_steps"] = [StepResult(step_index=0, output="result", success=True)]
+        state["current_step_index"] = 1
+        state["start_time"] = _time.time() - TOTAL_TIMEOUT_S - 10
+
+        result = evaluator_node(state)
+        assert result.get("eval_decision") == "synthesize"
+
+
+class TestReplannerNode:
+    def test_replanner_increments_count(self, monkeypatch):
+        from patterns.plan_and_execute import replanner_node, create_initial_state, Step, StepResult
+        import json
+
+        new_steps = [{"goal": "New step", "expected_output": "out", "dependencies": [], "delegate_to": None}]
+        monkeypatch.setattr("patterns.plan_and_execute.get_llm", lambda **kw: None)
+        monkeypatch.setattr("patterns.plan_and_execute.smart_llm_call", lambda *a, **kw: json.dumps(new_steps))
+
+        state = create_initial_state("test")
+        state["plan"] = [
+            Step(goal="A", expected_output="out", dependencies=[], delegate_to=None),
+            Step(goal="B", expected_output="out", dependencies=[], delegate_to=None),
+        ]
+        state["completed_steps"] = [StepResult(step_index=0, output="result", success=True)]
+        state["current_step_index"] = 1
+        state["replan_count"] = 0
+
+        result = replanner_node(state)
+        assert result["replan_count"] == 1
+        assert len(result["plan"]) >= 1
+
+
+class TestSynthesizerNode:
+    def test_synthesizer_produces_final_output(self, monkeypatch):
+        from patterns.plan_and_execute import synthesizer_node, create_initial_state, Step, StepResult
+
+        monkeypatch.setattr("patterns.plan_and_execute.get_llm", lambda **kw: None)
+        monkeypatch.setattr("patterns.plan_and_execute.smart_llm_call", lambda *a, **kw: "Final synthesis output")
+
+        state = create_initial_state("test topic")
+        state["plan"] = [Step(goal="A", expected_output="out", dependencies=[], delegate_to=None)]
+        state["completed_steps"] = [StepResult(step_index=0, output="Step A result", success=True)]
+
+        result = synthesizer_node(state)
+        assert result["final_output"] == "Final synthesis output"
+        assert "synthesizer" in result["agent_history"][0]
+
+
+class TestPlanExecuteGraph:
+    def test_graph_builds_without_error(self):
+        from patterns.plan_and_execute import build_plan_execute_graph
+        graph = build_plan_execute_graph()
+        assert graph is not None
+
+    def test_run_plan_execute_end_to_end(self, monkeypatch):
+        from patterns.plan_and_execute import run_plan_execute
+        import json
+
+        call_count = {"n": 0}
+        plan = [{"goal": "Research", "expected_output": "findings", "dependencies": [], "delegate_to": None}]
+
+        def mock_llm_call(*a, **kw):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return json.dumps(plan)
+            return "Mock output"
+
+        monkeypatch.setattr("patterns.plan_and_execute.smart_llm_call", mock_llm_call)
+        monkeypatch.setattr("patterns.plan_and_execute.get_llm", lambda **kw: None)
+
+        result = run_plan_execute("Test topic")
+        assert isinstance(result, dict)
+        assert result.get("final_output")
