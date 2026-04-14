@@ -56,6 +56,7 @@ from shared.agents import (
     compute_cost_summary,
 )
 from shared.prompts import SUPERVISOR_PROMPT
+from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.memory_layer import get_shared_memory_manager
 from shared.convergence import ConvergenceController
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -66,6 +67,7 @@ logger = get_logger(__name__)
 # ─── MODULE-LEVEL MEMORY SINGLETON ──────────────────────────────
 # Shared singleton: all patterns share the same episodic/semantic/
 # procedural stores and GRPO experiences across the process lifetime.
+_experience_memory = get_shared_experience_memory()
 _memory_manager = get_shared_memory_manager()
 _convergence = ConvergenceController()
 
@@ -272,6 +274,20 @@ def finish_node(state: AgentState) -> dict:
     logger.info("Total cost: $%.4f (%d LLM calls)", cost['total_cost_usd'], cost['calls'])
     for agent, c in cost.get("cost_per_agent", {}).items():
         logger.info("  %s: $%.4f", agent, c)
+
+    # Extract experiential learning from high-scoring runs
+    if score >= 7.0:
+        exp = Experience(
+            task_description=state.get("topic", "")[:200],
+            successful_pattern=(
+                f"Hierarchical pattern scored {score}/10 in {iterations} iterations. "
+                f"Feedback: {state.get('review_feedback', '')[:300]}"
+            ),
+            score=score,
+            domain="writing",
+        )
+        _experience_memory.add(exp)
+        logger.info("Stored hierarchical experience (score: %s)", score)
 
     return {
         "final_output": draft,
