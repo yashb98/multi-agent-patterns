@@ -77,10 +77,10 @@ class TestAnalyzeTask:
         assert len(tasks) == 1
         assert tasks[0]["agent"] == "calendar"
 
-    def test_arxiv_single_task(self):
+    def test_arxiv_routes_to_pattern_router(self):
         tasks = self._analyze(Intent.ARXIV)
         assert len(tasks) == 1
-        assert tasks[0]["agent"] == "arxiv"
+        assert tasks[0]["agent"] == "pattern_router"
 
     def test_unknown_intent_returns_task(self):
         tasks = self._analyze(Intent.UNKNOWN)
@@ -449,6 +449,43 @@ class TestSwarmDispatch:
 
         # store_experience should have been called since score > 0
         mock_store.assert_called_once()
+
+
+class TestResearchRouting:
+    """Test that research queries route through pattern router."""
+
+    def _make_cmd(self, intent: Intent, raw: str = "test") -> ParsedCommand:
+        return ParsedCommand(intent=intent, args=raw, raw=raw)
+
+    def _analyze(self, intent: Intent, raw: str = "test") -> list:
+        from jobpulse.swarm_dispatcher import analyze_task
+        trail = MagicMock()
+        return analyze_task(self._make_cmd(intent, raw), trail)
+
+    def test_research_intent_routes_to_pattern_router(self):
+        tasks = self._analyze(Intent.RESEARCH, "research quantum computing")
+        assert len(tasks) == 1
+        assert tasks[0]["agent"] == "pattern_router"
+
+    def test_conversation_with_research_routes_to_pattern_router(self):
+        tasks = self._analyze(Intent.CONVERSATION, "compare React vs Vue for dashboards")
+        assert len(tasks) == 1
+        assert tasks[0]["agent"] == "pattern_router"
+
+    def test_conversation_without_research_stays_simple(self):
+        tasks = self._analyze(Intent.CONVERSATION, "hello how are you")
+        assert len(tasks) == 1
+        assert tasks[0]["agent"] == "conversation"
+
+    def test_budget_still_works(self):
+        tasks = self._analyze(Intent.LOG_SPEND, "spent 5 on coffee")
+        assert len(tasks) == 1
+        assert tasks[0].get("grpo") is True
+
+    def test_arxiv_routes_to_pattern_router(self):
+        tasks = self._analyze(Intent.ARXIV, "papers")
+        assert len(tasks) == 1
+        assert tasks[0]["agent"] == "pattern_router"
 
 
 if __name__ == "__main__":

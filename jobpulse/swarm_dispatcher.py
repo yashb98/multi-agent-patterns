@@ -120,6 +120,11 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
     """
     intent = cmd.intent
 
+    # Research queries — route through pattern auto-router
+    from jobpulse.pattern_router import is_research_query
+    if is_research_query(cmd):
+        return [{"agent": "pattern_router", "priority": 1, "description": "Research via LangGraph pattern"}]
+
     # Simple intents — single agent, no swarm overhead
     SIMPLE_INTENTS = {
         Intent.SHOW_TASKS, Intent.CREATE_TASKS, Intent.COMPLETE_TASK, Intent.REMOVE_TASK,
@@ -432,6 +437,14 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
         except Exception as e:
             logger.debug("Cross-reference failed: %s", e)
             return ""
+
+    elif agent_name == "pattern_router":
+        from jobpulse.pattern_router import select_pattern, run_with_pattern, log_pattern_selection
+        pattern, reason = select_pattern(cmd.raw)
+        logger.info("Pattern router: %s — %s", pattern, reason)
+        result = run_with_pattern(pattern, cmd.raw)
+        log_pattern_selection(cmd.raw, pattern, override=("override" in reason.lower()), quality_score=0.0)
+        return result
 
     # Standard agent
     handler = AGENT_MAP.get(agent_name)
