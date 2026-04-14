@@ -394,26 +394,21 @@ class TestNotionApiHelper:
     def test_returns_empty_dict_when_no_api_key(self):
         from jobpulse.papers.notion_publisher import _notion_api
 
-        with patch("jobpulse.papers.notion_publisher.NOTION_API_KEY", ""):
+        with patch("jobpulse.notion_client.NOTION_API_KEY", ""):
             result = _notion_api("GET", "/pages/123")
         assert result == {}
 
     def test_returns_response_json_on_success(self):
+        import json as _json
         from jobpulse.papers.notion_publisher import _notion_api
 
-        fake_response = MagicMock()
-        fake_response.json.return_value = {"object": "page", "id": "abc"}
+        fake_proc = MagicMock()
+        fake_proc.stdout = _json.dumps({"object": "page", "id": "abc"})
 
         with (
-            patch("jobpulse.papers.notion_publisher.NOTION_API_KEY", "secret-key"),
-            patch("httpx.Client") as mock_client_cls,
+            patch("jobpulse.notion_client.NOTION_API_KEY", "secret-key"),
+            patch("jobpulse.notion_client.subprocess.run", return_value=fake_proc),
         ):
-            mock_client = MagicMock()
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client.request.return_value = fake_response
-            mock_client_cls.return_value = mock_client
-
             result = _notion_api("POST", "/pages", {"children": []})
 
         assert result == {"object": "page", "id": "abc"}
@@ -422,8 +417,8 @@ class TestNotionApiHelper:
         from jobpulse.papers.notion_publisher import _notion_api
 
         with (
-            patch("jobpulse.papers.notion_publisher.NOTION_API_KEY", "secret-key"),
-            patch("httpx.Client", side_effect=Exception("network error")),
+            patch("jobpulse.notion_client.NOTION_API_KEY", "secret-key"),
+            patch("jobpulse.notion_client.subprocess.run", side_effect=Exception("network error")),
         ):
             result = _notion_api("GET", "/pages/bad")
         assert result == {}
