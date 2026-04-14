@@ -735,7 +735,7 @@ def build_digest(top_n: int = 5) -> str:
 
     threading.Thread(target=_blog_reminder, daemon=True).start()
 
-    # Store verification experiences for Ralph Loop learning
+    # Store verification experiences for experiential learning
     try:
         from jobpulse.swarm_dispatcher import store_experience
         for paper, summary in summaries:
