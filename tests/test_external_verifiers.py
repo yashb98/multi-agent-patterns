@@ -310,11 +310,13 @@ class TestQualityWebSearch:
         qualities = [r["quality"] for r in result["all_results"]]
         assert qualities == sorted(qualities, reverse=True)
 
-    def test_quality_web_verify_handles_import_error(self):
-        """When duckduckgo_search is not installed, returns empty result."""
+    def test_quality_web_verify_handles_import_error(self, monkeypatch):
+        """When duckduckgo_search is not installed, falls back to SearXNG or returns empty."""
         from shared.external_verifiers import quality_web_verify
 
-        # Remove from sys.modules so the import inside the function fails
+        # Disable SearXNG fallback too, to test pure DDG import failure
+        monkeypatch.setattr("shared.searxng_client.search", lambda q, **kw: [])
+
         import sys
         original = sys.modules.get("duckduckgo_search")
         sys.modules["duckduckgo_search"] = None  # Forces ImportError on `from X import Y`
