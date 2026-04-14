@@ -35,8 +35,8 @@ def test_dom_job_description_apply_for_this_job():
 def test_dom_login_form():
     s = _snapshot(
         fields=[
-            {"type": "email", "label": "Email address", "current_value": ""},
-            {"type": "password", "label": "Password", "current_value": ""},
+            {"input_type": "email", "label": "Email address", "current_value": ""},
+            {"input_type": "password", "label": "Password", "current_value": ""},
         ],
         buttons=[{"text": "Sign in", "enabled": True}],
     )
@@ -48,9 +48,9 @@ def test_dom_login_form():
 def test_dom_signup_confirm_password():
     s = _snapshot(
         fields=[
-            {"type": "email", "label": "Email", "current_value": ""},
-            {"type": "password", "label": "Password", "current_value": ""},
-            {"type": "password", "label": "Confirm Password", "current_value": ""},
+            {"input_type": "email", "label": "Email", "current_value": ""},
+            {"input_type": "password", "label": "Password", "current_value": ""},
+            {"input_type": "password", "label": "Confirm Password", "current_value": ""},
         ],
         buttons=[{"text": "Create Account", "enabled": True}],
     )
@@ -62,9 +62,9 @@ def test_dom_signup_confirm_password():
 def test_dom_signup_register_button():
     s = _snapshot(
         fields=[
-            {"type": "text", "label": "Full Name", "current_value": ""},
-            {"type": "email", "label": "Email", "current_value": ""},
-            {"type": "password", "label": "Password", "current_value": ""},
+            {"input_type": "text", "label": "Full Name", "current_value": ""},
+            {"input_type": "email", "label": "Email", "current_value": ""},
+            {"input_type": "password", "label": "Password", "current_value": ""},
         ],
         buttons=[{"text": "Register", "enabled": True}],
     )
@@ -82,9 +82,9 @@ def test_dom_email_verification():
 def test_dom_application_form():
     s = _snapshot(
         fields=[
-            {"type": "text", "label": "First Name", "current_value": ""},
-            {"type": "text", "label": "Last Name", "current_value": ""},
-            {"type": "file", "label": "Resume", "current_value": ""},
+            {"input_type": "text", "label": "First Name", "current_value": ""},
+            {"input_type": "text", "label": "Last Name", "current_value": ""},
+            {"input_type": "file", "label": "Resume", "current_value": ""},
         ],
         buttons=[{"text": "Submit Application", "enabled": True}],
         has_file_inputs=True,
@@ -96,8 +96,8 @@ def test_dom_application_form():
 def test_dom_application_form_screening():
     s = _snapshot(
         fields=[
-            {"type": "select", "label": "Do you require sponsorship?", "current_value": "", "options": ["Yes", "No"]},
-            {"type": "textarea", "label": "Why are you interested?", "current_value": ""},
+            {"input_type": "select", "label": "Do you require sponsorship?", "current_value": "", "options": ["Yes", "No"]},
+            {"input_type": "textarea", "label": "Why are you interested?", "current_value": ""},
         ],
         buttons=[{"text": "Next", "enabled": True}],
     )

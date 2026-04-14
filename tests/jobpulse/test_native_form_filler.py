@@ -322,7 +322,7 @@ async def test_map_fields_basic():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"Email": "test@example.com", "Phone": "+44123456789"}'
 
-    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         result = await filler._map_fields(fields, profile, {}, "greenhouse")
 
@@ -353,7 +353,7 @@ async def test_map_fields_includes_options():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"Country": "UK"}'
 
-    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         result = await filler._map_fields(fields, {}, {}, "greenhouse")
 
@@ -380,7 +380,7 @@ async def test_screen_questions_basic():
         '{"Are you authorized to work in the UK?": "Yes", "Expected salary": "50000"}'
     )
 
-    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         result = await filler._screen_questions(unresolved, "SWE at Acme")
 
@@ -400,7 +400,7 @@ async def test_screen_questions_includes_options():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"Years of experience": "2-3"}'
 
-    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         result = await filler._screen_questions(unresolved, "Data Analyst")
 
@@ -423,7 +423,7 @@ async def test_review_form_pass():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"pass": true}'
 
-    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         result = await filler._review_form()
 
@@ -442,7 +442,7 @@ async def test_review_form_fail_with_issues():
         '{"pass": false, "issues": ["Phone empty", "Wrong country"]}'
     )
 
-    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         result = await filler._review_form()
 
@@ -461,7 +461,7 @@ async def test_review_form_sends_image():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"pass": true}'
 
-    with patch("jobpulse.native_form_filler.OpenAI") as mock_openai:
+    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         await filler._review_form()
 
@@ -885,17 +885,17 @@ from jobpulse.application_orchestrator import ApplicationOrchestrator
 
 @pytest.mark.asyncio
 async def test_fill_application_routes_to_native_filler():
-    """_fill_application creates NativeFormFiller when engine='playwright'."""
+    """fill_application creates NativeFormFiller when engine='playwright'."""
     driver = AsyncMock()
     driver.page = MagicMock()
     orch = ApplicationOrchestrator(driver=driver, engine="playwright")
 
-    with patch("jobpulse.application_orchestrator.NativeFormFiller") as MockFiller:
+    with patch("jobpulse.native_form_filler.NativeFormFiller") as MockFiller:
         mock_instance = AsyncMock()
         mock_instance.fill = AsyncMock(return_value={"success": True, "pages_filled": 1})
         MockFiller.return_value = mock_instance
 
-        result = await orch._fill_application(
+        result = await orch._filler.fill_application(
             platform="greenhouse",
             snapshot={"url": "https://example.com", "fields": [], "buttons": []},
             cv_path="/tmp/cv.pdf",

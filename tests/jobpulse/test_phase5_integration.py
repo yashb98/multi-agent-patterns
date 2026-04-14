@@ -66,8 +66,8 @@ def _snapshot(buttons=None, fields=None, page_text="", verification_wall=None, h
 async def test_direct_form_to_confirmation(orchestrator, bridge):
     form = _snapshot(
         fields=[
-            {"type": "text", "label": "First Name", "current_value": "", "selector": "#fname"},
-            {"type": "file", "label": "Resume", "current_value": "", "selector": "#resume"},
+            {"input_type": "text", "label": "First Name", "current_value": "", "selector": "#fname"},
+            {"input_type": "file", "label": "Resume", "current_value": "", "selector": "#resume"},
         ],
         buttons=[{"text": "Submit Application", "enabled": True, "selector": "#submit"}],
         has_file_inputs=True,
@@ -92,7 +92,7 @@ async def test_jd_then_form(orchestrator, bridge):
         page_text="Software Engineer position",
     )
     form = _snapshot(
-        fields=[{"type": "text", "label": "First Name", "current_value": "", "selector": "#fname"}],
+        fields=[{"input_type": "text", "label": "First Name", "current_value": "", "selector": "#fname"}],
         buttons=[{"text": "Submit Application", "enabled": True, "selector": "#submit"}],
         has_file_inputs=True,
     )
@@ -124,8 +124,8 @@ async def test_captcha_wall_aborts(orchestrator, bridge):
 async def test_sso_google_detected(orchestrator, bridge):
     login = _snapshot(
         fields=[
-            {"type": "email", "label": "Email", "current_value": "", "selector": "#email"},
-            {"type": "password", "label": "Password", "current_value": "", "selector": "#pass"},
+            {"input_type": "email", "label": "Email", "current_value": "", "selector": "#email"},
+            {"input_type": "password", "label": "Password", "current_value": "", "selector": "#pass"},
         ],
         buttons=[
             {"text": "Sign in with Google", "enabled": True, "selector": "#google-sso"},
@@ -133,7 +133,7 @@ async def test_sso_google_detected(orchestrator, bridge):
         ],
     )
     form = _snapshot(
-        fields=[{"type": "text", "label": "First Name", "current_value": "", "selector": "#fname"}],
+        fields=[{"input_type": "text", "label": "First Name", "current_value": "", "selector": "#fname"}],
         buttons=[{"text": "Submit Application", "enabled": True, "selector": "#submit"}],
         has_file_inputs=True,
     )
@@ -152,15 +152,15 @@ async def test_sso_google_detected(orchestrator, bridge):
 async def test_signup_verify_login_apply(orchestrator, bridge):
     signup = _snapshot(
         fields=[
-            {"type": "email", "label": "Email", "current_value": "", "selector": "#email"},
-            {"type": "password", "label": "Password", "current_value": "", "selector": "#pass"},
-            {"type": "password", "label": "Confirm Password", "current_value": "", "selector": "#pass2"},
+            {"input_type": "email", "label": "Email", "current_value": "", "selector": "#email"},
+            {"input_type": "password", "label": "Password", "current_value": "", "selector": "#pass"},
+            {"input_type": "password", "label": "Confirm Password", "current_value": "", "selector": "#pass2"},
         ],
         buttons=[{"text": "Create Account", "enabled": True, "selector": "#create"}],
     )
     verify_page = _snapshot(page_text="We've sent a verification email. Check your email.")
     form = _snapshot(
-        fields=[{"type": "text", "label": "First Name", "current_value": "", "selector": "#fname"}],
+        fields=[{"input_type": "text", "label": "First Name", "current_value": "", "selector": "#fname"}],
         buttons=[{"text": "Submit Application", "enabled": True, "selector": "#submit"}],
         has_file_inputs=True,
     )
@@ -191,7 +191,7 @@ async def test_cookie_banner_dismissed(orchestrator, bridge):
         page_text="Software Engineer position",
     )
     form = _snapshot(
-        fields=[{"type": "text", "label": "First Name", "current_value": "", "selector": "#fname"}],
+        fields=[{"input_type": "text", "label": "First Name", "current_value": "", "selector": "#fname"}],
         buttons=[{"text": "Submit Application", "enabled": True, "selector": "#submit"}],
         has_file_inputs=True,
     )

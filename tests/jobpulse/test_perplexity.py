@@ -32,7 +32,7 @@ def test_client_init_with_explicit_key():
 
 
 def test_client_init_from_env(monkeypatch):
-    monkeypatch.setenv("PERPLEXITY_API_KEY", "pplx-env")
+    monkeypatch.setattr("jobpulse.config.PERPLEXITY_API_KEY", "pplx-env")
     c = PerplexityClient()
     assert c.api_key == "pplx-env"
 

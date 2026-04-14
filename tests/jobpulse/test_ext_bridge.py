@@ -233,26 +233,23 @@ class TestConnectionLifecycle:
     @pytest.mark.asyncio
     async def test_reconnection_replaces_old_connection(self, bridge):
         """New WebSocket connection replaces old one (MV3 service worker restart)."""
+        import json as _json
         await bridge.start()
         port = bridge.port
 
-        async def client1():
-            async with websockets.connect(f"ws://localhost:{port}"):
-                await asyncio.sleep(0.5)
-
-        async def client2():
+        # First connection is auto-adopted as extension (no existing ws)
+        async with websockets.connect(f"ws://localhost:{port}") as ws1:
             await asyncio.sleep(0.2)
-            async with websockets.connect(f"ws://localhost:{port}"):
-                await asyncio.sleep(1.0)  # stays alive longer than client1
+            assert bridge._ws is not None
+            first_ws = bridge._ws
 
-        t1 = asyncio.create_task(client1())
-        t2 = asyncio.create_task(client2())
-        await bridge.wait_for_connection(timeout=2.0)
-        await asyncio.sleep(0.7)  # client1 gone, client2 still alive
-        assert bridge.connected is True
+            # Second connection sends extension_hello to take over
+            async with websockets.connect(f"ws://localhost:{port}") as ws2:
+                await ws2.send(_json.dumps({"type": "extension_hello"}))
+                await asyncio.sleep(0.3)
+                assert bridge._ws is not None
+                assert bridge._ws is not first_ws  # replaced by second
 
-        t1.cancel()
-        t2.cancel()
         await bridge.stop()
 
 
