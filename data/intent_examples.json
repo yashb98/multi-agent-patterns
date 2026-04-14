@@ -431,5 +431,27 @@
     "STAR stories for",
     "behavioral interview prep",
     "interview preparation"
+  ],
+  "research": [
+    "research quantum computing advances",
+    "investigate transformer architectures",
+    "analyze the impact of LLMs on software engineering",
+    "compare different vector databases",
+    "what are the trade-offs between RAG and fine-tuning",
+    "explain how attention mechanisms work",
+    "deep dive into reinforcement learning from human feedback",
+    "break down the RLHF pipeline",
+    "compare PyTorch vs JAX for research",
+    "how does mixture of experts work",
+    "investigate multi-agent coordination patterns",
+    "analyze the pros and cons of microservices",
+    "research the latest advances in code generation",
+    "compare embedding models for semantic search",
+    "explain diffusion models step by step",
+    "what is the current state of autonomous agents",
+    "investigate knowledge graph construction methods",
+    "analyze trade-offs in distributed training",
+    "research federated learning privacy guarantees",
+    "compare RLHF vs DPO vs GRPO for alignment"
   ]
 }
