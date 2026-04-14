@@ -192,3 +192,18 @@ def format_prep_telegram(report: dict) -> str:
             lines.append(f"- {tip}")
 
     return "\n".join(lines)
+
+
+def fetch_interview_questions(company: str, role: str, max_results: int = 5) -> list[dict]:
+    """Fetch common interview questions via SearXNG. Returns empty list if unavailable."""
+    try:
+        from shared.searxng_client import search_smart
+        results = search_smart(
+            f"{company} {role} interview questions",
+            context="general",
+            max_results=max_results,
+        )
+        return [{"title": r.title, "url": r.url, "content": r.content[:300]} for r in results]
+    except Exception as e:
+        logger.debug("Interview question fetch failed: %s", e)
+        return []
