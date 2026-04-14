@@ -66,6 +66,7 @@ class Intent(str, Enum):
     JOB_PATTERNS = "job_patterns"
     FOLLOW_UPS = "follow_ups"
     INTERVIEW_PREP = "interview_prep"
+    RESEARCH = "research"
     UNKNOWN = "unknown"
 
 
@@ -315,6 +316,15 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     # Trending
     (Intent.TRENDING, [
         r"(trending|hot repos?|popular repos?|github trending|top repos?)",
+    ]),
+    # Research (explicit research/analysis — routed to LangGraph patterns)
+    (Intent.RESEARCH, [
+        r"^research\s+(.+)",
+        r"^investigate\s+(.+)",
+        r"^analyze\s+(.+)",
+        r"^compare\s+(.+)\s+(vs|versus|or|and)\s+(.+)",
+        r"^(debate|argue)\s*:?\s+(.+)",
+        r"^(deep dive|explain in depth|break down)\s+(.+)",
     ]),
     # arXiv
     (Intent.ARXIV, [
