@@ -54,6 +54,13 @@ def alert_if_down():
     with open(HEALTH_LOG, "a") as f:
         f.write(log_msg + "\n")
 
+    # Also check OAuth health on every watchdog cycle
+    try:
+        from jobpulse.oauth_monitor import run_health_check
+        run_health_check()
+    except Exception as e:
+        logger.warning("OAuth health check failed: %s", e)
+
     if not health["alive"]:
         from jobpulse.telegram_bots import send_alert
         send_alert(

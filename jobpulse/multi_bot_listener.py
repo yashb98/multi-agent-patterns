@@ -200,6 +200,13 @@ def start_all_bots():
     """Start all configured bot listeners in parallel threads."""
     from jobpulse.telegram_bots import send_main, send_budget, send_research, send_jobs
 
+    # Check OAuth health on startup
+    try:
+        from jobpulse.oauth_monitor import run_health_check
+        run_health_check()
+    except Exception as e:
+        logger.warning("OAuth health check on startup failed: %s", e)
+
     threads = []
 
     # Main bot — handles everything EXCEPT intents claimed by dedicated bots
