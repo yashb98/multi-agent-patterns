@@ -395,18 +395,29 @@ def quality_web_verify(query: str) -> dict:
         "all_results": [],
     }
 
+    raw_results = []
     try:
         from duckduckgo_search import DDGS
-    except ImportError:
-        logger.warning("duckduckgo_search not installed, quality_web_verify unavailable")
-        return empty_result
-
-    try:
         with DDGS() as ddgs:
             raw_results = list(ddgs.text(query, max_results=8))
+    except ImportError:
+        logger.warning("duckduckgo_search not installed, trying SearXNG fallback")
     except Exception as e:
         logger.warning("DuckDuckGo search failed for '%s': %s", query, e)
-        return empty_result
+
+    if not raw_results:
+        # Fallback: try SearXNG if DuckDuckGo returned nothing
+        try:
+            from shared.searxng_client import search_smart
+            sxng_results = search_smart(query, context="fact_check", max_results=5)
+            if sxng_results:
+                raw_results = [
+                    {"href": r.url, "body": r.content}
+                    for r in sxng_results
+                ]
+                logger.info("DuckDuckGo empty, SearXNG returned %d results", len(raw_results))
+        except Exception as e:
+            logger.debug("SearXNG fallback failed: %s", e)
 
     if not raw_results:
         return empty_result
