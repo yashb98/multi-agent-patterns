@@ -1,115 +1,115 @@
 {
   "fixtures": [
     {
-      "job_id": "49ab4ac620cad9ff",
+      "job_id": "a1ca812ae0274c94",
       "platform": "linkedin",
-      "filename": "linkedin_49ab4ac620cad9ff.json",
-      "url": "https://uk.linkedin.com/jobs/view/junior-graduate-data-analysts-x-3-graduate-scheme-bristol-immediate-start%21-at-redrock-resourcing-4394709698",
-      "title": "Junior/Graduate Data Analysts x 3 - Graduate Scheme - Bristol - Immediate Start!",
-      "company": "RedRock Resourcing",
-      "has_jd": true,
-      "detected_ats": null,
-      "scraped_at": "2026-04-07T13:41:58.042025+00:00"
-    },
-    {
-      "job_id": "6d24385392f5b1af",
-      "platform": "linkedin",
-      "filename": "linkedin_6d24385392f5b1af.json",
-      "url": "https://uk.linkedin.com/jobs/view/data-analyst-at-lorien-4398383430",
+      "filename": "linkedin_a1ca812ae0274c94.json",
+      "url": "https://uk.linkedin.com/jobs/view/data-analyst-at-explore-group-4399762909",
       "title": "Data Analyst",
-      "company": "Lorien",
+      "company": "Explore Group",
       "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:42:01.158197+00:00"
+      "scraped_at": "2026-04-14T16:43:56.715476+00:00"
     },
     {
-      "job_id": "cfd67a35cf233499",
+      "job_id": "17754fa7cc3cc202",
       "platform": "linkedin",
-      "filename": "linkedin_cfd67a35cf233499.json",
-      "url": "https://uk.linkedin.com/jobs/view/data-analyst-at-talentedge-4398214934",
+      "filename": "linkedin_17754fa7cc3cc202.json",
+      "url": "https://uk.linkedin.com/jobs/view/data-analyst-at-tech-in-rent-4400700877",
       "title": "Data Analyst",
-      "company": "Talentedge",
+      "company": "Tech in rent",
       "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:42:04.285601+00:00"
+      "scraped_at": "2026-04-14T16:44:00.403003+00:00"
     },
     {
-      "job_id": "7a1d35f52978b960",
+      "job_id": "a886f55d36be38d0",
       "platform": "linkedin",
-      "filename": "linkedin_7a1d35f52978b960.json",
-      "url": "https://uk.linkedin.com/jobs/view/graduate-software-engineer-at-targetjobs-uk-4394473941",
-      "title": "Graduate Software Engineer",
-      "company": "targetjobs UK",
+      "filename": "linkedin_a886f55d36be38d0.json",
+      "url": "https://uk.linkedin.com/jobs/view/data-analyst-remote-at-joveo-ai-4401764400",
+      "title": "Data Analyst (Remote)",
+      "company": "Joveo Ai",
       "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:42:10.818000+00:00"
+      "scraped_at": "2026-04-14T16:44:04.115158+00:00"
     },
     {
-      "job_id": "24028b5bf892f7c6",
+      "job_id": "815e0566922dc831",
       "platform": "linkedin",
-      "filename": "linkedin_24028b5bf892f7c6.json",
-      "url": "https://uk.linkedin.com/jobs/view/software-developer-at-profectus-recruitment-4395022892",
-      "title": "Software Developer",
-      "company": "Profectus Recruitment",
+      "filename": "linkedin_815e0566922dc831.json",
+      "url": "https://uk.linkedin.com/jobs/view/graduate-software-engineer-at-evernote-4399659985",
+      "title": "Graduate software engineer",
+      "company": "Evernote",
       "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:42:14.193658+00:00"
+      "scraped_at": "2026-04-14T16:44:11.550823+00:00"
     },
     {
-      "job_id": "3be7b51c7e20690d",
+      "job_id": "ae0a572a48f0a4c0",
+      "platform": "linkedin",
+      "filename": "linkedin_ae0a572a48f0a4c0.json",
+      "url": "https://uk.linkedin.com/jobs/view/graduate-software-engineer-at-meetup-4400029065",
+      "title": "Graduate software engineer",
+      "company": "Meetup",
+      "has_jd": true,
+      "detected_ats": null,
+      "scraped_at": "2026-04-14T16:44:14.613543+00:00"
+    },
+    {
+      "job_id": "ce8391a22817deee",
       "platform": "indeed",
-      "filename": "indeed_3be7b51c7e20690d.json",
-      "url": "https://uk.indeed.com/viewjob?jk=82fb9bbdce6bf1ba",
-      "title": "Senior Data Engineer",
+      "filename": "indeed_ce8391a22817deee.json",
+      "url": "https://uk.indeed.com/viewjob?jk=e0b24cec2cc150d8",
+      "title": "Business Support Analyst",
       "company": "Unknown",
       "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:43:36.166815+00:00"
+      "scraped_at": "2026-04-14T16:44:22.405769+00:00"
     },
     {
-      "job_id": "f374052f619afa35",
+      "job_id": "fd9b942287932f6e",
       "platform": "indeed",
-      "filename": "indeed_f374052f619afa35.json",
-      "url": "https://uk.indeed.com/viewjob?jk=5b6f5d5270e054cc",
-      "title": "Business Intelligence Analyst",
+      "filename": "indeed_fd9b942287932f6e.json",
+      "url": "https://uk.indeed.com/viewjob?jk=8a0060ee4eea6d48",
+      "title": "Undergraduate Data and Reporting Analyst",
       "company": "Unknown",
       "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:43:39.455837+00:00"
+      "scraped_at": "2026-04-14T16:44:26.005696+00:00"
     },
     {
-      "job_id": "49d779a848cc5046",
+      "job_id": "5f9058c9f5f81fd4",
       "platform": "indeed",
-      "filename": "indeed_49d779a848cc5046.json",
-      "url": "https://uk.indeed.com/viewjob?jk=4112c8efffcf8990",
-      "title": "Data Insights Analyst - Fintech Payments",
+      "filename": "indeed_5f9058c9f5f81fd4.json",
+      "url": "https://uk.indeed.com/viewjob?jk=d8c9673fb354a9b3",
+      "title": "Solution Consultant",
       "company": "Unknown",
       "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:43:43.962862+00:00"
+      "scraped_at": "2026-04-14T16:44:29.354051+00:00"
     },
     {
-      "job_id": "2dbeebb7ec782614",
+      "job_id": "4b158f1ea57eb0a2",
       "platform": "indeed",
-      "filename": "indeed_2dbeebb7ec782614.json",
-      "url": "https://uk.indeed.com/viewjob?jk=bb624a4c66ae3282",
-      "title": "Business Analyst",
+      "filename": "indeed_4b158f1ea57eb0a2.json",
+      "url": "https://uk.indeed.com/viewjob?jk=801510abbae52de7",
+      "title": "Senior Data Analyst",
       "company": "Unknown",
       "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:43:47.486838+00:00"
+      "scraped_at": "2026-04-14T16:44:33.019422+00:00"
     },
     {
-      "job_id": "f0ab1b5ed0e550cd",
+      "job_id": "314272cc691d1579",
       "platform": "indeed",
-      "filename": "indeed_f0ab1b5ed0e550cd.json",
-      "url": "https://uk.indeed.com/viewjob?jk=890abcdef0123456",
-      "title": "Business Analyst",
+      "filename": "indeed_314272cc691d1579.json",
+      "url": "https://uk.indeed.com/viewjob?jk=8c70aae4fa7b95d1",
+      "title": "Tableau & Data Specialist – FX Data & Analytics, AVP/VP",
       "company": "Unknown",
-      "has_jd": false,
+      "has_jd": true,
       "detected_ats": null,
-      "scraped_at": "2026-04-07T13:43:52.671461+00:00"
+      "scraped_at": "2026-04-14T16:44:36.274223+00:00"
     }
   ],
-  "last_refresh": "2026-04-07T13:43:55.192474+00:00"
+  "last_refresh": "2026-04-14T16:44:39.244200+00:00"
 }
