@@ -28,3 +28,5 @@ All errors in agent code MUST return structured error context, not generic strin
 - Classify errors: timeouts/rate-limits = transient (retryable), auth = permission, bad input = validation
 - Propagate partial results when available — don't discard work done before the failure
 - Distinguish access failures (needing retry) from valid empty results (successful query, no matches)
+- Only validate at system boundaries (user input, external APIs) — don't add error handling for impossible internal scenarios
+- Trust internal code and framework guarantees — no defensive coding against things that can't happen

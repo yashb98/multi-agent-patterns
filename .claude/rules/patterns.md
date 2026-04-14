@@ -11,6 +11,8 @@
 - Never return full AgentState — only the fields that changed.
 - Never mutate `topic` after initialization — it's the immutable input.
 - Review scores are floats 0.0-10.0. Never use integers.
+- Minimum code that solves the problem — no speculative abstractions or unused flexibility.
+- Every changed line should trace directly to the request. Don't "improve" adjacent agents.
 
 ## LLM Usage
 - Never instantiate ChatOpenAI directly — use get_llm() from shared/agents.py.

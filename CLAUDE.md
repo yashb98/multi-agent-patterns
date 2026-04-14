@@ -30,6 +30,29 @@ MCP tools are 10-250x faster than Grep (1-28ms vs 350-750ms, pre-indexed SQLite)
 Subagents automatically get CLI instructions via `AGENTS.md` — no manual briefing needed.
 CLI uses direct SQLite (~50ms) vs `python -m` path (~4s, heavy `shared/__init__.py` imports).
 
+## Coding Principles
+
+### Think Before Coding
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+
+### Simplicity First
+- Minimum code that solves the problem. Nothing speculative.
+- No features beyond what was asked. No abstractions for single-use code.
+- No error handling for impossible scenarios. If 200 lines could be 50, rewrite it.
+
+### Surgical Changes
+- Don't "improve" adjacent code, comments, or formatting.
+- Match existing style. Don't refactor things that aren't broken.
+- Remove imports/variables/functions that YOUR changes made unused — don't touch pre-existing dead code.
+- Every changed line should trace directly to the request.
+
+### Goal-Driven Execution
+- Transform tasks into verifiable goals with success criteria.
+- For multi-step tasks, state a brief plan with verification checks per step.
+- Loop until verified — weak criteria ("make it work") require clarification first.
+
 ## Critical Rules
 - Update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
 - Always HTTPS for external APIs | Tests NEVER touch data/*.db — use tmp_path
@@ -41,7 +64,7 @@ CLI uses direct SQLite (~50ms) vs `python -m` path (~4s, heavy `shared/__init__.
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~82,000 LOC | 345 Python files | 18 databases | 1939 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~82,500 LOC | 346 Python files | 18 databases | 1939 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)

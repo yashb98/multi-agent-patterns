@@ -20,6 +20,12 @@ python -m pytest tests/ -v -k "dispatch"      # Dispatcher tests only
 python -m pytest tests/ -v -k "fact"          # Fact-checker tests only
 ```
 
+## Goal-Driven Testing
+- Transform "fix the bug" → write a test that reproduces it, then make it pass.
+- Transform "add validation" → write tests for invalid inputs, then make them pass.
+- Transform "refactor X" → ensure tests pass before and after.
+- Don't add error handling or test coverage for scenarios that can't happen.
+
 ## What to Test for New Features
 - Intent routing: test in BOTH dispatcher AND swarm_dispatcher
 - Budget: test parsing, recurring, alerts, undo, CSV export, weekly comparison

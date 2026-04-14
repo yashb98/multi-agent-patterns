@@ -109,14 +109,23 @@ PLAYWRIGHT_CDP_URL = os.environ.get("PLAYWRIGHT_CDP_URL", "http://localhost:9222
 PLAYWRIGHT_CDP_PORT = os.environ.get("PLAYWRIGHT_CDP_PORT", "9222")
 
 # Local LLM provider (shared with shared/agents.py)
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
+# "auto" (default) probes Ollama and uses local if reachable, else cloud
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").lower()
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "gemma4:31b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
+# Import resolved provider from shared/agents.py for downstream decisions
+try:
+    from shared.agents import is_local_llm as _is_local_check
+    _resolved_local = _is_local_check()
+except ImportError:
+    _resolved_local = LLM_PROVIDER == "local"
+
 # RLM (Recursive Language Model)
-# When LLM_PROVIDER=local, auto-switch RLM to use Ollama backend + local model
-_rlm_default_backend = "openai" if LLM_PROVIDER != "local" else "openai"
-_rlm_default_model = "gpt-4.1-mini" if LLM_PROVIDER != "local" else LOCAL_LLM_MODEL
+# When local LLM is active, use Ollama backend + local model
+# When auto-falling back to cloud, use older/cheaper model (gpt-4o-mini)
+_rlm_default_backend = "openai"
+_rlm_default_model = LOCAL_LLM_MODEL if _resolved_local else "gpt-4o-mini"
 RLM_BACKEND = os.getenv("RLM_BACKEND", _rlm_default_backend)
 RLM_ROOT_MODEL = os.getenv("RLM_ROOT_MODEL", _rlm_default_model)
 RLM_MAX_ITERATIONS = int(os.getenv("RLM_MAX_ITERATIONS", "10"))

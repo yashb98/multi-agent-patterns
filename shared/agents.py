@@ -62,19 +62,58 @@ logger = get_logger(__name__)
 
 # ─── LLM PROVIDER CONFIG ───────────────────────────────────────
 #
-# LLM_PROVIDER=local   → Ollama (gemma4:31b via OpenAI-compatible API)
-# LLM_PROVIDER=openai  → OpenAI API (gpt-4.1-mini, default)
+# LLM_PROVIDER=auto    → Probe Ollama; use local if reachable, else cloud (DEFAULT)
+# LLM_PROVIDER=local   → Force Ollama (gemma4:31b via OpenAI-compatible API)
+# LLM_PROVIDER=openai  → Force OpenAI API
 #
-# When provider is "local", get_llm() and get_openai_client() point at
-# Ollama's OpenAI-compatible endpoint (http://localhost:11434/v1).
-# All downstream code (smart_llm_call, patterns, dispatchers) works
-# unchanged because ChatOpenAI and OpenAI SDK both support base_url.
+# When provider resolves to "local", get_llm() and get_openai_client()
+# point at Ollama's OpenAI-compatible endpoint (http://localhost:11434/v1).
+# When falling back to cloud, older/cheaper models are used automatically
+# (gpt-4o-mini instead of gpt-4.1-mini) to minimise cost.
 
-_LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai").lower()
 _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 _OLLAMA_BASE_URL = _OLLAMA_HOST.rstrip("/") + "/v1"
 _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gemma4:31b")
+
+# Cloud fallback model map: current → older/cheaper equivalent
+_FALLBACK_MODELS = {
+    "gpt-4.1-mini": "gpt-4o-mini",
+    "gpt-4.1": "gpt-4o",
+    "gpt-4.1-nano": "gpt-4o-mini",
+}
+
+
+def _probe_ollama() -> bool:
+    """Check if Ollama is reachable (fast 2s timeout)."""
+    import urllib.request
+    import urllib.error
+    try:
+        req = urllib.request.Request(
+            _OLLAMA_HOST.rstrip("/") + "/api/tags",
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=2):
+            return True
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
+def _resolve_provider() -> str:
+    """Resolve LLM_PROVIDER, auto-detecting Ollama when set to 'auto'."""
+    explicit = os.environ.get("LLM_PROVIDER", "auto").lower()
+    if explicit in ("local", "openai"):
+        return explicit
+    # auto: probe Ollama
+    if _probe_ollama():
+        logger.info("Ollama detected at %s — using local LLM (%s)", _OLLAMA_HOST, _LOCAL_MODEL)
+        return "local"
+    logger.info("Ollama not reachable — falling back to cloud (older models)")
+    return "openai"
+
+
+_LLM_PROVIDER = _resolve_provider()
 _is_local = _LLM_PROVIDER == "local"
+_use_fallback_models = not _is_local and os.environ.get("LLM_PROVIDER", "auto").lower() == "auto"
 
 
 def is_local_llm() -> bool:
@@ -86,12 +125,15 @@ def get_model_name(default: str = "gpt-4.1-mini") -> str:
     """Return the effective model name for raw OpenAI SDK calls.
 
     When LLM_PROVIDER=local, returns LOCAL_LLM_MODEL (e.g. gemma4:31b).
-    When LLM_PROVIDER=openai, returns the provided default.
-
-    Use this whenever calling client.chat.completions.create(model=...)
-    with a client from get_openai_client().
+    When falling back to cloud via auto-detection, maps to older/cheaper
+    models (e.g. gpt-4.1-mini → gpt-4o-mini).
+    When LLM_PROVIDER=openai (explicit), returns the provided default as-is.
     """
-    return _LOCAL_MODEL if _is_local else default
+    if _is_local:
+        return _LOCAL_MODEL
+    if _use_fallback_models:
+        return _FALLBACK_MODELS.get(default, default)
+    return default
 
 
 def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
@@ -110,7 +152,7 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
 
     timeout: seconds before the HTTP request is aborted (default 30s).
     """
-    if _LLM_PROVIDER == "local":
+    if _is_local:
         # Use local model unless caller explicitly requested a specific model
         effective_model = _LOCAL_MODEL if model == "gpt-4.1-mini" else model
         return ChatOpenAI(
@@ -120,8 +162,10 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
             openai_api_base=_OLLAMA_BASE_URL,
             openai_api_key="ollama",  # Ollama doesn't require a real key
         )
+    # Cloud path: use fallback (older/cheaper) models when auto-detected
+    effective_model = _FALLBACK_MODELS.get(model, model) if _use_fallback_models else model
     return ChatOpenAI(
-        model=model,
+        model=effective_model,
         temperature=temperature,
         request_timeout=timeout,
     )

@@ -25,6 +25,8 @@ while iteration < max_iterations:
 - Using iteration caps as the PRIMARY stopping mechanism (they are safety valves only)
 - Checking for assistant text content as a completion indicator
 - Skipping tool result injection — tool results MUST be appended to conversation history
+- Adding speculative abstractions, feature flags, or backwards-compatibility shims — just change the code
+- Writing helpers/utilities for one-time operations — three similar lines beats a premature abstraction
 
 ## Score-Based Convergence
 

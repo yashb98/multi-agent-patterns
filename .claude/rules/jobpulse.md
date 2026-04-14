@@ -27,6 +27,12 @@ NEVER update only one dispatcher. This has caused production bugs (see mistakes.
 - Always include User-Agent header for arxiv.org requests
 - Gmail pre-classifier runs BEFORE LLM classification to save 70-85% of API costs
 
+## Surgical Changes
+- Match existing agent style. Don't refactor working agents while fixing a bug.
+- Don't add docstrings, comments, or type annotations to code you didn't change.
+- Every changed line should trace directly to the request.
+- If you notice unrelated dead code, mention it — don't delete it.
+
 ## Database Safety
 - Production DBs live in data/*.db — tests MUST NEVER touch these
 - All test fixtures use tmp_path or monkeypatch DB_PATH

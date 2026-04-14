@@ -1,5 +1,11 @@
 # Rules: Shared Modules (shared/**/*)
 
+## Coding Discipline
+- Surgical changes only — don't refactor adjacent code or add unrequested features.
+- No abstractions for single-use code. No speculative "flexibility" or "configurability."
+- Remove only what YOUR changes made unused — don't touch pre-existing dead code.
+- State assumptions explicitly before implementing. If multiple approaches exist, present them.
+
 ## Dependency Direction
 shared/ modules MUST NOT import from patterns/, jobpulse/, or mindgraph_app/.
 Dependency flows one way: systems → shared. Never the reverse.
