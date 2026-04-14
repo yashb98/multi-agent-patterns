@@ -64,23 +64,99 @@ The token was originally authorized with fewer scopes than `config.py` now requi
 **Problem**: Imports deleted `fast_score` function from `arxiv_agent`.
 **Fix**: Find the current scoring function that replaced `fast_score` and update the import.
 
-### 1.5 arXiv Rate Limiting → Multi-Source Paper Discovery
+### 1.5 arXiv → Community-First Paper Discovery
 
-**Problem**: arXiv API returns 429 since Apr 7. Single-source dependency is a production risk.
-**Current**: 3 attempts at 5s/10s/15s backoff against `export.arxiv.org/api/query`.
+**Problem**: arXiv API returns 429 since Apr 7. But the deeper problem is architectural — fetching 200 papers and then filtering is wasteful when the community has already done the filtering for us.
 
-**Fix — replace single-source with multi-source pipeline**:
+**Old approach** (200 papers, then filter):
+```
+arXiv API → 200 papers → LLM rank each ($0.40) → top 5 → then check community
+```
 
-| Source | Role | Rate Limit | Cost |
-|--------|------|-----------|------|
-| **Semantic Scholar API** | Primary discovery (already in codebase via `shared/external_verifiers.py`) | 100 req/sec (with free API key) | Free |
-| **arXiv RSS feeds** | Fallback, zero rate limiting (static files per category) | None | Free |
-| **HuggingFace Daily Papers** | High-signal supplement (community-upvoted trending papers) | Generous | Free |
-| **Papers with Code API** | Papers WITH implementations + SOTA benchmarks | Generous | Free |
+**New approach** (community-first, ~20-40 papers):
+```
+HN + Reddit + HuggingFace + Papers with Code + X (via SearXNG/Nitter)
+  → ~20-40 papers people are actually discussing
+  → enrich with Semantic Scholar metadata
+  → rank by community_buzz + relevance_to_profile + novelty
+  → top 5
+```
 
-**Implementation**: New `jobpulse/paper_sources.py` module with `fetch_papers()` that tries sources in order: Semantic Scholar → arXiv RSS → HuggingFace. Papers with Code used for enrichment (linked repos, benchmarks). Dedup by arXiv ID across sources. Existing `arxiv_agent.py` calls `fetch_papers()` instead of hitting arXiv directly.
+**Why this is better**:
+- Zero arXiv API dependency (eliminated, not mitigated)
+- 20-40 API calls instead of 200+ (10x fewer)
+- LLM scoring on 20-40 papers (~$0.04) instead of 200 (~$0.40)
+- Community signal IS the discovery — no separate validation step
+- Every paper is pre-validated by humans (if nobody's discussing it, it's not in the pipeline)
+- X/Twitter covered for free via SearXNG Nitter engine (no $100/mo API)
 
-**Also fix**: Add `User-Agent` header to arXiv fallback, increase backoff to 30s/60s/120s
+**New file**: `jobpulse/paper_discovery.py` (replaces the need for both `paper_sources.py` AND `paper_validator.py` — one module instead of two)
+
+#### Community Sources
+
+| Source | API | Papers/Day | Cost | Signal |
+|--------|-----|-----------|------|--------|
+| **HuggingFace Daily Papers** | `huggingface.co/api/daily_papers` | 10-15 | Free | Community upvotes, ML-focused curation |
+| **Reddit** | PRAW: r/MachineLearning + r/LocalLLaMA | 5-15 | Free (100/min) | Upvotes, comment count, practitioner sentiment |
+| **Hacker News** | Algolia: `hn.algolia.com/api` (search "arxiv.org") | 3-10 | Free, no auth | Points, comments, tech community buzz |
+| **Papers with Code** | `paperswithcode.com/api` | 5-10 | Free | Linked repos, SOTA benchmarks, implementation count |
+| **X/Twitter** | SearXNG Nitter engine (no API key) | 3-8 | Free | Author threads, quote tweets, retweet count |
+
+#### Pipeline
+
+```python
+def discover_trending_papers() -> list[TrendingPaper]:
+    """Discover papers from community signals. Returns pre-validated papers."""
+    
+    # Parallel fetch from all community sources
+    hf = fetch_huggingface_daily()           # 10-15 papers
+    reddit = fetch_reddit_papers()            # 5-15 papers
+    hn = fetch_hackernews_papers()            # 3-10 papers
+    pwc = fetch_papers_with_code()            # 5-10 papers
+    x = fetch_x_via_searxng()                # 3-8 papers (Nitter, free)
+    
+    # Dedup by arXiv ID → ~20-40 unique papers
+    unique = dedup_by_arxiv_id(hf + reddit + hn + pwc + x)
+    
+    # Enrich: fetch full abstract + authors + citations from Semantic Scholar
+    enriched = enrich_from_semantic_scholar(unique)  # 1 call each, 100/sec limit
+    
+    # Each paper carries community signals from discovery:
+    #   hf_upvotes, reddit_score, hn_points, pwc_stars, x_mentions
+    # No separate validation step needed — discovery IS validation
+    
+    return enriched
+```
+
+#### Ranking (Personalized)
+
+```python
+final_score = (
+    community_buzz * 0.4 +         # Aggregated: HN points + Reddit upvotes + HF likes + X mentions
+    relevance_to_profile * 0.4 +   # Skill graph match (verified skills vs paper topics)
+    novelty * 0.2                  # Hours since published (newer = higher)
+)
+```
+
+A paper huge on HN but irrelevant to your skills won't make your top 5. A paper moderately discussed AND matching your profile jumps to the top.
+
+#### Fallback
+
+If all community sources return zero papers (unlikely but possible on holidays):
+- Fall back to arXiv RSS feeds (static XML, zero rate limiting) for category-based discovery
+- This is the ONLY time arXiv is hit, and it's the rate-limit-free RSS endpoint
+
+#### Rate Limits and Cost
+
+| Source | Calls/day | Cost |
+|--------|----------|------|
+| HuggingFace | 1 | Free |
+| Reddit (PRAW) | 2-4 | Free |
+| Hacker News | 1-2 | Free |
+| Papers with Code | 1-2 | Free |
+| SearXNG (X/Nitter) | 1-2 | Free (self-hosted) |
+| Semantic Scholar (enrichment) | 20-40 | Free |
+| **Total** | ~30-50 | **$0/day** |
 
 ### 1.6 Voice Handler Import
 
@@ -123,7 +199,10 @@ After all fixes:
 - `python -c "from jobpulse.job_autopilot import run_scan_window"` — no AttributeError
 - `python -c "from jobpulse.notion_papers_agent import sync_papers"` — no ImportError
 - `python -c "from jobpulse.voice_handler import transcribe_voice"` — no ImportError
-- arXiv test: `python -m jobpulse.runner ralph-test` with arXiv URL returns 200
+- Paper discovery: `discover_trending_papers()` returns 20-40 papers from community sources
+- Paper discovery: known paper (e.g., "Attention Is All You Need") shows high community buzz across HN/Reddit/HF
+- Paper discovery: parallel fetch from all 5 sources completes in <5 seconds
+- Paper discovery: fallback to arXiv RSS works when all community sources return empty
 - Health watchdog runs without error for 30 minutes
 - All 4 Telegram bots respond to "help"
 
@@ -423,71 +502,11 @@ class MapReduceState(TypedDict):
 | "Review all agents in jobpulse/" | by_item (files) | Assess each agent | summarize |
 | "Compare 5 databases" | by_entity | Research each DB | rank |
 
-### 3.3 Community Validation Pipeline
+### 3.3 Community Validation — Merged into Phase 1.5
 
-**New file**: `jobpulse/paper_validator.py`
+Community validation is no longer a separate step. With community-first discovery (Phase 1.5), the community signals (HN points, Reddit upvotes, HF likes, X mentions, Papers with Code stars) come for free during discovery. No separate `paper_validator.py` needed.
 
-**Purpose**: For each paper surfaced by the multi-source discovery (Phase 1.5), validate its claims and measure community reception across 4 platforms.
-
-#### Pipeline
-
-```
-paper (arXiv ID + title + abstract)
-  → parallel fetch from 4 sources
-  → aggregate signals
-  → community_score (0-10)
-  → append to paper ranking
-```
-
-#### Sources and Signals
-
-| Platform | API | What We Extract | Python Package |
-|----------|-----|----------------|----------------|
-| **Semantic Scholar** | REST API (already integrated) | Citation count, venue quality, author h-index, influential citations | `semanticscholar` or raw httpx |
-| **GitHub** | REST API (GITHUB_TOKEN already configured) | Repos implementing the paper (search by title/arXiv ID), total stars, forks, last commit date | `PyGithub` or raw httpx |
-| **HuggingFace** | `huggingface_hub` API | Models/spaces referencing the paper, download counts, community likes/discussions | `huggingface_hub` |
-| **Reddit** | PRAW (OAuth) | Posts in r/MachineLearning + r/LocalLLaMA mentioning the paper, upvotes, comment count, sentiment | `praw` |
-| **Hacker News** | Algolia Search API (no auth) | Stories/comments mentioning the paper, points, comment count | raw httpx |
-
-**X/Twitter excluded**: $100/mo for 100 reads. Not worth the signal.
-
-#### Community Score Formula
-
-```python
-community_score = (
-    citations_normalized * 0.25 +      # Semantic Scholar
-    github_adoption * 0.25 +            # Stars + forks + recency
-    hf_adoption * 0.20 +               # Model downloads + spaces
-    reddit_buzz * 0.15 +               # Upvotes + comment quality
-    hn_buzz * 0.15                      # Points + comments
-)
-```
-
-Each component normalized to 0-10. Weights tunable via experiential learning feedback.
-
-#### Integration with arXiv Agent
-
-The existing `arxiv_agent.py` ranking pipeline gets a new signal:
-```python
-final_score = (
-    relevance_score * 0.4 +
-    novelty_score * 0.3 +
-    community_score * 0.3    # NEW — from paper_validator
-)
-```
-
-Papers with high community scores but low novelty (e.g., a well-known framework release) still surface. Papers with zero community signal (brand new) rely on relevance + novelty only.
-
-#### Rate Limits and Cost
-
-| Source | Calls per paper | Daily (50 papers) | Cost |
-|--------|----------------|-------------------|------|
-| Semantic Scholar | 1 | 50 | Free |
-| GitHub | 1-2 | 100 | Free (5k/hr limit) |
-| HuggingFace | 1 | 50 | Free |
-| Reddit (PRAW) | 2 | 100 | Free (100/min limit) |
-| Hacker News | 1 | 50 | Free, no auth |
-| **Total** | ~6 | ~350 | **$0/day** |
+The old approach (discover 200 papers → validate each) required ~350 API calls/day for validation alone. The new approach gets validation signals as a byproduct of discovery at ~30-50 calls/day total.
 
 ### 3.4 Google Jobs Scanner
 
@@ -577,10 +596,8 @@ PATTERN_RULES.extend([
 - "Summarize all papers from this week" → splits into N papers, parallel map, synthesized digest
 - "Batch analyze my pending applications" → parallel scoring, ranked output
 
-**Community Validation**:
-- Fetch validation for a known paper (e.g., "Attention Is All You Need") → high GitHub stars, many HF models, Reddit/HN discussion
-- Fetch validation for a brand-new paper → zero community signal, falls back to relevance + novelty only
-- Verify parallel fetch completes in <5 seconds for all 5 sources
+**Community-First Discovery** (moved to Phase 1 verification):
+- Verified in Phase 1.5 — community signals come from discovery, no separate validation step
 
 **Google Jobs**:
 - `scan_google_jobs(["data engineer"], "London")` returns results
@@ -625,19 +642,18 @@ Telegram message
        └─ pattern selection feedback → router improves over time
 
 
-Paper Discovery & Validation Pipeline:
-  paper_sources.fetch_papers()
-    ├─ Semantic Scholar API (primary)
-    ├─ arXiv RSS feeds (fallback)
-    ├─ HuggingFace Daily Papers (supplement)
-    └─ Papers with Code (enrichment)
-  → paper_validator.validate()
-    ├─ Semantic Scholar (citations, h-index)
-    ├─ GitHub (implementations, stars)
-    ├─ HuggingFace (models, spaces, downloads)
-    ├─ Reddit (r/MachineLearning, r/LocalLLaMA)
-    └─ Hacker News (Algolia search)
-  → community_score → arxiv_agent ranking
+Paper Discovery Pipeline (community-first, ~30-50 calls/day):
+  paper_discovery.discover_trending_papers()
+    ├─ HuggingFace Daily Papers (10-15 papers, upvoted)
+    ├─ Reddit PRAW: r/MachineLearning + r/LocalLLaMA (5-15 papers)
+    ├─ Hacker News Algolia (3-10 papers, by points)
+    ├─ Papers with Code (5-10 papers, with implementations)
+    └─ X/Twitter via SearXNG Nitter (3-8 papers, free)
+  → dedup by arXiv ID → ~20-40 unique
+  → enrich from Semantic Scholar (abstract, citations, authors)
+  → rank by: community_buzz * 0.4 + relevance_to_profile * 0.4 + novelty * 0.2
+  → top 5 → morning digest
+  (Fallback: arXiv RSS if all community sources empty)
 
 
 Job Autopilot Pipeline (full, no submission):
@@ -800,11 +816,11 @@ These existing modules serve all 6 patterns without modification:
 
 | File | Phase | Lines (est.) | Purpose |
 |------|-------|-------------|---------|
-| `jobpulse/paper_sources.py` | 1 | ~150 | Multi-source paper discovery (Semantic Scholar + RSS + HF) |
+| `jobpulse/paper_discovery.py` | 1 | ~250 | Community-first paper discovery (HN + Reddit + HF + PwC + X via SearXNG) + Semantic Scholar enrichment |
 | `jobpulse/pattern_router.py` | 2 | ~200 | Auto-router + override + feedback |
 | `patterns/plan_and_execute.py` | 3 | ~400 | 5-node plan-execute-replan graph (max 3 replans) |
 | `patterns/map_reduce.py` | 3 | ~200 | 4-node split-map-reduce graph |
-| `jobpulse/paper_validator.py` | 3 | ~250 | Community validation (GitHub + HF + Reddit + HN) |
+| ~~`jobpulse/paper_validator.py`~~ | ~~3~~ | ~~250~~ | Merged into `paper_discovery.py` — community signals come from discovery, no separate validation |
 | `jobpulse/job_scanners/google_jobs.py` | 3 | ~80 | Google Jobs scanner via JobSpy |
 | `shared/searxng_client.py` | 4 | ~120 | SearXNG client with smart Tor/no-Tor routing + SQLite cache |
 | `docker-compose.searxng.yml` | 4 | ~30 | Docker setup for SearXNG + Tor sidecar |
@@ -818,14 +834,14 @@ These existing modules serve all 6 patterns without modification:
 | `jobpulse/gmail_agent.py` | 1 | Initialize `messages = []` + OAuth fix |
 | `jobpulse/job_autopilot.py` | 1 | `description` → `description_raw` |
 | `jobpulse/notion_papers_agent.py` | 1 | Fix `fast_score` import |
-| `jobpulse/arxiv_agent.py` | 1 | Use `paper_sources.fetch_papers()` instead of direct arXiv API |
+| `jobpulse/arxiv_agent.py` | 1 | Use `paper_discovery.discover_trending_papers()` instead of direct arXiv API |
 | `jobpulse/voice_handler.py` | 1 | Fix import path |
 | `patterns/hierarchical.py` | 1 | Wire experiential learning |
 | `jobpulse/swarm_dispatcher.py` | 2 | Add pattern router call |
 | `jobpulse/dispatcher.py` | 2 | Add pattern router call (flat path) |
 | `shared/nlp_classifier.py` | 2 | Add `research` intent examples |
 | `jobpulse/job_autopilot.py` | 3 | Opt-in adaptive mode + Google Jobs source |
-| `jobpulse/arxiv_agent.py` | 3 | Integrate community_score into ranking |
+| `jobpulse/arxiv_agent.py` | 3 | Community score already integrated via paper_discovery (Phase 1.5) |
 | `requirements.txt` | 3 | Add `python-jobspy`, `praw`, `huggingface_hub` |
 
 ## Dependencies Added
@@ -863,9 +879,8 @@ These existing modules serve all 6 patterns without modification:
 - Integration: end-to-end test with a real query through each pattern
 - Plan-and-execute: test replan early-exit (duplicate plan detection), test max 3 replans cap
 - Job autopilot adaptive: test with fixture scan results, verify plan output
-- Paper sources: test fallback chain (mock Semantic Scholar failure → RSS fallback)
-- Paper validator: test with fixture paper data, mock all 5 APIs
+- Paper discovery: test all 5 community sources with mocked responses, test dedup, test Semantic Scholar enrichment, test RSS fallback
 - Google Jobs scanner: test with JobSpy mock, verify normalize_to_job_listing output shape
 - All tests use `tmp_path` for databases per project rules
 - SearXNG client: test with mocked HTTP responses, test Tor/no-Tor routing, test SQLite cache hit/miss/TTL
-- Tests mirror source: `tests/patterns/test_plan_and_execute.py`, `tests/patterns/test_map_reduce.py`, `tests/jobpulse/test_pattern_router.py`, `tests/jobpulse/test_paper_validator.py`, `tests/jobpulse/test_paper_sources.py`, `tests/jobpulse/test_google_jobs.py`, `tests/shared/test_searxng_client.py`
+- Tests mirror source: `tests/patterns/test_plan_and_execute.py`, `tests/patterns/test_map_reduce.py`, `tests/jobpulse/test_pattern_router.py`, `tests/jobpulse/test_paper_discovery.py`, `tests/jobpulse/test_google_jobs.py`, `tests/shared/test_searxng_client.py`
