@@ -7,7 +7,7 @@ Ties together all Job Autopilot pipeline tasks:
   L4: Match projects  (github_matcher)
   L5: Generate CV PDF (cv_templates.generate_cv — ReportLab)
   L6: Cover letter PDF(cv_templates.generate_cover_letter — ReportLab)
-  L7: Score & tier    (cv_tailor.determine_match_tier)
+  L7: Score & tier    (determine_match_tier — inline)
   L8: Apply / queue   (applicator)
   L9: Notify          (telegram_bots)
 
@@ -35,14 +35,6 @@ from shared.logging_config import get_logger
 from jobpulse.applicator import classify_action
 from jobpulse.ralph_loop import ralph_apply_sync
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
-
-def determine_match_tier(ats_score: float) -> str:
-    """Return 'auto' if >= 90, 'review' if >= 82, 'skip' otherwise."""
-    if ats_score >= 90:
-        return "auto"
-    if ats_score >= 82:
-        return "review"
-    return "skip"
 from jobpulse.cv_templates.generate_cv import generate_cv_pdf, build_extra_skills, get_role_profile
 from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
 from jobpulse.drive_uploader import upload_cv, upload_cover_letter
@@ -63,6 +55,16 @@ from jobpulse.process_logger import ProcessTrail
 from jobpulse.telegram_bots import send_jobs
 
 logger = get_logger(__name__)
+
+
+def determine_match_tier(ats_score: float) -> str:
+    """Return 'auto' if >= 90, 'review' if >= 82, 'skip' otherwise."""
+    if ats_score >= 90:
+        return "auto"
+    if ats_score >= 82:
+        return "review"
+    return "skip"
+
 
 # ---------------------------------------------------------------------------
 # Constants / file paths

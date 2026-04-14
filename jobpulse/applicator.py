@@ -317,12 +317,13 @@ def apply_job(
         result["external_url"] = external_url
         result["external_platform"] = ext_platform or "generic"
 
+    platform_name = result.get("external_platform", adapter.name)
     if result.get("success"):
-        logger.info("Application submitted via %s (%d today)", adapter.name, total)
+        logger.info("Application submitted via %s (%d today)", platform_name, total)
     else:
         logger.warning(
             "Application failed via %s: %s (quota already consumed)",
-            adapter.name,
+            platform_name,
             result.get("error"),
         )
 
