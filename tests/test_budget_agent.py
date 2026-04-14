@@ -197,11 +197,11 @@ class TestClassifyTransaction:
         section, category = classify_transaction("pharmacy medicine", 8.0, "expense")
         assert category == "Health"
 
-    @patch("openai.OpenAI")
-    def test_llm_fallback_on_unknown_description(self, mock_openai_cls):
+    @patch("shared.agents.get_openai_client")
+    def test_llm_fallback_on_unknown_description(self, mock_get_client):
         """When keyword match fails, LLM fallback is tried."""
         client = MagicMock()
-        mock_openai_cls.return_value = client
+        mock_get_client.return_value = client
         response = MagicMock()
         response.choices = [MagicMock()]
         response.choices[0].message.content = "variable|Shopping"

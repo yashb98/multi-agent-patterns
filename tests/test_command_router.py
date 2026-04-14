@@ -170,7 +170,8 @@ class TestClassify:
         assert result.intent == Intent.CREATE_TASKS
 
     @patch("jobpulse.command_router.classify_llm")
-    def test_falls_back_to_llm(self, mock_llm):
+    @patch("jobpulse.nlp_classifier.classify_semantic", return_value=("unknown", 0.0))
+    def test_falls_back_to_llm(self, mock_semantic, mock_llm):
         mock_llm.return_value = ParsedCommand(
             intent=Intent.UNKNOWN, args="hello world", raw="hello world"
         )
