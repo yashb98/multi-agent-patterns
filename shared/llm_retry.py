@@ -9,6 +9,7 @@ Wraps LLM calls with retry logic for:
 Integrates with both OpenAI client and LangChain ChatOpenAI.
 """
 
+import random
 import time
 from functools import wraps
 
@@ -87,6 +88,7 @@ def retry_with_backoff(
                 raise
 
             delay = min(base_delay * (backoff_factor ** attempt), max_delay)
+            delay = delay * (0.5 + random.random())  # 50%-150% of base delay (jitter)
             logger.warning(
                 "LLM call failed (attempt %d/%d): %s. Retrying in %.1fs...",
                 attempt + 1, max_retries + 1, str(e)[:100], delay,
