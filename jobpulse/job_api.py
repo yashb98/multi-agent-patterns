@@ -83,16 +83,6 @@ class ScanResponse(BaseModel):
     jobs: list[ScanJobItem]
 
 
-class RalphLearnRequest(BaseModel):
-    platform: str
-    fix_type: str
-    fix_payload: dict[str, Any]
-    url: str = Field(default="", description="URL where fix was observed (used for step_name)")
-
-
-class RalphLearnResponse(BaseModel):
-    stored: bool
-
 
 class ApplyJobRequest(BaseModel):
     url: str = Field(description="Job listing or application URL")
@@ -441,44 +431,6 @@ def scan_linkedin(req: ScanRequest) -> ScanResponse:
     return ScanResponse(jobs=jobs)
 
 
-@job_api_router.post("/ralph-learn", response_model=RalphLearnResponse)
-def ralph_learn(req: RalphLearnRequest) -> RalphLearnResponse:
-    """Store a Ralph Loop fix pattern learned from the extension."""
-    try:
-        from jobpulse.ralph_loop.pattern_store import (
-            PatternStore,
-            compute_error_signature,
-            FIX_TYPES,
-        )
-    except ImportError as exc:
-        raise HTTPException(status_code=503, detail=f"pattern_store unavailable: {exc}") from exc
-
-    if req.fix_type not in FIX_TYPES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid fix_type '{req.fix_type}'. Must be one of: {sorted(FIX_TYPES)}",
-        )
-
-    try:
-        store = PatternStore(mode="manual")
-        # Derive a stable step_name from the URL path (strip query params / fragments)
-        step_name = req.url.split("?")[0].split("#")[0].rstrip("/")[-64:] or "unknown"
-        error_sig = compute_error_signature(req.platform, step_name, req.fix_type)
-        store.save_fix(
-            platform=req.platform,
-            step_name=step_name,
-            error_signature=error_sig,
-            fix_type=req.fix_type,
-            fix_payload=req.fix_payload,
-            confidence=0.9,
-            source="manual",
-        )
-    except Exception as exc:
-        logger.error("ralph_learn: failed to store pattern: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Pattern store failed: {exc}") from exc
-
-    return RalphLearnResponse(stored=True)
-
 
 @job_api_router.post("/notify", response_model=NotifyResponse)
 def notify(req: NotifyRequest) -> NotifyResponse:
@@ -513,18 +465,15 @@ def notify(req: NotifyRequest) -> NotifyResponse:
 
 @job_api_router.post("/apply", response_model=ApplyJobResponse)
 def apply_job_endpoint(req: ApplyJobRequest) -> ApplyJobResponse:
-    """Trigger a job application via the Ralph self-healing loop.
+    """Trigger a job application via the applicator.
 
     This is the endpoint the extension calls after a user approves a job
     in the side panel. It runs the full pipeline: rate limit → CV gen →
-    ralph_apply_sync → fill + submit via extension WebSocket.
+    apply_job → fill + submit via extension WebSocket.
     """
     from pathlib import Path
 
-    try:
-        from jobpulse.ralph_loop.loop import ralph_apply_sync
-    except ImportError as exc:
-        raise HTTPException(status_code=503, detail=f"ralph_loop unavailable: {exc}") from exc
+    from jobpulse.applicator import apply_job
 
     # Auto-generate CV if no path provided
     cv_path: Path | None = Path(req.cv_path) if req.cv_path else None
@@ -569,7 +518,7 @@ def apply_job_endpoint(req: ApplyJobRequest) -> ApplyJobResponse:
                 return None
 
     try:
-        result = ralph_apply_sync(
+        result = apply_job(
             url=req.url,
             ats_platform=req.platform,
             cv_path=cv_path,
@@ -578,7 +527,7 @@ def apply_job_endpoint(req: ApplyJobRequest) -> ApplyJobResponse:
             dry_run=req.dry_run,
         )
     except Exception as exc:
-        logger.error("apply endpoint: ralph_apply_sync failed: %s", exc)
+        logger.error("apply endpoint: apply_job failed: %s", exc)
         return ApplyJobResponse(success=False, error=str(exc))
 
     return ApplyJobResponse(
