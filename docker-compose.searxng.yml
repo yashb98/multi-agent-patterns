@@ -1,0 +1,41 @@
+# SearXNG self-hosted metasearch + optional Tor proxy
+#
+# Usage:
+#   docker compose -f docker-compose.searxng.yml up -d
+#   curl "http://localhost:8888/search?q=test&format=json"
+#
+# With Tor:
+#   docker compose -f docker-compose.searxng.yml --profile tor up -d
+#   curl "http://localhost:8889/search?q=test&format=json"
+
+services:
+  searxng:
+    image: searxng/searxng
+    container_name: searxng
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng
+    restart: unless-stopped
+
+  searxng-tor:
+    image: searxng/searxng
+    container_name: searxng-tor
+    ports:
+      - "8889:8080"
+    volumes:
+      - ./searxng-tor:/etc/searxng
+    depends_on:
+      - tor-proxy
+    restart: unless-stopped
+    profiles:
+      - tor
+
+  tor-proxy:
+    image: dperson/torproxy
+    container_name: tor-proxy
+    ports:
+      - "9050:9050"
+    restart: unless-stopped
+    profiles:
+      - tor
