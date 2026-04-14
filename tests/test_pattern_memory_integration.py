@@ -259,10 +259,10 @@ class TestLearnFact:
             patch("shared.fact_checker.verify_claims") as mock_verify,
             patch("shared.fact_checker.compute_accuracy_score") as mock_score,
             patch("shared.fact_checker.generate_revision_notes") as mock_notes,
-            patch("shared.memory_layer.MemoryManager") as MockMM,
+            patch("shared.memory_layer.get_shared_memory_manager") as mock_get_mm,
         ):
             mock_instance = MagicMock()
-            MockMM.return_value = mock_instance
+            mock_get_mm.return_value = mock_instance
             mock_extract.return_value = ["Python is a high-level language"]
             mock_verify.return_value = fake_verifications
             mock_score.return_value = 9.6
