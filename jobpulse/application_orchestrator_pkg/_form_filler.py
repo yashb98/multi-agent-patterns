@@ -126,7 +126,7 @@ class FormFiller:
             except (TimeoutError, ConnectionError):
                 pass  # filled_selectors already initialized as empty set
 
-        # Load known gotchas for this domain (learned from Ralph Loop + manual fixes)
+        # Load known gotchas for this domain (learned from manual fixes)
         from jobpulse.application_orchestrator_pkg._navigator import extract_domain
         domain = extract_domain(current_url) if current_url else platform
         domain_gotchas = {g["selector_pattern"]: g for g in self.gotchas.lookup_domain(domain, engine=self.engine)}

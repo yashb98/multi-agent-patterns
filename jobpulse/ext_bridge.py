@@ -122,7 +122,7 @@ class ExtensionBridge:
 
         Connection types:
         - Extension: sends snapshots, receives commands (the Chrome MV3 extension)
-        - Relay: sends commands, receives results (ralph-test or other Python callers)
+        - Relay: sends commands, receives results (Python callers via RelayBridge)
 
         Relay clients identify themselves with {"type":"relay_hello"} as their
         first message. Their commands are forwarded to the extension and results

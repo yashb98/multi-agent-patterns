@@ -1,7 +1,7 @@
 """WebSocket relay client that connects to an already-running ExtensionBridge.
 
-When ``ralph-test`` or another Python process needs to send commands through
-the Chrome extension but the bridge server is already running (port in use),
+When a Python process needs to send commands through the Chrome extension but
+the bridge server is already running (port in use),
 this class connects as a WebSocket **client** and forwards commands via the
 bridge's relay protocol.
 

@@ -13,8 +13,6 @@ python -m jobpulse.runner export       # Full data backup
 python -m jobpulse.runner profile-sync # Refresh skill/project graph (3am cron)
 python -m jobpulse.runner skill-gaps   # Show top missing skills + export CSV
 python -m jobpulse.runner ext-bridge   # Start Chrome extension WebSocket bridge
-python -m jobpulse.runner ralph-test <url>   # Test single URL via Ralph Loop
-python -m jobpulse.runner ralph-test --live  # Scrape fresh URLs + test via extension
 ```
 
 ## Code Intelligence (use for ALL code exploration)

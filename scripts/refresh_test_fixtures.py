@@ -5,8 +5,8 @@ no browser needed). Saves JSON fixtures to tests/fixtures/live_snapshots/.
 
 Each fixture contains: URL, platform, company, title, JD text, detected ATS,
 salary, location, and scrape timestamp. Tests use these to validate the full
-pipeline (platform detection → JD analysis → skill extraction → gate logic →
-Ralph Loop routing) against real, current job data.
+pipeline (platform detection → JD analysis → skill extraction → gate logic)
+against real, current job data.
 
 Usage:
     python scripts/refresh_test_fixtures.py              # All platforms

@@ -31,8 +31,8 @@ class BaseATSAdapter(ABC):
         """Fill form and submit.
 
         Args:
-            overrides: Ralph Loop learned fixes — selector overrides, wait
-                adjustments, strategy switches, field remaps, interaction mods.
+            overrides: learned fixes — selector overrides, wait adjustments,
+                strategy switches, field remaps, interaction mods.
                 Adapters can use resolve_selector() to apply selector overrides.
 
         Returns:
@@ -46,7 +46,7 @@ class BaseATSAdapter(ABC):
         """Return the override selector if one exists, otherwise the original.
 
         Adapters should call this before every query_selector() to benefit
-        from Ralph Loop learned selector fixes.
+        from learned selector fixes.
         """
         if overrides and selector in overrides.get("selector_overrides", {}):
             new = overrides["selector_overrides"][selector]
