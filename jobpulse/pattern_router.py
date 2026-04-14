@@ -166,13 +166,11 @@ def run_with_pattern(pattern: str, query: str) -> str:
             from patterns.hierarchical import run_hierarchical
             result = run_hierarchical(query)
         elif pattern == "plan_and_execute":
-            from patterns.enhanced_swarm import run_enhanced_swarm
-            result = run_enhanced_swarm(query)
-            logger.info("plan_and_execute not yet implemented, used enhanced_swarm fallback")
+            from patterns.plan_and_execute import run_plan_execute
+            result = run_plan_execute(query)
         elif pattern == "map_reduce":
-            from patterns.enhanced_swarm import run_enhanced_swarm
-            result = run_enhanced_swarm(query)
-            logger.info("map_reduce not yet implemented, used enhanced_swarm fallback")
+            from patterns.map_reduce import run_map_reduce
+            result = run_map_reduce(query)
         else:
             from patterns.enhanced_swarm import run_enhanced_swarm
             result = run_enhanced_swarm(query)

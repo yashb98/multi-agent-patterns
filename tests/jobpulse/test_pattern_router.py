@@ -144,3 +144,49 @@ class TestResponseHeader:
         from jobpulse.pattern_router import format_response_header
         header = format_response_header("enhanced_swarm", 1, 7.5)
         assert "[Enhanced Swarm]" in header
+
+
+class TestNewPatternRouting:
+    """Test routing and execution of plan-and-execute and map-reduce patterns."""
+
+    def test_multi_step_routes_to_plan_and_execute(self):
+        from jobpulse.pattern_router import select_pattern
+        pattern, reason = select_pattern("first research quantum computing then summarize findings")
+        assert pattern == "plan_and_execute"
+
+    def test_batch_routes_to_map_reduce(self):
+        from jobpulse.pattern_router import select_pattern
+        pattern, reason = select_pattern("summarize all 10 papers from this week")
+        assert pattern == "map_reduce"
+
+    def test_plan_override(self):
+        from jobpulse.pattern_router import parse_override
+        pattern, query = parse_override("plan: analyze and recommend a database")
+        assert pattern == "plan_and_execute"
+        assert query == "analyze and recommend a database"
+
+    def test_batch_override(self):
+        from jobpulse.pattern_router import parse_override
+        pattern, query = parse_override("batch: process all applications")
+        assert pattern == "map_reduce"
+        assert query == "process all applications"
+
+    def test_run_with_plan_and_execute(self, monkeypatch):
+        from jobpulse.pattern_router import run_with_pattern
+
+        monkeypatch.setattr(
+            "patterns.plan_and_execute.run_plan_execute",
+            lambda topic: {"final_output": "plan result"},
+        )
+        result = run_with_pattern("plan_and_execute", "test query")
+        assert "plan result" in result
+
+    def test_run_with_map_reduce(self, monkeypatch):
+        from jobpulse.pattern_router import run_with_pattern
+
+        monkeypatch.setattr(
+            "patterns.map_reduce.run_map_reduce",
+            lambda topic: {"final_output": "map result"},
+        )
+        result = run_with_pattern("map_reduce", "test query")
+        assert "map result" in result
