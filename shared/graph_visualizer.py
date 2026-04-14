@@ -132,6 +132,54 @@ PATTERN_TOPOLOGIES = {
             "enhanced_writer": "fill:#bfb,stroke:#333",
         },
     },
+    "plan_and_execute": {
+        "title": "Plan-and-Execute Pattern",
+        "nodes": {
+            "planner": "Planner\\n(decompose query)",
+            "step_executor": "Step Executor\\n(run one step)",
+            "evaluator": "Evaluator\\n(continue/replan/done)",
+            "replanner": "Replanner\\n(adjust remaining steps)",
+            "synthesizer": "Synthesizer\\n(combine outputs)",
+        },
+        "edges": [
+            ("START", "planner", ""),
+            ("planner", "step_executor", ""),
+            ("step_executor", "evaluator", ""),
+            ("evaluator", "step_executor", "continue"),
+            ("evaluator", "replanner", "replan"),
+            ("evaluator", "synthesizer", "done"),
+            ("replanner", "step_executor", ""),
+            ("synthesizer", "END", ""),
+        ],
+        "styles": {
+            "planner": "fill:#f9f,stroke:#333",
+            "evaluator": "fill:#fbf,stroke:#333",
+            "replanner": "fill:#fbb,stroke:#333",
+            "synthesizer": "fill:#ff9,stroke:#333",
+        },
+    },
+    "map_reduce": {
+        "title": "Map-Reduce Pattern",
+        "nodes": {
+            "splitter": "Splitter\\n(chunk input)",
+            "mapper": "Mapper\\n(parallel analysis)",
+            "reducer": "Reducer\\n(synthesize results)",
+            "reconciler": "Reconciler\\n(resolve conflicts)",
+        },
+        "edges": [
+            ("START", "splitter", ""),
+            ("splitter", "mapper", ""),
+            ("mapper", "reducer", ""),
+            ("reducer", "reconciler", ""),
+            ("reconciler", "END", ""),
+        ],
+        "styles": {
+            "splitter": "fill:#bbf,stroke:#333",
+            "mapper": "fill:#bfb,stroke:#333",
+            "reducer": "fill:#f9f,stroke:#333",
+            "reconciler": "fill:#ff9,stroke:#333",
+        },
+    },
 }
 
 
@@ -139,7 +187,7 @@ def export_pattern_mermaid(pattern_name: str) -> str:
     """Export a pattern topology as Mermaid flowchart.
 
     Args:
-        pattern_name: One of "hierarchical", "peer_debate", "dynamic_swarm", "enhanced_swarm"
+        pattern_name: One of "hierarchical", "peer_debate", "dynamic_swarm", "enhanced_swarm", "plan_and_execute", "map_reduce"
 
     Returns:
         Mermaid markdown string
@@ -169,7 +217,7 @@ def export_pattern_mermaid(pattern_name: str) -> str:
 
 
 def export_all_patterns_mermaid() -> str:
-    """Export all 4 pattern topologies as a single Mermaid document."""
+    """Export all 6 pattern topologies as a single Mermaid document."""
     sections = []
     for name in PATTERN_TOPOLOGIES:
         sections.append(f"## {PATTERN_TOPOLOGIES[name]['title']}\n")
