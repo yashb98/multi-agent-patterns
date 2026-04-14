@@ -656,6 +656,135 @@ Job Autopilot Pipeline (full, no submission):
     ✋ STOP — no form submission
 ```
 
+## Phase 4: SearXNG Integration — Self-Hosted Metasearch Layer
+
+**Goal**: Add a self-hosted SearXNG instance as a universal web search layer, with optional Tor proxy for anonymous scraping.
+
+### 4.1 SearXNG Setup
+
+**New file**: `shared/searxng_client.py`
+
+**Deployment**: Docker container on the local machine.
+
+```bash
+# Docker setup (one-time)
+docker run -d --name searxng -p 8888:8080 \
+  -v ./searxng:/etc/searxng \
+  --restart unless-stopped \
+  searxng/searxng
+```
+
+**Client interface**:
+```python
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
+
+def search(query: str, categories: list[str] = None,
+           engines: list[str] = None, max_results: int = 10,
+           use_tor: bool = False) -> list[SearchResult]:
+    """Query local SearXNG instance. Returns structured results."""
+    params = {
+        "q": query,
+        "format": "json",
+        "categories": ",".join(categories or []),
+        "engines": ",".join(engines or []),
+    }
+    url = SEARXNG_TOR_URL if use_tor else SEARXNG_URL
+    resp = httpx.get(f"{url}/search", params=params, timeout=15)
+    return [SearchResult(**r) for r in resp.json()["results"][:max_results]]
+```
+
+### 4.2 SearXNG (No Tor) — Use Cases
+
+Fast (~200ms), broad web search. No anonymity needed.
+
+| Use Case | Engines | Integration Point | Value |
+|----------|---------|-------------------|-------|
+| **Paper community validation fallback** | `reddit`, `hackernews`, `google` | `paper_validator.py` — 6th source after direct APIs | Catches blog posts, YouTube videos, Medium articles that direct APIs miss |
+| **Company research during pre-screen** | `google`, `duckduckgo`, `wikipedia` | New: `gate4_quality.py` Phase A3 company background check | Tech stack, recent news, funding rounds, layoff history. Currently A3 is "soft, non-blocking" — SearXNG makes it substantive |
+| **Screening question research** | `google`, `stackoverflow`, `reddit` | `screening_answers.py` LLM fallback path | When pattern-based + SQLite cache miss, search web before asking LLM. Reduces hallucination on niche tools |
+| **Interview prep enrichment** | `google`, `reddit`, `hackernews` | `interview_prep.py` STAR generation | "Common {company} interview questions", "{role} technical interview questions". Makes STAR stories targeted |
+| **Briefing agent news** | `google news`, `hackernews`, `reddit` | `briefing_agent.py` morning digest | Add "top AI news today" section. One SearXNG call replaces manual news scanning |
+| **Fact-checker web verification** | `google`, `wikipedia`, `semantic_scholar` | `shared/fact_checker.py` external verification tier | Replace current web search with SearXNG for broader coverage, no API key |
+| **Technology research for patterns** | `google`, `stackoverflow`, `github` | All 6 LangGraph patterns — research nodes | When patterns research a topic, SearXNG provides web context beyond LLM knowledge |
+
+### 4.3 SearXNG + Tor — Use Cases
+
+Slow (~3-8s), anonymous. Use only when target blocks scrapers or rate-limits aggressively.
+
+**Tor setup**: Separate SearXNG instance or same instance with Tor proxy configured:
+```yaml
+# searxng/settings.yml (tor-enabled instance)
+outgoing:
+  proxies:
+    all://:
+      - socks5h://tor:9050
+  using_tor_proxy: true
+```
+
+**Docker with Tor**:
+```bash
+docker run -d --name searxng-tor -p 8889:8080 \
+  -v ./searxng-tor:/etc/searxng \
+  --restart unless-stopped \
+  searxng/searxng
+
+# Tor sidecar
+docker run -d --name tor-proxy -p 9050:9050 \
+  dperson/torproxy
+```
+
+**Env vars**: `SEARXNG_URL=http://localhost:8888` (fast), `SEARXNG_TOR_URL=http://localhost:8889` (anonymous)
+
+| Use Case | Why Tor | Integration Point | Frequency |
+|----------|---------|-------------------|-----------|
+| **Salary research** | Glassdoor/Levels.fyi block scrapers after 5-10 requests | New: `jobpulse/salary_researcher.py` — enrich pre-screen with salary data | Per scan batch (~3x/day) |
+| **Company Glassdoor reviews** | Rate-limited, requires login for full reviews | `gate4_quality.py` company background | Per company in scan |
+| **Job board scraping fallback** | When JobSpy/APIs fail, scrape Google Jobs directly | `job_scanners/google_jobs.py` fallback | Only on JobSpy failure |
+| **Ghost job verification** | Company career pages block automated requests | `liveness_checker.py` — verify posting exists on company site | Per flagged listing |
+| **LinkedIn public company pages** | LinkedIn aggressively blocks non-logged-in scraping | Company research enrichment | Per company (cached) |
+
+### 4.4 Decision Logic in Code
+
+```python
+# shared/searxng_client.py
+
+def search_smart(query: str, context: str = "general") -> list[SearchResult]:
+    """Auto-select SearXNG mode based on context."""
+    TOR_CONTEXTS = {"salary", "glassdoor", "linkedin_public", "career_page"}
+    
+    if context in TOR_CONTEXTS:
+        return search(query, use_tor=True)  # 3-8s, anonymous
+    else:
+        return search(query, use_tor=False)  # 200ms, fast
+```
+
+**Caching**: All SearXNG results cached in SQLite (`data/searxng_cache.db`) with 24-hour TTL for fast mode, 7-day TTL for Tor mode (expensive to re-fetch). Cache key: `hash(query + engines + use_tor)`.
+
+### 4.5 What NOT to Use SearXNG For
+
+| Task | Why Not | Better Alternative |
+|------|---------|-------------------|
+| Paper discovery (arXiv/Semantic Scholar) | Returns unstructured snippets, not metadata | Direct APIs give full structured data |
+| GitHub repo search | GitHub API is faster and gives structured data (stars, forks) | Direct GitHub API |
+| HuggingFace model search | HF API gives download counts, model cards | Direct `huggingface_hub` API |
+| Reddit specific subreddit search | PRAW gives structured post data with scores | Direct PRAW |
+| Anything in the Telegram hot path | 200ms adds up; direct APIs are faster | Direct APIs for latency-sensitive paths |
+
+**Rule of thumb**: If a structured API exists for the data source, use the API. SearXNG is for when you need to search across sources that don't have APIs, or as a fallback when APIs fail.
+
+### Phase 4 Verification
+
+- `docker ps` shows searxng and searxng-tor containers running
+- `curl "http://localhost:8888/search?q=test&format=json"` returns results
+- `curl "http://localhost:8889/search?q=test&format=json"` returns results (via Tor, slower)
+- Company research: `search_smart("Monzo tech stack layoffs", context="general")` returns relevant results in <500ms
+- Salary research: `search_smart("data engineer London salary glassdoor", context="salary")` returns results via Tor
+- Cache: second identical query returns instantly from SQLite
+- Fact-checker integration: `fact_checker.verify_claim()` uses SearXNG when web search needed
+- Briefing includes "top AI news" section from SearXNG
+
+---
+
 ## Shared Infrastructure (No Changes Needed)
 
 These existing modules serve all 6 patterns without modification:
@@ -677,6 +806,8 @@ These existing modules serve all 6 patterns without modification:
 | `patterns/map_reduce.py` | 3 | ~200 | 4-node split-map-reduce graph |
 | `jobpulse/paper_validator.py` | 3 | ~250 | Community validation (GitHub + HF + Reddit + HN) |
 | `jobpulse/job_scanners/google_jobs.py` | 3 | ~80 | Google Jobs scanner via JobSpy |
+| `shared/searxng_client.py` | 4 | ~120 | SearXNG client with smart Tor/no-Tor routing + SQLite cache |
+| `docker-compose.searxng.yml` | 4 | ~30 | Docker setup for SearXNG + Tor sidecar |
 
 ## Modified Files Summary
 
@@ -705,6 +836,8 @@ These existing modules serve all 6 patterns without modification:
 | `praw` | 3 | Reddit API for paper validation | Free |
 | `huggingface_hub` | 3 | HuggingFace papers/models API | Free |
 | `semanticscholar` | 1 | Semantic Scholar API (may already be installed) | Free |
+| Docker: `searxng/searxng` | 4 | Self-hosted metasearch engine | Free |
+| Docker: `dperson/torproxy` | 4 | Tor SOCKS5 proxy for anonymous scraping | Free |
 
 ## Risk Assessment
 
@@ -719,6 +852,9 @@ These existing modules serve all 6 patterns without modification:
 | JobSpy scraping breaks | SerpAPI ($50/mo) as paid fallback; existing LinkedIn/Reed/Indeed unaffected |
 | Reddit API rate limiting | PRAW handles rate limiting automatically; 100/min is generous for 50 papers/day |
 | Community validation adds latency to paper ranking | Runs in parallel (all 5 sources fetched concurrently); cached per arXiv ID |
+| SearXNG Docker container goes down | Health check in watchdog cron; `--restart unless-stopped` flag; system works without it (graceful degradation) |
+| Tor exit nodes blocked by target | Retry with different circuit (`NEWNYM` signal); fallback to non-Tor SearXNG; Tor is never in the critical path |
+| SearXNG cache grows unbounded | 24hr TTL for fast mode, 7-day TTL for Tor mode; periodic cleanup cron |
 
 ## Testing Strategy
 
@@ -731,4 +867,5 @@ These existing modules serve all 6 patterns without modification:
 - Paper validator: test with fixture paper data, mock all 5 APIs
 - Google Jobs scanner: test with JobSpy mock, verify normalize_to_job_listing output shape
 - All tests use `tmp_path` for databases per project rules
-- Tests mirror source: `tests/patterns/test_plan_and_execute.py`, `tests/patterns/test_map_reduce.py`, `tests/jobpulse/test_pattern_router.py`, `tests/jobpulse/test_paper_validator.py`, `tests/jobpulse/test_paper_sources.py`, `tests/jobpulse/test_google_jobs.py`
+- SearXNG client: test with mocked HTTP responses, test Tor/no-Tor routing, test SQLite cache hit/miss/TTL
+- Tests mirror source: `tests/patterns/test_plan_and_execute.py`, `tests/patterns/test_map_reduce.py`, `tests/jobpulse/test_pattern_router.py`, `tests/jobpulse/test_paper_validator.py`, `tests/jobpulse/test_paper_sources.py`, `tests/jobpulse/test_google_jobs.py`, `tests/shared/test_searxng_client.py`
