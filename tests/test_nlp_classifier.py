@@ -9,9 +9,15 @@ class TestClassifySemantic:
     """Test that the semantic classifier returns correct intents for natural language."""
 
     @pytest.fixture(autouse=True)
-    def setup(self):
-        from jobpulse.nlp_classifier import _ensure_loaded
-        _ensure_loaded()
+    def _require_embedding_model(self):
+        from jobpulse.nlp_classifier import _load_model
+        model = _load_model()
+        if model is None:
+            pytest.skip("No embedding model available (Ollama not running / sentence-transformers not installed)")
+        try:
+            model.encode(["ping"], normalize_embeddings=False)
+        except Exception:
+            pytest.skip("No embedding model available (Ollama not running / sentence-transformers not installed)")
 
     def test_natural_hours_logging(self):
         from jobpulse.nlp_classifier import classify_semantic
@@ -127,7 +133,7 @@ class TestGetStats:
         assert stats["loaded"] is True
         assert stats["total_examples"] > 200
         assert stats["intents"] >= 30
-        assert "MiniLM" in stats["model"]
+        assert stats["model"] != "not loaded"
 
 
 class TestThreeTierClassify:
@@ -143,17 +149,28 @@ class TestThreeTierClassify:
         cmd = classify("undo")
         assert cmd.intent == Intent.UNDO_BUDGET
 
-    def test_nlp_tier_catches_natural(self):
+    @pytest.fixture
+    def _require_embedding_model(self):
+        from jobpulse.nlp_classifier import _load_model
+        model = _load_model()
+        if model is None:
+            pytest.skip("No embedding model available (Ollama not running / sentence-transformers not installed)")
+        try:
+            model.encode(["ping"], normalize_embeddings=False)
+        except Exception:
+            pytest.skip("No embedding model available (Ollama not running / sentence-transformers not installed)")
+
+    def test_nlp_tier_catches_natural(self, _require_embedding_model):
         from jobpulse.command_router import classify, Intent
         cmd = classify("I put in 6 hours at work today")
         assert cmd.intent == Intent.LOG_HOURS
 
-    def test_nlp_tier_catches_slang(self):
+    def test_nlp_tier_catches_slang(self, _require_embedding_model):
         from jobpulse.command_router import classify, Intent
         cmd = classify("chuck 50 quid into savings")
         assert cmd.intent == Intent.LOG_SAVINGS
 
-    def test_unknown_falls_to_conversation(self):
+    def test_unknown_falls_to_conversation(self, _require_embedding_model):
         from jobpulse.command_router import classify, Intent
         cmd = classify("asdfjkl random gibberish xyz")
         assert cmd.intent == Intent.CONVERSATION

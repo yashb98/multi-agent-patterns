@@ -283,7 +283,7 @@ def get_stats() -> dict:
             pass  # Corrupted file — start fresh
 
     return {
-        "model": "all-MiniLM-L6-v2" if _model else "not loaded",
+        "model": getattr(_model, "model", "all-MiniLM-L6-v2") if _model else "not loaded",
         "total_examples": len(_intent_names) if _loaded else 0,
         "intents": len(examples),
         "learned_examples": sum(len(v) for v in learned.values()),
