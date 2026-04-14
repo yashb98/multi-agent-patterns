@@ -6,9 +6,14 @@
 
 ## Overview
 
-Three-phase staged rollout to bring the JobPulse multi-agent system from ~60% operational to 100%, unlock 3 dormant LangGraph patterns, and add 2 new patterns (plan-and-execute, map-reduce) with an auto-routing layer.
+Four-phase staged rollout to bring the JobPulse multi-agent system from ~60% operational to 100%, unlock 3 dormant LangGraph patterns, add 2 new patterns (plan-and-execute, map-reduce) with an auto-routing layer, and build a multi-source research pipeline with community validation.
 
-**Non-goals**: DSPy revival (GRPO is working, revisit in 6 months), new Telegram bots, new external integrations, UI/frontend changes.
+**Non-goals**: DSPy revival (GRPO is working, revisit in 6 months), new Telegram bots, UI/frontend changes, X/Twitter API integration ($100/mo for minimal signal).
+
+**Post-plan changes already landed** (10 commits since initial draft):
+- Ralph Loop removed (module, tests, DB, all references)
+- 5 new job pipeline agents added and wired: liveness_checker, ats_api_scanner, rejection_analyzer, followup_tracker, interview_prep
+- CLAUDE.md updated to reflect new agents
 
 ---
 
@@ -33,11 +38,19 @@ Three-phase staged rollout to bring the JobPulse multi-agent system from ~60% op
 - Daemon restart (every 3 hours)
 - Notion papers (Monday 8:33am)
 
-### 1.2 Gmail Agent UnboundLocalError
+### 1.2 Gmail Agent — OAuth + UnboundLocalError
 
+**Two stacked issues**:
+
+**Issue A — OAuth token scope mismatch (root cause of API failures)**:
+The token was originally authorized with fewer scopes than `config.py` now requires (4 scopes: gmail.readonly, gmail.modify, calendar.readonly, drive.file). When the token refreshes, Google rejects with `invalid_scope: Bad Request`. Between refreshes: `403 insufficientPermissions`.
+
+**Fix A**: Re-run `python scripts/setup_integrations.py` to re-authorize OAuth with all 4 scopes. This regenerates `data/google_token.json` with a properly scoped refresh token.
+
+**Issue B — UnboundLocalError on `messages`**:
 **File**: `jobpulse/gmail_agent.py:315`
 **Problem**: `messages` variable referenced before assignment when the Gmail API call fails.
-**Fix**: Initialize `messages = []` before the try block.
+**Fix B**: Initialize `messages = []` before the try block.
 
 ### 1.3 Job Autopilot AttributeError
 
@@ -51,13 +64,23 @@ Three-phase staged rollout to bring the JobPulse multi-agent system from ~60% op
 **Problem**: Imports deleted `fast_score` function from `arxiv_agent`.
 **Fix**: Find the current scoring function that replaced `fast_score` and update the import.
 
-### 1.5 arXiv Rate Limiting
+### 1.5 arXiv Rate Limiting → Multi-Source Paper Discovery
 
-**Problem**: 429 errors since Apr 7. Current backoff: 3 attempts at 5s/10s/15s.
-**Fix**:
-- Add `User-Agent` header per project rules (arXiv requires it)
-- Increase backoff to 30s/60s/120s (exponential)
-- Add `requests` session reuse to avoid connection churn
+**Problem**: arXiv API returns 429 since Apr 7. Single-source dependency is a production risk.
+**Current**: 3 attempts at 5s/10s/15s backoff against `export.arxiv.org/api/query`.
+
+**Fix — replace single-source with multi-source pipeline**:
+
+| Source | Role | Rate Limit | Cost |
+|--------|------|-----------|------|
+| **Semantic Scholar API** | Primary discovery (already in codebase via `shared/external_verifiers.py`) | 100 req/sec (with free API key) | Free |
+| **arXiv RSS feeds** | Fallback, zero rate limiting (static files per category) | None | Free |
+| **HuggingFace Daily Papers** | High-signal supplement (community-upvoted trending papers) | Generous | Free |
+| **Papers with Code API** | Papers WITH implementations + SOTA benchmarks | Generous | Free |
+
+**Implementation**: New `jobpulse/paper_sources.py` module with `fetch_papers()` that tries sources in order: Semantic Scholar → arXiv RSS → HuggingFace. Papers with Code used for enrichment (linked repos, benchmarks). Dedup by arXiv ID across sources. Existing `arxiv_agent.py` calls `fetch_papers()` instead of hitting arXiv directly.
+
+**Also fix**: Add `User-Agent` header to arXiv fallback, increase backoff to 30s/60s/120s
 
 ### 1.6 Voice Handler Import
 
@@ -80,6 +103,17 @@ Three-phase staged rollout to bring the JobPulse multi-agent system from ~60% op
 **File**: `patterns/hierarchical.py`
 **Problem**: Only pattern without experiential learning.
 **Fix**: Add `ExperienceMemory` import, inject into research/writing prompts (same pattern as peer_debate.py), extract learnings at finish node.
+
+### 1.10 New Agents Already Landed (No Action Needed)
+
+These 5 agents were implemented and wired after the initial plan draft. They are complete and need no Phase 1 work:
+- `liveness_checker.py` — ghost job detection (12 expired patterns)
+- `ats_api_scanner.py` — zero-browser Greenhouse/Ashby/Lever API scanning
+- `rejection_analyzer.py` — statistical rejection pattern analysis
+- `followup_tracker.py` — follow-up cadence with urgency tiers
+- `interview_prep.py` — STAR+Reflection interview prep
+
+All wired into both dispatchers, NLP classifier, and pipeline.
 
 ### Phase 1 Verification
 
@@ -209,9 +243,9 @@ Add to BOTH `dispatcher.py` and `swarm_dispatcher.py` per dual dispatcher invari
 
 ---
 
-## Phase 3: Plan-and-Execute + Map-Reduce
+## Phase 3: Plan-and-Execute + Map-Reduce + Community Validation + Google Jobs
 
-**Goal**: Add 2 new LangGraph patterns that handle multi-step and batch workloads.
+**Goal**: Add 2 new LangGraph patterns, a community validation pipeline for papers, and Google Jobs as a new scan source. Full job pipeline runs autonomously except form submission.
 
 ### 3.1 Plan-and-Execute Pattern
 
@@ -235,7 +269,7 @@ class PlanExecuteState(TypedDict):
     plan: list[Step]                    # current plan (mutable)
     completed_steps: list[StepResult]   # executed steps with outputs
     current_step_index: int
-    replan_count: int                   # max 2 replans
+    replan_count: int                   # max 3 replans
     research_notes: list[str]           # accumulated research
     final_output: str
     quality_score: float
@@ -277,8 +311,13 @@ class Step(TypedDict):
 **replanner_node**:
 - Takes completed steps + remaining plan + evaluator's reason
 - Regenerates only the remaining steps (preserves completed work)
-- Max 2 replans. After that, proceeds with current plan.
-- Logs replan reason to experience_memory.db for future learning
+- **Max 3 replans** (optimal for learning systems):
+  - Replan 1: catches ~20% of cases where step 2-3 reveals new info
+  - Replan 2: catches ~8% where first replan was still wrong
+  - Replan 3: catches last ~2% edge cases where problem space was fundamentally different
+  - Beyond 3: <0.5% improvement, not worth the latency/cost
+- **Early-exit**: if replan N produces same plan as replan N-1 (no new information), stop immediately
+- Logs replan reason + delta to experience_memory.db — even replans that don't improve the current run improve future runs
 
 **synthesizer_node**:
 - Combines all step outputs into a coherent final response
@@ -290,9 +329,9 @@ class Step(TypedDict):
 #### Convergence
 
 - Max 7 steps per plan
-- Max 2 replans
+- Max 3 replans (with early-exit on duplicate plan)
 - Each step has a 60-second timeout (matches existing arXiv timeout)
-- Total execution timeout: 5 minutes
+- Total execution timeout: 7 minutes (increased to accommodate 3 replans)
 - Quality gate: same dual-gate as other patterns (quality >= 8.0, accuracy >= 9.5)
   - But applied at synthesis, not per-step
 
@@ -384,7 +423,128 @@ class MapReduceState(TypedDict):
 | "Review all agents in jobpulse/" | by_item (files) | Assess each agent | summarize |
 | "Compare 5 databases" | by_entity | Research each DB | rank |
 
-### 3.3 Auto-Router Additions
+### 3.3 Community Validation Pipeline
+
+**New file**: `jobpulse/paper_validator.py`
+
+**Purpose**: For each paper surfaced by the multi-source discovery (Phase 1.5), validate its claims and measure community reception across 4 platforms.
+
+#### Pipeline
+
+```
+paper (arXiv ID + title + abstract)
+  → parallel fetch from 4 sources
+  → aggregate signals
+  → community_score (0-10)
+  → append to paper ranking
+```
+
+#### Sources and Signals
+
+| Platform | API | What We Extract | Python Package |
+|----------|-----|----------------|----------------|
+| **Semantic Scholar** | REST API (already integrated) | Citation count, venue quality, author h-index, influential citations | `semanticscholar` or raw httpx |
+| **GitHub** | REST API (GITHUB_TOKEN already configured) | Repos implementing the paper (search by title/arXiv ID), total stars, forks, last commit date | `PyGithub` or raw httpx |
+| **HuggingFace** | `huggingface_hub` API | Models/spaces referencing the paper, download counts, community likes/discussions | `huggingface_hub` |
+| **Reddit** | PRAW (OAuth) | Posts in r/MachineLearning + r/LocalLLaMA mentioning the paper, upvotes, comment count, sentiment | `praw` |
+| **Hacker News** | Algolia Search API (no auth) | Stories/comments mentioning the paper, points, comment count | raw httpx |
+
+**X/Twitter excluded**: $100/mo for 100 reads. Not worth the signal.
+
+#### Community Score Formula
+
+```python
+community_score = (
+    citations_normalized * 0.25 +      # Semantic Scholar
+    github_adoption * 0.25 +            # Stars + forks + recency
+    hf_adoption * 0.20 +               # Model downloads + spaces
+    reddit_buzz * 0.15 +               # Upvotes + comment quality
+    hn_buzz * 0.15                      # Points + comments
+)
+```
+
+Each component normalized to 0-10. Weights tunable via experiential learning feedback.
+
+#### Integration with arXiv Agent
+
+The existing `arxiv_agent.py` ranking pipeline gets a new signal:
+```python
+final_score = (
+    relevance_score * 0.4 +
+    novelty_score * 0.3 +
+    community_score * 0.3    # NEW — from paper_validator
+)
+```
+
+Papers with high community scores but low novelty (e.g., a well-known framework release) still surface. Papers with zero community signal (brand new) rely on relevance + novelty only.
+
+#### Rate Limits and Cost
+
+| Source | Calls per paper | Daily (50 papers) | Cost |
+|--------|----------------|-------------------|------|
+| Semantic Scholar | 1 | 50 | Free |
+| GitHub | 1-2 | 100 | Free (5k/hr limit) |
+| HuggingFace | 1 | 50 | Free |
+| Reddit (PRAW) | 2 | 100 | Free (100/min limit) |
+| Hacker News | 1 | 50 | Free, no auth |
+| **Total** | ~6 | ~350 | **$0/day** |
+
+### 3.4 Google Jobs Scanner
+
+**New file**: `jobpulse/job_scanners/google_jobs.py`
+
+**Approach**: Use **JobSpy** (`python-jobspy`) — open-source multi-platform scraper that supports Google Jobs, LinkedIn, Indeed, Glassdoor, and ZipRecruiter.
+
+**Why JobSpy over SerpAPI**: Free, no API key, already supports the same platforms we scan. SerpAPI ($50/mo) is a paid fallback if JobSpy breaks.
+
+#### Integration
+
+```python
+from jobspy import scrape_jobs
+
+def scan_google_jobs(search_terms: list[str], location: str, max_results: int = 25) -> list[dict]:
+    """Scan Google Jobs via JobSpy, return normalized JobListing-compatible dicts."""
+    results = scrape_jobs(
+        site_name=["google"],
+        search_term=" OR ".join(search_terms),
+        location=location,
+        results_wanted=max_results,
+        hours_old=24,  # last 24 hours only
+    )
+    return [normalize_to_job_listing(row) for _, row in results.iterrows()]
+```
+
+**Feeds into existing pipeline**: `scan_google_jobs()` returns the same shape as LinkedIn/Reed/Indeed scanners → existing `run_scan_window()` picks them up → pre-screen → CV generation → queue for approval.
+
+**Filters**: Same search terms and location filters as existing scanners. Configurable via `GOOGLE_JOBS_ENABLED=true` (default: false until proven).
+
+**Cross-platform dedup**: Extend existing dedup (company + normalized title) to include Google Jobs source. Same job on Google and LinkedIn = one entry.
+
+### 3.5 Job Autopilot — Full Pipeline, No Submission
+
+**Clarification of scope**: The job autopilot should run every step of the pipeline autonomously:
+
+```
+scan (LinkedIn + Reed + Indeed + Google Jobs)
+  → liveness check (ghost job filter)
+  → Gate 0: recruiter screen (title filter)
+  → Gates 1-3: skill graph pre-screen
+  → Gate 4: JD quality + company blocklist + CV scrutiny + LLM review
+  → CV generation (ReportLab PDF)
+  → Cover letter generation (lazy, only if ATS needs it)
+  → ATS scoring
+  → rejection analysis (learn from past rejections)
+  → follow-up tracking (set cadence timers)
+  → interview prep (generate STAR stories)
+  → Queue for approval in Telegram
+  ✋ STOP — no form submission
+```
+
+Form submission is handled separately via the Chrome extension engine, which will be enhanced by integrating patterns from AIHawk's screening question answerer (study, don't import — their Selenium approach is inferior to our Playwright/extension architecture).
+
+**`JOB_AUTOPILOT_AUTO_SUBMIT` stays `false`**. The pipeline value is in automated discovery, screening, CV tailoring, and preparation — not in auto-submitting.
+
+### 3.7 Auto-Router Additions
 
 Two new entries in `pattern_router.py`:
 
@@ -409,11 +569,28 @@ PATTERN_RULES.extend([
 **Plan-and-Execute**:
 - "Compare FastAPI vs Django vs Flask for webhooks" → plan with 4 steps, executes sequentially
 - "Research quantum ML and recommend a paper to implement" → 2-step plan with replan capability
+- Verify replan early-exit: same plan twice → stops immediately
+- Verify max 3 replans: force 4th replan → proceeds with current plan
 - Job autopilot adaptive mode: scan produces grouped recommendations instead of linear pipeline
 
 **Map-Reduce**:
 - "Summarize all papers from this week" → splits into N papers, parallel map, synthesized digest
 - "Batch analyze my pending applications" → parallel scoring, ranked output
+
+**Community Validation**:
+- Fetch validation for a known paper (e.g., "Attention Is All You Need") → high GitHub stars, many HF models, Reddit/HN discussion
+- Fetch validation for a brand-new paper → zero community signal, falls back to relevance + novelty only
+- Verify parallel fetch completes in <5 seconds for all 5 sources
+
+**Google Jobs**:
+- `scan_google_jobs(["data engineer"], "London")` returns results
+- Results feed into existing pre-screen pipeline without modification
+- Cross-platform dedup catches same job on Google + LinkedIn
+
+**Job Autopilot Full Pipeline**:
+- Scan → liveness → Gate 0-3 → Gate 4 → CV → ATS score → rejection analysis → follow-up → interview prep → queue
+- Verify NO form submission occurs (AUTO_SUBMIT=false)
+- Verify all new agents (liveness, rejection, followup, interview_prep) execute in pipeline
 
 ---
 
@@ -446,6 +623,37 @@ Telegram message
   │
   └─ experiential_learning.store()
        └─ pattern selection feedback → router improves over time
+
+
+Paper Discovery & Validation Pipeline:
+  paper_sources.fetch_papers()
+    ├─ Semantic Scholar API (primary)
+    ├─ arXiv RSS feeds (fallback)
+    ├─ HuggingFace Daily Papers (supplement)
+    └─ Papers with Code (enrichment)
+  → paper_validator.validate()
+    ├─ Semantic Scholar (citations, h-index)
+    ├─ GitHub (implementations, stars)
+    ├─ HuggingFace (models, spaces, downloads)
+    ├─ Reddit (r/MachineLearning, r/LocalLLaMA)
+    └─ Hacker News (Algolia search)
+  → community_score → arxiv_agent ranking
+
+
+Job Autopilot Pipeline (full, no submission):
+  scan (LinkedIn + Reed + Indeed + Google Jobs)
+    → liveness_checker (ghost job filter)
+    → Gate 0: recruiter_screen
+    → Gates 1-3: skill_graph_store
+    → Gate 4: gate4_quality (JD + blocklist + CV scrutiny + LLM)
+    → CV generation (ReportLab)
+    → Cover letter (lazy, if ATS needs it)
+    → ATS scoring
+    → rejection_analyzer (learn from past)
+    → followup_tracker (set cadence)
+    → interview_prep (STAR stories)
+    → Queue for Telegram approval
+    ✋ STOP — no form submission
 ```
 
 ## Shared Infrastructure (No Changes Needed)
@@ -463,41 +671,64 @@ These existing modules serve all 6 patterns without modification:
 
 | File | Phase | Lines (est.) | Purpose |
 |------|-------|-------------|---------|
+| `jobpulse/paper_sources.py` | 1 | ~150 | Multi-source paper discovery (Semantic Scholar + RSS + HF) |
 | `jobpulse/pattern_router.py` | 2 | ~200 | Auto-router + override + feedback |
-| `patterns/plan_and_execute.py` | 3 | ~350 | 5-node plan-execute-replan graph |
+| `patterns/plan_and_execute.py` | 3 | ~400 | 5-node plan-execute-replan graph (max 3 replans) |
 | `patterns/map_reduce.py` | 3 | ~200 | 4-node split-map-reduce graph |
+| `jobpulse/paper_validator.py` | 3 | ~250 | Community validation (GitHub + HF + Reddit + HN) |
+| `jobpulse/job_scanners/google_jobs.py` | 3 | ~80 | Google Jobs scanner via JobSpy |
 
 ## Modified Files Summary
 
 | File | Phase | Change |
 |------|-------|--------|
 | crontab | 1 | Fix all paths |
-| `jobpulse/gmail_agent.py` | 1 | Initialize `messages = []` |
+| `scripts/setup_integrations.py` | 1 | Re-run to fix Gmail OAuth scopes |
+| `jobpulse/gmail_agent.py` | 1 | Initialize `messages = []` + OAuth fix |
 | `jobpulse/job_autopilot.py` | 1 | `description` → `description_raw` |
 | `jobpulse/notion_papers_agent.py` | 1 | Fix `fast_score` import |
-| `jobpulse/arxiv_agent.py` | 1 | Add User-Agent header, increase backoff |
+| `jobpulse/arxiv_agent.py` | 1 | Use `paper_sources.fetch_papers()` instead of direct arXiv API |
 | `jobpulse/voice_handler.py` | 1 | Fix import path |
 | `patterns/hierarchical.py` | 1 | Wire experiential learning |
 | `jobpulse/swarm_dispatcher.py` | 2 | Add pattern router call |
 | `jobpulse/dispatcher.py` | 2 | Add pattern router call (flat path) |
 | `shared/nlp_classifier.py` | 2 | Add `research` intent examples |
-| `jobpulse/job_autopilot.py` | 3 | Opt-in adaptive mode |
+| `jobpulse/job_autopilot.py` | 3 | Opt-in adaptive mode + Google Jobs source |
+| `jobpulse/arxiv_agent.py` | 3 | Integrate community_score into ranking |
+| `requirements.txt` | 3 | Add `python-jobspy`, `praw`, `huggingface_hub` |
+
+## Dependencies Added
+
+| Package | Phase | Purpose | Cost |
+|---------|-------|---------|------|
+| `python-jobspy` | 3 | Google Jobs scraping | Free |
+| `praw` | 3 | Reddit API for paper validation | Free |
+| `huggingface_hub` | 3 | HuggingFace papers/models API | Free |
+| `semanticscholar` | 1 | Semantic Scholar API (may already be installed) | Free |
 
 ## Risk Assessment
 
 | Risk | Mitigation |
 |------|-----------|
 | Auto-router misclassifies | Override syntax always available; feedback loop self-corrects |
-| Plan-and-execute infinite replans | Hard cap at 2 replans, 5-minute total timeout |
+| Plan-and-execute infinite replans | Hard cap at 3 replans + early-exit on duplicate plan + 7-min timeout |
 | Map-reduce parallelism overload | Max 20 chunks, reuses existing parallel_executor pool |
 | Job autopilot adaptive breaks applications | Feature-flagged (default off), 2-week proving period |
 | Pattern router adds latency | Rule-based tier is instant; embedding tier is 5ms; no LLM needed |
+| Semantic Scholar/HF API goes down | Multi-source with fallback chain; arXiv RSS as last resort (zero rate limiting) |
+| JobSpy scraping breaks | SerpAPI ($50/mo) as paid fallback; existing LinkedIn/Reed/Indeed unaffected |
+| Reddit API rate limiting | PRAW handles rate limiting automatically; 100/min is generous for 50 papers/day |
+| Community validation adds latency to paper ranking | Runs in parallel (all 5 sources fetched concurrently); cached per arXiv ID |
 
 ## Testing Strategy
 
 - All new patterns: unit tests with mocked LLM (no real API calls)
 - Pattern router: test all signal→pattern mappings + override syntax
 - Integration: end-to-end test with a real query through each pattern
+- Plan-and-execute: test replan early-exit (duplicate plan detection), test max 3 replans cap
 - Job autopilot adaptive: test with fixture scan results, verify plan output
+- Paper sources: test fallback chain (mock Semantic Scholar failure → RSS fallback)
+- Paper validator: test with fixture paper data, mock all 5 APIs
+- Google Jobs scanner: test with JobSpy mock, verify normalize_to_job_listing output shape
 - All tests use `tmp_path` for databases per project rules
-- Tests mirror source: `tests/patterns/test_plan_and_execute.py`, `tests/patterns/test_map_reduce.py`, `tests/jobpulse/test_pattern_router.py`
+- Tests mirror source: `tests/patterns/test_plan_and_execute.py`, `tests/patterns/test_map_reduce.py`, `tests/jobpulse/test_pattern_router.py`, `tests/jobpulse/test_paper_validator.py`, `tests/jobpulse/test_paper_sources.py`, `tests/jobpulse/test_google_jobs.py`
