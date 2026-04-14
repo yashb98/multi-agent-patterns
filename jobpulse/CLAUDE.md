@@ -36,6 +36,11 @@
 - navigation_learner.py — Per-domain navigation sequence save/replay (SQLite)
 - sso_handler.py — SSO button detection (Google > LinkedIn > Microsoft > Apple)
 - screening_answers.py — Pattern-based screening question answers + LLM fallback + SQLite cache
+- liveness_checker.py — Ghost job detection: 12 expired patterns (EN/DE/FR), apply-button detection
+- ats_api_scanner.py — Zero-browser ATS API scanning (Greenhouse/Ashby/Lever REST APIs)
+- rejection_analyzer.py — Statistical rejection pattern analysis: blocker classification, recommendations
+- followup_tracker.py — Follow-up cadence tracker: urgency tiers (urgent/overdue/waiting/cold), SQLite
+- interview_prep.py — STAR+Reflection interview prep: skill-to-project mapping, story templates
 
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.
