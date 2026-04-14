@@ -362,6 +362,16 @@ def _handle_show_budget(cmd: ParsedCommand) -> str:
     return "\n\n".join(parts)
 
 
+def _handle_research(cmd: ParsedCommand) -> str:
+    """Route research queries through pattern auto-router."""
+    from jobpulse.pattern_router import select_pattern, run_with_pattern, log_pattern_selection
+    pattern, reason = select_pattern(cmd.raw)
+    logger.info("Pattern router: %s — %s", pattern, reason)
+    result = run_with_pattern(pattern, cmd.raw)
+    log_pattern_selection(cmd.raw, pattern, override=("override" in reason.lower()), quality_score=0.0)
+    return result
+
+
 def _handle_conversation(cmd: ParsedCommand) -> str:
     from jobpulse.conversation import chat
     return chat(cmd.raw)
