@@ -12,6 +12,7 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional, Callable
 from shared.logging_config import get_logger
+from shared.prompt_defense import sanitize_user_input
 
 logger = get_logger(__name__)
 
@@ -403,7 +404,7 @@ FOLLOW_UPS — user wants to check pending follow-ups for job applications
 INTERVIEW_PREP — user wants interview preparation, STAR stories, or behavioral prep for a company
 UNKNOWN — doesn't match any of the above
 
-Message: "{text}"
+Message: {sanitize_user_input(text, source="telegram")}
 
 Respond with ONLY the intent name. Nothing else."""}],
             max_tokens=60 if is_local_llm() else 15,

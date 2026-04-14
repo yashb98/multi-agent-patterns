@@ -34,6 +34,7 @@ from openai import OpenAI
 from shared.state import AgentState
 from shared.prompts import RESEARCHER_PROMPT, WRITER_PROMPT, REVIEWER_PROMPT
 from shared.logging_config import get_logger
+from shared.prompt_defense import sanitize_user_input
 
 # Re-export from split modules for backward compatibility
 from shared.cost_tracker import (  # noqa: F401
@@ -203,10 +204,11 @@ def researcher_node(state: AgentState) -> dict:
     logger.info("=" * 50)
 
     topic = state["topic"]
+    safe_topic = sanitize_user_input(topic, source="topic")
     feedback = state.get("review_feedback", "")
 
     if feedback and state.get("iteration", 0) > 0:
-        user_msg = f"""Topic: {topic}
+        user_msg = f"""Topic: {safe_topic}
 
 PREVIOUS REVIEW FEEDBACK (address these gaps):
 {feedback}
@@ -214,7 +216,7 @@ PREVIOUS REVIEW FEEDBACK (address these gaps):
 Conduct ADDITIONAL research specifically targeting the gaps identified above.
 Focus on finding information that was missing from the previous research."""
     else:
-        user_msg = f"""Topic: {topic}
+        user_msg = f"""Topic: {safe_topic}
 
 Conduct comprehensive research on this topic. Gather facts, technical
 details, current trends, and notable perspectives."""
@@ -251,6 +253,7 @@ def writer_node(state: AgentState) -> dict:
     logger.info("=" * 50)
 
     topic = state["topic"]
+    safe_topic = sanitize_user_input(topic, source="topic")
     raw_notes = state.get("research_notes", [])
     compressed_notes = compress_research_notes(raw_notes)
     research = "\n\n---\n\n".join(compressed_notes)
@@ -263,7 +266,7 @@ def writer_node(state: AgentState) -> dict:
         feedback = f"{feedback}\n\n{fact_notes}" if feedback else fact_notes
 
     if feedback and current_draft:
-        user_msg = f"""Topic: {topic}
+        user_msg = f"""Topic: {safe_topic}
 
 RESEARCH NOTES:
 {research}
@@ -277,7 +280,7 @@ REVIEWER FEEDBACK TO ADDRESS:
 Revise the draft to address EACH piece of feedback. Maintain what was
 good, fix what was flagged. Produce the COMPLETE revised article."""
     else:
-        user_msg = f"""Topic: {topic}
+        user_msg = f"""Topic: {safe_topic}
 
 RESEARCH NOTES:
 {research}
@@ -318,6 +321,7 @@ def reviewer_node(state: AgentState) -> dict:
 
     draft = state.get("draft", "")
     topic = state["topic"]
+    safe_topic = sanitize_user_input(topic, source="topic")
     research = "\n\n".join(state.get("research_notes", []))
 
     # Token-aware truncation instead of hardcoded char limit
@@ -338,7 +342,7 @@ def reviewer_node(state: AgentState) -> dict:
 
     user_msg = f"""Evaluate this blog article draft.
 
-ORIGINAL TOPIC: {topic}
+ORIGINAL TOPIC: {safe_topic}
 
 RESEARCH NOTES (for accuracy checking):
 {research}
@@ -490,9 +494,10 @@ def fact_check_node(state: AgentState) -> dict:
 
     draft = state.get("draft", "")
     topic = state["topic"]
+    safe_topic = sanitize_user_input(topic, source="topic")
     research = state.get("research_notes", [])
 
-    claims = extract_claims(draft, topic)
+    claims = extract_claims(draft, safe_topic)
     logger.info("Extracted %d claims from draft", len(claims))
 
     verifications = verify_claims(claims, research, web_search=True)
