@@ -16,10 +16,18 @@ SECURITY MODEL:
 """
 
 import json
+import os
+import sqlite3
+import time
+from pathlib import Path
 from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # ─── PERMISSION LEVELS ──────────────────────────────────────────
@@ -55,13 +63,39 @@ class AuditEntry:
 
 
 class AuditLog:
-    """Thread-safe audit log for all tool executions."""
+    """Thread-safe audit log for all tool executions with SQLite persistence."""
 
-    def __init__(self):
+    def __init__(self, db_path: str | None = None):
         self.entries: list[AuditEntry] = []
+        self._db_path = db_path or str(Path(__file__).parent.parent / "data" / "audit.db")
+        self._init_db()
+
+    def _init_db(self):
+        conn = sqlite3.connect(self._db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, agent_name TEXT, tool_name TEXT,
+            action TEXT, input_summary TEXT, output_summary TEXT,
+            risk_level TEXT, approved_by TEXT, success INTEGER,
+            error TEXT, created_at TEXT DEFAULT (datetime('now'))
+        )""")
+        conn.commit()
+        conn.close()
 
     def record(self, entry: AuditEntry):
         self.entries.append(entry)
+        conn = sqlite3.connect(self._db_path)
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, agent_name, tool_name, action, "
+            "input_summary, output_summary, risk_level, approved_by, success, error) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (entry.timestamp, entry.agent_name, entry.tool_name, entry.action,
+             entry.input_summary, entry.output_summary, entry.risk_level,
+             entry.approved_by, entry.success, entry.error),
+        )
+        conn.commit()
+        conn.close()
 
     def get_recent(self, n: int = 10) -> list[AuditEntry]:
         return self.entries[-n:]
@@ -182,7 +216,7 @@ class ToolExecutor:
         self.permissions = permissions or DEFAULT_PERMISSIONS
         self.audit = AuditLog()
         self.approval_fn = approval_fn or self._default_approval
-        self._call_counts: dict[str, int] = {}
+        self._call_timestamps: dict[str, list[float]] = {}
 
     def execute(
         self,
@@ -230,13 +264,16 @@ class ToolExecutor:
                 return {"status": "denied", "message": "Action rejected by human reviewer"}
             approved_by = "human"
 
-        # Rate limiting
+        # Rate limiting (sliding window — 60 second window)
         rate_key = f"{agent_name}:{tool_name}"
-        count = self._call_counts.get(rate_key, 0)
-        if count >= tool.rate_limit_per_minute:
+        now = time.time()
+        timestamps = self._call_timestamps.get(rate_key, [])
+        timestamps = [t for t in timestamps if now - t < 60]
+        if len(timestamps) >= tool.rate_limit_per_minute:
             self._audit_denied(timestamp, agent_name, tool_name, action, "rate limited")
             return {"status": "rate_limited", "message": "Rate limit exceeded"}
-        self._call_counts[rate_key] = count + 1
+        timestamps.append(now)
+        self._call_timestamps[rate_key] = timestamps
 
         # Execute
         try:
@@ -270,8 +307,14 @@ class ToolExecutor:
 
     @staticmethod
     def _default_approval(agent: str, tool: str, action: str, params: dict) -> bool:
-        """Default approval — auto-approves in non-interactive mode."""
-        return True
+        """Default approval — denies unless TOOL_AUTO_APPROVE=1 is set."""
+        if os.environ.get("TOOL_AUTO_APPROVE") == "1":
+            return True
+        logger.warning(
+            "Approval denied for %s/%s/%s — set TOOL_AUTO_APPROVE=1 to auto-approve",
+            agent, tool, action,
+        )
+        return False
 
     def get_available_tools(self, agent_name: str) -> list[dict]:
         """List all tools available to a specific agent."""
