@@ -89,10 +89,10 @@ async def test_pre_submit_gate_blocks_low_score(sample_company_research, mock_ex
         "page_type": PageType.APPLICATION_FORM,
         "snapshot": {"url": "https://greenhouse.io/jobs/1", "fields": [], "buttons": []},
     }
-    orch._navigate_to_form = AsyncMock(return_value=nav_result)
+    orch._navigator.navigate_to_form = AsyncMock(return_value=nav_result)
 
-    # Patch _fill_application to return success
-    orch._fill_application = AsyncMock(return_value={"success": True, "pages_filled": 2})
+    # Patch _filler.fill_application to return success
+    orch._filler.fill_application = AsyncMock(return_value={"success": True, "pages_filled": 2})
 
     # Gate returns failing score
     failing_gate = GateResult(passed=False, score=4.0, weaknesses=["Generic answer"], suggestions=[])
@@ -126,8 +126,8 @@ async def test_pre_submit_gate_passes_high_score(sample_company_research, mock_e
         "page_type": PageType.APPLICATION_FORM,
         "snapshot": {"url": "https://greenhouse.io/jobs/2", "fields": [], "buttons": []},
     }
-    orch._navigate_to_form = AsyncMock(return_value=nav_result)
-    orch._fill_application = AsyncMock(return_value={"success": True, "pages_filled": 1})
+    orch._navigator.navigate_to_form = AsyncMock(return_value=nav_result)
+    orch._filler.fill_application = AsyncMock(return_value={"success": True, "pages_filled": 1})
     orch.learner.save_sequence = MagicMock()
 
     passing_gate = GateResult(passed=True, score=8.5, weaknesses=[], suggestions=[])
@@ -158,8 +158,8 @@ async def test_pre_submit_gate_skipped_without_company_research(mock_ext_bridge)
         "page_type": PageType.APPLICATION_FORM,
         "snapshot": {"url": "https://example.com", "fields": [], "buttons": []},
     }
-    orch._navigate_to_form = AsyncMock(return_value=nav_result)
-    orch._fill_application = AsyncMock(return_value={"success": True, "pages_filled": 1})
+    orch._navigator.navigate_to_form = AsyncMock(return_value=nav_result)
+    orch._filler.fill_application = AsyncMock(return_value={"success": True, "pages_filled": 1})
     orch.learner.save_sequence = MagicMock()
 
     with patch.object(ApplicationOrchestrator, "_run_pre_submit_gate") as mock_gate:
@@ -187,8 +187,8 @@ async def test_pre_submit_gate_skipped_in_dry_run(sample_company_research, mock_
         "page_type": PageType.APPLICATION_FORM,
         "snapshot": {"url": "https://example.com", "fields": [], "buttons": []},
     }
-    orch._navigate_to_form = AsyncMock(return_value=nav_result)
-    orch._fill_application = AsyncMock(return_value={"success": True, "dry_run": True, "pages_filled": 1})
+    orch._navigator.navigate_to_form = AsyncMock(return_value=nav_result)
+    orch._filler.fill_application = AsyncMock(return_value={"success": True, "dry_run": True, "pages_filled": 1})
 
     with patch.object(ApplicationOrchestrator, "_run_pre_submit_gate") as mock_gate:
         result = await orch.apply(
