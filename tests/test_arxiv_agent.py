@@ -222,7 +222,7 @@ class TestLlmRankBroad:
         mock_cls, mock_inst = _mock_openai_class(ranking_json)
 
         with patch("jobpulse.arxiv_agent.OPENAI_API_KEY", "sk-test"), \
-             patch("openai.OpenAI", mock_cls):
+             patch("jobpulse.arxiv_agent.get_openai_client", return_value=mock_inst):
             ranked = agent.llm_rank_broad(candidates, top_n=2)
 
         assert len(ranked) == 2
@@ -238,12 +238,11 @@ class TestLlmRankBroad:
 
         candidates = _make_candidates(5)
 
-        mock_cls = MagicMock()
-        mock_inst = mock_cls.return_value
+        mock_inst = MagicMock()
         mock_inst.chat.completions.create.side_effect = Exception("rate limited")
 
         with patch("jobpulse.arxiv_agent.OPENAI_API_KEY", "sk-test"), \
-             patch("openai.OpenAI", mock_cls):
+             patch("jobpulse.arxiv_agent.get_openai_client", return_value=mock_inst):
             ranked = agent.llm_rank_broad(candidates, top_n=3)
 
         assert len(ranked) == 3
@@ -260,7 +259,7 @@ class TestLlmRankBroad:
         mock_cls, mock_inst = _mock_openai_class("not valid json {{")
 
         with patch("jobpulse.arxiv_agent.OPENAI_API_KEY", "sk-test"), \
-             patch("openai.OpenAI", mock_cls):
+             patch("jobpulse.arxiv_agent.get_openai_client", return_value=mock_inst):
             ranked = agent.llm_rank_broad(candidates, top_n=3)
 
         # Function catches the JSON error and returns a list (fallback)
@@ -292,10 +291,10 @@ class TestLlmRankBroad:
              "key_technique": "y", "category_tag": "RL"},
         ])
 
-        mock_cls, _ = _mock_openai_class(ranking_json)
+        mock_cls, mock_inst = _mock_openai_class(ranking_json)
 
         with patch("jobpulse.arxiv_agent.OPENAI_API_KEY", "sk-test"), \
-             patch("openai.OpenAI", mock_cls):
+             patch("jobpulse.arxiv_agent.get_openai_client", return_value=mock_inst):
             ranked = agent.llm_rank_broad(candidates, top_n=2)
 
         # Only the valid paper_num=1 (index 0) should be returned
@@ -335,10 +334,10 @@ def test_json_parsing_handles_various_llm_formats(raw_response, expected_count):
 
     candidates = _make_candidates(3)
 
-    mock_cls, _ = _mock_openai_class(raw_response)
+    mock_cls, mock_inst = _mock_openai_class(raw_response)
 
     with patch("jobpulse.arxiv_agent.OPENAI_API_KEY", "sk-test"), \
-         patch("openai.OpenAI", mock_cls):
+         patch("jobpulse.arxiv_agent.get_openai_client", return_value=mock_inst):
         ranked = agent.llm_rank_broad(candidates, top_n=1)
 
     assert len(ranked) == expected_count

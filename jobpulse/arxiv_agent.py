@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from shared.logging_config import get_logger
 from shared.db import get_db_conn
+from shared.agents import get_openai_client
 from jobpulse.config import OPENAI_API_KEY, PROJECT_DIR, DATA_DIR
 from jobpulse import telegram_agent, event_logger
 
@@ -183,7 +184,7 @@ def llm_rank_broad(papers: list[dict], top_n: int = 5) -> list[dict]:
     if not OPENAI_API_KEY:
         return papers[:top_n]
 
-    from shared.agents import get_openai_client, get_model_name, is_local_llm
+    from shared.agents import get_model_name, is_local_llm
     client = get_openai_client()
     _local = is_local_llm()
 
@@ -353,7 +354,7 @@ def summarize_paper(paper: dict) -> str:
     if not OPENAI_API_KEY:
         return paper["abstract"][:200]
 
-    from shared.agents import get_openai_client, get_model_name, is_local_llm
+    from shared.agents import get_model_name, is_local_llm
     client = get_openai_client()
     _local = is_local_llm()
 
