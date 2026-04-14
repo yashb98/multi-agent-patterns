@@ -18,6 +18,7 @@ from shared.db import get_db_conn
 from shared.agents import get_openai_client
 from jobpulse.config import OPENAI_API_KEY, PROJECT_DIR, DATA_DIR
 from jobpulse import telegram_agent, event_logger
+from jobpulse.paper_discovery import discover_trending_papers
 
 logger = get_logger(__name__)
 
@@ -603,10 +604,14 @@ def build_digest(top_n: int = 5) -> str:
     trail = ProcessTrail("arxiv_agent", "daily_digest")
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Step 1: Fetch
-    with trail.step("api_call", "Fetch papers from arXiv") as s:
-        papers = fetch_papers(max_results=200)
-        s["output"] = f"Fetched {len(papers)} papers"
+    # Step 1: Community-first discovery, fallback to arXiv API
+    with trail.step("api_call", "Discover trending papers (community-first)") as s:
+        papers = discover_trending_papers()
+        s["output"] = f"Community discovery: {len(papers)} papers"
+        if not papers:
+            # Fallback to direct arXiv API fetch
+            papers = fetch_papers(max_results=200)
+            s["output"] = f"Fallback to arXiv API: {len(papers)} papers"
         if not papers:
             trail.finalize("No papers fetched")
             return "Could not fetch papers from arXiv. Try again later."
