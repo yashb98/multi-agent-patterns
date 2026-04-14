@@ -140,6 +140,134 @@ final_score = (
 
 A paper huge on HN but irrelevant to your skills won't make your top 5. A paper moderately discussed AND matching your profile jumps to the top.
 
+#### Nitter/X Resilience Learning
+
+Nitter instances get blocked by X periodically. Rather than failing silently, the system should detect, learn, and adapt.
+
+**Detection signals** (checked on every X/Nitter fetch):
+- HTTP 403/429 from Nitter instance
+- Empty results when other sources returned papers (X should have SOME signal if HN/Reddit do)
+- Response time >10 seconds (Nitter being throttled)
+- HTML response instead of expected data (block page)
+
+**Learning engine** — reuses the existing `scan_learning.py` architecture (17-signal statistical correlation):
+
+```python
+# In paper_discovery.py — Nitter health tracking
+
+class NitterHealthTracker:
+    """Track Nitter instance health, learn block patterns, auto-adapt."""
+    
+    def record_attempt(self, instance_url: str, success: bool, 
+                       response_code: int, latency_ms: int, time_of_day: int):
+        """Record every Nitter fetch attempt to SQLite."""
+        # Stored in data/nitter_health.db
+    
+    def get_best_instance(self) -> str:
+        """Pick the healthiest Nitter instance based on recent success rate."""
+        # Rotates through instance pool, avoids recently-blocked ones
+    
+    def get_block_patterns(self) -> list[BlockPattern]:
+        """Statistical analysis: when does X block Nitter most often?"""
+        # e.g., "Blocks increase on weekday mornings US-time (9am-12pm ET)"
+        # e.g., "Instance X blocked after >20 requests/hour"
+    
+    def should_skip_x(self) -> bool:
+        """If all instances blocked in last 2 hours, skip X entirely."""
+        # Saves latency — don't waste 10s on a source that's down
+```
+
+**Nitter instance pool** (rotate on block):
+```python
+NITTER_INSTANCES = [
+    "https://nitter.net",
+    "https://nitter.privacydev.net", 
+    "https://nitter.poast.org",
+    "https://nitter.woodland.cafe",
+]
+```
+
+**Adaptive behavior**:
+1. First block → rotate to next instance, log event
+2. Second block (same hour) → increase delay between requests to 5s
+3. Third block → skip X for this fetch cycle, alert via Telegram: "X/Nitter blocked — using 4 other sources"
+4. Cooldown: exponential backoff (2hr → 4hr → 24hr), same as `scan_learning.py`
+5. After successful fetch → reset cooldown, record which instance worked and when
+
+**What the agent learns over time** (stored in `data/nitter_health.db`):
+- Which instances are most reliable (success rate per instance)
+- What time of day blocks happen (avoid peak block windows)
+- How many requests trigger a block (stay under threshold)
+- How long blocks last (optimize cooldown duration)
+- Whether Tor helps (SearXNG+Tor vs SearXNG direct for Nitter)
+
+**Telegram notification on sustained block**:
+```
+⚠️ X/Nitter: All instances blocked for 24h+
+Paper discovery running on 4/5 sources (HF, Reddit, HN, PwC)
+X signal temporarily excluded from community_buzz score
+```
+
+#### Google OAuth Token Monitor
+
+**Problem**: OAuth token scope mismatches and expiry cause silent failures. The user should be notified before things break.
+
+**New file**: `jobpulse/oauth_monitor.py`
+
+**Checks** (run on every daemon startup + every 6 hours via cron):
+
+```python
+def check_google_oauth_health() -> OAuthHealth:
+    """Check token validity, scope match, and expiry."""
+    token_path = DATA_DIR / "google_token.json"
+    
+    # 1. Token file exists?
+    if not token_path.exists():
+        return OAuthHealth(status="missing", message="No token file")
+    
+    # 2. Parse token, check expiry
+    token_data = json.loads(token_path.read_text())
+    expiry = datetime.fromisoformat(token_data.get("expiry", ""))
+    hours_until_expiry = (expiry - datetime.utcnow()).total_seconds() / 3600
+    
+    # 3. Check scopes match config.py GOOGLE_SCOPES
+    token_scopes = set(token_data.get("scopes", []))
+    required_scopes = set(GOOGLE_SCOPES)
+    missing_scopes = required_scopes - token_scopes
+    
+    # 4. Test refresh — actually try to refresh and see if it works
+    try:
+        creds = Credentials.from_authorized_user_file(str(token_path), GOOGLE_SCOPES)
+        if creds.expired:
+            creds.refresh(Request())  # This is where "invalid_scope" would surface
+    except Exception as e:
+        return OAuthHealth(status="broken", message=str(e), missing_scopes=missing_scopes)
+    
+    return OAuthHealth(
+        status="healthy",
+        hours_until_expiry=hours_until_expiry,
+        missing_scopes=missing_scopes,
+    )
+```
+
+**Notification thresholds** (via Alert bot):
+
+| Condition | Notification | Urgency |
+|-----------|-------------|---------|
+| Scope mismatch detected | "🔑 Google OAuth: missing scopes {scopes}. Run `python scripts/setup_integrations.py` to re-authorize" | Immediate |
+| Token refresh fails | "🔑 Google OAuth: refresh failed — {error}. Re-authorize now or Gmail/Calendar/Drive will stop working" | Immediate |
+| Token expires in <24 hours | "🔑 Google OAuth: token expires in {hours}h. Will auto-refresh, but check if scopes are current" | Warning |
+| Token file missing | "🔑 Google OAuth: token file missing. Run `python scripts/setup_integrations.py`" | Critical |
+| Healthy check | No notification (silent success) | — |
+
+**How often does the token expire?**
+- Google OAuth access tokens expire every **1 hour**
+- The refresh token auto-refreshes them — this is invisible when scopes match
+- Refresh tokens themselves **never expire** unless: (a) unused for 6 months, (b) user revokes access, (c) scopes change (our problem)
+- So the real trigger is: every time you add a new scope to `GOOGLE_SCOPES` in config.py
+
+**Integration**: Health watchdog cron (already exists, runs every 10 minutes) calls `check_google_oauth_health()`. On failure, sends alert via Alert bot. On daemon startup, same check runs once.
+
 #### Fallback
 
 If all community sources return zero papers (unlikely but possible on holidays):
@@ -203,6 +331,10 @@ After all fixes:
 - Paper discovery: known paper (e.g., "Attention Is All You Need") shows high community buzz across HN/Reddit/HF
 - Paper discovery: parallel fetch from all 5 sources completes in <5 seconds
 - Paper discovery: fallback to arXiv RSS works when all community sources return empty
+- Nitter health: simulate block (mock 403) → tracker rotates instance, logs event
+- Nitter health: simulate all instances blocked → skips X, sends Telegram alert
+- OAuth monitor: token with wrong scopes → sends Telegram alert with re-auth command
+- OAuth monitor: healthy token → silent (no notification)
 - Health watchdog runs without error for 30 minutes
 - All 4 Telegram bots respond to "help"
 
@@ -816,7 +948,8 @@ These existing modules serve all 6 patterns without modification:
 
 | File | Phase | Lines (est.) | Purpose |
 |------|-------|-------------|---------|
-| `jobpulse/paper_discovery.py` | 1 | ~250 | Community-first paper discovery (HN + Reddit + HF + PwC + X via SearXNG) + Semantic Scholar enrichment |
+| `jobpulse/paper_discovery.py` | 1 | ~350 | Community-first paper discovery + Nitter health tracker + Semantic Scholar enrichment |
+| `jobpulse/oauth_monitor.py` | 1 | ~80 | Google OAuth health check + scope mismatch detection + Telegram alerts |
 | `jobpulse/pattern_router.py` | 2 | ~200 | Auto-router + override + feedback |
 | `patterns/plan_and_execute.py` | 3 | ~400 | 5-node plan-execute-replan graph (max 3 replans) |
 | `patterns/map_reduce.py` | 3 | ~200 | 4-node split-map-reduce graph |
@@ -870,6 +1003,8 @@ These existing modules serve all 6 patterns without modification:
 | Community validation adds latency to paper ranking | Runs in parallel (all 5 sources fetched concurrently); cached per arXiv ID |
 | SearXNG Docker container goes down | Health check in watchdog cron; `--restart unless-stopped` flag; system works without it (graceful degradation) |
 | Tor exit nodes blocked by target | Retry with different circuit (`NEWNYM` signal); fallback to non-Tor SearXNG; Tor is never in the critical path |
+| All Nitter instances blocked | NitterHealthTracker detects, skips X, alerts via Telegram, redistributes weight to 4 remaining sources. Learns block patterns over time |
+| Google OAuth scope mismatch | oauth_monitor.py detects on startup + every 6 hours, sends immediate Telegram alert with exact re-auth command |
 | SearXNG cache grows unbounded | 24hr TTL for fast mode, 7-day TTL for Tor mode; periodic cleanup cron |
 
 ## Testing Strategy
