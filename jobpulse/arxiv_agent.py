@@ -108,7 +108,7 @@ def fetch_papers(max_results: int = 200) -> list[dict]:
         except Exception as e:
             if attempt < 2:
                 logger.warning("arXiv API error (attempt %d/3): %s", attempt + 1, e)
-                time.sleep(5 * (attempt + 1))
+                time.sleep(30 * (2 ** attempt))  # 30s, 60s, 120s
             else:
                 logger.error("arXiv API error after 3 attempts: %s", e)
                 return []
