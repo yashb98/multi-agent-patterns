@@ -1,5 +1,7 @@
 """Browser automation tool implementation."""
 
+import os
+
 from shared.tool_integration import ToolDefinition, RiskLevel
 
 
@@ -35,6 +37,17 @@ class BrowserTool:
 
     @staticmethod
     def execute(action: str, params: dict) -> dict:
+        # Path validation for screenshot output
+        if action == "screenshot":
+            output = params.get("output_path", "/tmp/screenshot.png")
+            ALLOWED_PREFIXES = ("/tmp/", "/var/tmp/", "/private/tmp/", "/private/var/tmp/")
+            resolved = os.path.realpath(output)
+            if not any(resolved.startswith(p) for p in ALLOWED_PREFIXES):
+                return {
+                    "status": "error",
+                    "message": f"Invalid output_path: '{output}' resolves outside allowed directories",
+                }
+
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
