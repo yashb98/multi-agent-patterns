@@ -213,7 +213,7 @@ class NotionPublisher:
         # Page parents use a title array directly.
         if "database_id" in parent:
             title_property = {
-                "Name": {
+                "Title": {
                     "title": [{"type": "text", "text": {"content": title}}]
                 }
             }

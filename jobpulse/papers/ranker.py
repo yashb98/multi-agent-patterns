@@ -292,22 +292,46 @@ def _summarize_paper(paper: Paper, client) -> str:  # type: ignore[no-untyped-de
 
 
 def _verify_paper(paper: Paper, summary: str) -> FactCheckResult:
-    """Run fact-checking via shared/fact_checker if available.
+    """Run fact-checking via shared/fact_checker.
 
-    Returns a default FactCheckResult when the module is not importable (e.g.
-    in environments where shared/ dependencies are missing).
+    Pipeline: extract_claims → verify_claims → compute_accuracy_score.
+    Returns a default FactCheckResult on any failure.
     """
     try:
-        from shared.fact_checker import FactChecker  # type: ignore[import]
+        from shared.fact_checker import (
+            extract_claims,
+            verify_claims,
+            compute_accuracy_score,
+            generate_fact_check_explanation,
+        )
 
-        checker = FactChecker()
-        result = checker.verify(summary, context=paper.abstract)
+        claims = extract_claims(summary, topic=paper.title)
+        if not claims:
+            return FactCheckResult()
+
+        verifications = verify_claims(
+            claims,
+            sources=[paper.abstract],
+            paper_abstract=paper.abstract,
+            arxiv_id=paper.arxiv_id,
+        )
+        score = compute_accuracy_score(verifications)
+        verified_count = sum(
+            1 for v in verifications if v.get("verdict", "").upper() == "VERIFIED"
+        )
+        total_claims = len([c for c in claims if c.get("source_needed", True)])
+        issues = [
+            v.get("claim", "") for v in verifications
+            if v.get("verdict", "").upper() not in ("VERIFIED", "SKIPPED")
+        ]
+        explanation = generate_fact_check_explanation(score, verifications)
+
         return FactCheckResult(
-            score=float(result.get("score", 0.0)),
-            total_claims=int(result.get("total_claims", 0)),
-            verified_count=int(result.get("verified_count", 0)),
-            issues=result.get("issues", []),
-            explanation=result.get("explanation", ""),
+            score=score,
+            total_claims=total_claims,
+            verified_count=verified_count,
+            issues=issues,
+            explanation=explanation,
         )
     except ImportError:
         logger.debug("_verify_paper: shared.fact_checker not available — skipping")
