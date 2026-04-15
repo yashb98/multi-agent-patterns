@@ -70,6 +70,20 @@ class TestWeeklyDigest:
         assert "Theme 1" in result
 
 
+class TestBuildDigestWrapper:
+    def test_build_digest_calls_pipeline(self, tmp_path):
+        from unittest.mock import patch, AsyncMock
+
+        with patch("jobpulse.papers.PapersPipeline") as MockPipeline:
+            mock_instance = MockPipeline.return_value
+            mock_instance.daily_digest = AsyncMock(return_value="📄 *Daily AI Papers*\n\n1. Test Paper")
+            from jobpulse.arxiv_agent import build_digest
+            result = build_digest(top_n=5)
+
+        assert "Test Paper" in result
+        mock_instance.daily_digest.assert_called_once_with(top_n=5)
+
+
 class TestGenerateBlog:
     def test_raises_on_invalid_index(self, pipeline):
         with pytest.raises(ValueError, match="No paper"):

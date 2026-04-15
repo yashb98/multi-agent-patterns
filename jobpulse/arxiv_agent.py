@@ -599,170 +599,17 @@ def create_notion_paper_pages(summaries: list[tuple[dict, str]], digest_date: st
 # ── Digest Builder ──
 
 def build_digest(top_n: int = 5) -> str:
-    """Full pipeline: fetch -> LLM rank by broad AI impact -> summarize -> format."""
-    from jobpulse.process_logger import ProcessTrail
-    trail = ProcessTrail("arxiv_agent", "daily_digest")
-    today = datetime.now().strftime("%Y-%m-%d")
+    """Full pipeline: fetch from all sources -> enrich -> rank -> summarize -> format."""
+    import asyncio
+    from jobpulse.papers import PapersPipeline
 
-    # Step 1: Community-first discovery, fallback to arXiv API
-    with trail.step("api_call", "Discover trending papers (community-first)") as s:
-        papers = discover_trending_papers()
-        s["output"] = f"Community discovery: {len(papers)} papers"
-        if not papers:
-            # Fallback to direct arXiv API fetch
-            papers = fetch_papers(max_results=200)
-            s["output"] = f"Fallback to arXiv API: {len(papers)} papers"
-        if not papers:
-            trail.finalize("No papers fetched")
-            return "Could not fetch papers from arXiv. Try again later."
-
-    # Step 2: LLM rank by BROAD AI IMPACT
-    with trail.step("llm_call", "LLM ranking by broad AI impact") as s:
-        ranked = llm_rank_broad(papers, top_n=top_n)
-        s["output"] = f"Selected {len(ranked)} papers"
-
-    # Step 3: Summarize + fact-check each
-    summaries = []
-    for i, paper in enumerate(ranked):
-        with trail.step("llm_call", f"Summarize + verify paper {i+1}",
-                         step_input=paper["title"][:100]) as s:
-            result = summarize_and_verify_paper(paper)
-            paper["summary"] = result["summary"]
-            paper["fact_check"] = result["fact_check"]
-            summaries.append((paper, result["summary"]))
-            fc = result["fact_check"]
-            s["output"] = (f"{result['summary'][:80]}... "
-                          f"[FC: {fc['verified_count']}/{fc['total_claims']}]")
-
-    # Step 4: Store in database
-    with trail.step("api_call", "Store papers in database") as s:
-        store_papers(ranked, today)
-        s["output"] = f"Stored {len(ranked)} papers"
-
-    # Step 4b: Create Notion pages for each paper + daily index page
-    notion_urls = {}
-    with trail.step("api_call", "Create Notion paper pages") as s:
-        try:
-            notion_urls = create_notion_paper_pages(summaries, today)
-            s["output"] = f"Created {len(notion_urls)} Notion pages"
-        except Exception as e:
-            logger.warning("Notion paper pages failed: %s", e)
-            s["output"] = f"Notion failed: {e}"
-
-    # Step 5: Format
-    date_display = datetime.now().strftime("%B %d, %Y")
-    lines = [f"📚 TOP 5 AI PAPERS — {date_display}\n"]
-
-    for i, (paper, summary) in enumerate(summaries, 1):
-        score = paper.get("impact_score", 0)
-        tag = paper.get("category_tag", "AI")
-        technique = paper.get("key_technique", "")
-        authors = ", ".join(paper["authors"][:3])
-        if len(paper["authors"]) > 3:
-            authors += " et al."
-        cats = ", ".join(paper["categories"][:3])
-
-        lines.append(f"━━━━━━━━━━━━━━━━━━━━\n")
-        lines.append(f"{i}. [{tag}] ({score:.0f}/10)")
-        lines.append(f"\"{paper['title']}\"")
-        lines.append(f"Authors: {authors}")
-        if technique:
-            lines.append(f"Key: {technique}")
-        lines.append(f"")
-        lines.append(f"{summary}\n")
-
-        # Fact-check with honest explanation
-        fc = paper.get("fact_check", {})
-        if fc and fc.get("explanation"):
-            lines.append(f"Fact-check: {fc['explanation']}")
-        elif fc and fc.get("total_claims", 0) > 0:
-            verified = fc.get("verified_count", 0)
-            total = fc["total_claims"]
-            lines.append(f"Fact-check: {fc.get('score', 0):.1f}/10 — {verified}/{total} claims checked")
-
-        lines.append(f"PDF: {paper.get('pdf_url', paper['arxiv_url'])}")
-        notion_link = notion_urls.get(paper['arxiv_id'], '')
-        if notion_link:
-            lines.append(f"Summary: {notion_link}")
-
-    lines.append(f"\n━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"Scanned {len(papers)} papers from {', '.join(CATEGORIES)}")
-    lines.append(f"\nCommands: \"paper 3\" full abstract | \"blog 1\" generate blog post | \"read 1\" mark as read")
-
-    digest = "\n".join(lines)
-
-    event_logger.log_event(
-        event_type="research_paper",
-        agent_name="arxiv_agent",
-        action="daily_digest",
-        content=digest[:500],
-        metadata={"papers_scanned": len(papers), "papers_shown": len(summaries)},
-    )
-
-    trail.finalize(f"Digest: {len(summaries)} papers from {len(papers)} scanned")
-
-    # Extract to knowledge graph in background (don't block the reply)
-    import threading
-    def _extract_bg():
-        for paper, summary in summaries:
-            try:
-                from jobpulse.auto_extract import extract_from_paper_summary
-                extract_from_paper_summary(
-                    title=paper["title"],
-                    authors=", ".join(paper["authors"][:3]),
-                    summary=summary,
-                    arxiv_id=paper["arxiv_id"],
-                )
-            except Exception as e:
-                logger.debug("KG extraction failed for paper: %s", e)
-        logger.info("KG extraction complete for %d papers", len(summaries))
-
-    threading.Thread(target=_extract_bg, daemon=True).start()
-
-    # Schedule a 20-minute reminder to blog papers
-    def _blog_reminder():
-        import time
-        time.sleep(20 * 60)  # 20 minutes
-        try:
-            from jobpulse.telegram_bots import send_research
-            paper_titles = [f"{i}. \"{p['title'][:60]}\"" for i, (p, _) in enumerate(summaries, 1)]
-            reminder = (
-                "\U0001f4dd PAPER BLOG REMINDER (20 min)\n\n"
-                "Today's papers:\n" + "\n".join(paper_titles) + "\n\n"
-                "Want to generate a blog post?\n"
-                "Reply: \"blog 1\" through \"blog 5\"\n"
-                "Or \"skip\" to pass today."
-            )
-            send_research(reminder)
-            logger.info("Blog reminder sent (20 min after digest)")
-        except Exception as e:
-            logger.debug("Blog reminder failed: %s", e)
-
-    threading.Thread(target=_blog_reminder, daemon=True).start()
-
-    # Store verification experiences for experiential learning
+    pipeline = PapersPipeline()
     try:
-        from jobpulse.swarm_dispatcher import store_experience
-        for paper, summary in summaries:
-            fc = paper.get("fact_check", {})
-            if fc.get("total_claims", 0) > 0:
-                store_experience(
-                    intent=f"arxiv_verification_{paper['arxiv_id']}",
-                    experience={
-                        "paper_title": paper["title"][:100],
-                        "arxiv_id": paper["arxiv_id"],
-                        "score": fc.get("score", 0),
-                        "total_claims": fc.get("total_claims", 0),
-                        "verified_count": fc.get("verified_count", 0),
-                        "issues": fc.get("issues", []),
-                        "repo_status": fc.get("repo_health", {}).get("status", "REPO_NA"),
-                    },
-                    score=fc.get("score", 0) / 10.0,
-                )
-    except Exception as e:
-        logger.debug("Experience storage failed: %s", e)
-
-    return digest
+        return asyncio.run(pipeline.daily_digest(top_n=top_n))
+    except RuntimeError:
+        # Event loop already running (e.g., inside async context)
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(pipeline.daily_digest(top_n=top_n))
 
 
 def get_paper_detail(index: int) -> str:
