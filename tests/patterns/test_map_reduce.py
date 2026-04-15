@@ -72,21 +72,30 @@ class TestReconcilerNode:
 
         monkeypatch.setattr("patterns.map_reduce.smart_llm_call", lambda *a, **kw: "Reconciled output")
         monkeypatch.setattr("patterns.map_reduce.get_llm", lambda **kw: None)
+        monkeypatch.setattr("patterns.map_reduce.reviewer_node", lambda s: {"review_score": 8.5})
+        monkeypatch.setattr("patterns.map_reduce.fact_check_node", lambda s: {"accuracy_score": 9.6})
 
         state = create_initial_state("test")
         state["reduced_output"] = "Raw reduction with [CONTRADICTION] conflicts"
         state["needs_reconciliation"] = True
         result = reconciler_node(state)
         assert result["final_output"] == "Reconciled output"
+        assert result["quality_score"] == 8.5
+        assert result["accuracy_score"] == 9.6
 
-    def test_reconciler_passes_through_when_no_conflicts(self):
+    def test_reconciler_passes_through_when_no_conflicts(self, monkeypatch):
         from patterns.map_reduce import reconciler_node, create_initial_state
+
+        monkeypatch.setattr("patterns.map_reduce.reviewer_node", lambda s: {"review_score": 7.0})
+        monkeypatch.setattr("patterns.map_reduce.fact_check_node", lambda s: {"accuracy_score": 8.0})
 
         state = create_initial_state("test")
         state["reduced_output"] = "Clean reduction"
         state["needs_reconciliation"] = False
         result = reconciler_node(state)
         assert result["final_output"] == "Clean reduction"
+        assert result["quality_score"] == 7.0
+        assert result["accuracy_score"] == 8.0
 
 
 class TestMapReduceGraph:
@@ -109,6 +118,8 @@ class TestMapReduceGraph:
 
         monkeypatch.setattr("patterns.map_reduce.smart_llm_call", mock_llm)
         monkeypatch.setattr("patterns.map_reduce.get_llm", lambda **kw: None)
+        monkeypatch.setattr("patterns.map_reduce.reviewer_node", lambda s: {"review_score": 8.0})
+        monkeypatch.setattr("patterns.map_reduce.fact_check_node", lambda s: {"accuracy_score": 9.5})
 
         result = run_map_reduce("Summarize items")
         assert isinstance(result, dict)

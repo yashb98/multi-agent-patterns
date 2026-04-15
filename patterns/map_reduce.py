@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from langgraph.graph import StateGraph, START, END
 
-from shared.agents import get_llm, smart_llm_call
+from shared.agents import get_llm, smart_llm_call, reviewer_node, fact_check_node
 from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.logging_config import get_logger, generate_run_id, set_run_id
 
@@ -40,6 +40,7 @@ class MapReduceState(TypedDict):
     needs_reconciliation: bool
     final_output: str
     quality_score: float
+    accuracy_score: float
     token_usage: Annotated[list[dict], operator.add]
     agent_history: Annotated[list[str], operator.add]
 
@@ -53,6 +54,7 @@ def create_initial_state(topic: str) -> MapReduceState:
         needs_reconciliation=False,
         final_output="",
         quality_score=0.0,
+        accuracy_score=0.0,
         token_usage=[],
         agent_history=[],
     )
@@ -135,10 +137,17 @@ def reducer_node(state: MapReduceState) -> dict:
 def reconciler_node(state: MapReduceState) -> dict:
     """Resolve contradictions if present, otherwise pass through."""
     if not state["needs_reconciliation"]:
+        output = state["reduced_output"]
+        review = reviewer_node({**state, "draft": output})
+        quality = review.get("review_score", 0.0)
+        fact = fact_check_node({**state, "draft": output})
+        accuracy = fact.get("accuracy_score", 0.0)
+        logger.info("Reconciler pass-through: quality=%.1f, accuracy=%.1f", quality, accuracy)
         return {
-            "final_output": state["reduced_output"],
-            "quality_score": 8.0,
-            "agent_history": ["reconciler: no conflicts, pass-through"],
+            "final_output": output,
+            "quality_score": quality,
+            "accuracy_score": accuracy,
+            "agent_history": [f"reconciler: no conflicts, quality={quality}, accuracy={accuracy}"],
         }
 
     llm = get_llm()
@@ -149,7 +158,11 @@ def reconciler_node(state: MapReduceState) -> dict:
         f"Produce a clean, consistent final output with all contradictions resolved."
     )
     output = smart_llm_call(llm, prompt)
-    quality = 8.0
+
+    review = reviewer_node({**state, "draft": output})
+    quality = review.get("review_score", 0.0)
+    fact = fact_check_node({**state, "draft": output})
+    accuracy = fact.get("accuracy_score", 0.0)
 
     try:
         exp = Experience(
@@ -162,11 +175,12 @@ def reconciler_node(state: MapReduceState) -> dict:
     except Exception:
         pass
 
-    logger.info("Reconciler completed: resolved contradictions")
+    logger.info("Reconciler completed: quality=%.1f, accuracy=%.1f", quality, accuracy)
     return {
         "final_output": output,
         "quality_score": quality,
-        "agent_history": [f"reconciler: resolved contradictions, quality={quality}"],
+        "accuracy_score": accuracy,
+        "agent_history": [f"reconciler: resolved contradictions, quality={quality}, accuracy={accuracy}"],
     }
 
 
@@ -200,7 +214,10 @@ def run_map_reduce(topic: str) -> dict:
     graph = build_map_reduce_graph()
     final_state = graph.invoke(initial_state)
 
-    logger.info("Map-reduce complete. Chunks: %d", len(final_state.get("chunks", [])))
+    logger.info("Map-reduce complete. Chunks: %d, quality=%.1f, accuracy=%.1f",
+                len(final_state.get("chunks", [])),
+                final_state.get("quality_score", 0),
+                final_state.get("accuracy_score", 0))
     return final_state
 
 

@@ -152,6 +152,8 @@ class TestSynthesizerNode:
 
         monkeypatch.setattr("patterns.plan_and_execute.get_llm", lambda **kw: None)
         monkeypatch.setattr("patterns.plan_and_execute.smart_llm_call", lambda *a, **kw: "Final synthesis output")
+        monkeypatch.setattr("patterns.plan_and_execute.reviewer_node", lambda s: {"review_score": 8.2})
+        monkeypatch.setattr("patterns.plan_and_execute.fact_check_node", lambda s: {"accuracy_score": 9.7})
 
         state = create_initial_state("test topic")
         state["plan"] = [Step(goal="A", expected_output="out", dependencies=[], delegate_to=None)]
@@ -159,6 +161,8 @@ class TestSynthesizerNode:
 
         result = synthesizer_node(state)
         assert result["final_output"] == "Final synthesis output"
+        assert result["quality_score"] == 8.2
+        assert result["accuracy_score"] == 9.7
         assert "synthesizer" in result["agent_history"][0]
 
 
@@ -183,6 +187,8 @@ class TestPlanExecuteGraph:
 
         monkeypatch.setattr("patterns.plan_and_execute.smart_llm_call", mock_llm_call)
         monkeypatch.setattr("patterns.plan_and_execute.get_llm", lambda **kw: None)
+        monkeypatch.setattr("patterns.plan_and_execute.reviewer_node", lambda s: {"review_score": 8.0})
+        monkeypatch.setattr("patterns.plan_and_execute.fact_check_node", lambda s: {"accuracy_score": 9.5})
 
         result = run_plan_execute("Test topic")
         assert isinstance(result, dict)

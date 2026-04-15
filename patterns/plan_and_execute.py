@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from langgraph.graph import StateGraph, START, END
 
-from shared.agents import get_llm, smart_llm_call
+from shared.agents import get_llm, smart_llm_call, reviewer_node, fact_check_node
 from shared.state import prune_state
 from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.logging_config import get_logger, generate_run_id, set_run_id
@@ -290,8 +290,10 @@ def synthesizer_node(state: PlanExecuteState) -> dict:
     )
     final = smart_llm_call(llm, prompt)
 
-    quality = 8.0
-    accuracy = 9.5
+    review = reviewer_node({**state, "draft": final})
+    quality = review.get("review_score", 0.0)
+    fact = fact_check_node({**state, "draft": final})
+    accuracy = fact.get("accuracy_score", 0.0)
 
     if quality >= 7.0:
         try:
