@@ -45,6 +45,7 @@ async def test_full_daily_pipeline(tmp_path):
 
     with (
         patch.object(pipeline.fetcher, "fetch_all", side_effect=mock_fetch_all),
+        patch.object(pipeline.fetcher, "enrich", new_callable=AsyncMock, side_effect=lambda p: p),
         patch("jobpulse.papers.ranker._get_openai_client", return_value=None),
         patch.object(pipeline.notion, "publish_daily", return_value={}),
     ):
@@ -61,6 +62,48 @@ async def test_full_daily_pipeline(tmp_path):
     paper1 = pipeline.store.get_by_arxiv_id("2401.00001")
     assert paper1 is not None
     assert paper1.hf_upvotes == 50 or paper1.source == "both"
+
+
+@pytest.mark.asyncio
+async def test_full_pipeline_with_community_sources(tmp_path):
+    """Smoke test: fetch → enrich → rank → summarize → store → format with new signals."""
+    paper = Paper(
+        arxiv_id="2401.00001",
+        title="Novel Transformer",
+        authors=["Alice", "Bob", "Charlie"],
+        abstract="We propose a novel transformer that improves efficiency. Code at https://github.com/org/repo.",
+        categories=["cs.AI", "cs.LG"],
+        pdf_url="https://arxiv.org/pdf/2401.00001",
+        arxiv_url="https://arxiv.org/abs/2401.00001",
+        published_at="2026-04-01",
+        source="both",
+        hf_upvotes=60,
+        community_buzz=80,
+        sources=["huggingface", "hackernews"],
+        s2_citation_count=15,
+    )
+
+    pipeline = PapersPipeline(db_path=tmp_path / "papers.db")
+
+    with (
+        patch.object(pipeline.fetcher, "fetch_all", new_callable=AsyncMock, return_value=[paper]),
+        patch.object(pipeline.fetcher, "enrich", new_callable=AsyncMock, return_value=[paper]),
+        patch("jobpulse.papers.ranker._get_openai_client", return_value=None),
+        patch.object(pipeline.notion, "publish_daily"),
+    ):
+        result = await pipeline.daily_digest(top_n=1)
+
+    # Verify output format
+    assert "Novel Transformer" in result
+    assert "arxiv.org" in result
+
+    # Verify stored in DB
+    stored = pipeline.store.get_by_arxiv_id("2401.00001")
+    assert stored is not None
+    assert stored.title == "Novel Transformer"
+    assert stored.community_buzz == 80
+    assert stored.s2_citation_count == 15
+    assert "huggingface" in stored.sources
 
 
 @pytest.mark.asyncio
