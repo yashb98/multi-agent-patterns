@@ -68,6 +68,7 @@ class Intent(str, Enum):
     FOLLOW_UPS = "follow_ups"
     INTERVIEW_PREP = "interview_prep"
     RESEARCH = "research"
+    CANCEL = "cancel"
     UNKNOWN = "unknown"
 
 
@@ -107,6 +108,11 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
     # Clear chat / conversation history
     (Intent.CLEAR_CHAT, [
         r"^(clear (chat|history|conversation)|new (chat|conversation)|reset chat)",
+    ]),
+    # Cancel — abort long-running operations (higher priority than STOP)
+    (Intent.CANCEL, [
+        r"^/cancel\s*$",
+        r"^cancel\s+(scan|job|application|running|current)\s*$",
     ]),
     # Stop / undo last action (high priority — before other patterns)
     (Intent.STOP, [

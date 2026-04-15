@@ -35,6 +35,27 @@ def send_message(text: str, chat_id: str = None) -> bool:
         return False
 
 
+def send_chat_action(action: str = "typing", chat_id: str = None) -> bool:
+    """Send a chat action (e.g. 'typing') to show the bot is processing."""
+    cid = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not cid:
+        return False
+    payload = json.dumps({"chat_id": cid, "action": action})
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-X", "POST",
+             telegram_url(TELEGRAM_BOT_TOKEN, "sendChatAction"),
+             "-H", "Content-Type: application/json",
+             "-d", payload],
+            capture_output=True, text=True, timeout=5
+        )
+        resp = json.loads(result.stdout)
+        return bool(resp.get("ok"))
+    except Exception as e:
+        logger.debug("send_chat_action failed: %s", e)
+        return False
+
+
 def get_updates(offset: int = 0, long_poll: bool = False) -> list[dict]:
     """Get new messages from Telegram.
 

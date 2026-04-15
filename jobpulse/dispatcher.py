@@ -9,6 +9,7 @@ All errors return structured DispatchError objects with:
 - attemptedAction: what was being attempted
 """
 
+import threading
 from datetime import datetime
 from jobpulse.command_router import Intent, ParsedCommand
 from jobpulse import event_logger
@@ -16,6 +17,9 @@ from shared.agent_result import DispatchError, classify_error as _classify_error
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Module-level cancel event — set by /cancel, checked by long-running operations.
+_cancel_event = threading.Event()
 
 
 def dispatch(cmd: ParsedCommand) -> str:
@@ -729,6 +733,12 @@ def _handle_job_stats(cmd: ParsedCommand) -> str:
 def _handle_search_config(cmd: ParsedCommand) -> str:
     from jobpulse.job_autopilot import update_search_config
     return update_search_config(cmd.args)
+
+
+def _handle_cancel(cmd: ParsedCommand) -> str:
+    """Set the cancel flag. Long-running operations check this and abort at the next checkpoint."""
+    _cancel_event.set()
+    return "🛑 Cancellation requested. Running operations will stop at the next checkpoint."
 
 
 def _handle_pause_jobs(cmd: ParsedCommand) -> str:

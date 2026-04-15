@@ -182,6 +182,27 @@ ALERT_CATEGORIES = {
 }
 
 
+def send_chat_action_for_token(token: str, action: str = "typing", chat_id: str = None) -> bool:
+    """Send a typing/chat action via a specific bot token."""
+    cid = chat_id or TELEGRAM_CHAT_ID
+    if not token or not cid:
+        return False
+    payload = json.dumps({"chat_id": cid, "action": action})
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-X", "POST",
+             telegram_url(token, "sendChatAction"),
+             "-H", "Content-Type: application/json",
+             "-d", payload],
+            capture_output=True, text=True, timeout=5
+        )
+        resp = json.loads(result.stdout)
+        return bool(resp.get("ok"))
+    except Exception as e:
+        logger.debug("send_chat_action_for_token failed: %s", e)
+        return False
+
+
 def send_for_intent(intent: str, text: str) -> bool:
     """Route a reply to the correct bot based on intent."""
     if intent in BUDGET_INTENTS:

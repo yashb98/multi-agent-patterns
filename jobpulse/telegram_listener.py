@@ -105,6 +105,9 @@ def poll_and_process():
         cmd = classify(text)
         _log(f"Intent: {cmd.intent.value}")
 
+        # Show typing indicator before LLM/agent call
+        telegram_agent.send_chat_action()
+
         # Dispatch to agent and get reply
         reply = dispatch(cmd)
 
@@ -196,6 +199,9 @@ def poll_continuous():
                 # Classify and dispatch
                 cmd = classify(text)
                 _log(f"Intent: {cmd.intent.value}")
+
+                # Show typing indicator before LLM/agent call
+                telegram_agent.send_chat_action()
 
                 reply = dispatch(cmd)
                 # Route reply to the correct bot based on intent

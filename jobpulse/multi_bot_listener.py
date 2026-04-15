@@ -176,6 +176,10 @@ def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
                 if cmd.intent.value == "arxiv" and "blog" in cmd.raw.lower():
                     send_fn("⏳ Generating 2000-word blog post... ~90s\n(5 agents: reader → writer → fact checker → diagrams → editor)")
 
+                # Show typing indicator before LLM/agent call
+                from jobpulse.telegram_bots import send_chat_action_for_token
+                send_chat_action_for_token(token)
+
                 # Dispatch
                 reply = dispatch(cmd)
                 send_fn(reply)
