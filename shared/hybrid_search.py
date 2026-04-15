@@ -30,6 +30,23 @@ except ImportError:
     _HAS_NUMPY = False
 
 from shared.logging_config import get_logger
+from shared.reranker import Reranker, _get_cross_encoder
+
+_reranker_instance = None
+
+
+def get_reranker():
+    """Get singleton reranker, or None if unavailable."""
+    global _reranker_instance
+    if _reranker_instance is None:
+        try:
+            if _get_cross_encoder() is not None:
+                _reranker_instance = Reranker()
+            else:
+                return None
+        except Exception:
+            return None
+    return _reranker_instance
 
 logger = get_logger(__name__)
 
@@ -140,6 +157,13 @@ class HybridSearch:
                     "fts_rank": fts_rank,
                     "vec_rank": vec_rank,
                 })
+
+        # ── Optional reranker pass ──
+        reranker = get_reranker()
+        if reranker and len(results) > 1:
+            reranked = reranker.rerank(query_text, results, top_k=top_k)
+            if reranked:
+                results = reranked
 
         return results
 
