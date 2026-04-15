@@ -186,3 +186,14 @@ class TestWriteFile:
     def test_write_absolute_outside_blocked(self, tmp_path):
         result = run("write_file", {"path": "/tmp/evil.txt", "content": "x", "working_dir": str(tmp_path)})
         assert result["status"] == "blocked"
+
+
+def test_execute_rejects_arbitrary_working_dir():
+    """working_dir outside project root must be rejected."""
+    from shared.tools.terminal import TerminalTool
+    result = TerminalTool.execute("execute", {
+        "command": "ls",
+        "working_dir": "/etc",
+    })
+    assert result["status"] == "error"
+    assert "outside" in result["message"].lower() or "sandbox" in result["message"].lower()

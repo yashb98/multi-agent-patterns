@@ -3,6 +3,7 @@
 import os
 import shlex
 import subprocess
+import tempfile
 
 from shared.tool_integration import ToolDefinition, RiskLevel
 
@@ -63,7 +64,16 @@ class TerminalTool:
     def execute(action: str, params: dict) -> dict:
         if action == "execute":
             command = params.get("command", "")
-            working_dir = params.get("working_dir", "/tmp/agent_sandbox")
+            working_dir = params.get("working_dir", os.getcwd())
+            project_root = os.path.realpath(os.getcwd())
+            resolved_wd = os.path.realpath(working_dir)
+            tmp_root = os.path.realpath(tempfile.gettempdir())
+            if not (resolved_wd.startswith(project_root + os.sep) or resolved_wd == project_root
+                    or resolved_wd.startswith(tmp_root + os.sep) or resolved_wd == tmp_root):
+                return {
+                    "status": "error",
+                    "message": f"working_dir '{working_dir}' resolves outside sandbox",
+                }
             os.makedirs(working_dir, exist_ok=True)
 
             # Block shell metacharacters in raw input (before parsing)
