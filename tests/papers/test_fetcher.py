@@ -359,3 +359,82 @@ class TestFetchAllTiered:
             papers = await fetcher.fetch_all()
         assert len(papers) == 1
         assert papers[0].arxiv_id == "2401.00999"
+
+
+class TestEnrichGithub:
+    @pytest.mark.asyncio
+    async def test_extracts_github_url_from_abstract(self):
+        fetcher = PaperFetcher()
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=["A"],
+            abstract="Code at https://github.com/org/repo available.",
+            categories=["cs.AI"], pdf_url="", arxiv_url="", published_at="2026-04-01",
+        )
+        result = await fetcher._enrich_github([paper])
+        assert result[0].github_url == "https://github.com/org/repo"
+
+    @pytest.mark.asyncio
+    async def test_searches_github_api_when_no_url_in_abstract(self):
+        fetcher = PaperFetcher()
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=["A"],
+            abstract="No github link here.",
+            categories=["cs.AI"], pdf_url="", arxiv_url="", published_at="2026-04-01",
+        )
+        gh_resp = httpx.Response(200, json={"items": [{"html_url": "https://github.com/found/repo", "stargazers_count": 42}]})
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=gh_resp):
+            result = await fetcher._enrich_github([paper])
+        assert result[0].github_url == "https://github.com/found/repo"
+        assert result[0].github_stars == 42
+
+    @pytest.mark.asyncio
+    async def test_skips_on_api_error(self):
+        fetcher = PaperFetcher()
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=["A"],
+            abstract="No link.", categories=["cs.AI"], pdf_url="", arxiv_url="", published_at="2026-04-01",
+        )
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("down")):
+            result = await fetcher._enrich_github([paper])
+        assert result[0].github_url == ""
+        assert result[0].github_stars == 0
+
+
+class TestEnrichS2:
+    @pytest.mark.asyncio
+    async def test_enriches_abstract_and_citations(self):
+        fetcher = PaperFetcher()
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=[],
+            abstract="", categories=[], pdf_url="", arxiv_url="", published_at="2026-04-01",
+        )
+        s2_resp = httpx.Response(200, json={
+            "abstract": "Enriched abstract from S2.",
+            "citationCount": 25,
+            "influentialCitationCount": 3,
+            "authors": [{"name": "Alice"}, {"name": "Bob"}],
+            "year": 2026,
+        })
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=s2_resp):
+            result = await fetcher._enrich_s2([paper])
+        assert result[0].abstract == "Enriched abstract from S2."
+        assert result[0].s2_citation_count == 25
+        assert result[0].s2_influential_citations == 3
+        assert result[0].authors == ["Alice", "Bob"]
+
+
+class TestFetchLinkedDatasets:
+    @pytest.mark.asyncio
+    async def test_fetches_datasets(self):
+        fetcher = PaperFetcher()
+        mock_resp = httpx.Response(200, json=[{"id": "dataset-1"}, {"id": "dataset-2"}])
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=mock_resp):
+            datasets = await fetcher._fetch_linked_datasets("2401.00001")
+        assert datasets == ["dataset-1", "dataset-2"]
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_error(self):
+        fetcher = PaperFetcher()
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("down")):
+            datasets = await fetcher._fetch_linked_datasets("2401.00001")
+        assert datasets == []

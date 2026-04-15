@@ -22,6 +22,9 @@ _ATOM_NS = "http://www.w3.org/2005/Atom"
 # Regex to extract bare arXiv IDs from arbitrary text
 _ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})")
 
+# Regex to extract GitHub repo URLs from text
+_GITHUB_URL_RE = re.compile(r"https?://github\.com/[\w\-]+/[\w\-]+")
+
 # Target AI/ML categories
 ARXIV_CATEGORIES = ["cs.AI", "cs.LG", "cs.CL", "cs.MA", "stat.ML"]
 
@@ -457,6 +460,116 @@ class PaperFetcher:
                 logger.warning("arXiv RSS %s failed: %s", category, exc)
         logger.info("arXiv RSS fallback: %d papers", len(papers))
         return papers
+
+    # ------------------------------------------------------------------ #
+    # Enrichment                                                           #
+    # ------------------------------------------------------------------ #
+
+    async def enrich(self, papers: list[Paper]) -> list[Paper]:
+        """Run all enrichment: S2 details, GitHub repos, HF datasets."""
+        papers = await self._enrich_s2(papers)
+        papers = await self._enrich_github(papers[:30])  # top 30 only for GitHub
+        papers = await self._enrich_hf_extras(papers)
+        return papers
+
+    async def _enrich_s2(self, papers: list[Paper]) -> list[Paper]:
+        """Enrich papers with Semantic Scholar citation data and abstracts."""
+        s2_key = os.environ.get("S2_API_KEY", "")
+        headers: dict[str, str] = {"User-Agent": _USER_AGENT}
+        if s2_key:
+            headers["x-api-key"] = s2_key
+        delay = 0.15 if s2_key else 0.2
+
+        enriched: list[Paper] = []
+        async with httpx.AsyncClient(timeout=10) as client:
+            for paper in papers[:60]:
+                try:
+                    resp = await client.get(
+                        f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{paper.arxiv_id}",
+                        params={"fields": "title,abstract,citationCount,influentialCitationCount,authors,year"},
+                        headers=headers,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        updates: dict = {}
+                        if not paper.abstract and data.get("abstract"):
+                            updates["abstract"] = data["abstract"]
+                        if not paper.authors and data.get("authors"):
+                            updates["authors"] = [a.get("name", "") for a in data["authors"]][:5]
+                        updates["s2_citation_count"] = max(paper.s2_citation_count, data.get("citationCount", 0))
+                        updates["s2_influential_citations"] = max(
+                            paper.s2_influential_citations, data.get("influentialCitationCount", 0)
+                        )
+                        enriched.append(paper.model_copy(update=updates))
+                    else:
+                        enriched.append(paper)
+                    await asyncio.sleep(delay)
+                except Exception:
+                    enriched.append(paper)
+        enriched.extend(papers[60:])
+        return enriched
+
+    async def _enrich_github(self, papers: list[Paper]) -> list[Paper]:
+        """Enrich papers with GitHub repo URL and star count."""
+        gh_token = os.environ.get("GITHUB_TOKEN", "")
+        headers: dict[str, str] = {"User-Agent": _USER_AGENT, "Accept": "application/vnd.github.v3+json"}
+        if gh_token:
+            headers["Authorization"] = f"token {gh_token}"
+
+        enriched: list[Paper] = []
+        async with httpx.AsyncClient(timeout=10) as client:
+            for paper in papers:
+                # Strategy 1: extract from abstract
+                match = _GITHUB_URL_RE.search(paper.abstract)
+                if match:
+                    enriched.append(paper.model_copy(update={"github_url": match.group(0)}))
+                    continue
+                # Strategy 2: GitHub search API
+                try:
+                    resp = await client.get(
+                        "https://api.github.com/search/repositories",
+                        params={"q": paper.arxiv_id, "per_page": 1},
+                        headers=headers,
+                    )
+                    if resp.status_code == 200:
+                        items = resp.json().get("items", [])
+                        if items:
+                            enriched.append(paper.model_copy(update={
+                                "github_url": items[0].get("html_url", ""),
+                                "github_stars": items[0].get("stargazers_count", 0),
+                            }))
+                            continue
+                except Exception:
+                    pass
+                enriched.append(paper)
+        return enriched
+
+    async def _enrich_hf_extras(self, papers: list[Paper]) -> list[Paper]:
+        """Fetch linked models and datasets for papers missing them."""
+        enriched: list[Paper] = []
+        for paper in papers:
+            updates: dict = {}
+            if not paper.linked_models:
+                updates["linked_models"] = await self._fetch_linked_models(paper.arxiv_id)
+            if not paper.linked_datasets:
+                updates["linked_datasets"] = await self._fetch_linked_datasets(paper.arxiv_id)
+            enriched.append(paper.model_copy(update=updates) if updates else paper)
+        return enriched
+
+    async def _fetch_linked_datasets(self, arxiv_id: str) -> list[str]:
+        """Return dataset IDs on HuggingFace Hub that cite this paper."""
+        url = "https://huggingface.co/api/datasets"
+        params = {"search": arxiv_id, "limit": 5}
+        headers = {"User-Agent": _USER_AGENT}
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code >= 400:
+                return []
+            datasets = resp.json()
+            return [d["id"] for d in datasets if d.get("id")]
+        except Exception:
+            return []
 
     # ------------------------------------------------------------------ #
     # Deduplication                                                        #
