@@ -47,7 +47,9 @@ class PapersPipeline:
     async def daily_digest(self, top_n: int = 5) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
         papers = await self.fetcher.fetch_all()
-        logger.info("Fetched %d papers from arXiv + HuggingFace", len(papers))
+        logger.info("Fetched %d papers from all sources", len(papers))
+        papers = await self.fetcher.enrich(papers)
+        logger.info("Enriched %d papers with S2/GitHub/HF data", len(papers))
         ranked = self.ranker.llm_rank(papers, top_n=top_n)
         verified = self.ranker.summarize_and_verify(ranked)
         self.store.store(verified, digest_date=today)

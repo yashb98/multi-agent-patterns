@@ -20,12 +20,35 @@ class TestDailyDigest:
         )]
         ranked = [RankedPaper(**papers[0].model_dump(), impact_score=8.0, category_tag="LLM", summary="Summary.")]
         with patch.object(pipeline.fetcher, "fetch_all", new_callable=AsyncMock, return_value=papers), \
+             patch.object(pipeline.fetcher, "enrich", new_callable=AsyncMock, return_value=papers), \
              patch.object(pipeline.ranker, "llm_rank", return_value=ranked), \
              patch.object(pipeline.ranker, "summarize_and_verify", return_value=ranked), \
              patch.object(pipeline.notion, "publish_daily", return_value={}):
             result = await pipeline.daily_digest()
         assert "Test" in result
         assert isinstance(result, str)
+
+
+class TestDailyDigestEnrichment:
+    @pytest.mark.asyncio
+    async def test_calls_enrich_between_fetch_and_rank(self, pipeline):
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=["A"],
+            abstract="X.", categories=["cs.AI"], pdf_url="", arxiv_url="",
+            published_at="2026-04-01",
+        )
+        ranked = RankedPaper(**paper.model_dump(), fast_score=5.0, summary="Summary.")
+
+        with patch.object(pipeline.fetcher, "fetch_all", new_callable=AsyncMock, return_value=[paper]), \
+             patch.object(pipeline.fetcher, "enrich", new_callable=AsyncMock, return_value=[paper]) as mock_enrich, \
+             patch.object(pipeline.ranker, "llm_rank", return_value=[ranked]), \
+             patch.object(pipeline.ranker, "summarize_and_verify", return_value=[ranked]), \
+             patch.object(pipeline.store, "store"), \
+             patch.object(pipeline.notion, "publish_daily"):
+            result = await pipeline.daily_digest()
+
+        mock_enrich.assert_called_once()
+        assert "Test" in result
 
 
 class TestWeeklyDigest:
