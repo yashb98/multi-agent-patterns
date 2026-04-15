@@ -281,6 +281,81 @@ class TestFetchAll:
             published_at="2026-04-01", source="huggingface", hf_upvotes=5,
         )
         with patch.object(fetcher, "_fetch_arxiv", new_callable=AsyncMock, return_value=[arxiv_paper]), \
-             patch.object(fetcher, "_fetch_huggingface", new_callable=AsyncMock, return_value=[hf_paper]):
+             patch.object(fetcher, "_fetch_huggingface", new_callable=AsyncMock, return_value=[hf_paper]), \
+             patch.object(fetcher, "_fetch_s2_trending", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_hackernews", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_reddit", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_arxiv_rss", new_callable=AsyncMock, return_value=[]):
             papers = await fetcher.fetch_all()
         assert len(papers) == 2
+
+
+class TestFetchAllTiered:
+    @pytest.mark.asyncio
+    async def test_combines_all_sources(self):
+        fetcher = PaperFetcher()
+        hf_paper = Paper(
+            arxiv_id="2401.00001", title="HF Paper", authors=["A"],
+            abstract="X.", categories=[], pdf_url="", arxiv_url="",
+            published_at="2026-04-01", source="huggingface", hf_upvotes=10,
+            sources=["huggingface"],
+        )
+        hn_paper = Paper(
+            arxiv_id="2401.00002", title="HN Paper", authors=[],
+            abstract="", categories=[], pdf_url="", arxiv_url="",
+            published_at="", sources=["hackernews"], community_buzz=30,
+        )
+        with patch.object(fetcher, "_fetch_arxiv", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_huggingface", new_callable=AsyncMock, return_value=[hf_paper]), \
+             patch.object(fetcher, "_fetch_s2_trending", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_hackernews", new_callable=AsyncMock, return_value=[hn_paper]), \
+             patch.object(fetcher, "_fetch_reddit", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]):
+            papers = await fetcher.fetch_all()
+        assert len(papers) >= 2  # at least 2 unique papers (may trigger RSS fallback too)
+
+    @pytest.mark.asyncio
+    async def test_dedup_merges_sources(self):
+        fetcher = PaperFetcher()
+        hf_paper = Paper(
+            arxiv_id="2401.00001", title="Same Paper", authors=["A"],
+            abstract="Full abstract.", categories=["cs.AI"], pdf_url="", arxiv_url="",
+            published_at="2026-04-01", source="huggingface", hf_upvotes=50,
+            community_buzz=50, sources=["huggingface"],
+        )
+        hn_paper = Paper(
+            arxiv_id="2401.00001", title="Same Paper", authors=[],
+            abstract="", categories=[], pdf_url="", arxiv_url="",
+            published_at="", community_buzz=30, sources=["hackernews"],
+        )
+        with patch.object(fetcher, "_fetch_arxiv", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_huggingface", new_callable=AsyncMock, return_value=[hf_paper]), \
+             patch.object(fetcher, "_fetch_s2_trending", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_hackernews", new_callable=AsyncMock, return_value=[hn_paper]), \
+             patch.object(fetcher, "_fetch_reddit", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_arxiv_rss", new_callable=AsyncMock, return_value=[]):
+            papers = await fetcher.fetch_all()
+        assert len(papers) == 1
+        assert papers[0].community_buzz == 80  # aggregated
+        assert set(papers[0].sources) == {"huggingface", "hackernews"}
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_rss_when_few_papers(self):
+        fetcher = PaperFetcher()
+        rss_paper = Paper(
+            arxiv_id="2401.00999", title="RSS Paper", authors=[],
+            abstract="", categories=["cs.AI"], pdf_url="", arxiv_url="",
+            published_at="", sources=["arxiv_rss"],
+        )
+        with patch.object(fetcher, "_fetch_arxiv", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_huggingface", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_s2_trending", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_hackernews", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_reddit", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_arxiv_rss", new_callable=AsyncMock, return_value=[rss_paper]):
+            papers = await fetcher.fetch_all()
+        assert len(papers) == 1
+        assert papers[0].arxiv_id == "2401.00999"

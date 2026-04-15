@@ -37,12 +37,34 @@ class PaperFetcher:
     # ------------------------------------------------------------------ #
 
     async def fetch_all(self, max_results: int = 50) -> list[Paper]:
-        """Fetch from both sources concurrently and return deduplicated list."""
-        arxiv_papers, hf_papers = await asyncio.gather(
-            self._fetch_arxiv(max_results=max_results),
-            self._fetch_huggingface(),
+        """Fetch from all sources with tiered fallback, deduplicate, and return."""
+        # Tier 1 + Tier 2: all run concurrently
+        arxiv_papers, hf_papers, s2_papers, hn_papers, reddit_papers, bsky_papers = (
+            await asyncio.gather(
+                self._fetch_arxiv(max_results=max_results),
+                self._fetch_huggingface(),
+                self._fetch_s2_trending(),
+                self._fetch_hackernews(),
+                self._fetch_reddit(),
+                self._fetch_bluesky(),
+            )
         )
-        return self._deduplicate_and_merge(arxiv_papers, hf_papers)
+
+        all_papers = arxiv_papers + hf_papers + s2_papers + hn_papers + reddit_papers + bsky_papers
+        merged = self._deduplicate_and_merge_all(all_papers)
+
+        # Tier 3: fallback if < 5 unique papers
+        if len(merged) < 5:
+            logger.warning("Only %d papers from Tiers 1+2, falling back to arXiv RSS", len(merged))
+            rss_papers = await self._fetch_arxiv_rss()
+            existing_ids = {p.arxiv_id for p in merged}
+            for p in rss_papers:
+                if p.arxiv_id not in existing_ids:
+                    merged.append(p)
+                    existing_ids.add(p.arxiv_id)
+
+        logger.info("fetch_all: %d unique papers from all sources", len(merged))
+        return merged
 
     async def fetch_missed(self, dates: list[str]) -> list[Paper]:
         """Fetch papers for a list of missed dates by re-running fetch_all.
@@ -439,6 +461,32 @@ class PaperFetcher:
     # ------------------------------------------------------------------ #
     # Deduplication                                                        #
     # ------------------------------------------------------------------ #
+
+    def _deduplicate_and_merge_all(self, papers: list[Paper]) -> list[Paper]:
+        """Deduplicate by arxiv_id, aggregating community_buzz and sources."""
+        seen: dict[str, Paper] = {}
+        for paper in papers:
+            aid = paper.arxiv_id
+            if not aid:
+                continue
+            if aid in seen:
+                existing = seen[aid]
+                new_buzz = existing.community_buzz + paper.community_buzz
+                new_sources = list(set(existing.sources + paper.sources))
+                base = existing if len(existing.abstract) >= len(paper.abstract) else paper
+                seen[aid] = base.model_copy(update={
+                    "community_buzz": new_buzz,
+                    "sources": new_sources,
+                    "hf_upvotes": max(existing.hf_upvotes or 0, paper.hf_upvotes or 0) or None,
+                    "linked_models": existing.linked_models or paper.linked_models,
+                    "linked_datasets": existing.linked_datasets or paper.linked_datasets,
+                    "s2_citation_count": max(existing.s2_citation_count, paper.s2_citation_count),
+                    "s2_influential_citations": max(existing.s2_influential_citations, paper.s2_influential_citations),
+                    "source": "both" if len(new_sources) > 1 else base.source,
+                })
+            else:
+                seen[aid] = paper
+        return list(seen.values())
 
     def _deduplicate_and_merge(
         self,
