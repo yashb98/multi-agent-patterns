@@ -201,6 +201,22 @@ DEFAULT_PERMISSIONS = {
 }
 
 
+# ─── PARAM VALIDATION ───────────────────────────────────────────
+
+TYPE_MAP = {"str": str, "int": int, "float": float, "bool": bool, "list": list, "dict": dict}
+
+
+def _validate_params(params: dict, schema: dict) -> str | None:
+    """Return error message if params don't match schema, else None."""
+    for key, expected_type_str in schema.items():
+        if key not in params:
+            continue  # Missing params handled by the tool itself
+        expected_type = TYPE_MAP.get(expected_type_str)
+        if expected_type and not isinstance(params[key], expected_type):
+            return f"Param '{key}' expected {expected_type_str}, got {type(params[key]).__name__}"
+    return None
+
+
 # ─── TOOL EXECUTOR ──────────────────────────────────────────────
 
 class ToolExecutor:
@@ -218,14 +234,31 @@ class ToolExecutor:
         self.approval_fn = approval_fn or self._default_approval
         self._call_timestamps: dict[str, list[float]] = {}
 
+    def register(self, tool: "ToolDefinition") -> None:
+        """Register a tool by name, making it available for direct execution."""
+        self.tools[tool.name] = tool
+
     def execute(
         self,
         agent_name: str,
         tool_name: str,
-        action: str,
+        action: str | dict | None = None,
         params: dict | None = None,
     ) -> dict:
-        """Execute a tool action with permission checking and auditing."""
+        """Execute a tool action with permission checking and auditing.
+
+        Supports two call forms:
+          - Full:  execute(agent_name, tool_name, action, params)
+          - Direct: execute(tool_name, action, params)  — skips permission checks
+        """
+        # Detect 3-arg direct form: execute(tool_name, action, params)
+        if isinstance(action, dict) or (action is None and params is None):
+            # action slot holds params dict, tool_name slot holds action string
+            params = action or {}
+            action = tool_name
+            tool_name = agent_name
+            return self._execute_direct(tool_name, action, params)
+
         params = params or {}
         timestamp = datetime.now().strftime("%H:%M:%S")
 
@@ -275,6 +308,13 @@ class ToolExecutor:
         timestamps.append(now)
         self._call_timestamps[rate_key] = timestamps
 
+        # Validate params against action schema
+        param_schema = action_def.get("params", {})
+        if param_schema:
+            validation_error = _validate_params(params, param_schema)
+            if validation_error:
+                return {"status": "error", "message": f"Type validation failed: {validation_error}"}
+
         # Execute
         try:
             result = tool.execute_fn(action, params)
@@ -295,6 +335,31 @@ class ToolExecutor:
                 output_summary="", risk_level=risk.value,
                 approved_by=approved_by, success=False, error=str(e),
             ))
+            return {"status": "error", "message": str(e)}
+
+    def _execute_direct(self, tool_name: str, action: str, params: dict) -> dict:
+        """Execute a registered tool directly, bypassing permission checks.
+
+        Used by the 3-arg call form: execute(tool_name, action, params).
+        Validates param types against the action's schema before execution.
+        """
+        tool = self.tools.get(tool_name)
+        if not tool:
+            return {"status": "error", "message": f"Tool '{tool_name}' not found"}
+
+        action_def = tool.actions.get(action)
+        if not action_def:
+            return {"status": "error", "message": f"Action '{action}' not found on tool '{tool_name}'"}
+
+        param_schema = action_def.get("params", {})
+        if param_schema:
+            validation_error = _validate_params(params, param_schema)
+            if validation_error:
+                return {"status": "error", "message": f"Type validation failed: {validation_error}"}
+
+        try:
+            return tool.execute_fn(action, params)
+        except Exception as e:
             return {"status": "error", "message": str(e)}
 
     def _audit_denied(self, timestamp: str, agent: str, tool: str, action: str, reason: str):
