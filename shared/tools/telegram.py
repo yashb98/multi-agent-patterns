@@ -1,6 +1,7 @@
 """Telegram tool implementation."""
 
 import os
+import urllib.parse
 
 from shared.telegram_client import telegram_url
 from shared.tool_integration import ToolDefinition, RiskLevel
@@ -43,7 +44,8 @@ class TelegramTool:
         if action == "send_message":
             chat_id = params.get("chat_id", "")
             text = params.get("text", "")
-            url = f"{telegram_url(token, 'sendMessage')}?chat_id={chat_id}&text={text}"
+            query = urllib.parse.urlencode({"chat_id": chat_id, "text": text})
+            url = f"{telegram_url(token, 'sendMessage')}?{query}"
             try:
                 with urllib.request.urlopen(url, timeout=10) as resp:
                     return {"status": "success", "response": resp.read().decode()[:500]}
@@ -52,7 +54,8 @@ class TelegramTool:
 
         elif action == "get_updates":
             limit = params.get("limit", 10)
-            url = f"{telegram_url(token, 'getUpdates')}?limit={limit}"
+            query = urllib.parse.urlencode({"limit": limit})
+            url = f"{telegram_url(token, 'getUpdates')}?{query}"
             try:
                 with urllib.request.urlopen(url, timeout=10) as resp:
                     return {"status": "success", "updates": resp.read().decode()[:2000]}
