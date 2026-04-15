@@ -29,10 +29,10 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-class CircuitState(Enum):
-    CLOSED = "closed"
-    OPEN = "open"
-    HALF_OPEN = "half_open"
+class CircuitState(str, Enum):
+    CLOSED = "CLOSED"
+    OPEN = "OPEN"
+    HALF_OPEN = "HALF_OPEN"
 
 
 class CircuitBreaker:
@@ -127,6 +127,26 @@ class CircuitBreaker:
                     self.name, self._failure_count, error, self.cooldown_seconds,
                 )
 
+    def record_failure(self):
+        """Record a failure directly (without a callable)."""
+        with self._lock:
+            self._failure_count += 1
+            self._last_failure_time = time.time()
+
+            if self._state == CircuitState.HALF_OPEN:
+                self._state = CircuitState.OPEN
+                logger.warning("Circuit '%s' → OPEN (probe failed)", self.name)
+            elif self._failure_count >= self.failure_threshold:
+                self._state = CircuitState.OPEN
+                logger.warning(
+                    "Circuit '%s' → OPEN after %d failures. Cooldown: %ds",
+                    self.name, self._failure_count, self.cooldown_seconds,
+                )
+
+    def allow_request(self) -> bool:
+        """Return True if the circuit allows a request to proceed."""
+        return self.state != CircuitState.OPEN
+
     def reset(self):
         """Manually reset the circuit breaker to CLOSED."""
         with self._lock:
@@ -135,7 +155,7 @@ class CircuitBreaker:
             self._success_count = 0
 
     def __repr__(self):
-        return f"CircuitBreaker('{self.name}', state={self.state.value}, failures={self._failure_count})"
+        return f"CircuitBreaker('{self.name}', state={self.state.value.lower()}, failures={self._failure_count})"
 
 
 # ─── SHARED BREAKER INSTANCES ──────────────────────────────────────
@@ -144,3 +164,20 @@ class CircuitBreaker:
 ddg_breaker = CircuitBreaker("duckduckgo", failure_threshold=3, cooldown_seconds=60)
 s2_breaker = CircuitBreaker("semantic_scholar", failure_threshold=3, cooldown_seconds=120)
 web_breaker = CircuitBreaker("web_search", failure_threshold=5, cooldown_seconds=90)
+
+# ─── BREAKER REGISTRY ──────────────────────────────────────────────
+_BREAKERS: dict[str, CircuitBreaker] = {
+    "duckduckgo": ddg_breaker,
+    "semantic_scholar": s2_breaker,
+    "web_search": web_breaker,
+    "openai": CircuitBreaker("openai", failure_threshold=5, cooldown_seconds=120),
+    "notion": CircuitBreaker("notion", failure_threshold=5, cooldown_seconds=120),
+    "linkedin": CircuitBreaker("linkedin", failure_threshold=3, cooldown_seconds=300),
+}
+
+
+def get_breaker(name: str) -> CircuitBreaker:
+    """Return the named circuit breaker, creating a default one if not found."""
+    if name not in _BREAKERS:
+        _BREAKERS[name] = CircuitBreaker(name)
+    return _BREAKERS[name]
