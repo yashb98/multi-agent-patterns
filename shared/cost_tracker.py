@@ -4,6 +4,9 @@ Tracks token usage and estimated USD cost for every LLM call.
 Used by agent nodes and pattern finish nodes for cost visibility.
 """
 
+import os
+import threading
+
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -76,3 +79,47 @@ def compute_cost_summary(token_usage: list[dict]) -> dict:
         "calls": len(token_usage),
         "cost_per_agent": per_agent,
     }
+
+
+class BudgetExceededError(Exception):
+    """Raised when LLM spending exceeds the configured budget cap."""
+    def __init__(self, spent: float, cap: float, estimated: float):
+        self.spent = spent
+        self.cap = cap
+        self.estimated = estimated
+        super().__init__(
+            f"Budget exceeded: ${spent:.4f} spent + ${estimated:.4f} estimated > ${cap:.2f} cap"
+        )
+
+
+class CostEnforcer:
+    """Thread-safe budget cap for LLM spending.
+
+    Set LLM_BUDGET_CAP_USD env var or pass max_budget_usd. 0 = unlimited.
+    """
+    def __init__(self, max_budget_usd: float | None = None):
+        if max_budget_usd is not None:
+            self.max_budget_usd = max_budget_usd
+        else:
+            self.max_budget_usd = float(os.getenv("LLM_BUDGET_CAP_USD", "10.00"))
+        self.total_spent = 0.0
+        self._lock = threading.Lock()
+
+    def record(self, cost_usd: float):
+        with self._lock:
+            self.total_spent += cost_usd
+
+    def check_budget(self, estimated_cost: float = 0.0):
+        if self.max_budget_usd <= 0:
+            return
+        with self._lock:
+            if self.total_spent + estimated_cost > self.max_budget_usd:
+                raise BudgetExceededError(self.total_spent, self.max_budget_usd, estimated_cost)
+
+    def remaining(self) -> float:
+        with self._lock:
+            return max(0, self.max_budget_usd - self.total_spent)
+
+    def reset(self):
+        with self._lock:
+            self.total_spent = 0.0
