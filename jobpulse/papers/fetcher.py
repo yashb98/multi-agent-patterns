@@ -404,6 +404,38 @@ class PaperFetcher:
             logger.warning("S2 trending fetch failed: %s", exc)
             return []
 
+    async def _fetch_arxiv_rss(self) -> list[Paper]:
+        """Fallback: fetch from arXiv RSS feeds for cs.AI, cs.LG, cs.CL."""
+        papers: list[Paper] = []
+        for category in ["cs.AI", "cs.LG", "cs.CL"]:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(
+                        f"https://rss.arxiv.org/rss/{category}",
+                        headers={"User-Agent": _USER_AGENT},
+                    )
+                if resp.status_code >= 400:
+                    continue
+                root = ET.fromstring(resp.text)
+                for item in root.findall(".//{http://purl.org/rss/1.0/}item"):
+                    link = item.findtext("{http://purl.org/rss/1.0/}link", "")
+                    title = item.findtext("{http://purl.org/rss/1.0/}title", "")
+                    ids = _ARXIV_ID_RE.findall(link)
+                    if ids:
+                        aid = self._clean_arxiv_id(ids[0])
+                        papers.append(Paper(
+                            arxiv_id=aid, title=title, authors=[], abstract="",
+                            categories=[category],
+                            pdf_url=f"https://arxiv.org/pdf/{aid}",
+                            arxiv_url=f"https://arxiv.org/abs/{aid}",
+                            published_at="", source="arxiv",
+                            sources=["arxiv_rss"],
+                        ))
+            except Exception as exc:
+                logger.warning("arXiv RSS %s failed: %s", category, exc)
+        logger.info("arXiv RSS fallback: %d papers", len(papers))
+        return papers
+
     # ------------------------------------------------------------------ #
     # Deduplication                                                        #
     # ------------------------------------------------------------------ #

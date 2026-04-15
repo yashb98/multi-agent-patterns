@@ -237,6 +237,35 @@ class TestFetchS2Trending:
         assert papers == []
 
 
+SAMPLE_ARXIV_RSS = """<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/">
+  <item>
+    <title>RSS Paper Title</title>
+    <link>https://arxiv.org/abs/2401.00100</link>
+  </item>
+</rdf:RDF>"""
+
+
+class TestFetchArxivRss:
+    @pytest.mark.asyncio
+    async def test_parses_rss_feed(self):
+        fetcher = PaperFetcher()
+        mock_resp = httpx.Response(200, text=SAMPLE_ARXIV_RSS)
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=mock_resp):
+            papers = await fetcher._fetch_arxiv_rss()
+        assert len(papers) >= 1
+        assert papers[0].arxiv_id == "2401.00100"
+        assert "arxiv_rss" in papers[0].sources
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_error(self):
+        fetcher = PaperFetcher()
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("down")):
+            papers = await fetcher._fetch_arxiv_rss()
+        assert papers == []
+
+
 class TestFetchAll:
     @pytest.mark.asyncio
     async def test_combines_both_sources(self):
