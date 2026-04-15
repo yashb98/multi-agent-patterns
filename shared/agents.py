@@ -138,7 +138,7 @@ def get_model_name(default: str = "gpt-4.1-mini") -> str:
 
 
 def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
-            timeout: float = 30.0):
+            timeout: float = 30.0, max_tokens: int = 4096):
     """
     Factory function for LLM instances.
 
@@ -160,6 +160,7 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
             model=effective_model,
             temperature=temperature,
             request_timeout=timeout,
+            max_tokens=max_tokens,
             openai_api_base=_OLLAMA_BASE_URL,
             openai_api_key="ollama",  # Ollama doesn't require a real key
         )
@@ -169,6 +170,7 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
         model=effective_model,
         temperature=temperature,
         request_timeout=timeout,
+        max_tokens=max_tokens,
     )
 
 
