@@ -122,3 +122,24 @@ class TestMigration:
         store.store([ranked], digest_date="2026-04-01")
         result = store.get_by_index("2026-04-01", 1)
         assert result.hf_upvotes == 10
+
+
+class TestNewColumnMigration:
+    def test_store_and_retrieve_github_fields(self, paper_store, sample_ranked_paper):
+        paper = sample_ranked_paper.model_copy(update={
+            "github_url": "https://github.com/org/repo",
+            "github_stars": 150,
+            "s2_citation_count": 42,
+            "s2_influential_citations": 5,
+            "community_buzz": 75,
+            "sources": ["huggingface", "hackernews"],
+        })
+        paper_store.store([paper], digest_date="2026-04-15")
+        retrieved = paper_store.get_by_arxiv_id("2401.00001")
+        assert retrieved is not None
+        assert retrieved.github_url == "https://github.com/org/repo"
+        assert retrieved.github_stars == 150
+        assert retrieved.s2_citation_count == 42
+        assert retrieved.s2_influential_citations == 5
+        assert retrieved.community_buzz == 75
+        assert retrieved.sources == ["huggingface", "hackernews"]
