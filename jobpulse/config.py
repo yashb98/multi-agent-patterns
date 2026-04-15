@@ -79,8 +79,8 @@ REED_API_KEY = os.getenv("REED_API_KEY", "")
 
 # Job Autopilot
 JOB_AUTOPILOT_ENABLED = os.getenv("JOB_AUTOPILOT_ENABLED", "true").lower() in ("true", "1", "yes")
-JOB_AUTOPILOT_AUTO_SUBMIT = os.getenv("JOB_AUTOPILOT_AUTO_SUBMIT", "true").lower() in ("true", "1", "yes")
-JOB_AUTOPILOT_MAX_DAILY = int(os.getenv("JOB_AUTOPILOT_MAX_DAILY", "60"))
+JOB_AUTOPILOT_AUTO_SUBMIT = os.getenv("JOB_AUTOPILOT_AUTO_SUBMIT", "false").lower() in ("true", "1", "yes")
+JOB_AUTOPILOT_MAX_DAILY = int(os.getenv("JOB_AUTOPILOT_MAX_DAILY", "10"))
 
 # Perplexity
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
