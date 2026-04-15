@@ -2,13 +2,16 @@
 
 import os
 import sys
+import uuid
 
-from shared.logging_config import get_logger
+from shared.logging_config import get_logger, set_run_id
 
 logger = get_logger(__name__)
 
 
 def main():
+    set_run_id(str(uuid.uuid4())[:8])
+
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
         logger.info(
