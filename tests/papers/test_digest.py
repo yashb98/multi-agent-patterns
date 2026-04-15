@@ -44,6 +44,25 @@ class TestDailyFormat:
         assert "blog" in result.lower()
 
 
+class TestDailyFormatNewSignals:
+    def test_includes_github_link(self):
+        papers = [_make_ranked("2401.00001", "Test", 8.0, github_url="https://github.com/org/repo", github_stars=42)]
+        result = DigestBuilder().format_daily(papers)
+        assert "github.com" in result
+        assert "42" in result
+
+    def test_includes_s2_citations(self):
+        papers = [_make_ranked("2401.00001", "Test", 8.0, s2_citation_count=25)]
+        result = DigestBuilder().format_daily(papers)
+        assert "25" in result
+        assert "cit" in result.lower()
+
+    def test_includes_source_attribution(self):
+        papers = [_make_ranked("2401.00001", "Test", 8.0, sources=["huggingface", "hackernews", "reddit"])]
+        result = DigestBuilder().format_daily(papers)
+        assert "HuggingFace" in result or "huggingface" in result
+
+
 class TestWeeklyFormat:
     def test_includes_themes(self):
         papers = [_make_ranked("2401.00001", "Test", 8.0)]

@@ -125,12 +125,28 @@ class DigestBuilder:
         if hf_parts:
             parts.append(f"   {' · '.join(hf_parts)}")
 
+        # S2 citations
+        if paper.s2_citation_count > 0:
+            parts.append(f"   📊 {paper.s2_citation_count} citations")
+
+        # Source attribution
+        if paper.sources:
+            source_names = {"huggingface": "HuggingFace", "hackernews": "HackerNews",
+                           "reddit": "Reddit", "bluesky": "Bluesky",
+                           "semantic_scholar": "Semantic Scholar", "arxiv_rss": "arXiv",
+                           "arxiv": "arXiv"}
+            names = [source_names.get(s, s) for s in paper.sources]
+            parts.append(f"   📡 Found on: {', '.join(names)}")
+
         # Links
         links: list[str] = []
         if paper.arxiv_url:
             links.append(f"[arXiv]({paper.arxiv_url})")
         if paper.pdf_url:
             links.append(f"[PDF]({paper.pdf_url})")
+        if paper.github_url:
+            gh_label = f"GitHub ⭐{paper.github_stars}" if paper.github_stars else "GitHub"
+            links.append(f"[{gh_label}]({paper.github_url})")
         if links:
             parts.append(f"   {' · '.join(links)}")
 
