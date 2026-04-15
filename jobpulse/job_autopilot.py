@@ -32,24 +32,11 @@ from typing import Any
 
 from shared.logging_config import get_logger
 
-from jobpulse.applicator import apply_job, classify_action
+from jobpulse.applicator import apply_job
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
-from jobpulse.cv_templates.generate_cv import generate_cv_pdf, build_extra_skills, get_role_profile
-from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
-from jobpulse.drive_uploader import upload_cv, upload_cover_letter
-from jobpulse.gate4_quality import check_jd_quality, check_company_background, scrutinize_cv_deterministic, scrutinize_cv_llm
-from jobpulse.company_blocklist import detect_spam_company, flag_company_in_notion, BlocklistCache
-from jobpulse.github_matcher import fetch_and_cache_repos, pick_top_projects
-from jobpulse.jd_analyzer import analyze_jd
 from jobpulse.job_db import JobDB
-from jobpulse.job_deduplicator import deduplicate
-from jobpulse.job_notion_sync import (
-    build_page_content,
-    create_application_page,
-    set_page_content,
-    update_application_page,
-)
-from jobpulse.job_scanner import load_search_config, save_search_config, scan_platforms
+from jobpulse.job_notion_sync import update_application_page
+from jobpulse.job_scanner import load_search_config, save_search_config
 from jobpulse.process_logger import ProcessTrail
 from jobpulse.telegram_bots import send_jobs
 
@@ -176,7 +163,23 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
 
 
 def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
-    """Inner pipeline logic — called by run_scan_window() under lock."""
+    """Inner pipeline logic — called by run_scan_window() under lock.
+
+    Delegates to stage functions in jobpulse/scan_pipeline.py:
+      1. fetch_and_filter_jobs  — scan + liveness + Gate 0
+      2. analyze_and_deduplicate — JD analysis + dedup
+      3. prescreen_listings     — Gates 1-3 + Gate 4A
+      4. generate_materials     — CV/CL + ATS + Gate 4B  (per job)
+      5. route_and_apply        — auto-apply / review / skip (per job)
+    """
+    from jobpulse.scan_pipeline import (
+        fetch_and_filter_jobs,
+        analyze_and_deduplicate,
+        prescreen_listings,
+        generate_materials,
+        route_and_apply,
+    )
+
     trail = ProcessTrail("job_autopilot", "scan_window")
     notion_failures: list[str] = []
 
@@ -205,220 +208,20 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
 
     remaining_cap = JOB_AUTOPILOT_MAX_DAILY - already_applied
 
-    # --- Step 2: scan platforms ---
-    trail.log_step("api_call", "Scan platforms", step_input=str(platforms))
-    try:
-        raw_jobs = scan_platforms(platforms)
-    except Exception as exc:
-        logger.error("job_autopilot: scan_platforms failed: %s", exc)
-        raw_jobs = []
-
-    total_found = len(raw_jobs)
-    trail.log_step(
-        "api_call", "Platforms scanned",
-        step_output=f"{total_found} raw jobs found",
-    )
-
-    # --- Step 2a: Liveness check — filter expired postings ---
-    try:
-        from jobpulse.job_scanner import check_liveness_batch
-        alive_listings, expired_listings = check_liveness_batch(raw_jobs)
-        if expired_listings:
-            logger.info("Liveness: filtered %d expired postings", len(expired_listings))
-        trail.log_step(
-            "api_call", "Liveness check",
-            step_output=f"{len(alive_listings)} alive, {len(expired_listings)} expired",
-        )
-        raw_jobs = alive_listings
-    except Exception as exc:
-        logger.warning("job_autopilot: liveness check failed: %s — continuing with all jobs", exc)
-
-    # --- Step 2b: Gate 0 — title relevance filter ---
-    from jobpulse.recruiter_screen import gate0_title_relevance
+    # --- Stage 1: fetch and filter ---
     search_config = load_search_config()
-    gate0_config = {
-        "titles": search_config.titles if hasattr(search_config, "titles") else search_config.get("titles", []),
-        "exclude_keywords": search_config.exclude_keywords if hasattr(search_config, "exclude_keywords") else search_config.get("exclude_keywords", [
-            "senior", "lead", "principal", "staff", "director", "manager",
-            "10+ years", "8+ years", "7+ years", "5+ years",
-        ]),
-    }
-    filtered_jobs = []
-    gate0_rejected = 0
-    for raw in raw_jobs:
-        title = raw.get("title", "")
-        jd_snippet = raw.get("description", "")[:500]  # only check first 500 chars for speed
-        if gate0_title_relevance(title, jd_snippet, gate0_config):
-            filtered_jobs.append(raw)
-        else:
-            gate0_rejected += 1
-    trail.log_step(
-        "decision", "Gate 0: Title filter",
-        step_output=f"{len(filtered_jobs)} passed, {gate0_rejected} rejected",
-    )
-    raw_jobs = filtered_jobs
+    raw_jobs, total_found, gate0_rejected = fetch_and_filter_jobs(platforms, search_config, trail)
 
-    # --- Step 3: analyze JDs ---
-    trail.log_step("llm_call", "Analyze JDs", step_input=f"{total_found} raw jobs")
-    listings = []
-    for raw in raw_jobs:
-        try:
-            listing = analyze_jd(
-                url=raw.get("url", ""),
-                title=raw.get("title", ""),
-                company=raw.get("company", ""),
-                platform=raw.get("platform", "reed"),
-                jd_text=raw.get("description", ""),
-                apply_url=raw.get("apply_url", raw.get("url", "")),
-            )
-            listings.append(listing)
-        except Exception as exc:
-            logger.warning(
-                "job_autopilot: analyze_jd failed for %r @ %r: %s",
-                raw.get("title"),
-                raw.get("company"),
-                exc,
-            )
+    # --- Stage 2: analyze JDs and deduplicate ---
+    new_listings = analyze_and_deduplicate(raw_jobs, db, trail)
 
-    trail.log_step("llm_call", "JDs analyzed", step_output=f"{len(listings)} listings")
-
-    # --- Step 4: deduplicate ---
-    new_listings = deduplicate(listings, db)
-    trail.log_step(
-        "decision", "Deduplicated",
-        step_output=f"{len(new_listings)} new (filtered {len(listings) - len(new_listings)})",
+    # --- Stage 3: pre-screen (Gates 1-3 and Gate 4A) ---
+    gate4_filtered, gate_rejected, gate_skipped, gate4_blocked = prescreen_listings(
+        new_listings, db, trail,
     )
 
-    # --- Step 5: Pre-screen with 4-gate recruiter filter ---
-    from jobpulse.skill_graph_store import SkillGraphStore
-    try:
-        store = SkillGraphStore()
-    except Exception as exc:
-        logger.warning("job_autopilot: SkillGraphStore init failed: %s — skipping pre-screen", exc)
-        store = None
-
-    screened_listings = []
-    gate_rejected = 0
-    gate_skipped = 0
-
-    for listing in new_listings:
-        if store is None:
-            # No pre-screen available — pass all through
-            screened_listings.append((listing, None))
-            continue
-
-        screen = store.pre_screen_jd(listing)
-
-        # Record skill gaps for ALL tiers (reject, skip, apply, strong)
-        try:
-            from jobpulse.skill_gap_tracker import record_gap
-            record_gap(
-                job_id=listing.job_id,
-                title=listing.title,
-                company=listing.company,
-                missing_skills=screen.missing_skills,
-                matched_skills=screen.matched_skills,
-                gate3_score=screen.gate3_score,
-            )
-        except Exception as exc:
-            logger.debug("job_autopilot: skill_gap_tracker.record_gap failed: %s", exc)
-
-        # Sync missing skills to Notion Skill Tracker for user verification
-        try:
-            from jobpulse.skill_tracker_notion import sync_skills_to_notion
-            if screen and screen.missing_skills:
-                sync_skills_to_notion(screen.missing_skills, listing.company)
-        except Exception as exc:
-            logger.debug("skill_tracker_notion sync failed: %s", exc)
-
-        if screen.tier == "reject":
-            gate_rejected += 1
-            logger.info(
-                "job_autopilot: REJECTED %s @ %s — %s",
-                listing.title, listing.company, screen.gate1_kill_reason,
-            )
-            db.save_listing(listing)
-            db.save_application(job_id=listing.job_id, status="Rejected", match_tier="reject")
-            continue
-
-        if screen.tier == "skip":
-            gate_skipped += 1
-            reason = screen.gate2_fail_reason or f"Score {screen.gate3_score}/100"
-            logger.info(
-                "job_autopilot: SKIPPED %s @ %s — %s",
-                listing.title, listing.company, reason,
-            )
-            db.save_listing(listing)
-            db.save_application(job_id=listing.job_id, status="Skipped", match_tier="skip")
-            continue
-
-        screened_listings.append((listing, screen))
-
-    trail.log_step(
-        "decision", "Gates 1-3 pre-screen",
-        step_output=f"{len(screened_listings)} pass, {gate_rejected} rejected, {gate_skipped} skipped",
-    )
-
-    # --- Gate 4 Phase A: Pre-generation quality check ---
-    blocklist = BlocklistCache()
-    try:
-        blocklist.refresh()
-    except Exception as exc:
-        logger.warning("job_autopilot: blocklist refresh failed: %s", exc)
-
-    gate4_filtered: list[tuple] = []
-    gate4_blocked = 0
-
-    for listing, screen in screened_listings:
-        # A2: Company blocklist check
-        if blocklist.is_blocked(listing.company):
-            gate4_blocked += 1
-            logger.info("job_autopilot: Gate 4 BLOCKED (blocklist) %s @ %s", listing.title, listing.company)
-            db.save_listing(listing)
-            db.save_application(job_id=listing.job_id, status="Blocked", match_tier="skip")
-            continue
-
-        # A2: Spam detection (auto-flag to Notion if not already known)
-        if not blocklist.is_approved(listing.company) and not blocklist.is_known(listing.company):
-            spam = detect_spam_company(listing.company)
-            if spam.is_spam:
-                gate4_blocked += 1
-                logger.info("job_autopilot: Gate 4 BLOCKED (spam) %s @ %s — %s", listing.title, listing.company, spam.reason)
-                try:
-                    flag_company_in_notion(listing.company, spam.reason, listing.platform)
-                except Exception as e:
-                    logger.warning("Failed to flag company %s in Notion: %s", listing.company, e)
-                db.save_listing(listing)
-                db.save_application(job_id=listing.job_id, status="Blocked", match_tier="skip")
-                continue
-
-        # A1: JD quality check
-        jd_quality = check_jd_quality(listing.description_raw or "", listing.required_skills + listing.preferred_skills)
-        if not jd_quality.passed:
-            gate4_blocked += 1
-            logger.info("job_autopilot: Gate 4 BLOCKED (JD quality) %s @ %s — %s", listing.title, listing.company, jd_quality.reason)
-            db.save_listing(listing)
-            db.save_application(job_id=listing.job_id, status="Skipped", match_tier="skip")
-            continue
-
-        # A3: Company background (soft flags — don't block)
-        try:
-            past_apps = db.get_applications_by_company(listing.company)
-        except (AttributeError, Exception):
-            past_apps = []
-        bg = check_company_background(listing.company, past_apps)
-        if bg.previously_applied:
-            logger.info("job_autopilot: Gate 4 NOTE — %s", bg.note)
-        if bg.is_generic:
-            logger.info("job_autopilot: Gate 4 NOTE — generic company name: %s", listing.company)
-
-        gate4_filtered.append((listing, screen))
-
-    trail.log_step("decision", "Gate 4 Phase A", step_output=f"{len(gate4_filtered)} pass, {gate4_blocked} blocked")
-
-    # Fallback repos for when SkillGraphStore is unavailable
-    repos = []
-
+    # --- Stages 4 + 5: generate materials and route (per job) ---
+    repos: list[dict] = []  # shared cache across jobs
     auto_applied = 0
     review_batch: list[dict[str, Any]] = []
     skipped = 0
@@ -433,313 +236,14 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
             break
 
         try:
-            # Save listing to DB
-            db.save_listing(listing)
-            db.save_application(job_id=listing.job_id, status="Analyzing")
-
-            # Create Notion page
-            notion_page_id: str | None = None
-            try:
-                notion_page_id = create_application_page(listing)
-            except Exception as exc:
-                logger.warning(
-                    "job_autopilot: Notion create failed for %s: %s", listing.job_id[:8], exc
-                )
-                notion_failures.append(f"{listing.title}: {exc}")
-            if notion_page_id:
-                db.save_application(
-                    job_id=listing.job_id,
-                    status="Analyzing",
-                    notion_page_id=notion_page_id,
-                )
-
-            # Match GitHub projects — prefer pre-screened results
-            if screen and screen.best_projects:
-                matched_project_names = [p.name for p in screen.best_projects[:4]]
-            else:
-                if not repos:
-                    try:
-                        repos = fetch_and_cache_repos()
-                    except Exception as exc:
-                        logger.warning("job_autopilot: fetch_and_cache_repos fallback: %s", exc)
-                matched_repos = pick_top_projects(
-                    repos,
-                    jd_required=listing.required_skills,
-                    jd_preferred=listing.preferred_skills,
-                    top_n=4,
-                )
-                matched_project_names = [r.get("name", "") for r in matched_repos]
-
-            # Generate CV PDF (ReportLab — no xelatex dependency)
-            cv_path = None
-            ats_score = 0.0
-            try:
-                extra_skills = build_extra_skills(listing.required_skills, listing.preferred_skills)
-
-                # Pre-generation: sync Notion Skill Tracker (user may have approved new skills)
-                try:
-                    from jobpulse.skill_tracker_notion import sync_verified_to_profile
-                    sync_verified_to_profile()
-                except Exception:
-                    pass  # Non-blocking — profile data from 3am cron is still valid
-
-                # Dynamic project selection — pick top 4 from MindGraph (priority-ordered)
-                from jobpulse.project_portfolio import get_best_projects_for_jd
-                matched_projects = get_best_projects_for_jd(
-                    listing.required_skills, listing.preferred_skills,
-                )
-
-                role_profile = get_role_profile(listing.title)
-                cv_path = generate_cv_pdf(
-                    company=listing.company,
-                    location=listing.location or "United Kingdom",
-                    tagline=role_profile.get("tagline"),
-                    summary=role_profile.get("summary"),
-                    projects=matched_projects,
-                    extra_skills=extra_skills if extra_skills else None,
-                    output_dir=str(DATA_DIR / "applications" / listing.job_id),
-                )
-                # Run ATS scorer on the generated CV text
-                from jobpulse.ats_scorer import score_ats
-                from jobpulse.cv_templates.generate_cv import (
-                    BASE_SKILLS, EDUCATION, EXPERIENCE,
-                )
-                # Build representative CV text with section headers for scorer
-                cv_parts = [
-                    "PROFESSIONAL SUMMARY Software Engineer Python AI ML",
-                    "TECHNICAL SKILLS " + " ".join(BASE_SKILLS.values()),
-                ]
-                if extra_skills:
-                    cv_parts.append(" ".join(extra_skills.values()))
-                cv_parts.append("PROJECTS " + " ".join(
-                    p["title"] + " " + " ".join(p["bullets"])
-                    for p in matched_projects
-                ))
-                cv_parts.append("EXPERIENCE " + " ".join(
-                    e["title"] + " " + " ".join(e["bullets"])
-                    for e in EXPERIENCE
-                ))
-                cv_parts.append("EDUCATION " + " ".join(
-                    e["degree"] + " " + e["institution"]
-                    for e in EDUCATION
-                ))
-                cv_text = " ".join(cv_parts)
-                jd_skills = listing.required_skills + listing.preferred_skills
-                ats_score_obj = score_ats(jd_skills, cv_text)
-                ats_score = ats_score_obj.total
-            except Exception as exc:
-                logger.warning(
-                    "job_autopilot: generate_cv_pdf failed for %s: %s",
-                    listing.job_id[:8],
-                    exc,
-                )
-
-            # Cover letter: lazy generation — only when ATS form needs it
-            cover_letter_path = None
-            def _make_cl_generator(lst, proj, skills):
-                def _generate():
-                    cl_path = generate_cover_letter_pdf(
-                        company=lst.company,
-                        role=lst.title,
-                        location=lst.location or "United Kingdom",
-                        matched_projects=proj,
-                        required_skills=skills,
-                        output_dir=str(DATA_DIR / "applications" / lst.job_id),
-                    )
-                    # Upload to Drive if successful
-                    if cl_path:
-                        try:
-                            cl_link = upload_cover_letter(cl_path, lst.company)
-                            if cl_link and notion_page_id:
-                                update_application_page(
-                                    notion_page_id, cl_drive_link=cl_link, company=lst.company,
-                                )
-                        except Exception as e:
-                            logger.warning("CL generation/upload failed for %s: %s", lst.company, e)
-                    return cl_path
-                return _generate
-
-            cl_generator = _make_cl_generator(listing, matched_projects, listing.required_skills + listing.preferred_skills)
-
-            # --- Gate 4 Phase B: CV quality scrutiny ---
-            gate4b_notes = ""
-            if cv_path and cv_text:
-                b1_result = scrutinize_cv_deterministic(cv_text)
-                if b1_result.warnings:
-                    gate4b_notes = "B1: " + "; ".join(b1_result.warnings)
-                    logger.info("job_autopilot: Gate 4B warnings for %s: %s", listing.company, gate4b_notes)
-
-                if b1_result.status in ("clean", "acceptable"):
-                    try:
-                        b2_result = scrutinize_cv_llm(
-                            cv_text, listing.title, listing.company,
-                            listing.required_skills, listing.preferred_skills,
-                        )
-                        if b2_result.needs_review:
-                            weakness_str = "; ".join(b2_result.weaknesses[:3])
-                            gate4b_notes += f" | B2: {b2_result.score}/10 — {weakness_str}"
-                            logger.info(
-                                "job_autopilot: Gate 4B LLM score %d/10 for %s — %s",
-                                b2_result.score, listing.company, weakness_str,
-                            )
-                    except Exception as exc:
-                        logger.warning("job_autopilot: Gate 4B LLM failed: %s", exc)
-
-            # Determine match tier
-            tier = determine_match_tier(ats_score)
-
-            # Upload PDFs to Google Drive
-            cv_drive_link = None
-            cl_drive_link = None
-            if cv_path:
-                try:
-                    cv_drive_link = upload_cv(cv_path, listing.company)
-                except Exception as exc:
-                    logger.warning("job_autopilot: Drive CV upload failed: %s", exc)
-            # CL Drive upload is handled inside cl_generator when triggered
-
-            # Update DB with full analysis results
-            db.save_application(
-                job_id=listing.job_id,
-                status="Needs Review" if (gate4b_notes and "B2:" in gate4b_notes) else "Ready",
-                ats_score=ats_score,
-                match_tier=tier,
-                matched_projects=matched_project_names,
-                cv_path=str(cv_path) if cv_path else None,
-                cover_letter_path=str(cover_letter_path) if cover_letter_path else None,
-                notion_page_id=notion_page_id,
+            bundle = generate_materials(listing, screen, db, repos, notion_failures)
+            result = route_and_apply(
+                listing, bundle, db, review_batch, remaining_cap, auto_applied,
             )
-
-            # Update Notion with score, tier, and Drive links
-            notion_status = "Ready"
-            if gate4b_notes and "B2:" in gate4b_notes:
-                notion_status = "Needs Review"
-
-            if notion_page_id:
-                try:
-                    update_application_page(
-                        notion_page_id,
-                        status=notion_status,
-                        ats_score=ats_score,
-                        match_tier=tier,
-                        matched_projects=matched_project_names,
-                        cv_drive_link=cv_drive_link,
-                        cl_drive_link=cl_drive_link,
-                        notes=gate4b_notes if gate4b_notes else None,
-                        company=listing.company,
-                    )
-                    # Set OakNorth-style page content
-                    page_blocks = build_page_content(
-                        job=listing,
-                        ats_score=ats_score,
-                        match_tier=tier,
-                        matched_projects=matched_project_names,
-                        cv_drive_link=cv_drive_link,
-                        cl_drive_link=cl_drive_link,
-                        cv_path=str(cv_path) if cv_path else None,
-                        cover_letter_path=str(cover_letter_path) if cover_letter_path else None,
-                        gate4_notes=gate4b_notes,
-                    )
-                    set_page_content(notion_page_id, page_blocks)
-                except Exception as exc:
-                    logger.warning(
-                        "job_autopilot: Notion update failed for %s: %s",
-                        listing.job_id[:8],
-                        exc,
-                    )
-                    notion_failures.append(f"{listing.title}: {exc}")
-
-            # --- Route by action (not tier — tier is for display, action is for routing) ---
-            action = classify_action(ats_score, listing.easy_apply)
-
-            if action in ("auto_submit", "auto_submit_with_preview"):
-                # Auto-apply
-                if cv_path is None:
-                    logger.warning(
-                        "job_autopilot: no CV for auto-apply %s — routing to review",
-                        listing.job_id[:8],
-                    )
-                    _queue_for_review(listing, ats_score, review_batch)
-                else:
-                    try:
-                        result = apply_job(
-                            url=listing.url,
-                            ats_platform=listing.ats_platform,
-                            cv_path=cv_path,
-                            cover_letter_path=cover_letter_path,
-                            cl_generator=cl_generator,
-                            custom_answers=None,
-                        )
-                        if result.get("success"):
-                            applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
-                            follow_up = (date.today() + timedelta(days=7)).isoformat()
-                            db.save_application(
-                                job_id=listing.job_id,
-                                status="Applied",
-                                ats_score=ats_score,
-                                match_tier=tier,
-                                matched_projects=matched_project_names,
-                                cv_path=str(cv_path),
-                                cover_letter_path=str(cover_letter_path) if cover_letter_path else None,
-                                applied_at=applied_at,
-                                notion_page_id=notion_page_id,
-                                follow_up_date=follow_up,
-                            )
-                            if notion_page_id:
-                                try:
-                                    update_application_page(
-                                        notion_page_id,
-                                        status="Applied",
-                                        applied_date=date.today(),
-                                        follow_up_date=date.today() + timedelta(days=7),
-                                    )
-                                except Exception as exc:
-                                    logger.warning(
-                                        "job_autopilot: Notion applied update failed: %s", exc
-                                    )
-                                    notion_failures.append(f"{listing.title}: {exc}")
-                            auto_applied += 1
-                            logger.info(
-                                "job_autopilot: AUTO-APPLIED %s @ %s (ATS %.1f%%)",
-                                listing.title,
-                                listing.company,
-                                ats_score,
-                            )
-                        else:
-                            # Application failed — send for human review
-                            logger.warning(
-                                "job_autopilot: auto-apply failed for %s: %s",
-                                listing.job_id[:8],
-                                result.get("error"),
-                            )
-                            _queue_for_review(listing, ats_score, review_batch)
-                    except Exception as exc:
-                        logger.error(
-                            "job_autopilot: apply_job exception for %s: %s",
-                            listing.job_id[:8],
-                            exc,
-                        )
-                        _queue_for_review(listing, ats_score, review_batch)
-
-            elif action == "send_for_review":
-                _queue_for_review(listing, ats_score, review_batch)
-
-            else:
-                # Skip
-                db.update_status(listing.job_id, "Skipped")
-                if notion_page_id:
-                    try:
-                        update_application_page(notion_page_id, status="Skipped")
-                    except Exception as exc:
-                        notion_failures.append(f"{listing.title}: {exc}")
+            if result.action == "auto_applied":
+                auto_applied += 1
+            elif result.action == "skipped":
                 skipped += 1
-                logger.debug(
-                    "job_autopilot: SKIPPED %s @ %s (ATS %.1f%%)",
-                    listing.title,
-                    listing.company,
-                    ats_score,
-                )
-
         except Exception as exc:
             logger.error(
                 "job_autopilot: unhandled error processing job %s @ %s: %s",
@@ -774,7 +278,6 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
     # Add skill tracker link if there are pending skills
     try:
         from jobpulse.skill_tracker_notion import get_pending_skills
-        from pathlib import Path
         pending = get_pending_skills()
         if pending:
             tracker_db_file = Path(__file__).parent.parent / "data" / "skill_tracker_db_id.txt"
