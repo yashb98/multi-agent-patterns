@@ -127,6 +127,10 @@ class CircuitBreaker:
                     self.name, self._failure_count, error, self.cooldown_seconds,
                 )
 
+    def record_success(self):
+        """Record a success directly (without a callable)."""
+        self._on_success()
+
     def record_failure(self):
         """Record a failure directly (without a callable)."""
         with self._lock:
