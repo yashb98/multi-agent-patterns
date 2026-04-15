@@ -126,6 +126,117 @@ class TestDeduplication:
         assert merged[0].linked_models == ["model-1"]
 
 
+SAMPLE_HN_RESPONSE = {
+    "hits": [
+        {"url": "https://arxiv.org/abs/2401.00050", "title": "HN Paper on LLMs", "points": 42},
+        {"url": "https://example.com/no-arxiv", "title": "Not a paper", "points": 10},
+    ]
+}
+
+SAMPLE_REDDIT_RESPONSE = {
+    "data": {
+        "children": [
+            {"data": {"url": "https://arxiv.org/abs/2401.00060", "selftext": "", "title": "Reddit ML Paper", "score": 15, "created_utc": __import__("time").time() - 3600}},
+            {"data": {"url": "https://example.com", "selftext": "Check 2401.00070 out", "title": "Text with ID", "score": 8, "created_utc": __import__("time").time() - 3600}},
+        ]
+    }
+}
+
+SAMPLE_BLUESKY_RESPONSE = {
+    "posts": [
+        {"record": {"text": "Great paper https://arxiv.org/abs/2401.00080 on agents"}},
+        {"record": {"text": "No arxiv link here"}},
+    ]
+}
+
+SAMPLE_S2_BULK_RESPONSE = {
+    "total": 100,
+    "data": [
+        {"paperId": "abc123", "title": "S2 Paper", "citationCount": 25, "publicationDate": "2026-04-01", "externalIds": {"ArXiv": "2401.00090"}},
+        {"paperId": "def456", "title": "S2 Paper No ArXiv", "citationCount": 10, "publicationDate": "2026-04-01", "externalIds": {}},
+    ]
+}
+
+
+class TestFetchHackerNews:
+    @pytest.mark.asyncio
+    async def test_extracts_arxiv_ids_from_hn(self):
+        fetcher = PaperFetcher()
+        mock_resp = httpx.Response(200, json=SAMPLE_HN_RESPONSE)
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=mock_resp):
+            papers = await fetcher._fetch_hackernews()
+        assert len(papers) == 1
+        assert papers[0].arxiv_id == "2401.00050"
+        assert papers[0].community_buzz == 42
+        assert "hackernews" in papers[0].sources
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_error(self):
+        fetcher = PaperFetcher()
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("down")):
+            papers = await fetcher._fetch_hackernews()
+        assert papers == []
+
+
+class TestFetchReddit:
+    @pytest.mark.asyncio
+    async def test_extracts_arxiv_ids_from_reddit(self):
+        fetcher = PaperFetcher()
+        mock_resp = httpx.Response(200, json=SAMPLE_REDDIT_RESPONSE)
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=mock_resp):
+            papers = await fetcher._fetch_reddit()
+        assert len(papers) == 2
+        ids = {p.arxiv_id for p in papers}
+        assert "2401.00060" in ids
+        assert "2401.00070" in ids
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_error(self):
+        fetcher = PaperFetcher()
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("down")):
+            papers = await fetcher._fetch_reddit()
+        assert papers == []
+
+
+class TestFetchBluesky:
+    @pytest.mark.asyncio
+    async def test_extracts_arxiv_ids_from_bluesky(self):
+        fetcher = PaperFetcher()
+        mock_resp = httpx.Response(200, json=SAMPLE_BLUESKY_RESPONSE)
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=mock_resp):
+            papers = await fetcher._fetch_bluesky()
+        assert len(papers) == 1
+        assert papers[0].arxiv_id == "2401.00080"
+        assert "bluesky" in papers[0].sources
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_error(self):
+        fetcher = PaperFetcher()
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("down")):
+            papers = await fetcher._fetch_bluesky()
+        assert papers == []
+
+
+class TestFetchS2Trending:
+    @pytest.mark.asyncio
+    async def test_extracts_papers_with_arxiv_ids(self):
+        fetcher = PaperFetcher()
+        mock_resp = httpx.Response(200, json=SAMPLE_S2_BULK_RESPONSE)
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=mock_resp):
+            papers = await fetcher._fetch_s2_trending()
+        assert len(papers) == 1  # only the one with ArXiv externalId
+        assert papers[0].arxiv_id == "2401.00090"
+        assert papers[0].s2_citation_count == 25
+        assert "semantic_scholar" in papers[0].sources
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_error(self):
+        fetcher = PaperFetcher()
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("down")):
+            papers = await fetcher._fetch_s2_trending()
+        assert papers == []
+
+
 class TestFetchAll:
     @pytest.mark.asyncio
     async def test_combines_both_sources(self):

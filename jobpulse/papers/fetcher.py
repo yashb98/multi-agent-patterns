@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import time as _time
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -15,6 +18,9 @@ logger = get_logger(__name__)
 
 # arXiv Atom feed namespace
 _ATOM_NS = "http://www.w3.org/2005/Atom"
+
+# Regex to extract bare arXiv IDs from arbitrary text
+_ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})")
 
 # Target AI/ML categories
 ARXIV_CATEGORIES = ["cs.AI", "cs.LG", "cs.CL", "cs.MA", "stat.ML"]
@@ -244,6 +250,158 @@ class PaperFetcher:
             return [m["id"] for m in models if m.get("id")]
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not fetch linked models for %s: %s", arxiv_id, exc)
+            return []
+
+    # ------------------------------------------------------------------ #
+    # Community sources                                                    #
+    # ------------------------------------------------------------------ #
+
+    async def _fetch_hackernews(self) -> list[Paper]:
+        """Fetch papers from HackerNews Algolia API."""
+        try:
+            cutoff = int(_time.time()) - 86400
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    "https://hn.algolia.com/api/v1/search_by_date",
+                    params={"query": "arxiv.org", "tags": "story", "numericFilters": f"created_at_i>{cutoff}"},
+                )
+            if resp.status_code >= 400:
+                return []
+            papers: list[Paper] = []
+            for hit in resp.json().get("hits", []):
+                url = hit.get("url", "")
+                title = hit.get("title", "")
+                ids = _ARXIV_ID_RE.findall(url + " " + title)
+                for aid in ids[:1]:
+                    papers.append(Paper(
+                        arxiv_id=self._clean_arxiv_id(aid),
+                        title=title, authors=[], abstract="", categories=[],
+                        pdf_url=f"https://arxiv.org/pdf/{aid}",
+                        arxiv_url=f"https://arxiv.org/abs/{aid}",
+                        published_at="", source="huggingface",
+                        community_buzz=hit.get("points", 0),
+                        sources=["hackernews"],
+                    ))
+            logger.info("HackerNews: %d papers", len(papers))
+            return papers
+        except Exception as exc:
+            logger.warning("HackerNews fetch failed: %s", exc)
+            return []
+
+    async def _fetch_reddit(self) -> list[Paper]:
+        """Fetch papers from Reddit JSON API."""
+        papers: list[Paper] = []
+        seen_ids: set[str] = set()
+        for sub in ["MachineLearning", "LocalLLaMA"]:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(
+                        f"https://www.reddit.com/r/{sub}/new.json",
+                        params={"limit": 50},
+                        headers={"User-Agent": _USER_AGENT},
+                    )
+                if resp.status_code >= 400:
+                    continue
+                for child in resp.json().get("data", {}).get("children", []):
+                    d = child.get("data", {})
+                    if _time.time() - d.get("created_utc", 0) > 172800:
+                        continue
+                    text = d.get("url", "") + " " + d.get("selftext", "")
+                    ids = _ARXIV_ID_RE.findall(text)
+                    for aid in ids[:1]:
+                        clean_id = self._clean_arxiv_id(aid)
+                        if clean_id in seen_ids:
+                            continue
+                        seen_ids.add(clean_id)
+                        papers.append(Paper(
+                            arxiv_id=clean_id,
+                            title=d.get("title", ""), authors=[], abstract="",
+                            categories=[], pdf_url=f"https://arxiv.org/pdf/{aid}",
+                            arxiv_url=f"https://arxiv.org/abs/{aid}",
+                            published_at="", source="huggingface",
+                            community_buzz=d.get("score", 0),
+                            sources=["reddit"],
+                        ))
+            except Exception as exc:
+                logger.warning("Reddit r/%s fetch failed: %s", sub, exc)
+        logger.info("Reddit: %d papers", len(papers))
+        return papers
+
+    async def _fetch_bluesky(self) -> list[Paper]:
+        """Fetch papers from Bluesky public search API."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    "https://api.bsky.app/xrpc/app.bsky.feed.searchPosts",
+                    params={"q": "arxiv.org", "limit": 25},
+                )
+            if resp.status_code >= 400:
+                return []
+            papers: list[Paper] = []
+            for post in resp.json().get("posts", []):
+                text = post.get("record", {}).get("text", "")
+                ids = _ARXIV_ID_RE.findall(text)
+                for aid in ids[:1]:
+                    papers.append(Paper(
+                        arxiv_id=self._clean_arxiv_id(aid),
+                        title="", authors=[], abstract="", categories=[],
+                        pdf_url=f"https://arxiv.org/pdf/{aid}",
+                        arxiv_url=f"https://arxiv.org/abs/{aid}",
+                        published_at="", source="huggingface",
+                        community_buzz=10,
+                        sources=["bluesky"],
+                    ))
+            logger.info("Bluesky: %d papers", len(papers))
+            return papers
+        except Exception as exc:
+            logger.warning("Bluesky fetch failed: %s", exc)
+            return []
+
+    async def _fetch_s2_trending(self) -> list[Paper]:
+        """Fetch recently cited AI papers from Semantic Scholar bulk search."""
+        s2_key = os.environ.get("S2_API_KEY", "")
+        headers: dict[str, str] = {"User-Agent": _USER_AGENT}
+        if s2_key:
+            headers["x-api-key"] = s2_key
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.get(
+                    "https://api.semanticscholar.org/graph/v1/paper/search/bulk",
+                    params={
+                        "query": "artificial intelligence|machine learning|large language model",
+                        "fields": "title,citationCount,publicationDate,externalIds",
+                        "year": "2026-",
+                        "minCitationCount": "1",
+                        "fieldsOfStudy": "Computer Science",
+                    },
+                    headers=headers,
+                )
+            if resp.status_code >= 400:
+                logger.warning("S2 bulk search HTTP %d", resp.status_code)
+                return []
+            papers: list[Paper] = []
+            for item in resp.json().get("data", [])[:50]:
+                ext_ids = item.get("externalIds") or {}
+                arxiv_id = ext_ids.get("ArXiv", "")
+                if not arxiv_id:
+                    continue
+                arxiv_id = self._clean_arxiv_id(arxiv_id)
+                papers.append(Paper(
+                    arxiv_id=arxiv_id,
+                    title=item.get("title", ""),
+                    authors=[], abstract="", categories=[],
+                    pdf_url=f"https://arxiv.org/pdf/{arxiv_id}",
+                    arxiv_url=f"https://arxiv.org/abs/{arxiv_id}",
+                    published_at=item.get("publicationDate", "") or "",
+                    source="huggingface",
+                    s2_citation_count=item.get("citationCount", 0),
+                    community_buzz=item.get("citationCount", 0),
+                    sources=["semantic_scholar"],
+                ))
+            logger.info("Semantic Scholar: %d papers", len(papers))
+            return papers
+        except Exception as exc:
+            logger.warning("S2 trending fetch failed: %s", exc)
             return []
 
     # ------------------------------------------------------------------ #
