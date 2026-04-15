@@ -22,6 +22,12 @@ class Paper(BaseModel):
     linked_models: list[str] = Field(default_factory=list)
     linked_datasets: list[str] = Field(default_factory=list)
     model_card_summary: str | None = None
+    github_url: str = ""
+    github_stars: int = 0
+    s2_citation_count: int = 0
+    s2_influential_citations: int = 0
+    community_buzz: int = 0
+    sources: list[str] = Field(default_factory=list)
 
 
 class FactCheckResult(BaseModel):

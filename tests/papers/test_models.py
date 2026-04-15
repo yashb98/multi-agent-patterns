@@ -130,3 +130,51 @@ class TestReadingStats:
         assert rs.total == 0
         assert rs.blog_count == 0
         assert rs.with_models == 0
+
+
+class TestPaperNewFields:
+    def test_paper_has_github_fields(self):
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=["A"],
+            abstract="X.", categories=["cs.AI"], pdf_url="", arxiv_url="",
+            published_at="2026-04-01",
+            github_url="https://github.com/org/repo",
+            github_stars=150,
+        )
+        assert paper.github_url == "https://github.com/org/repo"
+        assert paper.github_stars == 150
+
+    def test_paper_has_s2_fields(self):
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=["A"],
+            abstract="X.", categories=["cs.AI"], pdf_url="", arxiv_url="",
+            published_at="2026-04-01",
+            s2_citation_count=42,
+            s2_influential_citations=5,
+        )
+        assert paper.s2_citation_count == 42
+        assert paper.s2_influential_citations == 5
+
+    def test_paper_has_community_fields(self):
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=["A"],
+            abstract="X.", categories=["cs.AI"], pdf_url="", arxiv_url="",
+            published_at="2026-04-01",
+            community_buzz=75,
+            sources=["huggingface", "hackernews"],
+        )
+        assert paper.community_buzz == 75
+        assert paper.sources == ["huggingface", "hackernews"]
+
+    def test_new_fields_default_to_zero_or_empty(self):
+        paper = Paper(
+            arxiv_id="2401.00001", title="Test", authors=["A"],
+            abstract="X.", categories=["cs.AI"], pdf_url="", arxiv_url="",
+            published_at="2026-04-01",
+        )
+        assert paper.github_url == ""
+        assert paper.github_stars == 0
+        assert paper.s2_citation_count == 0
+        assert paper.s2_influential_citations == 0
+        assert paper.community_buzz == 0
+        assert paper.sources == []
