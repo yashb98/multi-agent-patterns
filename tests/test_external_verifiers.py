@@ -315,7 +315,7 @@ class TestQualityWebSearch:
         from shared.external_verifiers import quality_web_verify
 
         # Disable SearXNG fallback too, to test pure DDG import failure
-        monkeypatch.setattr("shared.searxng_client.search", lambda q, **kw: [])
+        monkeypatch.setattr("shared.searxng_client.search_smart", lambda q, **kw: [])
 
         import sys
         original = sys.modules.get("duckduckgo_search")
