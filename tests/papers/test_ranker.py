@@ -29,6 +29,12 @@ def make_paper(
     categories: list[str] | None = None,
     hf_upvotes: int | None = None,
     linked_models: list[str] | None = None,
+    linked_datasets: list[str] | None = None,
+    github_url: str = "",
+    github_stars: int = 0,
+    s2_citation_count: int = 0,
+    community_buzz: int = 0,
+    sources: list[str] | None = None,
 ) -> Paper:
     return Paper(
         arxiv_id=arxiv_id,
@@ -41,6 +47,12 @@ def make_paper(
         published_at="2026-04-01",
         hf_upvotes=hf_upvotes,
         linked_models=linked_models or [],
+        linked_datasets=linked_datasets or [],
+        github_url=github_url,
+        github_stars=github_stars,
+        s2_citation_count=s2_citation_count,
+        community_buzz=community_buzz,
+        sources=sources or [],
     )
 
 
@@ -62,8 +74,8 @@ class TestFastScore:
     def test_cs_ai_gets_category_bonus(self):
         paper = make_paper(categories=["cs.AI"])
         score = fast_score(paper)
-        # cs.AI = 3, authors >= 3 = 1, recency = 1 → minimum 5 (no upvotes/models/github)
-        assert score >= 5.0
+        # cs.AI = 2.0, recency = 0.5 → minimum 2.5 (no upvotes/models/github/buzz/citations)
+        assert score >= 2.5
 
     def test_unknown_category_gets_no_bonus(self):
         paper_ai = make_paper(categories=["cs.AI"])
@@ -73,7 +85,7 @@ class TestFastScore:
     def test_hf_upvotes_over_50_boost(self):
         base = make_paper(hf_upvotes=None)
         high = make_paper(hf_upvotes=51)
-        assert fast_score(high) >= fast_score(base) + 2.0
+        assert fast_score(high) >= fast_score(base) + 1.5
 
     def test_hf_upvotes_21_to_50_boost(self):
         base = make_paper(hf_upvotes=None)
@@ -81,9 +93,9 @@ class TestFastScore:
         diff = fast_score(mid) - fast_score(base)
         assert diff == pytest.approx(1.0)
 
-    def test_hf_upvotes_below_20_no_boost(self):
+    def test_hf_upvotes_below_5_no_boost(self):
         base = make_paper(hf_upvotes=None)
-        low = make_paper(hf_upvotes=10)
+        low = make_paper(hf_upvotes=3)
         assert fast_score(low) == pytest.approx(fast_score(base))
 
     def test_linked_models_boost(self):
@@ -92,40 +104,36 @@ class TestFastScore:
         two_models = make_paper(linked_models=["model-a", "model-b"])
         three_models = make_paper(linked_models=["a", "b", "c"])
 
-        assert fast_score(one_model) >= fast_score(base) + 1.0
-        assert fast_score(two_models) >= fast_score(base) + 2.0
-        # Capped at 2
+        # Any models gives 0.5
+        assert fast_score(one_model) >= fast_score(base) + 0.5
+        # Two or more models still gives 0.5 (datasets field empty, so capped at 0.5)
+        assert fast_score(two_models) == pytest.approx(fast_score(one_model))
+        # Three models same as two — cap still 0.5 without datasets
         assert fast_score(three_models) == pytest.approx(fast_score(two_models))
 
-    def test_github_in_abstract_boost(self):
-        base = make_paper(abstract="No repo here.")
-        with_gh = make_paper(abstract="Code at https://github.com/user/repo.")
-        assert fast_score(with_gh) >= fast_score(base) + 1.0
-
-    def test_author_count_boost(self):
-        few = make_paper(authors=["Alice", "Bob"])
-        many = make_paper(authors=["Alice", "Bob", "Charlie"])
-        assert fast_score(many) > fast_score(few)
+    def test_github_url_boost(self):
+        base = make_paper(github_url="")
+        with_gh = make_paper(github_url="https://github.com/user/repo")
+        assert fast_score(with_gh) >= fast_score(base) + 0.5
 
     def test_max_score_capped_at_10(self):
-        paper = Paper(
-            arxiv_id="2401.99999",
-            title="Perfect Paper",
-            authors=["A", "B", "C", "D"],
-            abstract="See https://github.com/org/repo for code.",
+        paper = make_paper(
             categories=["cs.AI"],
-            pdf_url="",
-            arxiv_url="",
-            published_at="2026-04-01",
             hf_upvotes=100,
             linked_models=["m1", "m2", "m3"],
+            linked_datasets=["d1"],
+            github_url="https://github.com/org/repo",
+            github_stars=100,
+            s2_citation_count=30,
+            community_buzz=200,
+            sources=["huggingface", "hackernews", "reddit"],
         )
         assert fast_score(paper) <= 10.0
 
     def test_recency_bonus_always_applied(self):
         paper = make_paper(categories=["math.CO"], authors=["Alice"])
-        # Only recency (1) should be awarded — no category, no author bonus
-        assert fast_score(paper) >= 1.0
+        # Only recency (0.5) should be awarded — no category, no other bonuses
+        assert fast_score(paper) >= 0.5
 
     def test_category_weights_ordering(self):
         """cs.AI / cs.LG outrank cs.CL which outranks cs.MA."""
@@ -133,6 +141,47 @@ class TestFastScore:
         cl_paper = make_paper(categories=["cs.CL"], authors=["A"])
         ma_paper = make_paper(categories=["cs.MA"], authors=["A"])
         assert fast_score(ai_paper) > fast_score(cl_paper) > fast_score(ma_paper)
+
+
+# ---------------------------------------------------------------------------
+# TestFastScoreV2 — new signals
+# ---------------------------------------------------------------------------
+
+
+class TestFastScoreV2:
+    def test_community_buzz_high(self):
+        base = make_paper(community_buzz=0)
+        high = make_paper(community_buzz=150)
+        assert fast_score(high) > fast_score(base)
+
+    def test_s2_citations_boost(self):
+        base = make_paper(s2_citation_count=0)
+        cited = make_paper(s2_citation_count=25)
+        assert fast_score(cited) > fast_score(base)
+
+    def test_github_repo_boost(self):
+        base = make_paper(github_url="")
+        with_repo = make_paper(github_url="https://github.com/org/repo", github_stars=100)
+        assert fast_score(with_repo) > fast_score(base)
+
+    def test_multi_source_bonus(self):
+        one = make_paper(sources=["huggingface"])
+        three = make_paper(sources=["huggingface", "hackernews", "reddit"])
+        assert fast_score(three) > fast_score(one)
+
+    def test_linked_datasets_boost(self):
+        base = make_paper(linked_datasets=[])
+        with_ds = make_paper(linked_datasets=["ds-1"])
+        assert fast_score(with_ds) > fast_score(base)
+
+    def test_max_still_capped_at_10(self):
+        paper = make_paper(
+            categories=["cs.AI"], hf_upvotes=100, linked_models=["m1", "m2"],
+            linked_datasets=["d1"], github_url="https://github.com/x/y",
+            github_stars=100, s2_citation_count=30, community_buzz=200,
+            sources=["huggingface", "hackernews", "reddit"],
+        )
+        assert fast_score(paper) <= 10.0
 
 
 # ---------------------------------------------------------------------------

@@ -12,10 +12,10 @@ logger = get_logger(__name__)
 
 # Category weights for fast_score
 _CATEGORY_WEIGHTS: dict[str, float] = {
-    "cs.AI": 3.0,
-    "cs.LG": 3.0,
-    "cs.CL": 2.0,
-    "stat.ML": 2.0,
+    "cs.AI": 2.0,
+    "cs.LG": 2.0,
+    "cs.CL": 1.5,
+    "stat.ML": 1.5,
     "cs.MA": 1.0,
 }
 
@@ -51,42 +51,76 @@ def _get_openai_client():  # pragma: no cover
 
 
 def fast_score(paper: Paper) -> float:
-    """Deterministic score for a paper.  Maximum possible value is 10.0.
+    """Deterministic score for a paper. Maximum possible value is 10.0.
 
     Scoring breakdown:
-    - Category bonus   : up to 3.0 (best matching category)
-    - HF upvotes       : 2.0 if >50, 1.0 if >20
-    - Linked models    : min(count, 2) × 1.0
-    - GitHub in abstract: 1.0
-    - Author count ≥ 3 : 1.0
-    - Recency bonus    : 1.0 (always awarded — caller can adjust based on date if desired)
+    - Category bonus       : up to 2.0
+    - Community buzz       : up to 2.0
+    - HF upvotes           : up to 1.5
+    - S2 citations         : up to 1.5
+    - GitHub repo          : up to 1.0
+    - Linked models/datasets: up to 1.0
+    - Multi-source bonus   : up to 0.5
+    - Recency              : 0.5
     """
     score = 0.0
 
-    # Category bonus — take the highest matching weight
+    # Category bonus — best matching weight
     cat_bonus = max((_CATEGORY_WEIGHTS.get(c, 0.0) for c in paper.categories), default=0.0)
     score += cat_bonus
+
+    # Community buzz (aggregated across sources)
+    buzz = paper.community_buzz
+    if buzz > 100:
+        score += 2.0
+    elif buzz > 50:
+        score += 1.5
+    elif buzz > 20:
+        score += 1.0
+    elif buzz > 5:
+        score += 0.5
 
     # HF upvotes
     if paper.hf_upvotes is not None:
         if paper.hf_upvotes > 50:
-            score += 2.0
+            score += 1.5
         elif paper.hf_upvotes > 20:
             score += 1.0
+        elif paper.hf_upvotes > 5:
+            score += 0.5
 
-    # Linked models bonus (capped at 2)
-    score += min(len(paper.linked_models), 2) * 1.0
-
-    # GitHub repo in abstract
-    if "github.com" in paper.abstract.lower():
+    # S2 citations
+    cites = paper.s2_citation_count
+    if cites > 20:
+        score += 1.5
+    elif cites > 10:
         score += 1.0
+    elif cites > 3:
+        score += 0.5
 
-    # Author count
-    if len(paper.authors) >= 3:
-        score += 1.0
+    # GitHub repo
+    if paper.github_url:
+        score += 0.5
+        if paper.github_stars > 50:
+            score += 0.5
 
-    # Recency bonus (structural — always 1 point; callers can skip based on published_at)
-    score += 1.0
+    # Linked models/datasets (0.5 each, capped at 1.0)
+    model_ds_score = 0.0
+    if paper.linked_models:
+        model_ds_score += 0.5
+    if paper.linked_datasets:
+        model_ds_score += 0.5
+    score += min(model_ds_score, 1.0)
+
+    # Multi-source bonus
+    n_sources = len(paper.sources)
+    if n_sources >= 3:
+        score += 0.5
+    elif n_sources >= 2:
+        score += 0.25
+
+    # Recency bonus
+    score += 0.5
 
     return min(score, 10.0)
 
