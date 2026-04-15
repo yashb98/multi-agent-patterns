@@ -2,12 +2,19 @@
 
 Stores one account per domain. Uses a single password from ATS_ACCOUNT_PASSWORD
 env var and the user's profile email. Credentials stored in SQLite.
+Passwords are encrypted at rest using Fernet symmetric encryption.
+ATS_ENCRYPTION_KEY env var is required for all credential operations.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import os
 import sqlite3
 from datetime import UTC, datetime
 from urllib.parse import urlparse
+
+from cryptography.fernet import Fernet
 
 from shared.logging_config import get_logger
 
@@ -17,6 +24,14 @@ from jobpulse.ext_models import AccountInfo
 logger = get_logger(__name__)
 
 _DEFAULT_DB = str(DATA_DIR / "ats_accounts.db")
+
+
+def _get_fernet() -> Fernet:
+    key = os.environ.get("ATS_ENCRYPTION_KEY", "")
+    if not key:
+        raise ValueError("ATS_ENCRYPTION_KEY env var required for credential encryption")
+    derived = hashlib.sha256(key.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(derived))
 
 
 class AccountManager:
@@ -63,15 +78,17 @@ class AccountManager:
         if not password:
             raise ValueError("ATS_ACCOUNT_PASSWORD env var not set")
 
+        fernet = _get_fernet()
         with sqlite3.connect(self._db_path) as conn:
             existing = conn.execute(
                 "SELECT email, password FROM accounts WHERE domain = ?", (domain,)
             ).fetchone()
             if existing:
-                return existing[0], existing[1]
+                return existing[0], fernet.decrypt(existing[1].encode()).decode()
+            encrypted_password = fernet.encrypt(password.encode()).decode()
             conn.execute(
                 "INSERT INTO accounts (domain, email, password, created_at) VALUES (?, ?, ?, ?)",
-                (domain, email, password, datetime.now(UTC).isoformat()),
+                (domain, email, encrypted_password, datetime.now(UTC).isoformat()),
             )
         logger.info("Created account for %s with email %s", domain, email)
         return email, password
@@ -84,7 +101,8 @@ class AccountManager:
             ).fetchone()
         if not row:
             raise KeyError(f"No account for {domain}")
-        return row[0], row[1]
+        decrypted_password = _get_fernet().decrypt(row[1].encode()).decode()
+        return row[0], decrypted_password
 
     def get_account_info(self, domain_or_url: str) -> AccountInfo:
         domain = self._normalize_domain(domain_or_url)

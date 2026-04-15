@@ -6,7 +6,8 @@ from jobpulse.account_manager import AccountManager
 
 
 @pytest.fixture
-def mgr(tmp_path):
+def mgr(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATS_ENCRYPTION_KEY", "test-key-for-encryption-32bytes!")
     with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "TestPass123!"):
         yield AccountManager(db_path=str(tmp_path / "accounts.db"))
 
@@ -60,7 +61,8 @@ def test_mark_login_success(mgr):
     assert info.last_login != ""
 
 
-def test_no_password_raises(tmp_path):
+def test_no_password_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATS_ENCRYPTION_KEY", "test-key-for-encryption-32bytes!")
     with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", ""):
         mgr = AccountManager(db_path=str(tmp_path / "accounts.db"))
         with pytest.raises(ValueError, match="ATS_ACCOUNT_PASSWORD"):
