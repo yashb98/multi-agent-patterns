@@ -16,6 +16,7 @@ logger = get_logger(__name__)
 
 MODEL_COSTS = {
     # model_prefix: (input_per_1M, output_per_1M)
+    "gpt-5-mini": (0.40, 1.60),
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.00),
     "gpt-4.1-mini": (0.40, 1.60),

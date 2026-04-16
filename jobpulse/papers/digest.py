@@ -113,7 +113,7 @@ class DigestBuilder:
         # Fact-check score
         if paper.fact_check is not None:
             fc_score = paper.fact_check.score
-            parts.append(f"   ✅ Fact-check: {fc_score:.1f}/10")
+            parts.append(f"   ✅ Fact-check: {fc_score:.3f}/10")
 
         # HuggingFace signals
         hf_parts: list[str] = []

@@ -49,7 +49,7 @@ class FallbackLLM:
         from openai import OpenAI
         client = OpenAI()
         resp = client.chat.completions.create(
-            model=kwargs.get("model", "gpt-4.1-mini"),
+            model=kwargs.get("model", "gpt-5-mini"),
             messages=[{"role": "user", "content": prompt}],
             max_tokens=kwargs.get("max_tokens", 4096),
         )

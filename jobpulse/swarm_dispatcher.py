@@ -486,7 +486,7 @@ def _score_result(result: str, intent: str = "") -> float:
         try:
             from shared.agents import get_llm
             from shared.streaming import smart_llm_call
-            llm = get_llm(model="gpt-4.1-mini", temperature=0)
+            llm = get_llm(model="gpt-5-mini", temperature=0)
             prompt = (
                 f"Rate this agent response for intent '{intent}' on a 0-10 scale.\n\n"
                 f"Criteria:\n"

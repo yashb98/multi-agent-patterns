@@ -78,6 +78,7 @@ _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gemma4:31b")
 
 # Cloud fallback model map: current → older/cheaper equivalent
 _FALLBACK_MODELS = {
+    "gpt-5-mini": "gpt-4o-mini",
     "gpt-4.1-mini": "gpt-4o-mini",
     "gpt-4.1": "gpt-4o",
     "gpt-4.1-nano": "gpt-4o-mini",
@@ -122,12 +123,12 @@ def is_local_llm() -> bool:
     return _is_local
 
 
-def get_model_name(default: str = "gpt-4.1-mini") -> str:
+def get_model_name(default: str = "gpt-5-mini") -> str:
     """Return the effective model name for raw OpenAI SDK calls.
 
     When LLM_PROVIDER=local, returns LOCAL_LLM_MODEL (e.g. gemma4:31b).
     When falling back to cloud via auto-detection, maps to older/cheaper
-    models (e.g. gpt-4.1-mini → gpt-4o-mini).
+    models (e.g. gpt-5-mini → gpt-4o-mini).
     When LLM_PROVIDER=openai (explicit), returns the provided default as-is.
     """
     if _is_local:
@@ -137,7 +138,7 @@ def get_model_name(default: str = "gpt-4.1-mini") -> str:
     return default
 
 
-def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
+def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
             timeout: float = 30.0, max_tokens: int = 4096):
     """
     Factory function for LLM instances.
@@ -155,7 +156,7 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
     """
     if _is_local:
         # Use local model unless caller explicitly requested a specific model
-        effective_model = _LOCAL_MODEL if model == "gpt-4.1-mini" else model
+        effective_model = _LOCAL_MODEL if model == "gpt-5-mini" else model
         return ChatOpenAI(
             model=effective_model,
             temperature=temperature,
@@ -166,9 +167,11 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-4.1-mini",
         )
     # Cloud path: use fallback (older/cheaper) models when auto-detected
     effective_model = _FALLBACK_MODELS.get(model, model) if _use_fallback_models else model
+    # gpt-5-mini only supports default temperature (1)
+    effective_temp = temperature if not effective_model.startswith("gpt-5") else 1
     return ChatOpenAI(
         model=effective_model,
-        temperature=temperature,
+        temperature=effective_temp,
         request_timeout=timeout,
         max_tokens=max_tokens,
     )
@@ -356,7 +359,7 @@ Evaluate against all criteria and respond with ONLY the JSON structure
 specified in your instructions."""
 
     llm = get_llm(
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         temperature=0.2,
         timeout=30.0,
     )

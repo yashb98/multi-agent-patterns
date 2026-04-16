@@ -145,9 +145,8 @@ def polish_points_llm(
 
     raw = safe_openai_call(
         client,
-        model="gpt-4.1-mini",
+        model="gpt-5-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.4,
         caller="polish_cover_letter_points",
     )
 

@@ -34,6 +34,7 @@ from shared.logging_config import get_logger
 
 from jobpulse.applicator import apply_job
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
+from jobpulse.cv_templates.generate_cv import build_extra_skills, get_role_profile
 from jobpulse.job_db import JobDB
 from jobpulse.job_notion_sync import update_application_page
 from jobpulse.job_scanner import load_search_config, save_search_config
@@ -170,14 +171,12 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
       2. analyze_and_deduplicate — JD analysis + dedup
       3. prescreen_listings     — Gates 1-3 + Gate 4A
       4. generate_materials     — CV/CL + ATS + Gate 4B  (per job)
-      5. route_and_apply        — auto-apply / review / skip (per job)
     """
     from jobpulse.scan_pipeline import (
         fetch_and_filter_jobs,
         analyze_and_deduplicate,
         prescreen_listings,
         generate_materials,
-        route_and_apply,
     )
 
     trail = ProcessTrail("job_autopilot", "scan_window")
@@ -206,8 +205,6 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         logger.info("job_autopilot: %s", msg)
         return msg
 
-    remaining_cap = JOB_AUTOPILOT_MAX_DAILY - already_applied
-
     # --- Stage 1: fetch and filter ---
     search_config = load_search_config()
     raw_jobs, total_found, gate0_rejected = fetch_and_filter_jobs(platforms, search_config, trail)
@@ -220,30 +217,16 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         new_listings, db, trail,
     )
 
-    # --- Stages 4 + 5: generate materials and route (per job) ---
+    # --- Stage 4: generate materials (per job) ---
     repos: list[dict] = []  # shared cache across jobs
-    auto_applied = 0
     review_batch: list[dict[str, Any]] = []
-    skipped = 0
     errors = 0
 
     for listing, screen in gate4_filtered:
-        if auto_applied >= remaining_cap:
-            logger.info(
-                "job_autopilot: reached daily cap mid-batch, stopping at %d auto-applied",
-                auto_applied,
-            )
-            break
-
         try:
             bundle = generate_materials(listing, screen, db, repos, notion_failures)
-            result = route_and_apply(
-                listing, bundle, db, review_batch, remaining_cap, auto_applied,
-            )
-            if result.action == "auto_applied":
-                auto_applied += 1
-            elif result.action == "skipped":
-                skipped += 1
+            # Queue for manual review — no auto-apply or form filling
+            _queue_for_review(listing, bundle.ats_score, review_batch)
         except Exception as exc:
             logger.error(
                 "job_autopilot: unhandled error processing job %s @ %s: %s",
@@ -268,12 +251,19 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         f"New: {len(new_listings)} | Pre-screen: {gate_rejected} rejected, {gate_skipped} skipped",
         f"Gate 4: {gate4_blocked} blocked, {len(gate4_filtered)} passed",
         f"Processed: {len(gate4_filtered)}",
-        f"Auto-applied: {auto_applied}",
         f"Ready for review: {len(review_batch)}",
-        f"Skipped: {skipped} (<82% match)",
     ]
     if errors:
         summary_lines.append(f"Errors: {errors}")
+
+    # Add Job Tracker link
+    try:
+        from jobpulse.config import NOTION_APPLICATIONS_DB_ID
+        if NOTION_APPLICATIONS_DB_ID:
+            app_db_clean = NOTION_APPLICATIONS_DB_ID.replace("-", "")
+            summary_lines.append(f"\n📎 Job Tracker: https://www.notion.so/{app_db_clean}")
+    except Exception as exc:
+        logger.debug("job tracker link failed: %s", exc)
 
     # Add skill tracker link if there are pending skills
     try:
@@ -301,8 +291,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         _send_review_batch(review_batch)
 
     trail.finalize(
-        f"Scan complete: {auto_applied} auto-applied, "
-        f"{len(review_batch)} for review, {skipped} skipped"
+        f"Scan complete: {len(review_batch)} for review"
     )
 
     if notion_failures:

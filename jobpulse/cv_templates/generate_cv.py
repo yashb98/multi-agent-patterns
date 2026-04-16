@@ -231,6 +231,26 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
             '<b>agentic architectures</b>, <b>tool-use</b>, and <b>production AI deployment</b>.'
         ),
     },
+    "data engineer": {
+        "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Engineer | Python | SQL | ETL | Airflow | Cloud",
+        "summary": (
+            '<b>Data Engineer</b> with hands-on experience building data pipelines, ETL workflows, '
+            'and database systems. Built a <b>61,500+ LOC</b> autonomous system with '
+            '<b>20 SQLite databases</b>, automated data ingestion, and scheduled processing. '
+            'Specialises in <b>Python</b>, <b>SQL</b>, <b>pipeline orchestration</b>, '
+            'and <b>scalable data infrastructure</b>.'
+        ),
+    },
+    "software engineer": {
+        "tagline": "MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | System Design | APIs | Testing",
+        "summary": (
+            '<b>Software Engineer</b> who built a <b>61,500+ LOC</b> production system with '
+            '<b>488 tests</b>, <b>RESTful APIs</b>, and multi-service architecture. '
+            'Designed modular components with clean interfaces, comprehensive testing, '
+            'and CI/CD automation. Specialises in <b>Python</b>, <b>system design</b>, '
+            '<b>API development</b>, and <b>production-grade software delivery</b>.'
+        ),
+    },
 }
 
 
@@ -312,6 +332,10 @@ def get_role_profile(role_title: str) -> dict[str, str]:
         return _ROLE_PROFILES["ml engineer"]
     if any(kw in role_lower for kw in ("ai eng", "llm", "agent")):
         return _ROLE_PROFILES["ai engineer"]
+    if any(kw in role_lower for kw in ("data eng", "etl", "pipeline eng")):
+        return _ROLE_PROFILES["data engineer"]
+    if any(kw in role_lower for kw in ("software eng", "backend", "fullstack", "full stack")):
+        return _ROLE_PROFILES["software engineer"]
     return {}
 
 

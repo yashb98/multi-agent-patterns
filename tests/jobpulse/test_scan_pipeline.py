@@ -479,6 +479,8 @@ class TestGenerateMaterials:
             patch("jobpulse.scan_pipeline.scrutinize_cv_deterministic", return_value=MagicMock(status="clean", warnings=[])),
             patch("jobpulse.scan_pipeline.scrutinize_cv_llm", return_value=MagicMock(needs_review=False, score=8)),
             patch("jobpulse.scan_pipeline.upload_cv", return_value="https://drive.google.com/cv"),
+            patch("jobpulse.scan_pipeline.generate_cover_letter_pdf", return_value=tmp_path / "cl.pdf"),
+            patch("jobpulse.scan_pipeline.upload_cover_letter", return_value="https://drive.google.com/cl"),
             patch("jobpulse.scan_pipeline.update_application_page"),
             patch("jobpulse.scan_pipeline.build_page_content", return_value=[]),
             patch("jobpulse.scan_pipeline.set_page_content"),
@@ -492,8 +494,7 @@ class TestGenerateMaterials:
         assert bundle.ats_score == 88.5
         assert bundle.notion_page_id == "notion-page-id"
         assert bundle.cv_drive_link == "https://drive.google.com/cv"
-        assert bundle.cl_generator is not None
-        assert callable(bundle.cl_generator)
+        assert bundle.cover_letter_path is not None
 
     def test_cv_generation_failure_returns_zero_score(self, tmp_path):
         from jobpulse.scan_pipeline import generate_materials

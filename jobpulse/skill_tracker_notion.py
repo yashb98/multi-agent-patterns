@@ -14,7 +14,7 @@ from pathlib import Path
 
 from shared.logging_config import get_logger
 
-from jobpulse.config import DATA_DIR, NOTION_PARENT_PAGE_ID
+from jobpulse.config import DATA_DIR, NOTION_API_KEY, NOTION_PARENT_PAGE_ID
 from jobpulse.notion_client import notion_api as _notion_api
 
 logger = get_logger(__name__)
@@ -361,22 +361,33 @@ def get_pending_skills() -> list[dict]:
 
 
 def sync_verified_to_profile() -> int:
-    """Pull all 'I Know' skills from Notion and upsert to SkillGraphStore.
+    """Pull all 'I Know' skills from Notion, upsert to SkillGraphStore, then delete from Notion.
 
     Returns count of skills synced.
     """
-    verified = get_verified_skills()
-    if not verified:
+    db_id = ensure_skill_tracker_db()
+    if not db_id:
+        return 0
+
+    pages = _query_by_status(db_id, "I Know")
+    if not pages:
         return 0
 
     try:
         from jobpulse.skill_graph_store import SkillGraphStore
         store = SkillGraphStore()
         count = 0
-        for skill in verified:
+        for page in pages:
+            skill = _extract_title(page).lower()
+            if not skill:
+                continue
             store.upsert_skill(skill, source="notion_verified")
+            # Delete from Notion Skill Tracker — it's now in SQLite
+            page_id = page["id"]
+            _notion_api("PATCH", f"/pages/{page_id}", {"archived": True})
+            logger.debug("Archived verified skill '%s' from Notion", skill)
             count += 1
-        logger.info("Synced %d verified skills to profile", count)
+        logger.info("Synced %d verified skills to profile and removed from Notion", count)
         return count
     except Exception as exc:
         logger.error("Failed to sync verified skills to profile: %s", exc)

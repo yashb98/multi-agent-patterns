@@ -1,6 +1,5 @@
-"""Google Jobs scanner via JobSpy (python-jobspy).
+"""Indeed scanner via JobSpy (python-jobspy).
 
-Feature-gated: GOOGLE_JOBS_ENABLED=true (default: false).
 Returns normalized dicts compatible with the existing run_scan_window() pipeline.
 """
 
@@ -10,7 +9,6 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Lazy import — overridden in tests
 try:
     from jobspy import scrape_jobs
 except ImportError:
@@ -26,24 +24,21 @@ def normalize_to_job_listing(row: dict) -> dict:
         "description": row.get("description", ""),
         "url": row.get("job_url", ""),
         "date_posted": row.get("date_posted", ""),
-        "source": "google_jobs",
-        "platform": "google_jobs",
+        "source": "indeed",
+        "platform": "indeed",
     }
 
 
-def scan_google_jobs(
+def scan_indeed(
     search_terms: list[str],
     location: str,
     max_results: int = 50,
 ) -> list[dict]:
-    """Scan Google Jobs via JobSpy, return normalized JobListing-compatible dicts.
+    """Scan Indeed via JobSpy, return normalized JobListing-compatible dicts.
 
-    Disabled by default — set GOOGLE_JOBS_ENABLED=true to activate.
+    Uses python-jobspy to scrape Indeed listings. No browser needed.
+    Filters to last 24 hours only.
     """
-    if os.environ.get("GOOGLE_JOBS_ENABLED", "true").lower() != "true":
-        logger.debug("Google Jobs scanner disabled (GOOGLE_JOBS_ENABLED != true)")
-        return []
-
     if scrape_jobs is None:
         logger.warning("python-jobspy not installed — run: pip install python-jobspy")
         return []
@@ -52,16 +47,17 @@ def scan_google_jobs(
     for term in search_terms:
         try:
             results = scrape_jobs(
-                site_name=["google"],
+                site_name=["indeed"],
                 search_term=term,
                 location=location,
                 results_wanted=max_results,
                 hours_old=24,
+                country_indeed="UK",
             )
             listings = [normalize_to_job_listing(row.to_dict()) for _, row in results.iterrows()]
-            logger.info("Google Jobs: found %d listings for '%s' in %s", len(listings), term, location)
+            logger.info("Indeed: found %d listings for '%s' in %s", len(listings), term, location)
             all_results.extend(listings)
         except Exception as e:
-            logger.error("Google Jobs scan failed for '%s': %s", term, e)
+            logger.error("Indeed scan failed for '%s': %s", term, e)
 
     return all_results

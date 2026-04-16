@@ -73,7 +73,10 @@ def web_verify_claim(claim: str) -> dict:
     fallback = {"source": None, "supports": False, "snippet": "Web search unavailable (circuit open)"}
 
     def _do_search():
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.text(claim, max_results=3))
 
@@ -431,7 +434,7 @@ def generate_fact_check_explanation(score: float, verifications: list[dict],
     )
     external_note = " externally" if has_external else " (abstract only)" if verified > 0 else ""
 
-    parts = [f"{score:.1f}/10"]
+    parts = [f"{score:.3f}/10"]
 
     if total > 0:
         parts.append(f"{verified}/{total} claims verified{external_note}")

@@ -117,6 +117,9 @@ def build_create_payload(job: JobListing, db_id: str) -> dict:
         "JD URL": {
             "url": job.url
         },
+        "Manually Applied": {
+            "checkbox": False
+        },
     }
 
     if salary_str:
@@ -158,6 +161,7 @@ def build_update_payload(
     cl_drive_link: str | None = None,
     recruiter_email: str | None = None,
     company: str | None = None,
+    manually_applied: bool | None = None,
 ) -> dict:
     """Build Notion update-page payload with only the provided (non-None) fields.
 
@@ -212,6 +216,9 @@ def build_update_payload(
 
     if recruiter_email is not None:
         properties["Recruiter Email"] = {"email": recruiter_email}
+
+    if manually_applied is not None:
+        properties["Manually Applied"] = {"checkbox": manually_applied}
 
     return {"properties": properties}
 

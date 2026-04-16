@@ -85,7 +85,7 @@ def _build_paper_blocks(paper: RankedPaper) -> list[dict]:
 
     if paper.fact_check:
         fc = paper.fact_check
-        blocks.append(_text_block(f"Fact-check: {fc.score:.1f}/10 ({fc.verified_count}/{fc.total_claims} claims verified)"))
+        blocks.append(_text_block(f"Fact-check: {fc.score:.3f}/10 ({fc.verified_count}/{fc.total_claims} claims verified)"))
 
     blocks.append(_divider_block())
     return blocks
@@ -176,7 +176,7 @@ def _build_blog_blocks(blog: BlogPost) -> list[dict]:
         fc = blog.fact_check
         blocks.append(_divider_block())
         blocks.append(_heading_block("Fact-Check", level=2))
-        blocks.append(_text_block(f"Score: {fc.score:.1f}/10 — {fc.verified_count}/{fc.total_claims} claims verified"))
+        blocks.append(_text_block(f"Score: {fc.score:.3f}/10 — {fc.verified_count}/{fc.total_claims} claims verified"))
         if fc.explanation:
             blocks.append(_text_block(fc.explanation))
 

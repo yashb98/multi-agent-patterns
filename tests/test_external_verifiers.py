@@ -299,7 +299,7 @@ class TestQualityWebSearch:
         mock_module = MagicMock()
         mock_module.DDGS = MockDDGS
 
-        with patch.dict("sys.modules", {"duckduckgo_search": mock_module}):
+        with patch.dict("sys.modules", {"ddgs": mock_module, "duckduckgo_search": mock_module}):
             result = quality_web_verify("transformer architecture")
 
         assert result["best_source_quality"] == 0.9
@@ -318,13 +318,19 @@ class TestQualityWebSearch:
         monkeypatch.setattr("shared.searxng_client.search_smart", lambda q, **kw: [])
 
         import sys
-        original = sys.modules.get("duckduckgo_search")
-        sys.modules["duckduckgo_search"] = None  # Forces ImportError on `from X import Y`
+        original_ddgs = sys.modules.get("ddgs")
+        original_duckduckgo = sys.modules.get("duckduckgo_search")
+        sys.modules["ddgs"] = None
+        sys.modules["duckduckgo_search"] = None  # Forces ImportError on both
         try:
             result = quality_web_verify("test query")
         finally:
-            if original is not None:
-                sys.modules["duckduckgo_search"] = original
+            if original_ddgs is not None:
+                sys.modules["ddgs"] = original_ddgs
+            else:
+                sys.modules.pop("ddgs", None)
+            if original_duckduckgo is not None:
+                sys.modules["duckduckgo_search"] = original_duckduckgo
             else:
                 sys.modules.pop("duckduckgo_search", None)
 

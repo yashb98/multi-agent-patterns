@@ -192,7 +192,7 @@ def llm_rank(
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
         )
@@ -256,7 +256,7 @@ def extract_themes(papers: list[Paper]) -> list[str]:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )
@@ -281,7 +281,7 @@ def _summarize_paper(paper: Paper, client) -> str:  # type: ignore[no-untyped-de
     )
     try:
         response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )

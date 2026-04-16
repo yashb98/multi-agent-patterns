@@ -264,9 +264,8 @@ def scrutinize_cv_llm(
     client = get_openai_client()
     response = safe_openai_call(
         client,
-        model=get_model_name(),
+        model="gpt-5-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
         caller="gate4_llm_scrutiny",
     )
 

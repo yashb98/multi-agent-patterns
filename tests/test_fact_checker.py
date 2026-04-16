@@ -268,7 +268,7 @@ class TestWebVerifyClaim:
 
     def test_returns_dict_on_import_error(self):
         from shared.fact_checker import web_verify_claim
-        with patch.dict("sys.modules", {"duckduckgo_search": None}):
+        with patch.dict("sys.modules", {"ddgs": None, "duckduckgo_search": None}):
             # Force reimport to trigger ImportError path
             pass
         # Just test the function exists and returns a dict
@@ -282,7 +282,7 @@ class TestWebVerifyClaim:
         mock_ddgs = MagicMock()
         mock_ddgs_module = MagicMock()
         mock_ddgs_module.DDGS = MagicMock(side_effect=Exception("network error"))
-        with patch.dict("sys.modules", {"duckduckgo_search": mock_ddgs_module}):
+        with patch.dict("sys.modules", {"ddgs": None, "duckduckgo_search": mock_ddgs_module}):
             result = web_verify_claim("test claim")
             assert result["supports"] is False
 

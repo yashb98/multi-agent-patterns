@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 def safe_openai_call(
     client: Any,
     *,
-    model: str = "gpt-4.1-mini",
+    model: str = "gpt-5-mini",
     messages: list[dict[str, str]],
     temperature: float = 0.5,
     timeout: float = 60.0,
@@ -35,13 +35,16 @@ def safe_openai_call(
     Never raises — logs the error instead.
     """
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            timeout=timeout,
+        # gpt-5-mini only supports default temperature (1)
+        call_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "timeout": timeout,
             **kwargs,
-        )
+        }
+        if not model.startswith("gpt-5"):
+            call_kwargs["temperature"] = temperature
+        response = client.chat.completions.create(**call_kwargs)
         if not response.choices:
             logger.warning("safe_openai_call(%s): empty choices list", caller)
             return None

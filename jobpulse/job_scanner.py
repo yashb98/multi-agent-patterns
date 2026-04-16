@@ -247,73 +247,92 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
         if len(results) >= MAX_REQUESTS_PER_PLATFORM:
             break
 
-        params: dict[str, Any] = {
-            "keywords": title,
-            "locationName": config.location,
-            "distanceFromLocation": 50,
-            "minimumSalary": config.salary_min,
-            "resultsToTake": 25,
-        }
-
         try:
             logger.info("scan_reed: searching '%s' in '%s'", title, config.location)
+            page_size = 25
+            max_pages = 5
+
             with httpx.Client(timeout=20) as client:
-                data = None
-                for retry in range(3):
-                    resp = client.get(
-                        base_url,
-                        params=params,
-                        auth=(REED_API_KEY, ""),
-                        headers={"User-Agent": _random_ua()},
+                for page in range(max_pages):
+                    if len(results) >= MAX_REQUESTS_PER_PLATFORM:
+                        break
+
+                    params: dict[str, Any] = {
+                        "keywords": title,
+                        "locationName": config.location,
+                        "distanceFromLocation": 50,
+                        "minimumSalary": config.salary_min,
+                        "resultsToTake": page_size,
+                        "resultsToSkip": page * page_size,
+                    }
+
+                    data = None
+                    for retry in range(3):
+                        resp = client.get(
+                            base_url,
+                            params=params,
+                            auth=(REED_API_KEY, ""),
+                            headers={"User-Agent": _random_ua()},
+                        )
+
+                        if resp.status_code == 429:
+                            wait = 2 ** (retry + 1)  # 2s, 4s, 8s
+                            logger.warning(
+                                "scan_reed: rate limited (429), retrying in %ds (attempt %d/3)",
+                                wait, retry + 1,
+                            )
+                            time.sleep(wait)
+                            continue
+
+                        resp.raise_for_status()
+                        try:
+                            from shared.rate_monitor import record_from_headers
+                            record_from_headers("reed", dict(resp.headers))
+                        except Exception:
+                            pass  # Non-blocking monitoring
+                        data = resp.json()
+                        break
+                    else:
+                        logger.error("scan_reed: rate limited after 3 retries for '%s' page %d", title, page + 1)
+                        break  # stop pagination for this title
+
+                    if data is None:
+                        break
+
+                    page_results = data.get("results", [])
+                    if not page_results:
+                        break  # no more results
+
+                    for job in page_results:
+                        url = job.get("jobUrl", "")
+                        reed_id = str(job.get("jobId", ""))
+                        if not url:
+                            url = f"https://www.reed.co.uk/jobs/{reed_id}" if reed_id else ""
+
+                        results.append(
+                            {
+                                "title": job.get("jobTitle", ""),
+                                "company": job.get("employerName", ""),
+                                "url": url,
+                                "location": job.get("locationName", ""),
+                                "salary_min": _to_float(job.get("minimumSalary")),
+                                "salary_max": _to_float(job.get("maximumSalary")),
+                                "description": job.get("jobDescription", ""),
+                                "platform": "reed",
+                                "job_id": _make_job_id(url) if url else _make_job_id(reed_id),
+                                "reed_id": reed_id,
+                            }
+                        )
+
+                    logger.info(
+                        "scan_reed: page %d got %d results for '%s' (total so far: %d)",
+                        page + 1, len(page_results), title, len(results),
                     )
 
-                    if resp.status_code == 429:
-                        wait = 2 ** (retry + 1)  # 2s, 4s, 8s
-                        logger.warning(
-                            "scan_reed: rate limited (429), retrying in %ds (attempt %d/3)",
-                            wait, retry + 1,
-                        )
-                        time.sleep(wait)
-                        continue
+                    if len(page_results) < page_size:
+                        break  # last page
 
-                    resp.raise_for_status()
-                    try:
-                        from shared.rate_monitor import record_from_headers
-                        record_from_headers("reed", dict(resp.headers))
-                    except Exception:
-                        pass  # Non-blocking monitoring
-                    data = resp.json()
-                    break
-                else:
-                    logger.error("scan_reed: rate limited after 3 retries for '%s'", title)
-                    continue  # skip to next title
-
-                if data is None:
-                    continue
-
-            for job in data.get("results", []):
-                url = job.get("jobUrl", "")
-                reed_id = str(job.get("jobId", ""))
-                if not url:
-                    # Fall back to constructing a canonical URL from jobId
-                    url = f"https://www.reed.co.uk/jobs/{reed_id}" if reed_id else ""
-
-                results.append(
-                    {
-                        "title": job.get("jobTitle", ""),
-                        "company": job.get("employerName", ""),
-                        "url": url,
-                        "location": job.get("locationName", ""),
-                        "salary_min": _to_float(job.get("minimumSalary")),
-                        "salary_max": _to_float(job.get("maximumSalary")),
-                        "description": job.get("jobDescription", ""),
-                        "platform": "reed",
-                        "job_id": _make_job_id(url) if url else _make_job_id(reed_id),
-                        "reed_id": reed_id,
-                    }
-                )
-
-            logger.info("scan_reed: got %d results for '%s'", len(data.get("results", [])), title)
+                    time.sleep(random.uniform(0.5, 1.5))  # pause between pages
 
         except httpx.HTTPStatusError as exc:
             logger.error(
@@ -620,15 +639,27 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+def _scan_indeed_wrapper(config: SearchConfig) -> list[dict[str, Any]]:
+    """Wrap the JobSpy-based Indeed scanner to match the SearchConfig signature."""
+    from jobpulse.job_scanners.indeed import scan_indeed
+    return scan_indeed(config.titles, config.location, max_results=50)
+
+
+def _scan_google_jobs_wrapper(config: SearchConfig) -> list[dict[str, Any]]:
+    """Wrap the JobSpy-based Google Jobs scanner to match the SearchConfig signature."""
+    from jobpulse.job_scanners.google_jobs import scan_google_jobs
+    return scan_google_jobs(config.titles, config.location, max_results=50)
+
+
 PLATFORM_SCANNERS: dict[str, Any] = {
     "reed": scan_reed,
     "linkedin": scan_linkedin,
-    # Indeed scanning handled by Chrome extension (scanner.js)
-    # TotalJobs/Glassdoor not implemented — stubs removed
+    "indeed": _scan_indeed_wrapper,
+    "google_jobs": _scan_google_jobs_wrapper,
 }
 
 ALL_PLATFORMS: list[str] = list(PLATFORM_SCANNERS.keys())
-QUICK_PLATFORMS: list[str] = ["linkedin", "reed"]
+QUICK_PLATFORMS: list[str] = ["linkedin", "reed", "indeed"]
 
 
 def scan_platforms(platforms: list[str] | None = None) -> list[dict[str, Any]]:

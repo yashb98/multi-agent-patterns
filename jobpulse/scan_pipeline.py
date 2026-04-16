@@ -101,12 +101,12 @@ class MaterialsBundle:
 
     cv_path: Path | None = None
     cv_text: str = ""
-    cover_letter_path: Path | None = None
-    cl_generator: Any = None  # callable → Path | None
+    cover_letter_path: str | None = None
     ats_score: float = 0.0
     matched_project_names: list[str] = field(default_factory=list)
     matched_projects: list[dict] = field(default_factory=list)
     cv_drive_link: str | None = None
+    cl_drive_link: str | None = None
     gate4b_notes: str = ""
     notion_page_id: str | None = None
     notion_status: str = "Ready"
@@ -540,32 +540,29 @@ def generate_materials(
     bundle.ats_score = ats_score
     bundle.matched_projects = matched_projects
 
-    # Cover letter: lazy generation via callback
-    def _make_cl_generator(lst, proj, skills):
-        def _generate():
+    # Cover letter: generate upfront alongside CV
+    cl_path = None
+    cl_drive_link_val = None
+    if cv_path:
+        try:
             cl_path = generate_cover_letter_pdf(
-                company=lst.company,
-                role=lst.title,
-                location=lst.location or "United Kingdom",
-                matched_projects=proj,
-                required_skills=skills,
-                output_dir=str(DATA_DIR / "applications" / lst.job_id),
+                company=listing.company,
+                role=listing.title,
+                location=listing.location or "United Kingdom",
+                matched_projects=matched_projects,
+                required_skills=listing.required_skills + listing.preferred_skills,
+                output_dir=str(DATA_DIR / "applications" / listing.job_id),
             )
             if cl_path:
                 try:
-                    cl_link = upload_cover_letter(cl_path, lst.company)
-                    if cl_link and notion_page_id:
-                        update_application_page(
-                            notion_page_id, cl_drive_link=cl_link, company=lst.company,
-                        )
+                    cl_drive_link_val = upload_cover_letter(cl_path, listing.company)
                 except Exception as e:
-                    logger.warning("scan_pipeline: CL upload failed for %s: %s", lst.company, e)
-            return cl_path
-        return _generate
+                    logger.warning("scan_pipeline: CL upload failed for %s: %s", listing.company, e)
+        except Exception as exc:
+            logger.warning("scan_pipeline: generate_cover_letter_pdf failed for %s: %s", listing.job_id[:8], exc)
 
-    bundle.cl_generator = _make_cl_generator(
-        listing, matched_projects, listing.required_skills + listing.preferred_skills,
-    )
+    bundle.cover_letter_path = str(cl_path) if cl_path else None
+    bundle.cl_drive_link = cl_drive_link_val
 
     # Gate 4 Phase B: CV quality scrutiny
     gate4b_notes = ""
@@ -612,7 +609,7 @@ def generate_materials(
         match_tier=tier,
         matched_projects=matched_project_names,
         cv_path=str(cv_path) if cv_path else None,
-        cover_letter_path=None,
+        cover_letter_path=bundle.cover_letter_path,
         notion_page_id=notion_page_id,
     )
 
@@ -626,7 +623,7 @@ def generate_materials(
                 match_tier=tier,
                 matched_projects=matched_project_names,
                 cv_drive_link=cv_drive_link,
-                cl_drive_link=None,
+                cl_drive_link=cl_drive_link_val,
                 notes=gate4b_notes if gate4b_notes else None,
                 company=listing.company,
             )
@@ -636,9 +633,9 @@ def generate_materials(
                 match_tier=tier,
                 matched_projects=matched_project_names,
                 cv_drive_link=cv_drive_link,
-                cl_drive_link=None,
+                cl_drive_link=cl_drive_link_val,
                 cv_path=str(cv_path) if cv_path else None,
-                cover_letter_path=None,
+                cover_letter_path=bundle.cover_letter_path,
                 gate4_notes=gate4b_notes,
             )
             set_page_content(notion_page_id, page_blocks)
@@ -701,7 +698,7 @@ def route_and_apply(
                 ats_platform=listing.ats_platform,
                 cv_path=bundle.cv_path,
                 cover_letter_path=bundle.cover_letter_path,
-                cl_generator=bundle.cl_generator,
+                cl_generator=None,
                 custom_answers=None,
             )
             if result.get("success"):

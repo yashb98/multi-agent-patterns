@@ -397,11 +397,14 @@ def quality_web_verify(query: str) -> dict:
 
     raw_results = []
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
         with DDGS() as ddgs:
             raw_results = list(ddgs.text(query, max_results=8))
     except ImportError:
-        logger.warning("duckduckgo_search not installed, trying SearXNG fallback")
+        logger.warning("ddgs/duckduckgo_search not installed, trying SearXNG fallback")
     except Exception as e:
         logger.warning("DuckDuckGo search failed for '%s': %s", query, e)
 
