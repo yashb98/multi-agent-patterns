@@ -1,6 +1,6 @@
 # Multi-Agent Orchestration + JobPulse + Knowledge MindGraph
 
-Production autonomous agent system: 4 orchestration patterns, 10+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval, NLP intent classification, AI research blog pipeline.
+Production autonomous agent system: 6 orchestration patterns, 15+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval, NLP intent classification, AI research pipeline with multi-source enrichment.
 
 **~86,500 LOC** | **393 Python files** | **20 databases** | **2266 tests** | **4 dashboards** | **5 Telegram bots** | **3 platforms**
 
@@ -10,7 +10,7 @@ Production autonomous agent system: 4 orchestration patterns, 10+ daily automati
 
 ### 1. Orchestration Engine (patterns/)
 
-Four LangGraph patterns for multi-agent coordination, all with mandatory fact-checking:
+Six LangGraph patterns for multi-agent coordination, all with mandatory fact-checking:
 
 | Pattern | How It Works | Best For |
 |---------|-------------|----------|
@@ -18,6 +18,8 @@ Four LangGraph patterns for multi-agent coordination, all with mandatory fact-ch
 | **Peer Debate** | Agents cross-critique + fact-check each round | Quality-critical tasks |
 | **Dynamic Swarm** | Task queue + runtime re-analysis | Unknown complexity |
 | **Enhanced Swarm** | Swarm + GRPO + persona + RLM + fact-check | Production (used by JobPulse) |
+| **Plan-and-Execute** | Planner decomposes → executor runs steps → replanner adapts | Multi-step reasoning |
+| **Map-Reduce** | Fan-out parallel workers → reduce aggregation | Batch processing, summarization |
 
 **Dual convergence gate:** quality score >= 8.0/10 AND factual accuracy >= 9.5/10. Claim-level verification via research notes + web search + cached facts.
 
@@ -34,7 +36,7 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | Gmail | Classify recruiter emails (rule-based pre-classifier + LLM), send alerts, extract knowledge | 1pm, 3pm, 5pm |
 | Calendar | Today + tomorrow events, 2-hour reminders | 9am, 12pm, 3pm |
 | GitHub | Yesterday's commits (Commits API), trending repos | 8am briefing |
-| arXiv | Daily top 5 AI papers, multi-criteria ranking, multi-source fact-checking, repo health, Notion pages | 7:57am + on demand |
+| arXiv | Daily top 5 AI papers, multi-source trending (HN/Reddit/Bluesky/S2), enrichment (GitHub/S2/HF), Notion pages | 7:57am + on demand |
 | Notion | Tasks: create/complete/remove, dedup, priorities, due dates, subtasks, weekly plan | On demand |
 | Budget | Parse spending/income/savings, 17 categories, recurring, alerts, undo, Notion sync, category sub-pages, item+store NLP, weekly archival, weekly comparison, historical pace alerts, CSV export | On demand |
 | Budget Tracker | Weekly archival (Sunday 7am cron), category sub-page management, weekly comparison engine | Cron + on demand |
@@ -42,7 +44,7 @@ Fully autonomous agents running 24/7 via macOS daemon + cron + GitHub Actions ba
 | Briefing | Collect all agents → RLM synthesis → Telegram | 8:03am daily |
 | Weekly Report | 7-day aggregate across all agents | On demand |
 | Voice Handler | Telegram voice → Whisper transcription → dispatch | On demand |
-| **Job Autopilot** | 4-gate pre-screen → scan → hybrid skill extract → CV/CL → apply | 7am, 10am, 1pm, 4pm, 7pm |
+| **Job Autopilot** | 4-gate pre-screen → scan → hybrid skill extract → CV/CL → Gate 4 quality → apply | 7am, 10am, 1pm, 4pm, 7pm |
 | **Skill Graph Sync** | GitHub repos + resume + past apps → MindGraph skill/project graph | 3am nightly |
 | **Skill Gap Tracker** | Records missing skills across all JDs → CSV export for upskilling | On demand |
 
@@ -55,7 +57,8 @@ Models a senior IT recruiter's 6-30 second screening process. Zero LLM cost — 
 → Gate 1 (kill: seniority ≥5yr, primary lang missing, foreign domain)
 → Gate 2 (must-haves: ≥4/5 top skills, ≥2 projects, ≥20 matches, ≥92% required)
 → Gate 3 (competitiveness 0-100: hard skill 35 + project evidence 25 + coherence 15 + domain 15 + recency 10)
-→ ~3-5 strong matches/day → CV + Cover Letter (ReportLab, instant) → Apply
+→ Gate 4 (Phase A: JD quality + company blocklist | Phase B: deterministic CV scrutiny + LLM FAANG recruiter review ≥7/10)
+→ ~3-5 strong matches/day → CV + Cover Letter (ReportLab, lazy CL generation) → Apply
 ```
 
 **Result:** 96% fewer LLM calls ($0.23/month vs $5.63). Quality over quantity — only genuinely competitive jobs get applications.
@@ -64,7 +67,7 @@ Models a senior IT recruiter's 6-30 second screening process. Zero LLM cost — 
 
 ### Code Intelligence (shared/code_intelligence.py + MCP)
 
-AST-based code graph powering risk-aware review and developer tooling via 13 MCP tools:
+AST-based code graph powering risk-aware review and developer tooling via 20 MCP tools:
 
 | MCP Tool | What It Does | Replaces |
 |----------|-------------|----------|
@@ -81,8 +84,15 @@ AST-based code graph powering risk-aware review and developer tooling via 13 MCP
 | `complexity_hotspots` | High-risk + high fan-in functions | Manual triage |
 | `dependency_cycles` | Circular module dependencies | Manual dependency tracing |
 | `similar_functions` | Semantic duplicate detection | Manual code review |
+| `test_coverage_map` | Test coverage per function | Manual grep through tests |
+| `call_path` | Shortest path between two functions | Manual call tracing |
+| `batch_find` | Find multiple symbols in one call | Multiple grep invocations |
+| `boundary_check` | Validate module dependency direction | Manual import auditing |
+| `suggest_extract` | Suggest function extraction points | Manual refactoring analysis |
+| `rename_preview` | Preview symbol rename impact | Find-and-replace guesswork |
+| `diff_impact` | Blast radius of uncommitted changes | Manual diff + grep |
 
-**4,322 nodes, 22,822 edges.** Risk scoring: security keywords, fan-in, test coverage, function size. `grep_search` wraps ripgrep as subprocess and enriches each match with enclosing function, risk score, and caller count — replacing raw Grep/Glob for all codebase searches. One MCP call replaces 5-15 Grep/Glob/Read calls — saves 10-50k tokens per exploration.
+**19,533 nodes, 302,376 edges.** Risk scoring: security keywords, fan-in, test coverage, function size. `grep_search` wraps ripgrep as subprocess and enriches each match with enclosing function, risk score, and caller count — replacing raw Grep/Glob for all codebase searches. One MCP call replaces 5-15 Grep/Glob/Read calls — saves 10-50k tokens per exploration. Semantic search indexes all Python files and .md docs — find code by meaning, not just text.
 
 ### 3. Knowledge MindGraph (mindgraph_app/)
 
@@ -121,6 +131,7 @@ Four separate bots route messages to dedicated chats:
 | **Budget** | Expenses, income, savings, recurring | `TELEGRAM_BUDGET_BOT_TOKEN`, `TELEGRAM_BUDGET_CHAT_ID` |
 | **Research** | Knowledge queries, MindGraph, trending, arXiv digest | `TELEGRAM_RESEARCH_BOT_TOKEN`, `TELEGRAM_RESEARCH_CHAT_ID` |
 | **Alert** | Gmail alerts, interview notifications | `TELEGRAM_ALERT_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID` |
+| **Jobs** | Job autopilot status, scan results, application approvals | `TELEGRAM_JOBS_BOT_TOKEN`, `TELEGRAM_JOBS_CHAT_ID` |
 
 Each bot is optional -- falls back to the main bot token/chat if not configured.
 
@@ -148,7 +159,11 @@ Message → NLP 3-Tier Classifier (regex → embeddings → LLM)
 
 **RLM** (Recursive Language Model): when context exceeds single LLM capacity, root model writes code that processes chunks via sub-LM calls. Used for deep knowledge queries and briefing synthesis.
 
-**Multi-Source Fact Verification**: 3-level pipeline replaces circular LLM-checks-LLM with honest scoring. Level 1: summary vs abstract (scores 0.5 — self-referential). Level 2: external verification via Semantic Scholar (attribution, dates, citations) + quality web search with source credibility scoring (academic > docs > blogs). Level 3: GitHub repo health check (stars, tests, README, staleness). Abstract-only verification scores 5.0/10, not 10.0 — honest by design. Each paper gets a human-readable explanation: "6.2/10 — 3/4 verified externally, exaggerated: '3x faster' (benchmark shows 2.1x), repo exists but no tests". Ralph Loop stores verification experiences for persona evolution.
+**Multi-Source Fact Verification**: 3-level pipeline replaces circular LLM-checks-LLM with honest scoring. Level 1: summary vs abstract (scores 0.5 — self-referential). Level 2: external verification via Semantic Scholar (attribution, dates, citations) + SearXNG/DuckDuckGo web search with source credibility scoring (academic > docs > blogs). Level 3: GitHub repo health check (stars, tests, README, staleness). Abstract-only verification scores 5.0/10, not 10.0 — honest by design. Each paper gets a human-readable explanation: "6.2/10 — 3/4 verified externally, exaggerated: '3x faster' (benchmark shows 2.1x), repo exists but no tests". Ralph Loop stores verification experiences for persona evolution.
+
+**Multi-Provider LLM Fallback**: automatic failover chain OpenAI → Anthropic → Ollama. Circuit breakers on OpenAI, Notion, and LinkedIn APIs with automatic recovery. CostEnforcer budget cap halts execution when LLM spend exceeds limit. Telegram alerts on cost spikes and API outages.
+
+**SearXNG Integration**: self-hosted meta-search (Docker Compose + Tor sidecar) wired into fact-checker web verification and briefing agent interview prep. SQLite-cached results with smart Tor routing.
 
 **Gmail Pre-Classifier**: rule-based triage eliminates 70-85% of unnecessary LLM calls. 4-tier system: Learning → Static Rules → LLM Fallback → User Feedback. Adaptive audit decay (50% → 10%). Telegram review flow (✅/❌/🔄). Auto-graduates when accuracy exceeds 95%.
 
@@ -208,10 +223,13 @@ python -m jobpulse.runner webhook <url>   # Start webhook server
 python -m jobpulse.runner slack           # Start Slack listener
 python -m jobpulse.runner discord         # Start Discord listener
 python -m jobpulse.runner multi           # All platform listeners
+python -m jobpulse.runner multi-bot      # Start all 5 Telegram bots
+python -m jobpulse.runner stop           # Stop all daemons
 python -m jobpulse.runner profile-sync   # Refresh skill/project graph
 python -m jobpulse.runner skill-gaps     # Show top missing skills + export CSV
 python -m jobpulse.runner skill-gap-export # Export gap report CSV only
-python run_all.py "topic"                 # Compare all 4 patterns
+python -m jobpulse.runner ext-bridge     # Start Chrome extension WebSocket bridge
+python run_all.py "topic"                 # Compare all 6 patterns
 ```
 
 ## Environment Variables
@@ -269,7 +287,7 @@ RLM_MAX_BUDGET=0.10
 
 ## Test Suite
 
-1472 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (fetching, multi-criteria ranking, JSON parsing, storage, fact-check integration), external verifiers (Semantic Scholar, GitHub repo health, quality web search with source credibility), fact-checker (honest scoring, explanation generation, claim routing, multi-source verification, cache), dispatcher routing, swarm logic, GRPO sampling, experience storage, knowledge extraction, email pre-classifier (rules, confidence, evidence, audit, graduation, review flow).
+2266 tests covering command routing, budget parsing (recurring, alerts, undo, item+store NLP, weekly comparison, CSV export, archival), task features (priority, due dates, dedup, subtasks, weekly plan), arXiv agent (fetching, multi-criteria ranking, JSON parsing, storage, fact-check integration), external verifiers (Semantic Scholar, GitHub repo health, quality web search with source credibility), fact-checker (honest scoring, explanation generation, claim routing, multi-source verification, cache), dispatcher routing, swarm logic, GRPO sampling, experience storage, knowledge extraction, email pre-classifier (rules, confidence, evidence, audit, graduation, review flow).
 
 ```bash
 python -m pytest tests/ -v          # Full suite
@@ -291,12 +309,26 @@ All on gpt-4o-mini. Enhanced Swarm on gpt-4o would be ~$9/month.
 | Feature | Status | Doc |
 |---------|--------|-----|
 | **arXiv Blog Pipeline** | Designed | `docs/feature-arxiv-blogpost.md` |
-| **Auto Job Applier** | Designed | `docs/feature-auto-job-applier.md` |
 | **Gmail Smart Filter** | Designed | `docs/feature-gmail-smart-filter.md` |
 
-The blog pipeline uses 5 agents (Deep Reader → GRPO Writer → Fact Checker → Diagram Generator → Editor) to turn research papers into 2000-word publication-ready posts with workflow diagrams on Notion. Fact-checking now uses the unified `shared/fact_checker.py` with web search verification.
+The blog pipeline uses 5 agents (Deep Reader → GRPO Writer → Fact Checker → Diagram Generator → Editor) to turn research papers into 2000-word publication-ready posts with workflow diagrams on Notion. Fact-checking now uses the unified `shared/fact_checker.py` with SearXNG/web search verification.
 
 ## Recent Features
+
+### Papers Pipeline Overhaul (2026-04-15)
+Complete rewrite of the arXiv digest pipeline. Multi-source trending aggregation (Hacker News, Reddit, Bluesky, Semantic Scholar) with tiered fetch and RSS fallback. Enrichment pipeline adds GitHub stars, S2 citation counts, HuggingFace model links, and community buzz scores. Rebalanced `fast_score` weights community, S2, and GitHub signals alongside novelty/significance. Source attribution tracks where each paper was discovered.
+
+### Security Hardening (2026-04-01 → 2026-04-12)
+ATS account passwords encrypted at rest using Fernet (was plaintext SQLite). Prompt injection boundary markers for all LLM prompts. Fixed command injection in terminal tool, path traversal in browser screenshots, and Telegram API parameter injection (CRITICAL — chat_id/text). ToolExecutor sandboxed with deny-by-default approval and sliding-window rate limit. Default `max_tokens=4096` on `get_llm()` prevents unbounded output (OWASP LLM10). Sensitive file permissions script (600).
+
+### Reliability & Observability (2026-04-01 → 2026-04-14)
+Multi-provider LLM fallback chain (OpenAI → Anthropic → Ollama). Circuit breakers on OpenAI, Notion, LinkedIn APIs. CostEnforcer budget cap halts on spend limit. WAL mode on all SQLite connections (prevents SQLITE_BUSY with concurrent bots). Run ID propagation across all agent logs. Retrieval quality metrics (MRR, NDCG@k, recall@k). Telegram alerts for cost spikes and API outages.
+
+### Gate 4 Application Quality Check (2026-04-05)
+Two-phase quality gate after CV generation. Phase A (free, deterministic): JD quality filter (<200 chars, <5 skills, boilerplate), Company Blocklist with Notion curation + spam keyword auto-detect, company background check. Phase B (post-generation): deterministic CV scrutiny (metrics, tone, page limit) + LLM FAANG recruiter review scoring 0-10. Score ≥7 proceeds, <7 goes to Notion "Needs Review" with weaknesses.
+
+### Verification Wall Learning (2026-04-04)
+Universal detector for Cloudflare Turnstile, reCAPTCHA, hCaptcha, text challenges, HTTP 403/429. 17 signals tracked per scan session. Statistical correlation engine identifies risk factors (>50% block rate, ≥3 samples). LLM pattern analyzer (GPT-5o-mini every 5th block, ~$0.002/call). Exponential cooldown: 2hr → 4hr → 48hr. Adaptive params adjust delays and human simulation based on risk level.
 
 ### 4-Gate Pre-Screen + Skill Gap Tracker (2026-03-30)
 Job autopilot now uses a 4-gate recruiter-grade pre-screen modeled after senior IT recruiter behavior. Gate 0: title relevance (pre-LLM). Gate 1: kill signals (seniority, primary language, foreign domain). Gate 2: must-haves (≥4/5 top skills, ≥2 projects with 3+ overlap, ≥20 matches, ≥92% required). Gate 3: competitiveness score (0-100 across 5 dimensions). Hybrid skill extraction uses a 582-entry taxonomy first (free), LLM fallback only when < 10 skills found (15% of JDs). **Result:** 250 → 10-11 LLM calls/day (96% reduction), $5.63 → $0.23/month. Skill gap tracker records every missing skill across all scanned JDs and exports ranked CSV for Google Drive upskilling. 7-day experiment running 2026-03-31 → 2026-04-06.
@@ -330,7 +362,6 @@ Major upgrade to arXiv ranking and fact-checking. **Multi-criteria scoring**: pa
 | Feature | Status | Doc |
 |---------|--------|-----|
 | arXiv Blog Pipeline | Designed | [docs/feature-arxiv-blogpost.md](docs/feature-arxiv-blogpost.md) |
-| Auto Job Applier | Designed | [docs/feature-auto-job-applier.md](docs/feature-auto-job-applier.md) |
 | Gmail Smart Filter | Designed | [docs/feature-gmail-smart-filter.md](docs/feature-gmail-smart-filter.md) |
 | Notion Budget v2 | Implemented | [docs/feature-notion-budget-v2.md](docs/feature-notion-budget-v2.md) |
 | NLP Intent Classification | Implemented | [docs/feature-nlp-intent.md](docs/feature-nlp-intent.md) |
@@ -340,4 +371,8 @@ Major upgrade to arXiv ranking and fact-checking. **Multi-criteria scoring**: pa
 | Hybrid Fact Verification | Implemented | [docs/superpowers/specs/2026-03-28-hybrid-fact-verification-design.md](docs/superpowers/specs/2026-03-28-hybrid-fact-verification-design.md) |
 | Multi-Criteria arXiv Ranking | Implemented | [docs/superpowers/specs/2026-03-28-arxiv-ranking-fact-checking-design.md](docs/superpowers/specs/2026-03-28-arxiv-ranking-fact-checking-design.md) |
 | 4-Gate Pre-Screen Pipeline | Implemented | [docs/superpowers/specs/2026-03-30-job-pipeline-api-optimization-design.md](docs/superpowers/specs/2026-03-30-job-pipeline-api-optimization-design.md) |
-| Brutal Pre-Screen 7-Day Experiment | Running | [docs/experiments/2026-03-30-brutal-prescreen-7day.md](docs/experiments/2026-03-30-brutal-prescreen-7day.md) |
+| Papers Pipeline Overhaul | Implemented | [docs/superpowers/specs/2026-04-15-paper-pipeline-overhaul-design.md](docs/superpowers/specs/2026-04-15-paper-pipeline-overhaul-design.md) |
+| Code Intelligence | Implemented | [docs/superpowers/specs/2026-04-04-code-intelligence-design.md](docs/superpowers/specs/2026-04-04-code-intelligence-design.md) |
+| Chrome Extension Job Engine | Implemented | [docs/superpowers/specs/2026-04-03-chrome-extension-job-engine-design.md](docs/superpowers/specs/2026-04-03-chrome-extension-job-engine-design.md) |
+| LinkedIn Live Apply | Implemented | [docs/superpowers/specs/2026-04-01-linkedin-live-apply-design.md](docs/superpowers/specs/2026-04-01-linkedin-live-apply-design.md) |
+| Semantic Search Upgrade | Implemented | [docs/superpowers/specs/2026-04-05-semantic-search-upgrade-design.md](docs/superpowers/specs/2026-04-05-semantic-search-upgrade-design.md) |
