@@ -9,14 +9,9 @@ from shared.telegram_client import telegram_url
 logger = get_logger(__name__)
 
 
-def send_message(text: str, chat_id: str = None) -> bool:
-    """Send a message to Telegram. Returns True on success."""
-    cid = chat_id or TELEGRAM_CHAT_ID
-    if not TELEGRAM_BOT_TOKEN or not cid:
-        logger.warning("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
-        return False
-
-    payload = json.dumps({"chat_id": cid, "text": text})
+def _send_single(text: str, chat_id: str) -> bool:
+    """Send a single message chunk to Telegram."""
+    payload = json.dumps({"chat_id": chat_id, "text": text})
     try:
         result = subprocess.run(
             ["curl", "-s", "-X", "POST",
@@ -33,6 +28,40 @@ def send_message(text: str, chat_id: str = None) -> bool:
     except Exception as e:
         logger.error("Failed: %s", e)
         return False
+
+
+MAX_MSG_LEN = 4096
+
+
+def send_message(text: str, chat_id: str = None) -> bool:
+    """Send a message to Telegram. Splits at section boundaries if >4096 chars."""
+    cid = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not cid:
+        logger.warning("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+        return False
+
+    if len(text) <= MAX_MSG_LEN:
+        return _send_single(text, cid)
+
+    # Split on section separator lines, keeping them as part of each chunk
+    chunks = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = current + line + "\n" if current else line + "\n"
+        if len(candidate) > MAX_MSG_LEN:
+            if current:
+                chunks.append(current.rstrip("\n"))
+            current = line + "\n"
+        else:
+            current = candidate
+    if current.strip():
+        chunks.append(current.rstrip("\n"))
+
+    success = True
+    for chunk in chunks:
+        if not _send_single(chunk, cid):
+            success = False
+    return success
 
 
 def send_chat_action(action: str = "typing", chat_id: str = None) -> bool:

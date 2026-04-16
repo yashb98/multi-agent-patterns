@@ -1,60 +1,55 @@
 name: Morning Briefing (Backup)
 
-# Backup plan: runs if Mac is asleep/offline.
-# Primary plan is the local daemon + cron.
-# This only triggers if the health check detects the daemon is down.
+# Backup: only sends a fallback if local daemon didn't send the briefing.
+# The full briefing requires local DBs, OAuth tokens, and langchain —
+# it cannot run on GitHub Actions. This workflow only sends a nudge.
 
 on:
   schedule:
-    # 8:03 AM UTC (adjust for your timezone)
+    # 8:03 AM UTC (same time as local cron — local wins if both fire)
     - cron: '3 8 * * *'
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
 
 env:
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
   TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-  NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-  NOTION_TASKS_DB_ID: ${{ secrets.NOTION_TASKS_DB_ID }}
-  NOTION_RESEARCH_DB_ID: ${{ secrets.NOTION_RESEARCH_DB_ID }}
-  NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
-  GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
-  GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
 
 jobs:
   briefing:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: pip install python-dotenv openai google-api-python-client google-auth-oauthlib
-
-      - name: Check if local daemon is alive
-        id: health
+      - name: Wait for local daemon to send first
         run: |
-          # Check heartbeat via Telegram — ask daemon to respond
-          # If daemon is alive, skip this workflow
-          RESULT=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=-1&timeout=2" || echo "{}")
-          echo "daemon_check=done" >> $GITHUB_OUTPUT
+          # Give the local cron 90 seconds head start
+          echo "Waiting 90s for local daemon..."
+          sleep 90
 
-      - name: Run morning briefing
-        run: python -m jobpulse.runner briefing
-        continue-on-error: true
-
-      - name: Run GitHub commits check
+      - name: Check if local daemon sent briefing
+        id: check
         run: |
-          # GitHub agent uses gh CLI which isn't authed in Actions
-          # Use direct API instead
-          python -c "
-          from jobpulse.github_agent import get_yesterday_commits, format_commits
-          data = get_yesterday_commits()
-          print(format_commits(data))
-          " || echo "GitHub check skipped (no gh auth)"
-        continue-on-error: true
+          UPDATES=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=-10&timeout=2")
+          RESULT=$(echo "$UPDATES" | python3 -c "
+          import json, sys, time
+          data = json.load(sys.stdin)
+          now = time.time()
+          cutoff = now - 300  # 5 minutes ago
+          for u in data.get('result', []):
+              msg = u.get('message', {}) or u.get('channel_post', {})
+              ts = msg.get('date', 0)
+              text = msg.get('text', '')
+              if ts > cutoff and 'Good Morning' in text:
+                  print('skip')
+                  sys.exit(0)
+          print('run')
+          " 2>/dev/null || echo "run")
+
+          echo "should_run=$RESULT" >> $GITHUB_OUTPUT
+
+      - name: Send fallback nudge
+        if: steps.check.outputs.should_run == 'run'
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"☀️ Morning! Your local briefing didn't fire today. Run 'briefing' on Telegram to get it.\"}"

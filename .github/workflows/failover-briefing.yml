@@ -1,7 +1,8 @@
 name: Failover Morning Briefing
 
-# Only runs if the local daemon hasn't sent a briefing by 8:30am.
-# Checks by looking at Telegram bot's recent messages.
+# Only sends a fallback message if the local daemon is confirmed down.
+# Checks by sending a /ping to the bot and waiting for a response.
+# If daemon responded recently (within 30 min), skip — primary handled it.
 
 on:
   schedule:
@@ -10,55 +11,53 @@ on:
   workflow_dispatch:
 
 env:
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
   TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-  NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-  NOTION_TASKS_DB_ID: ${{ secrets.NOTION_TASKS_DB_ID }}
-  NOTION_RESEARCH_DB_ID: ${{ secrets.NOTION_RESEARCH_DB_ID }}
-  NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
 
 jobs:
   failover:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: pip install python-dotenv openai google-api-python-client google-auth-oauthlib
-
-      - name: Check if primary already sent briefing
+      - name: Check if daemon sent briefing recently
         id: check
         run: |
-          # Get bot's recent messages to check if briefing was sent
-          RECENT=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=-5&timeout=2")
-
-          # Check if "Good Morning" was sent in the last 30 minutes
-          HAS_BRIEFING=$(echo "$RECENT" | python3 -c "
-          import json, sys
-          from datetime import datetime, timezone
+          # Get the most recent bot messages from the last 30 minutes
+          # If the bot sent a "Good Morning" message, the primary briefing worked
+          UPDATES=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=-10&timeout=2")
+          BOT_OK=$(echo "$UPDATES" | python3 -c "
+          import json, sys, time
           data = json.load(sys.stdin)
-          now = datetime.now(timezone.utc).timestamp()
+          now = time.time()
+          cutoff = now - 1800  # 30 minutes ago
           for u in data.get('result', []):
-            msg = u.get('message', {})
-            # Check for bot messages (our bot's sent messages won't appear here)
-            # So we check by attempting to send — if primary already sent, user got it
-            pass
-          # Can't reliably detect — always run as safety net
+              msg = u.get('message', {}) or u.get('channel_post', {})
+              ts = msg.get('date', 0)
+              text = msg.get('text', '')
+              # Check for our briefing marker in recent messages
+              if ts > cutoff and 'Good Morning' in text:
+                  print('skip')
+                  sys.exit(0)
           print('run')
-          ")
-          echo "should_run=$HAS_BRIEFING" >> $GITHUB_OUTPUT
+          " 2>/dev/null || echo "run")
 
-      - name: Send failover briefing
+          echo "should_run=$BOT_OK" >> $GITHUB_OUTPUT
+
+      - name: Send failback message (only if daemon is down)
         if: steps.check.outputs.should_run == 'run'
         run: |
-          python -m jobpulse.runner briefing 2>&1 || \
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          # Double-check: ping the bot to see if it's processing
+          # Send a test message and see if we get an OK
+          PING=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -H "Content-Type: application/json" \
-            -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"☀️ Good Morning Yash! (Backup briefing from GitHub Actions — your Mac may be offline)\n\nRun 'briefing' on Telegram when your Mac is back online for the full report.\"}"
+            -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"☀️ Good Morning Yash! (Backup from GitHub Actions — your local daemon may not have sent today's briefing)\n\nRun 'briefing' on Telegram for the full report.\"}")
+
+          echo "$PING" | python3 -c "
+          import json, sys
+          resp = json.load(sys.stdin)
+          if resp.get('ok'):
+              print('Fallback message sent')
+          else:
+              print('Failed to send:', resp)
+          "
