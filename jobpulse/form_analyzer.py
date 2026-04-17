@@ -630,36 +630,58 @@ def deterministic_fill(
 # Phase 2: LLM for remaining fields (with real dropdown options)
 # ---------------------------------------------------------------------------
 
+def _format_single_field(index: int, f: FieldInfo) -> str:
+    """Format a single field for the LLM prompt."""
+    label = _clean_label(f)
+    desc = f"\nField {index + 1}:"
+    desc += f"\n  selector: {f.selector}"
+    desc += f"\n  type: {f.input_type}"
+    desc += f"\n  label: {label!r}"
+    if f.required:
+        desc += "\n  required: YES"
+    if f.current_value and f.current_value.strip().lower() not in _PLACEHOLDER_VALUES:
+        desc += f"\n  current_value: {f.current_value!r} (ALREADY FILLED)"
+    if f.options:
+        desc += f"\n  options: {f.options}"
+    dom_ctx = getattr(f, "dom_context", "") or ""
+    if dom_ctx:
+        desc += f"\n  dom_context: {dom_ctx!r}"
+    if f.help_text:
+        desc += f"\n  help_text: {f.help_text!r}"
+    if f.group_label:
+        desc += f"\n  group_label: {f.group_label!r}"
+    if f.fieldset_legend:
+        desc += f"\n  fieldset_legend: {f.fieldset_legend!r}"
+    if f.error_text:
+        desc += f"\n  error: {f.error_text!r}"
+    label_sources = getattr(f, "label_sources", None)
+    if label_sources:
+        desc += f"\n  label_sources: {label_sources}"
+    return desc
+
+
 def _build_fields_description(fields: list[FieldInfo]) -> str:
-    """Build field descriptions for the LLM — only unmatched fields."""
-    parts: list[str] = []
+    """Build field descriptions for the LLM — grouped by group_label when available."""
+    grouped: dict[str, list[tuple[int, FieldInfo]]] = {}
+    ungrouped: list[tuple[int, FieldInfo]] = []
+
     for i, f in enumerate(fields):
-        label = _clean_label(f)
-        desc = f"Field {i + 1}:"
-        desc += f"\n  selector: {f.selector}"
-        desc += f"\n  type: {f.input_type}"
-        desc += f"\n  label: {label!r}"
-        if f.required:
-            desc += "\n  required: YES"
-        if f.current_value and f.current_value.strip().lower() not in _PLACEHOLDER_VALUES:
-            desc += f"\n  current_value: {f.current_value!r} (ALREADY FILLED)"
-        if f.options:
-            desc += f"\n  options: {f.options}"
-        dom_ctx = getattr(f, "dom_context", "") or ""
-        if dom_ctx:
-            desc += f"\n  dom_context: {dom_ctx!r}"
-        if f.help_text:
-            desc += f"\n  help_text: {f.help_text!r}"
         if f.group_label:
-            desc += f"\n  group_label: {f.group_label!r}"
-        if f.fieldset_legend:
-            desc += f"\n  fieldset_legend: {f.fieldset_legend!r}"
-        if f.error_text:
-            desc += f"\n  error: {f.error_text!r}"
-        label_sources = getattr(f, "label_sources", None)
-        if label_sources:
-            desc += f"\n  label_sources: {label_sources}"
-        parts.append(desc)
+            grouped.setdefault(f.group_label, []).append((i, f))
+        else:
+            ungrouped.append((i, f))
+
+    parts: list[str] = []
+
+    for group_label, group_fields in grouped.items():
+        group_desc = f"=== Field Group: {group_label} ==="
+        for i, f in group_fields:
+            group_desc += _format_single_field(i, f)
+        parts.append(group_desc)
+
+    for i, f in ungrouped:
+        parts.append(_format_single_field(i, f).lstrip("\n"))
+
     return "\n\n".join(parts) if parts else "(no fields)"
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from jobpulse.ext_models import Action, FieldInfo, PageSnapshot
-from jobpulse.form_analyzer import deterministic_fill, _match_to_available_options
+from jobpulse.form_analyzer import deterministic_fill, _match_to_available_options, _build_fields_description
 
 
 class TestMatchToAvailableOptions:
@@ -126,3 +126,36 @@ class TestConfidenceScoring:
         snap = _make_snapshot([_make_field("#email", "Confirm Email Address")])
         actions = deterministic_fill(snap)
         assert len(actions) == 1
+
+
+class TestGroupedFieldsDescription:
+    def test_fields_grouped_by_group_label(self):
+        fields = [
+            _make_field("#line1", "Address Line 1"),
+            _make_field("#city", "City"),
+            _make_field("#postcode", "Postcode"),
+        ]
+        for f in fields:
+            f.group_label = "Home Address"
+        desc = _build_fields_description(fields)
+        assert "Home Address" in desc
+        assert "=== Field Group:" in desc
+
+    def test_ungrouped_fields_still_work(self):
+        fields = [_make_field("#email", "Email")]
+        desc = _build_fields_description(fields)
+        assert "Email" in desc
+
+    def test_mixed_grouped_and_ungrouped(self):
+        fields = [
+            _make_field("#line1", "Address Line 1"),
+            _make_field("#email", "Email"),
+        ]
+        fields[0].group_label = "Address"
+        desc = _build_fields_description(fields)
+        assert "=== Field Group: Address ===" in desc
+        assert "Email" in desc
+
+    def test_empty_fields_list(self):
+        desc = _build_fields_description([])
+        assert desc == "(no fields)"
