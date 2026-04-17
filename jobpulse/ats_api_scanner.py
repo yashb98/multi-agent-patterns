@@ -24,6 +24,7 @@ _PATTERNS = {
     "greenhouse": re.compile(r"(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io/([^/?#]+)"),
     "ashby": re.compile(r"jobs\.ashbyhq\.com/([^/?#]+)"),
     "lever": re.compile(r"jobs\.lever\.co/([^/?#]+)"),
+    "workday": re.compile(r"([a-z0-9_-]+)\.wd\d+\.myworkdayjobs\.com"),
 }
 
 
@@ -84,6 +85,21 @@ def parse_lever(data: list, company: str) -> list[dict]:
     return jobs
 
 
+def parse_workday(data: dict, company: str, host: str, site: str) -> list[dict]:
+    jobs = []
+    for job in data.get("jobPostings", []):
+        path = job.get("externalPath", "")
+        url = f"https://{host}{path}" if path else ""
+        jobs.append({
+            "title": job.get("title", ""),
+            "url": url,
+            "company": company,
+            "location": job.get("locationsText", ""),
+            "platform": "workday",
+        })
+    return jobs
+
+
 # ---------------------------------------------------------------------------
 # API callers
 # ---------------------------------------------------------------------------
@@ -136,6 +152,23 @@ def scan_lever(slug: str, company: str, client: Optional[httpx.Client] = None) -
             client.close()
 
 
+def scan_workday(slug: str, company: str, host: str, site: str, client: Optional[httpx.Client] = None) -> list[dict]:
+    url = f"https://{host}/wday/cxs/{slug}/{site}/jobs"
+    payload = {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": ""}
+    _close = client is None
+    client = client or httpx.Client(timeout=_TIMEOUT)
+    try:
+        resp = client.post(url, json=payload)
+        resp.raise_for_status()
+        return parse_workday(resp.json(), company, host, site)
+    except Exception as exc:
+        logger.warning("workday scan failed for %s: %s", slug, exc)
+        return []
+    finally:
+        if _close:
+            client.close()
+
+
 # ---------------------------------------------------------------------------
 # Unified scanner
 # ---------------------------------------------------------------------------
@@ -152,4 +185,10 @@ def scan_ats_api(url: str, company: str) -> list[dict]:
         return scan_ashby(slug, company)
     if provider == "lever":
         return scan_lever(slug, company)
+    if provider == "workday":
+        m = _PATTERNS["workday"].search(url)
+        host = m.group(0) if m else ""
+        path_parts = url.split(host)[-1].strip("/").split("/")
+        site = path_parts[0] if path_parts and path_parts[0] else "External"
+        return scan_workday(slug, company, host, site)
     return []

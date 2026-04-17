@@ -62,7 +62,7 @@ CLI uses direct SQLite (~50ms) vs `python -m` path (~4s, heavy `shared/__init__.
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~87,000 LOC | 395 Python files | 20 databases | 2276 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~87,000 LOC | 396 Python files | 20 databases | 2280 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
