@@ -2239,9 +2239,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case "analyze_field": {
         // Tier 3: try Prompt API first, fall back to Writer API for textarea
-        let answer = await analyzeFieldLocally(payload.question, payload.input_type, payload.options || []);
+        let answer = await analyzeFieldLocally(
+          payload.question, payload.input_type,
+          payload.options || [], payload.job_context || null
+        );
         if (!answer && payload.input_type === "textarea") {
-          answer = await writeShortAnswer(payload.question);
+          answer = await writeShortAnswer(payload.question, payload.job_context || null);
         }
         result = { success: !!answer, answer: answer || "" };
         break;
