@@ -22,6 +22,19 @@ from unittest.mock import patch, MagicMock
 os.environ["JOBPULSE_TEST_MODE"] = "1"
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live: requires live API access (skipped by default, run with -m live)")
+    config.addinivalue_line("markers", "slow: marks tests as slow-running")
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("-m", default=""):
+        skip_live = pytest.mark.skip(reason="live tests require -m live")
+        for item in items:
+            if "live" in item.keywords:
+                item.add_marker(skip_live)
+
+
 @pytest.fixture
 def mock_openai():
     """Mock OpenAI client for LLM calls."""

@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import pytest
+from unittest.mock import patch
 
 from jobpulse.ext_models import Action, ButtonInfo, FieldInfo, PageSnapshot, VerificationWall
 from jobpulse.state_machines import (
@@ -490,7 +491,11 @@ class TestActionGeneration:
         )
         assert actions == []
 
-    def test_screening_select_generates_select_action(self):
+    @patch(
+        "jobpulse.form_analyzer.analyze_form_page",
+        return_value=[Action(type="select", selector="#exp", value="2")],
+    )
+    def test_screening_select_generates_select_action(self, mock_afp):
         machine = GenericStateMachine()
         snap = _snap(
             fields=[

@@ -96,7 +96,8 @@ def bridge():
 
 
 @pytest.fixture
-def orchestrator(bridge, tmp_path):
+def orchestrator(bridge, tmp_path, monkeypatch):
+    monkeypatch.setenv("ATS_ENCRYPTION_KEY", "test-key-for-encryption-32bytes!")
     from jobpulse.account_manager import AccountManager
     from jobpulse.navigation_learner import NavigationLearner
 
