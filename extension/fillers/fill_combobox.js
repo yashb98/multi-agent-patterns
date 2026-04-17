@@ -44,6 +44,54 @@ function clickTargets(targets) {
   }
 }
 
+function _findScopedPanel(triggerEl) {
+  for (const attr of ["aria-owns", "aria-controls"]) {
+    const panelId = triggerEl.getAttribute(attr);
+    if (panelId) {
+      const panel = document.getElementById(panelId);
+      if (panel) return panel;
+    }
+  }
+
+  let parent = triggerEl.parentElement;
+  for (let d = 0; d < 4 && parent; d++, parent = parent.parentElement) {
+    for (const attr of ["aria-owns", "aria-controls"]) {
+      const panelId = parent.getAttribute(attr);
+      if (panelId) {
+        const panel = document.getElementById(panelId);
+        if (panel) return panel;
+      }
+    }
+    if (parent.getAttribute("role") === "combobox") break;
+  }
+
+  const dataAttrs = ["data-listbox-id", "data-popper-reference-hidden"];
+  for (const attr of dataAttrs) {
+    const val = triggerEl.getAttribute(attr);
+    if (val) {
+      const panel = document.getElementById(val);
+      if (panel) return panel;
+    }
+  }
+
+  return null;
+}
+
+function _collectScopedOptions(panel) {
+  const results = [];
+  if (!panel) return results;
+  for (const optSel of OPTION_SELECTORS) {
+    for (const opt of panel.querySelectorAll(optSel)) {
+      const text = opt.textContent.trim();
+      if (text && text.length < 200 && !PLACEHOLDER_VALUES.has(text.toLowerCase())) {
+        results.push({ el: opt, text });
+      }
+    }
+    if (results.length > 0) break;
+  }
+  return results;
+}
+
 /**
  * Fill a combobox/custom dropdown by clicking it open, scanning the entire
  * document for the floating option panel, and selecting the best match.
@@ -75,9 +123,43 @@ async function fillCombobox(selector, value) {
     await JP.dom.delay(150);
   }
 
-  // Search the ENTIRE document for floating dropdown panels with options
   const valueLower = value.toLowerCase().trim();
-  let allOptions = [];
+
+  // ── Try scoped search first (ARIA-linked panel) ──
+  const scopedPanel = _findScopedPanel(el);
+  let allOptions = _collectScopedOptions(scopedPanel);
+
+  if (allOptions.length > 0) {
+    for (const { el: opt, text } of allOptions) {
+      if (text.toLowerCase() === valueLower) {
+        await JP.cursor.moveCursorTo(opt);
+        JP.cursor.cursorClickFlash();
+        opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        opt.click();
+        await JP.dom.delay(200);
+        return { success: true, value_set: text, match: "scoped_exact", value_verified: true };
+      }
+    }
+    for (const { el: opt, text } of allOptions) {
+      const textLower = text.toLowerCase();
+      if (textLower.startsWith(valueLower) || valueLower.startsWith(textLower) ||
+          textLower.includes(valueLower) || valueLower.includes(textLower)) {
+        await JP.cursor.moveCursorTo(opt);
+        JP.cursor.cursorClickFlash();
+        opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        opt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        opt.click();
+        await JP.dom.delay(200);
+        return { success: true, value_set: text, match: "scoped_partial", value_verified: true };
+      }
+    }
+  }
+
+  // ── Fallback: search the ENTIRE document for floating dropdown panels ──
+  allOptions = [];
 
   for (const optSel of OPTION_SELECTORS) {
     const opts = document.querySelectorAll(optSel);
@@ -226,4 +308,4 @@ async function revealOptions(selector) {
   return { success: true, options, selector };
 }
 
-window.JobPulse.fillers.combobox = { fillCombobox, revealOptions };
+window.JobPulse.fillers.combobox = { fillCombobox, revealOptions, _findScopedPanel, _collectScopedOptions };
