@@ -39,13 +39,13 @@ export async function initPhases() {
       } else {
         // Create default phases for known platforms
         const defaultPhases = {
-          linkedin: { current: 'observation', stats: { ...DEFAULT_STATS } },
-          indeed: { current: 'observation', stats: { ...DEFAULT_STATS } },
+          linkedin: { current: 'dry_run', stats: { ...DEFAULT_STATS } },
+          indeed: { current: 'dry_run', stats: { ...DEFAULT_STATS } },
           workday: { current: 'observation', stats: { ...DEFAULT_STATS } },
           glassdoor: { current: 'observation', stats: { ...DEFAULT_STATS } },
-          reed: { current: 'observation', stats: { ...DEFAULT_STATS } },
-          greenhouse: { current: 'observation', stats: { ...DEFAULT_STATS } },
-          lever: { current: 'observation', stats: { ...DEFAULT_STATS } },
+          reed: { current: 'dry_run', stats: { ...DEFAULT_STATS } },
+          greenhouse: { current: 'dry_run', stats: { ...DEFAULT_STATS } },
+          lever: { current: 'dry_run', stats: { ...DEFAULT_STATS } },
           generic: { current: 'observation', stats: { ...DEFAULT_STATS } }
         };
 
@@ -501,6 +501,28 @@ export async function resetPlatform(platform) {
   phases[platform].stats = { ...DEFAULT_STATS };
 
   await _savePhases(phases);
+}
+
+/**
+ * Force a platform to a specific phase (testing/manual override)
+ *
+ * @param {string} platform - Platform identifier
+ * @param {string} phase - Target phase
+ * @returns {Promise<{from: string, to: string, error?: string}>}
+ */
+export async function forcePhase(platform, phase) {
+  if (!PHASE_ORDER.includes(phase)) {
+    return { from: 'unknown', to: 'unknown', error: 'Invalid phase' };
+  }
+  const phases = await _getPhases();
+  if (!phases[platform]) {
+    phases[platform] = { current: 'observation', stats: { ...DEFAULT_STATS } };
+  }
+  const from = phases[platform].current;
+  phases[platform].current = phase;
+  phases[platform].stats = { ...DEFAULT_STATS };
+  await _savePhases(phases);
+  return { from, to: phase };
 }
 
 /**
