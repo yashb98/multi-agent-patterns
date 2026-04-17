@@ -239,6 +239,19 @@ class FormFiller:
                         return {"success": False, "error": f"Critical field failed: {sel}", "screenshot": last_screenshot}
                     logger.warning("  Action %d/%d failed: %s — %r", i + 1, len(actions), atype, exc)
 
+            # ── Post-fill verification: check that values stuck ──
+            if filled_selectors:
+                try:
+                    await asyncio.sleep(0.5)
+                    verify_snap = self._to_page_snapshot(
+                        self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                    )
+                    retries = await self._verify_filled_fields(filled_selectors, actions, verify_snap)
+                    if retries > 0:
+                        logger.info("  Post-fill verification: retried %d empty fields", retries)
+                except (TimeoutError, ConnectionError):
+                    pass  # Non-critical — proceed without verification
+
             try:
                 screenshot_bytes = await self.driver.screenshot()
             except (TimeoutError, ConnectionError):
@@ -469,6 +482,44 @@ class FormFiller:
         logger.info("Two-phase fill: %d det (done) + %d llm + %d uploads = %d remaining",
                      len(det_actions), len(llm_actions), len(upload_actions), len(combined))
         return combined
+
+    async def _verify_filled_fields(
+        self,
+        filled_selectors: set[str],
+        actions: list,
+        snapshot,
+    ) -> int:
+        """Verify filled fields have values, retry empty ones. Returns retry count."""
+        if not filled_selectors:
+            return 0
+
+        retry_count = 0
+        action_map = {}
+        for a in actions:
+            sel = getattr(a, "selector", None) or (a.get("selector") if isinstance(a, dict) else None)
+            if sel:
+                action_map[sel] = a
+
+        for field in snapshot.fields:
+            if field.selector not in filled_selectors:
+                continue
+            if field.input_type == "file":
+                continue
+            if field.current_value and field.current_value.strip():
+                continue
+
+            original_action = action_map.get(field.selector)
+            if not original_action:
+                continue
+
+            logger.info("  Verify: %s is empty after fill — retrying", field.selector[:40])
+            try:
+                await self.executor.execute_action_with_retry(original_action)
+                retry_count += 1
+            except (TimeoutError, ConnectionError) as exc:
+                logger.warning("  Verify retry failed for %s: %s", field.selector[:40], exc)
+
+        return retry_count
 
 
 # ── Module-level utilities ──
