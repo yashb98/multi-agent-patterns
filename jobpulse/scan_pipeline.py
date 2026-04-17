@@ -704,7 +704,13 @@ def route_and_apply(
                 cv_path=bundle.cv_path,
                 cover_letter_path=bundle.cover_letter_path,
                 cl_generator=None,
-                custom_answers=None,
+                custom_answers={
+                    "_job_context": {
+                        "job_title": listing.title,
+                        "company": listing.company,
+                        "location": listing.location,
+                    },
+                },
             )
             if result.get("success"):
                 applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")

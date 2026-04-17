@@ -525,6 +525,13 @@ def apply_job_endpoint(req: ApplyJobRequest) -> ApplyJobResponse:
             cover_letter_path=cl_path,
             cl_generator=cl_generator,
             dry_run=req.dry_run,
+            custom_answers={
+                "_job_context": {
+                    "job_title": req.role or "",
+                    "company": req.company or "",
+                    "location": "",
+                },
+            },
         )
     except Exception as exc:
         logger.error("apply endpoint: apply_job failed: %s", exc)

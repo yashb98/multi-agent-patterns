@@ -417,7 +417,13 @@ def approve_jobs(args: str) -> str:
                 ats_platform=ats_platform,
                 cv_path=cv_path or Path("/dev/null"),
                 cover_letter_path=cover_letter_path,
-                custom_answers=None,
+                custom_answers={
+                    "_job_context": {
+                        "job_title": job.get("title", ""),
+                        "company": job.get("company", ""),
+                        "location": (listing_row or {}).get("location", ""),
+                    },
+                },
                 engine=engine_override,
             )
 
