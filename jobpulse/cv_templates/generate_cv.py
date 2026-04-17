@@ -544,3 +544,38 @@ def generate_cv_pdf(
     doc.build(el)
     logger.info("CV generated: %s", cv_path)
     return cv_path
+
+
+# ---------------------------------------------------------------------------
+# ATS Unicode normalization
+# ---------------------------------------------------------------------------
+
+_UNICODE_REPLACEMENTS: dict[str, str] = {
+    "\u2014": "-",
+    "\u2013": "-",
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201C": '"',
+    "\u201D": '"',
+    "\u2026": "...",
+    "\u00A0": " ",
+    "\u200B": "",
+    "\u200C": "",
+    "\u200D": "",
+    "\u2060": "",
+    "\uFEFF": "",
+}
+
+
+def normalize_text_for_ats(text: str) -> tuple[str, dict[str, int]]:
+    """Replace Unicode characters that ATS parsers handle poorly.
+
+    Returns (normalized_text, replacement_counts).
+    """
+    counts: dict[str, int] = {}
+    for char, replacement in _UNICODE_REPLACEMENTS.items():
+        n = text.count(char)
+        counts[char] = n
+        if n:
+            text = text.replace(char, replacement)
+    return text, counts
