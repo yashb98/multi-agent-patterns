@@ -54,6 +54,11 @@ from jobpulse.job_notion_sync import (
 from jobpulse.job_scanner import check_liveness_batch, scan_platforms
 from jobpulse.recruiter_screen import gate0_title_relevance
 from jobpulse.ats_scorer import score_ats
+from jobpulse.pipeline_hooks import (
+    enhanced_generate_materials,
+    with_ghost_detection,
+    with_archetype_detection,
+)
 
 logger = get_logger(__name__)
 
