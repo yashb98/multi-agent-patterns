@@ -1,0 +1,20 @@
+{
+  "_comment": "Company-to-ATS mapping. Auto-detected from careers URLs, manually editable.",
+  "anthropic": {"ats": "ashby", "slug": "anthropic"},
+  "stripe": {"ats": "greenhouse", "slug": "stripe"},
+  "figma": {"ats": "greenhouse", "slug": "figma"},
+  "notion": {"ats": "greenhouse", "slug": "notion-hq"},
+  "datadog": {"ats": "greenhouse", "slug": "datadog"},
+  "mongodb": {"ats": "greenhouse", "slug": "mongodb"},
+  "vercel": {"ats": "greenhouse", "slug": "vercel"},
+  "hashicorp": {"ats": "greenhouse", "slug": "hashicorp"},
+  "cloudflare": {"ats": "greenhouse", "slug": "cloudflare"},
+  "twilio": {"ats": "greenhouse", "slug": "twilio"},
+  "plaid": {"ats": "lever", "slug": "plaid"},
+  "netflix": {"ats": "lever", "slug": "netflix"},
+  "gusto": {"ats": "lever", "slug": "gusto"},
+  "cockroachlabs": {"ats": "lever", "slug": "cockroach-labs"},
+  "ramp": {"ats": "ashby", "slug": "ramp"},
+  "scale": {"ats": "ashby", "slug": "scaleai"},
+  "deepmind": {"ats": "workday", "slug": "deepmind"}
+}
