@@ -108,3 +108,21 @@ class TestDeterministicFill:
         snap = _make_snapshot([_make_field("#cv", "Resume", input_type="file")])
         actions = deterministic_fill(snap)
         assert len(actions) == 0
+
+
+class TestConfidenceScoring:
+    def test_specific_pattern_wins_over_generic(self):
+        snap = _make_snapshot([_make_field("#pname", "Passport First Name")])
+        actions = deterministic_fill(snap)
+        assert len(actions) == 1
+        # Should match the more specific "passport first name" pattern
+
+    def test_generic_name_still_matches(self):
+        snap = _make_snapshot([_make_field("#name", "Name")])
+        actions = deterministic_fill(snap)
+        assert len(actions) == 1
+
+    def test_longer_pattern_preferred(self):
+        snap = _make_snapshot([_make_field("#email", "Confirm Email Address")])
+        actions = deterministic_fill(snap)
+        assert len(actions) == 1

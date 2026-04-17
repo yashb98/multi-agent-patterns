@@ -593,28 +593,34 @@ def deterministic_fill(
                 logger.info("  DET → %s = %s (phone from context)", field.selector[:40], PROFILE["phone"])
                 continue
 
-        # Try deterministic rules
+        # Try deterministic rules — best-match: longest pattern wins
+        best_match: tuple[str, str, str, int] | None = None
         for pattern, value, atype in _DETERMINISTIC_RULES:
             if re.search(pattern, label_lower, re.IGNORECASE):
                 if not value:
-                    break  # Skip empty values
-                # Remap action type based on actual field type
-                ftype = field.input_type
-                role = field.attributes.get("role", "")
-                is_combobox = role == "combobox" or ftype in ("search_autocomplete", "combobox", "custom_select")
-                if is_combobox and atype == "fill":
-                    atype = "fill_combobox"
-                elif not is_combobox and atype == "fill_combobox":
-                    atype = "fill"  # Text field, not a combobox
-                if ftype == "rich_text" and atype == "fill":
-                    atype = "fill_contenteditable"
+                    best_match = None
+                    break
+                specificity = len(pattern)
+                if best_match is None or specificity > best_match[3]:
+                    best_match = (pattern, value, atype, specificity)
 
-                if atype in ("fill_combobox", "select") and field.options:
-                    value = _match_to_available_options(value, field.options)
-                actions.append(Action(type=atype, selector=field.selector, value=value))
-                matched_selectors.add(field.selector)
-                logger.info("  DET → %s [%s] = %s", field.selector[:40], atype, value[:60])
-                break
+        if best_match is not None:
+            _, value, atype, _ = best_match
+            ftype = field.input_type
+            role = field.attributes.get("role", "")
+            is_combobox = role == "combobox" or ftype in ("search_autocomplete", "combobox", "custom_select")
+            if is_combobox and atype == "fill":
+                atype = "fill_combobox"
+            elif not is_combobox and atype == "fill_combobox":
+                atype = "fill"
+            if ftype == "rich_text" and atype == "fill":
+                atype = "fill_contenteditable"
+
+            if atype in ("fill_combobox", "select") and field.options:
+                value = _match_to_available_options(value, field.options)
+            actions.append(Action(type=atype, selector=field.selector, value=value))
+            matched_selectors.add(field.selector)
+            logger.info("  DET → %s [%s] = %s", field.selector[:40], atype, value[:60])
 
     logger.info("Phase 1 (deterministic): %d/%d fields matched", len(actions), len(snapshot.fields))
     return actions
