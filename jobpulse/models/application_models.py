@@ -96,6 +96,36 @@ class JobListing(BaseModel):
         description="Recruiter or HR contact email extracted from the job description.",
     )
 
+    # --- Career-ops feature fields (all optional, behind feature flags) ---
+    ghost_tier: str | None = Field(
+        default=None,
+        description="Ghost detection tier: high_confidence, proceed_with_caution, or suspicious.",
+    )
+    archetype: str | None = Field(
+        default=None,
+        description="Primary archetype: agentic, data_platform, data_analyst, data_scientist, ai_ml, data_engineer.",
+    )
+    archetype_secondary: str | None = Field(
+        default=None,
+        description="Secondary archetype for hybrid roles.",
+    )
+    archetype_confidence: float = Field(
+        default=0.0,
+        description="Archetype detection confidence 0.0-1.0.",
+    )
+    locale_market: str | None = Field(
+        default=None,
+        description="Detected job market: uk, dach, france, nordics, us.",
+    )
+    locale_language: str | None = Field(
+        default=None,
+        description="Detected JD language: en, de, fr, etc.",
+    )
+    posted_at: str | None = Field(
+        default=None,
+        description="Posting date from ATS metadata (ISO 8601).",
+    )
+
 
 # ---------------------------------------------------------------------------
 # ATSScore
