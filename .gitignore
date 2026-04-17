@@ -22,6 +22,7 @@ outputs/
 data/
 !data/job_search_config.json
 !data/skill_synonyms.json
+!data/archetype_profiles.json
 logs/
 
 # IDE

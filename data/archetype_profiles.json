@@ -1,0 +1,50 @@
+{
+  "agentic": {
+    "keywords": {"agent": 3.0, "orchestration": 2.5, "hitl": 2.0, "multi-agent": 3.0, "langgraph": 2.5, "swarm": 2.0, "tool-use": 1.5, "human-in-the-loop": 2.0},
+    "tagline": "MSc Computer Science (UOD) | 2+ YOE | AI Engineer | Multi-Agent Systems | LangGraph | Python",
+    "summary_angle": "Building reliable agent systems from prototype to production",
+    "project_priority": ["JobPulse", "Multi-Agent Patterns", "MindGraph"],
+    "skills_to_highlight": ["LangGraph", "OpenAI Agents SDK", "Swarm", "Python"],
+    "yoe_framing": "2+ years"
+  },
+  "data_platform": {
+    "keywords": {"pipeline": 2.5, "evals": 2.0, "observability": 2.5, "mlops": 3.0, "monitoring": 2.0, "model serving": 2.0, "infrastructure": 1.5, "deployment": 1.5},
+    "tagline": "MSc Computer Science (UOD) | 2+ YOE | ML Engineer | MLOps | Pipelines | Python",
+    "summary_angle": "Production ML systems with monitoring, evals, and cost optimization",
+    "project_priority": ["JobPulse", "Velox AI", "Cloud Sentinel"],
+    "skills_to_highlight": ["Python", "Docker", "AWS", "MLOps", "CI/CD"],
+    "yoe_framing": "2+ years"
+  },
+  "data_analyst": {
+    "keywords": {"dashboard": 3.0, "sql": 2.5, "stakeholder": 2.0, "insights": 2.5, "reporting": 2.5, "power bi": 3.0, "tableau": 2.5, "excel": 1.5, "kpi": 2.0},
+    "tagline": "MSc Computer Science (UOD) | 3+ YOE | Data Analyst | SQL | Power BI | Python",
+    "summary_angle": "Turning complex data into clear, actionable business insights",
+    "project_priority": ["90 Days ML", "Cloud Sentinel", "JobPulse"],
+    "skills_to_highlight": ["SQL", "Power BI", "Python", "Excel", "Statistical Testing"],
+    "yoe_framing": "3+ years"
+  },
+  "data_scientist": {
+    "keywords": {"modeling": 2.5, "experiment": 2.5, "a/b test": 3.0, "statistics": 2.5, "research": 2.0, "hypothesis": 2.0, "regression": 2.0, "classification": 2.0},
+    "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Scientist | Python | ML | Statistics",
+    "summary_angle": "Research-to-production ML with experimentation rigor",
+    "project_priority": ["Deep Learning 3D", "90 Days ML", "Cloud Sentinel"],
+    "skills_to_highlight": ["Python", "PyTorch", "Scikit-learn", "Statistical Testing", "NLP"],
+    "yoe_framing": "2+ years"
+  },
+  "ai_ml": {
+    "keywords": {"training": 2.5, "fine-tuning": 3.0, "inference": 2.5, "gpu": 2.0, "model": 2.0, "neural network": 2.5, "transformer": 2.5, "deep learning": 2.5},
+    "tagline": "MSc Computer Science (UOD) | 2+ YOE | AI/ML Engineer | PyTorch | Python | Deep Learning",
+    "summary_angle": "Full-stack ML from training to deployment",
+    "project_priority": ["Deep Learning 3D", "Cloud Sentinel", "Velox AI"],
+    "skills_to_highlight": ["PyTorch", "TensorFlow", "Python", "Docker", "AWS"],
+    "yoe_framing": "2+ years"
+  },
+  "data_engineer": {
+    "keywords": {"etl": 3.0, "warehouse": 2.5, "spark": 3.0, "airflow": 3.0, "dbt": 2.5, "streaming": 2.0, "data lake": 2.0, "batch processing": 2.0},
+    "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Engineer | Python | SQL | ETL | Cloud",
+    "summary_angle": "Building scalable data infrastructure and pipelines",
+    "project_priority": ["JobPulse", "Velox AI", "90 Days ML"],
+    "skills_to_highlight": ["Python", "SQL", "Docker", "AWS", "CI/CD"],
+    "yoe_framing": "2+ years"
+  }
+}
