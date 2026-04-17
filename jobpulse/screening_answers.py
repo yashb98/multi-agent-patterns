@@ -13,6 +13,7 @@ from shared.agents import get_openai_client, get_model_name, is_local_llm
 
 from jobpulse.applicator import PROFILE, WORK_AUTH
 from jobpulse.job_db import JobDB
+from jobpulse.pipeline_hooks import with_tone_filter
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -412,10 +413,10 @@ def get_answer(
                     input_type=input_type, platform=platform, db=db,
                 )
                 logger.debug("Pattern match for '%s' -> '%s'", normalised[:60], resolved[:80])
-                return resolved
+                return with_tone_filter(resolved, normalised, None)
             # Matched but needs LLM (answer is None)
             logger.debug("Pattern match (LLM-required) for '%s'", normalised[:60])
-            return _generate_answer(normalised, job_context)
+            return with_tone_filter(_generate_answer(normalised, job_context), normalised, None)
 
     # --- Tier 2: cache lookup --------------------------------------------
     _db = db or JobDB()
@@ -423,13 +424,13 @@ def get_answer(
     if cached is not None:
         _db.cache_answer(normalised, cached)
         logger.debug("Cache hit for '%s'", normalised[:60])
-        return cached
+        return with_tone_filter(cached, normalised, None)
 
     # --- Tier 3: LLM generation ------------------------------------------
     answer = _generate_answer(normalised, job_context)
     _db.cache_answer(normalised, answer)
     logger.info("Generated + cached answer for '%s'", normalised[:60])
-    return answer
+    return with_tone_filter(answer, normalised, None)
 
 
 def cache_answer(question: str, answer: str, *, db: JobDB | None = None) -> None:

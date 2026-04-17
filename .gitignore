@@ -19,10 +19,11 @@ venv/
 outputs/
 
 # Agent data and logs
-data/
+data/*
 !data/job_search_config.json
 !data/skill_synonyms.json
 !data/archetype_profiles.json
+!data/ats_company_registry.json
 logs/
 
 # IDE
