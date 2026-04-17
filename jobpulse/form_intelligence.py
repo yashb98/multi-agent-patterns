@@ -238,6 +238,7 @@ class FormIntelligence:
                     question=question,
                     input_type=input_type or "text",
                     options=[],
+                    job_context=job_context,
                 )
                 if nano_answer:
                     logger.debug("Tier 3 Nano answer for '%s'", question[:60])

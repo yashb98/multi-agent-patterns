@@ -27,13 +27,16 @@ async function analyzeFieldLocally(question, inputType, options, jobContext) {
         "For dropdowns, pick the EXACT option text from the list.",
     });
 
-    let prompt = `Field: "${question}" (${inputType})`;
-    if (options && options.length > 0) prompt += `\nOptions: ${options.join(", ")}`;
-    prompt += "\nAnswer:";
+    try {
+      let prompt = `Field: "${question}" (${inputType})`;
+      if (options && options.length > 0) prompt += `\nOptions: ${options.join(", ")}`;
+      prompt += "\nAnswer:";
 
-    const answer = await session.prompt(prompt);
-    session.destroy();
-    return answer ? answer.trim() : null;
+      const answer = await session.prompt(prompt);
+      return answer ? answer.trim() : null;
+    } finally {
+      session.destroy();
+    }
   } catch (e) {
     console.log("[JobPulse] Gemini Nano unavailable:", e.message);
     return null;
@@ -52,15 +55,20 @@ async function writeShortAnswer(question, jobContext) {
     if (capabilities.available === "no") return null;
 
     const role = (jobContext && jobContext.title) || "ML Engineer";
+    const company = (jobContext && jobContext.company) || "";
     const location = (jobContext && jobContext.location) || "the UK";
+    const companyNote = company ? ` at ${company}` : "";
     const writer = await self.ai.writer.create({
       tone: "formal",
       length: "short",
-      sharedContext: `Job application for ${role} position in ${location}.`,
+      sharedContext: `Job application for ${role}${companyNote} position in ${location}.`,
     });
-    const answer = await writer.write(question);
-    writer.destroy();
-    return answer ? answer.trim() : null;
+    try {
+      const answer = await writer.write(question);
+      return answer ? answer.trim() : null;
+    } finally {
+      writer.destroy();
+    }
   } catch (e) {
     console.log("[JobPulse] Writer API unavailable:", e.message);
     return null;

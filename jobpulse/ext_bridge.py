@@ -442,16 +442,32 @@ class ExtensionBridge:
         return base64.b64decode(b64)
 
     async def analyze_field_locally(
-        self, question: str, input_type: str, options: list[str], timeout_ms: int = 15000
+        self,
+        question: str,
+        input_type: str,
+        options: list[str],
+        job_context: dict[str, str] | None = None,
+        timeout_ms: int = 15000,
     ) -> str | None:
         """Ask Gemini Nano (via Chrome extension) to analyze a form field.
 
         Returns the answer string, or None if Nano is unavailable.
         This is Tier 3 of the 5-tier form intelligence system.
         """
+        payload: dict[str, Any] = {
+            "question": question,
+            "input_type": input_type,
+            "options": options,
+        }
+        if job_context:
+            payload["job_context"] = {
+                "title": job_context.get("job_title", ""),
+                "company": job_context.get("company", ""),
+                "location": job_context.get("location", ""),
+            }
         result = await self._send_command(
             "analyze_field",
-            {"question": question, "input_type": input_type, "options": options},
+            payload,
             timeout_ms=timeout_ms,
         )
         answer = result.get("answer", "")
