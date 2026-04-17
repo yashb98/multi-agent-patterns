@@ -27,6 +27,67 @@ logger = get_logger(__name__)
 _PLACEHOLDER_VALUES = {"-none-", "loading", "-none- loading", "select", "select...", "choose", "please select"}
 
 # ---------------------------------------------------------------------------
+# Fuzzy dropdown matching
+# ---------------------------------------------------------------------------
+
+_ABBREVIATIONS: dict[str, str] = {
+    "uk": "united kingdom",
+    "us": "united states",
+    "usa": "united states of america",
+}
+_REVERSE_ABBREVIATIONS: dict[str, str] = {v: k for k, v in _ABBREVIATIONS.items()}
+
+
+def _normalize_option(text: str) -> str:
+    return (text or "").lower().strip().rstrip(".,;:!?")
+
+
+def _match_to_available_options(value: str, options: list[str]) -> str:
+    """Match a deterministic value to the closest available dropdown option.
+
+    Priority: exact > starts-with > contains > reverse contains > abbreviation > original value.
+    Skips placeholder options.
+    """
+    if not options:
+        return value
+
+    norm_value = _normalize_option(value)
+    expanded = _ABBREVIATIONS.get(norm_value, norm_value)
+    abbreviated = _REVERSE_ABBREVIATIONS.get(norm_value)
+
+    real_options = [o for o in options if _normalize_option(o) not in _PLACEHOLDER_VALUES]
+    if not real_options:
+        return value
+
+    for opt in real_options:
+        if _normalize_option(opt) == norm_value:
+            return opt
+
+    for opt in real_options:
+        if _normalize_option(opt).startswith(norm_value):
+            return opt
+
+    for opt in real_options:
+        if norm_value in _normalize_option(opt):
+            return opt
+
+    for opt in real_options:
+        norm_opt = _normalize_option(opt)
+        if norm_opt and len(norm_opt) > 2 and norm_opt in norm_value:
+            return opt
+
+    if expanded != norm_value:
+        for opt in real_options:
+            if _normalize_option(opt) == expanded or expanded in _normalize_option(opt):
+                return opt
+    if abbreviated:
+        for opt in real_options:
+            if _normalize_option(opt) == abbreviated or abbreviated in _normalize_option(opt):
+                return opt
+
+    return value
+
+# ---------------------------------------------------------------------------
 # Profile context for LLM prompt
 # ---------------------------------------------------------------------------
 
@@ -548,6 +609,8 @@ def deterministic_fill(
                 if ftype == "rich_text" and atype == "fill":
                     atype = "fill_contenteditable"
 
+                if atype in ("fill_combobox", "select") and field.options:
+                    value = _match_to_available_options(value, field.options)
                 actions.append(Action(type=atype, selector=field.selector, value=value))
                 matched_selectors.add(field.selector)
                 logger.info("  DET → %s [%s] = %s", field.selector[:40], atype, value[:60])
