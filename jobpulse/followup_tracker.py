@@ -182,3 +182,57 @@ def format_followup_report(entries: List[FollowUpEntry]) -> str:
         )
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Draft generation (F8 extension)
+# ---------------------------------------------------------------------------
+
+_EMAIL_TEMPLATES = {
+    0: (
+        "Subject: Following up — {role} application at {company}\n\n"
+        "Hi,\n\n"
+        "I applied for the {role} position at {company} recently and wanted to "
+        "confirm my application was received. I'm particularly interested in this "
+        "role given my experience with production Python systems and data pipelines.\n\n"
+        "Happy to provide any additional information.\n\n"
+        "Best regards,\nYash Bishnoi"
+    ),
+    1: (
+        "Subject: {role} at {company} — checking in\n\n"
+        "Hi,\n\n"
+        "I wanted to follow up on my application for {role} at {company}. "
+        "I remain very interested and would welcome the opportunity to discuss "
+        "how my background in ML systems and data analysis aligns with your needs.\n\n"
+        "Best regards,\nYash Bishnoi"
+    ),
+}
+
+_LINKEDIN_TEMPLATES = {
+    0: (
+        "Hi — I recently applied for {role} at {company}. "
+        "With my background in Python, ML, and data pipelines, "
+        "I'd love to connect and learn more about the role."
+    ),
+    1: (
+        "Following up on my {role} application at {company}. "
+        "Happy to share more about my experience with production AI systems."
+    ),
+}
+
+
+def generate_followup_draft(
+    company: str,
+    role: str,
+    status: str,
+    followup_count: int,
+    channel: str = "email",
+) -> str:
+    """Generate a follow-up draft for email or LinkedIn."""
+    templates = _LINKEDIN_TEMPLATES if channel == "linkedin" else _EMAIL_TEMPLATES
+    idx = min(followup_count, max(templates.keys()))
+    template = templates.get(idx, templates[0])
+    draft = template.format(company=company, role=role, status=status)
+    if channel == "linkedin" and len(draft) > 300:
+        draft = draft[:297] + "..."
+    return draft
