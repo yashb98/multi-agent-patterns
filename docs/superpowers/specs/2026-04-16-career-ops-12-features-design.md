@@ -965,21 +965,194 @@ Reads `applications.db` directly via `mattn/go-sqlite3`. No API server needed.
 
 ---
 
+## Codebase Protection Strategy
+
+### Principle: Zero Regression by Default
+
+Every new feature MUST be **invisible to the existing pipeline** unless explicitly enabled.
+The existing `scan_pipeline.py → job_autopilot.py → generate_cv.py` path must produce
+identical output with or without these features installed. No feature may modify the
+signature, return type, or behavior of an existing function.
+
+### Rule 1: Feature Flags (env vars with safe defaults)
+
+Every feature gets an env var. All default to `false` (disabled). The existing pipeline
+runs unchanged until a feature is explicitly turned on.
+
+```bash
+# Discovery
+JOBPULSE_ATS_API_FIRST=false        # F1: API-first scanning (false = browser-only, current behavior)
+JOBPULSE_GHOST_DETECTION=false      # F2: Ghost job Gate 0.5 (false = skip gate entirely)
+
+# Evaluation
+JOBPULSE_ARCHETYPE_ENGINE=false     # F3: Archetype detection (false = use get_role_profile as-is)
+JOBPULSE_MARKET_LOCALE=false        # F4: Locale detection (false = UK defaults, current behavior)
+
+# Generation
+JOBPULSE_ARCHETYPE_CV=false         # F5: Archetype-driven CV (false = get_role_profile, current behavior)
+JOBPULSE_ATS_NORMALIZE=false        # F6: Unicode normalization (false = skip normalize pass)
+JOBPULSE_TONE_FRAMEWORK=false       # F7: Tone filtering (false = raw answers, current behavior)
+
+# Post-Apply
+JOBPULSE_FOLLOWUP_CADENCE=false     # F8: Follow-up system (false = no cron check, no drafts)
+JOBPULSE_INTERVIEW_PREP=false       # F9: Story bank (false = no story extraction)
+
+# Infrastructure
+JOBPULSE_BATCH_PROCESSING=false     # F10: Parallel batch (false = sequential, current behavior)
+```
+
+Features F11 (update manager) and F12 (Go TUI) are standalone tools — no flag needed,
+they don't touch the pipeline.
+
+### Rule 2: Wrapper Pattern — Never Modify Existing Functions
+
+New features wrap existing functions via middleware, never by editing their internals.
+
+**WRONG (modifies existing function):**
+```python
+# generate_materials() in scan_pipeline.py — DON'T DO THIS
+def generate_materials(listing, jd_text, ...):
+    archetype = detect_archetype(jd_text)  # <-- injected into existing function
+    framing = get_archetype_framing(archetype)  # <-- replaces get_role_profile
+    ...
+```
+
+**CORRECT (wrapper that delegates to original):**
+```python
+# New file: jobpulse/pipeline_hooks.py
+def enhanced_generate_materials(listing, jd_text, ...):
+    """Wraps generate_materials with archetype framing when enabled."""
+    if os.getenv("JOBPULSE_ARCHETYPE_CV", "false") == "true":
+        archetype = detect_archetype(jd_text, listing.required_skills)
+        listing.archetype = archetype.primary
+        listing.archetype_confidence = archetype.confidence
+        framing = get_archetype_framing(archetype, jd_keywords, cv_data)
+        return generate_materials_with_framing(listing, jd_text, framing, ...)
+    return generate_materials(listing, jd_text, ...)  # <-- original, unchanged
+```
+
+**Pipeline wiring (single integration point in scan_pipeline.py):**
+```python
+# scan_pipeline.py — ONE change: swap the call site, not the function body
+from jobpulse.pipeline_hooks import enhanced_generate_materials
+
+# Before: generate_materials(listing, ...)
+# After:  enhanced_generate_materials(listing, ...)  # delegates to original when flag=false
+```
+
+### Rule 3: Pipeline Hooks — Gate 0.5 as Middleware, Not Inline
+
+Ghost detection (F2) must NOT be inserted inside `_run_scan_window_inner()`.
+Instead, it's a pre-processing step in the scan pipeline:
+
+```python
+# jobpulse/pipeline_hooks.py
+def with_ghost_detection(listings: list[JobListing], jd_texts: dict) -> list[JobListing]:
+    """Filter listings through ghost detection. No-op when disabled."""
+    if os.getenv("JOBPULSE_GHOST_DETECTION", "false") != "true":
+        return listings  # pass-through, zero overhead
+    
+    results = []
+    for listing in listings:
+        ghost = detect_ghost_job(listing, jd_texts.get(listing.job_id, ""))
+        listing.ghost_tier = ghost.tier
+        if not ghost.should_block:
+            results.append(listing)
+    return results
+```
+
+**Integration**: Called BETWEEN `fetch_and_filter_jobs()` and `prescreen_listings()`
+in the pipeline orchestrator. One line added. `_run_scan_window_inner()` untouched.
+
+### Rule 4: Model Extension — Backward-Compatible Fields Only
+
+All new `JobListing` fields MUST have `None` defaults. Existing code that doesn't
+know about these fields continues working — they're invisible Optional fields.
+
+```python
+# application_models.py — only ADD fields, never modify existing ones
+@dataclass
+class JobListing:
+    # ... existing fields unchanged ...
+    
+    # F2: Ghost detection (default None = not analyzed)
+    ghost_tier: str | None = None
+    
+    # F3: Archetype (default None = use get_role_profile fallback)
+    archetype: str | None = None
+    archetype_secondary: str | None = None
+    archetype_confidence: float = 0.0
+    
+    # F4: Locale (default None = UK defaults)
+    locale_market: str | None = None
+    locale_language: str | None = None
+    
+    # F1: ATS metadata (default None = not available)
+    posted_at: str | None = None
+```
+
+**Database migration**: Separate script `scripts/migrate_012_new_fields.py`.
+Uses `ALTER TABLE ADD COLUMN` with defaults. Idempotent (checks if column exists first).
+Never runs automatically — user must explicitly run it.
+
+### Rule 5: No Network I/O in the Hot Path
+
+Ghost detection's WebSearch signal (company hiring check) MUST NOT run synchronously
+in the scan pipeline. Options:
+- **Deferred**: queue it and resolve later (when user views job detail)
+- **Conditional**: only run for jobs where other signals give mixed results
+- **Cached-first**: check `ghost_cache.db` first, skip WebSearch if cache hit
+
+The scan pipeline must remain fast: Gate 0 + Gates 1-3 are all local/fast (<100ms each).
+Adding a 2-5s WebSearch mid-pipeline would 10x the per-job latency.
+
+### Rule 6: generate_materials() Stays Under 225 Lines
+
+The spec has 3 features (F5, F6, F7) targeting `generate_materials()`. To prevent
+it from growing into a 400-line monster:
+
+1. **F6 (Unicode)**: Pure function `normalize_text_for_ats()` in generate_cv.py.
+   Called at the end of `generate_cv_pdf()`, not in `generate_materials()`.
+   Zero coupling to other features.
+
+2. **F5 (Archetype CV)**: New function `generate_cv_pdf_with_archetype()` that
+   calls the original `generate_cv_pdf()` with pre-computed framing data.
+   `generate_materials()` dispatches to one or the other based on flag.
+
+3. **F7 (Tone)**: Wraps `screening_answers.get_answer()` output via
+   `tone_framework.apply_tone()`. Applied in `screening_answers.py`, not in
+   `generate_materials()`. Different file, different concern.
+
+Result: `generate_materials()` gains ONE conditional dispatch line, not three features.
+
+### Rule 7: Test Isolation
+
+- Every new feature has its own test file: `tests/jobpulse/test_ghost_detector.py`, etc.
+- Feature tests use `monkeypatch.setenv("JOBPULSE_GHOST_DETECTION", "true")` — they
+  explicitly enable their feature, proving the flag works.
+- A new integration test `test_pipeline_no_regression.py` runs the full pipeline
+  with ALL flags disabled and asserts identical output to the current behavior.
+- New DBs use `tmp_path`. Existing `data/*.db` never touched.
+
+---
+
 ## Cross-Cutting Concerns
 
-### Data Flow Through Pipeline
+### Data Flow Through Pipeline (with protection points)
 ```
 DISCOVERY                    EVALUATION                 GENERATION
 ats_api_scanner.py ----+     archetype_engine.py        generate_cv.py
 job_scanner.py --------+--> jd_analyzer.py ----------> (archetype framing)
-ghost_detector.py -----+     market_locale.py           tone_framework.py
+[ghost_detector.py] ---+     [market_locale.py]         [tone_framework.py]
                              skill_graph_store.py        normalize_text_for_ats()
                                     |
-                                    v
-POST-APPLY                   INFRASTRUCTURE
-followup_cadence.py          batch/orchestrator.py
-interview_prep.py            update_manager.py
-                             dashboard/
+  [brackets] = behind feature flag  v
+  no flag = existing behavior    POST-APPLY                   INFRASTRUCTURE
+                                 [followup_cadence.py]        [batch/orchestrator.py]
+                                 [interview_prep.py]          update_manager.py (standalone)
+                                                              dashboard/ (standalone)
+
+Integration layer: jobpulse/pipeline_hooks.py (all flag checks + wrappers live here)
 ```
 
 ### Shared Dependencies
@@ -987,43 +1160,98 @@ interview_prep.py            update_manager.py
 - `LocaleContext` flows from F4 into F5 (paper format), screening answers (visa context)
 - `GhostDetectionResult` flows from F2 into Notion tracker, Telegram display
 - All features use `get_llm()` and `smart_llm_call()` for any LLM interactions
+- **When archetype is None** (flag off or detection failed): all downstream consumers
+  fall back to existing `get_role_profile()` behavior. No exceptions, no degradation.
 
 ### Dual Dispatcher Rule
 New Telegram intents required:
-- `JOB_BATCH` — batch evaluate command
-- `JOB_FOLLOWUP` — follow-up cadence check
-- `JOB_INTERVIEW_PREP` — interview prep trigger
-- `JOB_GHOST_CHECK` — manual ghost check on a URL
-- `ARCHETYPE_EDIT` — edit archetype profiles
+- `JOB_BATCH` — batch evaluate command (NEW)
+- `JOB_FOLLOWUP` — follow-up cadence check (EXISTING handler `_handle_follow_ups`, extend only)
+- `JOB_INTERVIEW_PREP` — interview prep trigger (EXISTING handler `_handle_interview_prep`, extend only)
+- `JOB_GHOST_CHECK` — manual ghost check on a URL (NEW)
+- `ARCHETYPE_EDIT` — edit archetype profiles (NEW)
 
+3 truly new intents + 2 extensions of existing handlers.
 All must be added to BOTH `dispatcher.py` AND `swarm_dispatcher.py`.
+
+---
+
+## Features Deprioritized / Deferred
+
+### F4: Multi-Language Market Awareness — DEFERRED
+- **Reason**: User is UK-based on Graduate Visa, primarily applying to UK roles.
+  DACH/France/Nordics market profiles are speculative.
+- **When to revisit**: When >10% of scan results are non-English JDs.
+- **What stays**: The `LocaleContext` dataclass and `locale_market`/`locale_language`
+  fields on `JobListing` are still added (zero-cost Optional fields). Detection logic
+  is deferred.
+
+### F11: User/System Layer Separation — DEFERRED
+- **Reason**: Internal engineering concern, not a pipeline improvement. Can be done
+  incrementally without a formal update manager module.
+- **What stays**: The USER_PATHS/SYSTEM_PATHS boundary is documented but not enforced
+  in code.
+
+### F12: Go TUI Dashboard — REPLACED
+- **Reason**: Introduces Go into a Python codebase. Build system complexity (CGO for
+  go-sqlite3), new language for maintenance, marginal value over existing Telegram
+  + web dashboards.
+- **Replacement**: If terminal dashboard is still desired, use Python Textual/Rich TUI
+  within the existing stack. Same read-only SQLite approach, zero new dependencies.
+
+---
+
+## Implementation Order (safe layering)
+
+```
+Phase 1 — Zero-risk additions (no existing code modified):
+  F6: ATS Unicode Normalization      — pure function, 30min, add to generate_cv.py
+  F1: Workday ATS Parser             — additive to ats_api_scanner.py (skip BambooHR/Teamtailor)
+  pipeline_hooks.py                  — create the wrapper/middleware layer
+
+Phase 2 — Guarded pipeline enhancements:
+  F2: Ghost Detection                — new module + pipeline_hooks middleware
+  F3: Archetype Engine               — new module, stores result on JobListing
+
+Phase 3 — Generation upgrades (depend on F3):
+  F5: Archetype-Adaptive CV          — wraps generate_cv_pdf via pipeline_hooks
+  F7: Tone Framework                 — wraps screening_answers.get_answer
+
+Phase 4 — Post-apply (independent, lower priority):
+  F8: Follow-Up Cadence              — new module + extend existing dispatcher handlers
+  F9: Interview Story Bank           — new module, deferred until 3+ interviews/week
+  F10: Batch Processing              — new jobpulse/batch/ directory
+```
+
+Each phase is independently shippable. Phase N+1 can be abandoned without affecting Phase N.
 
 ---
 
 ## Data Model Changes
 
-### `JobListing` model — new fields:
-- `archetype: str | None` — primary archetype tag
-- `archetype_secondary: str | None` — secondary (hybrid roles)
-- `archetype_confidence: float` — detection confidence
-- `ghost_tier: str | None` — "high_confidence" / "proceed_with_caution" / "suspicious"
-- `locale_market: str | None` — "uk", "dach", "france", etc.
-- `locale_language: str | None` — "en", "de", "fr"
-- `posted_at: str | None` — ISO 8601 from ATS metadata
+### `JobListing` model — new fields (all Optional, all defaulted):
+- `archetype: str | None = None` — primary archetype tag
+- `archetype_secondary: str | None = None` — secondary (hybrid roles)
+- `archetype_confidence: float = 0.0` — detection confidence
+- `ghost_tier: str | None = None` — "high_confidence" / "proceed_with_caution" / "suspicious"
+- `locale_market: str | None = None` — "uk", "dach", "france", etc.
+- `locale_language: str | None = None` — "en", "de", "fr"
+- `posted_at: str | None = None` — ISO 8601 from ATS metadata
 
-### `applications` table — new columns:
+### `applications` table — new columns (added via migration script):
 - `followup_count: int` (default 0)
 - `followup_last_at: datetime | None`
 - `followup_status: str` (default "active")
 
+Migration: `scripts/migrate_012_new_fields.py` — idempotent, user-triggered, not automatic.
+
 ### New SQLite databases:
-- `data/story_bank.db` — STAR+R stories with FTS5
-- `data/ghost_cache.db` — company hiring signal cache (7-day TTL)
-- `data/scan_analytics.db` — ATS scan run metrics
+- `data/story_bank.db` — STAR+R stories with FTS5 (created on first use, not at startup)
+- `data/ghost_cache.db` — company hiring signal cache, 7-day TTL (created on first use)
+- `data/scan_analytics.db` — ATS scan run metrics (created on first use)
 
 ### New JSON configs (user-editable):
 - `data/archetype_profiles.json` — 6 archetype definitions
-- `data/market_profiles.json` — DACH/France/UK/Nordics market knowledge
 - `data/cv_profile.json` — candidate projects, experience, skills (source of truth). Schema:
   ```json
   {
@@ -1042,27 +1270,34 @@ All must be added to BOTH `dispatcher.py` AND `swarm_dispatcher.py`.
 - `data/keyword_synonyms.json` — ~200 JD-to-CV keyword mappings
 - `data/ats_company_registry.json` — company-to-ATS platform mapping
 
+### Removed from plan:
+- `data/market_profiles.json` — deferred with F4
+
 ---
 
 ## New Files Summary
 
-| File | Stage | Purpose |
-|------|-------|---------|
-| `jobpulse/ats_api_scanner.py` (extend) | Discovery | 6 ATS API parsers |
-| `jobpulse/ghost_detector.py` | Discovery | Ghost job detection (Gate 0.5) |
-| `jobpulse/archetype_engine.py` | Evaluation | 6-archetype detection engine |
-| `jobpulse/market_locale.py` | Evaluation | Language + market detection |
-| `jobpulse/cv_templates/generate_cv.py` (extend) | Generation | Archetype framing + ATS normalization |
-| `jobpulse/tone_framework.py` | Generation | "I'm choosing you" positioning |
-| `jobpulse/followup_cadence.py` | Post-Apply | Follow-up tracking + draft gen |
-| `jobpulse/interview_prep.py` | Post-Apply | STAR+R story bank + prep kits |
-| `jobpulse/batch/orchestrator.py` | Infrastructure | Parallel batch coordinator |
-| `jobpulse/batch/worker.py` | Infrastructure | Single-job evaluation worker |
-| `jobpulse/batch/state.py` | Infrastructure | TSV state tracking |
-| `jobpulse/update_manager.py` | Infrastructure | Auto-update with safety validation |
-| `dashboard/` (new directory) | Infrastructure | Go TUI dashboard |
-| `data/archetype_profiles.json` | Config | Archetype definitions |
-| `data/market_profiles.json` | Config | Market knowledge profiles |
-| `data/cv_profile.json` | Config | Candidate source of truth |
-| `data/keyword_synonyms.json` | Config | JD-to-CV keyword mappings |
-| `data/ats_company_registry.json` | Config | Company-to-ATS mapping |
+| File | Stage | Purpose | Modifies existing? |
+|------|-------|---------|-------------------|
+| `jobpulse/pipeline_hooks.py` (NEW) | Core | All feature flag checks + wrappers | No — wraps existing functions |
+| `jobpulse/ats_api_scanner.py` (extend) | Discovery | Workday parser (additive) | Additive only |
+| `jobpulse/ghost_detector.py` (NEW) | Discovery | Ghost job detection (Gate 0.5) | No — called via pipeline_hooks |
+| `jobpulse/archetype_engine.py` (NEW) | Evaluation | 6-archetype detection engine | No — called via pipeline_hooks |
+| `jobpulse/cv_templates/generate_cv.py` (extend) | Generation | `normalize_text_for_ats()` + `generate_cv_pdf_with_archetype()` | Additive only — new functions |
+| `jobpulse/tone_framework.py` (NEW) | Generation | "I'm choosing you" positioning | No — wraps screening_answers output |
+| `jobpulse/followup_cadence.py` (NEW) | Post-Apply | Follow-up tracking + draft gen | No — new module |
+| `jobpulse/interview_prep.py` (NEW) | Post-Apply | STAR+R story bank + prep kits | No — new module |
+| `jobpulse/batch/orchestrator.py` (NEW) | Infrastructure | Parallel batch coordinator | No — new module |
+| `jobpulse/batch/worker.py` (NEW) | Infrastructure | Single-job evaluation worker | No — new module |
+| `jobpulse/batch/state.py` (NEW) | Infrastructure | TSV state tracking | No — new module |
+| `scripts/migrate_012_new_fields.py` (NEW) | Migration | DB schema migration | Additive columns only |
+| `data/archetype_profiles.json` (NEW) | Config | Archetype definitions | No — new file |
+| `data/cv_profile.json` (NEW) | Config | Candidate source of truth | No — new file |
+| `data/keyword_synonyms.json` (NEW) | Config | JD-to-CV keyword mappings | No — new file |
+| `data/ats_company_registry.json` (NEW) | Config | Company-to-ATS mapping | No — new file |
+
+### Removed from plan:
+- `jobpulse/market_locale.py` — deferred with F4
+- `jobpulse/update_manager.py` — deferred (F11)
+- `dashboard/` directory — replaced with Python TUI if needed (F12)
+- `data/market_profiles.json` — deferred with F4

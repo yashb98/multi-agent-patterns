@@ -6,7 +6,6 @@ feature or passes through to the original function unchanged.
 """
 
 import os
-import sys
 from typing import Any
 
 from shared.logging_config import get_logger
