@@ -179,7 +179,7 @@ def build_update_payload(
 
     if match_tier is not None:
         tier_name = MATCH_TIER_NAMES.get(match_tier, match_tier.title())
-        properties["Match Tier"] = {"rich_text": [{"text": {"content": tier_name}}]}
+        properties["Match Tier"] = {"phone_number": tier_name}
 
     if matched_projects is not None:
         properties["Matched Projects"] = {

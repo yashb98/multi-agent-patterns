@@ -648,7 +648,7 @@ def _scan_indeed_wrapper(config: SearchConfig) -> list[dict[str, Any]]:
 def _scan_google_jobs_wrapper(config: SearchConfig) -> list[dict[str, Any]]:
     """Wrap the JobSpy-based Google Jobs scanner to match the SearchConfig signature."""
     from jobpulse.job_scanners.google_jobs import scan_google_jobs
-    return scan_google_jobs(config.titles, config.location, max_results=50)
+    return scan_google_jobs(config.titles, config.location, max_results=len(config.titles) * 10)
 
 
 PLATFORM_SCANNERS: dict[str, Any] = {
