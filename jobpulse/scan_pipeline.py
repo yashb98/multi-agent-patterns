@@ -27,6 +27,7 @@ from jobpulse.company_blocklist import BlocklistCache, detect_spam_company, flag
 from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
 from jobpulse.cv_templates.generate_cv import (
     BASE_SKILLS,
+    COMMUNITY,
     EDUCATION,
     EXPERIENCE,
     build_extra_skills,
@@ -93,6 +94,39 @@ def _queue_for_review(listing: Any, ats_score: float, batch: list[dict]) -> None
             "ats_score": round(ats_score, 1),
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _reorder_projects(
+    projects: list[dict], priority: list[str],
+) -> list[dict]:
+    """Reorder projects based on archetype priority list.
+
+    Priority names are fuzzy-matched against project titles via word overlap.
+    Projects not in the priority list keep their original order at the end.
+    """
+    ordered: list[dict] = []
+    remaining = list(projects)
+
+    for pname in priority:
+        pwords = set(pname.lower().split())
+        best_match = None
+        best_overlap = 0
+        for proj in remaining:
+            title_words = set(proj.get("title", "").lower().split())
+            overlap = len(pwords & title_words)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_match = proj
+        if best_match and best_overlap >= min(2, len(pwords)):
+            ordered.append(best_match)
+            remaining.remove(best_match)
+
+    return ordered + remaining
 
 
 # ---------------------------------------------------------------------------
@@ -498,25 +532,41 @@ def generate_materials(
         except Exception:
             pass  # Non-blocking
 
-        # Dynamic project selection from MindGraph
+        # Dynamic project selection from MindGraph (archetype-aware)
+        archetype = getattr(listing, "archetype", None)
         matched_projects = get_best_projects_for_jd(
             listing.required_skills, listing.preferred_skills,
+            archetype=archetype if archetype and archetype != "general" else None,
         )
+        if archetype and archetype != "general":
+            from jobpulse.archetype_engine import get_archetype_framing
+            framing = get_archetype_framing(
+                archetype, listing.required_skills, listing.preferred_skills,
+            )
+            tagline = framing.get("tagline")
+            summary = framing.get("summary")
+            project_priority = framing.get("project_priority", [])
+            if project_priority and matched_projects:
+                matched_projects = _reorder_projects(matched_projects, project_priority)
+        else:
+            role_profile = get_role_profile(listing.title)
+            tagline = role_profile.get("tagline")
+            summary = role_profile.get("summary")
 
-        role_profile = get_role_profile(listing.title)
         cv_path = generate_cv_pdf(
             company=listing.company,
             location=listing.location or "United Kingdom",
-            tagline=role_profile.get("tagline"),
-            summary=role_profile.get("summary"),
+            tagline=tagline,
+            summary=summary,
             projects=matched_projects,
             extra_skills=extra_skills if extra_skills else None,
             output_dir=str(DATA_DIR / "applications" / listing.job_id),
         )
 
-        # ATS scoring
+        # ATS scoring — include all CV sections so soft skills in
+        # Experience/Community are counted toward keyword matches
         cv_parts = [
-            "PROFESSIONAL SUMMARY Software Engineer Python AI ML",
+            "PROFESSIONAL SUMMARY " + (summary or "Software Engineer Python AI ML"),
             "TECHNICAL SKILLS " + " ".join(BASE_SKILLS.values()),
         ]
         if extra_skills:
@@ -528,6 +578,9 @@ def generate_materials(
         cv_parts.append("EXPERIENCE " + " ".join(
             e["title"] + " " + " ".join(e["bullets"])
             for e in EXPERIENCE
+        ))
+        cv_parts.append("COMMUNITY " + " ".join(
+            item["text"] for item in COMMUNITY
         ))
         cv_parts.append("EDUCATION " + " ".join(
             e["degree"] + " " + e["institution"]
@@ -694,6 +747,15 @@ def route_and_apply(
 
         if bundle.cv_path is None:
             logger.warning("scan_pipeline: no CV for auto-apply %s — routing to review", listing.job_id[:8])
+            _queue_for_review(listing, ats_score, review_batch)
+            return RouteResult("queued_for_review", listing.job_id, listing.title, listing.company)
+
+        from jobpulse.applicator import is_aggregator_url
+        if is_aggregator_url(listing.url):
+            logger.warning(
+                "scan_pipeline: aggregator URL for %s (%s) — routing to review instead of auto-apply",
+                listing.company, listing.url[:60],
+            )
             _queue_for_review(listing, ats_score, review_batch)
             return RouteResult("queued_for_review", listing.job_id, listing.title, listing.company)
 

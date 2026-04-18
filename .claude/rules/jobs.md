@@ -136,6 +136,32 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - Screening questions: pattern-based (work auth, salary, availability, experience years) → LLM fallback → SQLite cache
 - All 6 ATS adapters wire screening via `answer_screening_questions()` in the form-fill loop
 
+## Aggregator URL Handling
+- Google Jobs returns aggregator URLs (bebee.com, learn4good.com, adzuna.co.uk, engineeringjobs.co.uk, uk.talent.com) — NOT direct company ATS pages
+- Aggregators require their own registration/login before showing an application form
+- `AGGREGATOR_DOMAINS` set in applicator.py — checked before auto-apply
+- Cron path: scan_pipeline.py routes aggregator URLs to review queue instead of auto-apply
+- Manual path: apply_job() logs a warning but still attempts (user may have logged in)
+- Preferred flow: apply on the SOURCE platform (Reed, LinkedIn, company ATS), not through aggregators
+
+## Platform-Specific Quirks (Dry Run Learnings)
+- Reed Easy Apply: modal overlay with pre-filled CV from profile + "Submit application" button
+  - System auto-detects CV mismatch and uploads tailored CV via "Update" → file chooser
+  - Google SSO login required on first visit — handled by SSO handler
+  - `NativeFormFiller._handle_modal_cv_upload()` handles the modal CV swap
+- When a dry run succeeds and user approves, save platform-specific learnings:
+  - Code: update NativeFormFiller, state machines, or form_gotchas.db
+  - Docs: update this file + jobpulse/CLAUDE.md with the quirk
+  - Cron: ensure scan_pipeline.py handles the same scenario
+
+## Dry Run → Approve → Learn Workflow
+- Every new platform/ATS: run `apply_job(dry_run=True)` first
+- Screenshot the filled form state for user review
+- On approval: save learnings to code (form_gotchas.db, state machines, native_form_filler)
+- Document the platform quirk in this file under "Platform-Specific Quirks"
+- Verify the cron path (scan_pipeline.py) handles the same flow
+- Internal keys (_stream, _gotchas, _job_context) MUST be filtered before json.dumps
+
 ## Dynamic Cover Letter
 - Cover letter NOT generated upfront — lazy generation via cl_generator callback
 - ATS form detection: Greenhouse/Lever adapters trigger generation when CL field found

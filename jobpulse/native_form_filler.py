@@ -234,7 +234,7 @@ class NativeFormFiller:
             f"Fields:\n{chr(10).join(field_descriptions)}\n\n"
             f"Profile: {json.dumps(profile)}\n"
             f"Platform: {platform}\n"
-            f"Known answers: {json.dumps(custom_answers)}"
+            f"Known answers: {json.dumps({k: v for k, v in custom_answers.items() if not k.startswith('_')})}"
         )
 
         client = get_openai_client()
@@ -354,6 +354,60 @@ class NativeFormFiller:
                 if not await cb.is_checked():
                     await cb.check()
 
+    # ── Modal CV Upload (Reed, etc.) ──
+
+    async def _handle_modal_cv_upload(self, cv_path: str | None) -> bool:
+        """Detect and handle modal-based CV upload (Reed Easy Apply pattern).
+
+        Reed shows a modal with a pre-filled CV from the user profile.
+        If the expected tailored CV filename doesn't match, clicks Update
+        and uploads via the file chooser dialog.
+
+        Returns True if a modal was handled, False if no modal detected.
+        """
+        if not cv_path:
+            return False
+
+        modal = self._page.locator('[data-qa="apply-job-modal"]')
+        if not await modal.count():
+            return False
+
+        modal_text = await modal.text_content() or ""
+        expected_filename = os.path.basename(cv_path)
+
+        if expected_filename in modal_text:
+            logger.info("Modal CV already matches: %s", expected_filename)
+            return True
+
+        logger.info("Modal CV mismatch — uploading tailored CV: %s", expected_filename)
+
+        update_btn = self._page.locator('[data-qa="UpdateCvBtn"]')
+        if not await update_btn.count():
+            return False
+
+        await update_btn.click()
+        await asyncio.sleep(2)
+
+        choose_btn = self._page.locator('text=Choose your CV file')
+        if await choose_btn.is_visible(timeout=5000):
+            async with self._page.expect_file_chooser(timeout=10000) as fc_info:
+                await choose_btn.click()
+            file_chooser = await fc_info.value
+            await file_chooser.set_files(str(cv_path))
+            logger.info("Uploaded tailored CV via modal file chooser")
+            await asyncio.sleep(3)
+            return True
+
+        file_inputs = await self._page.locator("input[type='file']").all()
+        if file_inputs:
+            await file_inputs[0].set_input_files(str(cv_path))
+            logger.info("Uploaded tailored CV via hidden file input")
+            await asyncio.sleep(3)
+            return True
+
+        logger.warning("Could not find file upload mechanism in CV modal")
+        return False
+
     # ── Page Detection ──
 
     async def _is_confirmation_page(self) -> bool:
@@ -442,6 +496,9 @@ class NativeFormFiller:
         9. Pre-submit review on final page (LLM Call 3)
         10. Click next/submit
         """
+        # 0. Handle modal-based CV upload (Reed Easy Apply pattern)
+        await self._handle_modal_cv_upload(cv_path)
+
         for page_num in range(1, MAX_FORM_PAGES + 1):
             # 1. Scan fields
             fields = await self._scan_fields()
