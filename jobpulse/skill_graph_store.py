@@ -37,6 +37,7 @@ class ProjectMatch:
     skill_overlap: int
     matched_skills: list[str]
     url: str = ""
+    relevance_score: float = 0.0
 
 
 @dataclass
@@ -188,9 +189,31 @@ class SkillGraphStore:
         return {row["name"].lower().strip() for row in rows}
 
     def get_projects_for_skills(self, jd_skills: list[str]) -> list[ProjectMatch]:
-        """Find projects demonstrating given skills, ranked by overlap count."""
+        """Find projects demonstrating given skills, ranked by IDF-weighted relevance.
+
+        Each skill match is weighted by 1/log2(1 + project_count), so niche skills
+        (e.g. Kafka in 1 project) score higher than ubiquitous ones (Python in 19).
+        """
+        import math
+
         profile = self.get_skill_profile()
         conn = get_conn()
+
+        # Build IDF weights: how many projects demonstrate each skill
+        all_skills_rows = conn.execute(
+            "SELECT id, name FROM knowledge_entities WHERE entity_type = 'SKILL'"
+        ).fetchall()
+        skill_project_count: dict[str, int] = {}
+        for s in all_skills_rows:
+            cnt = conn.execute(
+                "SELECT COUNT(*) as c FROM knowledge_relations WHERE to_id = ? AND type = 'DEMONSTRATES'",
+                (s["id"],),
+            ).fetchone()["c"]
+            skill_project_count[s["name"].lower().strip()] = max(cnt, 1)
+
+        total_projects = conn.execute(
+            "SELECT COUNT(*) as c FROM knowledge_entities WHERE entity_type = 'PROJECT'"
+        ).fetchone()["c"] or 1
 
         # Get all projects
         projects = conn.execute(
@@ -199,14 +222,12 @@ class SkillGraphStore:
 
         results: list[ProjectMatch] = []
         for proj in projects:
-            # Get skills this project demonstrates
             rels = conn.execute(
                 "SELECT to_id FROM knowledge_relations WHERE from_id = ? AND type = 'DEMONSTRATES'",
                 (proj["id"],),
             ).fetchall()
             proj_skill_ids = {r["to_id"] for r in rels}
 
-            # Get actual skill names for these IDs
             if not proj_skill_ids:
                 continue
             placeholders = ",".join("?" * len(proj_skill_ids))
@@ -216,12 +237,14 @@ class SkillGraphStore:
             ).fetchall()
             proj_skills = {row["name"].lower().strip() for row in skill_rows}
 
-            # Compute overlap with JD skills
             matched = []
+            relevance = 0.0
             for jd_skill in jd_skills:
                 normalized = self._normalize(jd_skill)
                 if normalized in proj_skills:
                     matched.append(jd_skill)
+                    proj_count = skill_project_count.get(normalized, 1)
+                    relevance += 1.0 / math.log2(1 + proj_count)
 
             if matched:
                 results.append(ProjectMatch(
@@ -230,12 +253,12 @@ class SkillGraphStore:
                     skill_overlap=len(matched),
                     matched_skills=matched,
                     url="",
+                    relevance_score=round(relevance, 4),
                 ))
 
         conn.close()
 
-        # Sort by overlap descending
-        results.sort(key=lambda m: m.skill_overlap, reverse=True)
+        results.sort(key=lambda m: m.relevance_score, reverse=True)
         return results
 
 

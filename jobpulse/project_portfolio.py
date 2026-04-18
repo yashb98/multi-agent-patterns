@@ -25,7 +25,7 @@ PORTFOLIO: dict[str, dict] = {
         "url": "https://github.com/yashb98/multi-agent-patterns",
         "priority": 1,  # Always first if it matches — strongest project
         "bullets": [
-            'Built a <b>61,500+ LOC</b> production AI system with <b>488 tests</b>, <b>259 files</b>, and <b>5 databases</b>, shipping<b>10+ autonomous agents</b> (Gmail, Calendar, GitHub, Notion, Budget) running <b>24/7</b> via Telegram with <b>99.9%</b> uptime.',
+            'Built a <b>88,500+ LOC</b> production AI system with <b>2,350 tests</b>, <b>412 files</b>, and <b>21 databases</b>, shipping <b>10+ autonomous agents</b> (Gmail, Calendar, GitHub, Notion, Budget) running <b>24/7</b> via Telegram with <b>99.9%</b> uptime.',
             'Designed <b>4 LangGraph</b> orchestration patterns with GRPO experiential learning, persona evolution, and <b>A/B testing</b>, reducingLLM costs by <b>96%</b> ($5.63 → $0.23/month) through hybrid rule-based + ML classification.',
             'Engineered <b>5-gate pre-screen pipeline</b> with statistical correlation engine, adaptive rate limiting, and <b>17-signal verification wall learning</b>, processing<b>200+ JDs/day</b> with <b>92%+</b> skill match threshold.',
             'Built multi-source <b>fact-checking</b> pipeline using Semantic Scholar API with <b>9.5/10</b> accuracy gate, SQLite caching, and automated <b>Google Drive</b> integration for document management.',
@@ -150,6 +150,102 @@ PORTFOLIO: dict[str, dict] = {
             'Delivered <b>15%</b> improvement in forecast accuracy over naive baseline through ensemble methods.',
         ],
     },
+    # --- Added: repos from last 1 year not previously in PORTFOLIO ---
+    "yashb98/LetsFineTune": {
+        "title": "LetsFineTune - LLM Fine-Tuning Collection | Python | LoRA | Unsloth | Hugging Face",
+        "url": "https://github.com/yashb98/LetsFineTune",
+        "bullets": [
+            'Fine-tuned multiple language models using <b>LoRA/QLoRA</b> with <b>Unsloth</b> and Hugging Face Transformers, building reproducible training pipelines from dataset preparation to evaluation.',
+            'Implemented parameter-efficient fine-tuning reducing training compute by <b>90%+</b> compared to full fine-tuning, with configurable hyperparameter sweeps.',
+            'Built end-to-end notebooks covering data preprocessing, tokenisation, model training, and automated metrics logging.',
+        ],
+    },
+    "yashb98/code-graph-mcp": {
+        "title": "Code Graph MCP Server | TypeScript | OXC Parser | Graphology",
+        "url": "https://github.com/yashb98/code-graph-mcp",
+        "bullets": [
+            'Built type-aware code knowledge graph <b>MCP server</b> for TypeScript/TSX projects using OXC parser and graphology, enabling structural analysis of imports, exports, and symbols.',
+            'Implemented <b>Louvain</b> community detection algorithm for automatic module clustering and codebase architecture discovery.',
+            'Designed MCP tool interface exposing <b>20+</b> graph queries for code navigation, dependency analysis, and symbol resolution.',
+        ],
+    },
+    "yashb98/agentforge-arena": {
+        "title": "AgentForge Arena - AI Agent Competition Platform | Python",
+        "url": "https://github.com/yashb98/agentforge-arena",
+        "bullets": [
+            'Built AI agent competition platform where autonomous agents compete to build projects and win hackathons with automated evaluation.',
+            'Designed multi-agent evaluation framework with scoring and ranking across multiple challenge categories.',
+            'Implemented agent orchestration with sandboxed execution environments for safe autonomous code generation.',
+        ],
+    },
+    "yashb98/SoloQuest": {
+        "title": "SoloQuest - Full-Stack Application | TypeScript",
+        "url": "https://github.com/yashb98/SoloQuest",
+        "bullets": [
+            'Built full-stack TypeScript application with modern development practices and type-safe architecture.',
+            'Implemented end-to-end feature development with component-based UI and API integration.',
+        ],
+    },
+    "yashb98/AIEngine-Hackathon": {
+        "title": "RegBot - AI Compliance Agent for SMEs | TypeScript | Next.js | Vercel",
+        "url": "https://github.com/yashb98/AIEngine-Hackathon",
+        "bullets": [
+            'Built AI-powered compliance agent for Scottish SMEs, automating regulatory deadline tracking and admin reduction by <b>50%</b>.',
+            'Designed conversational AI interface for compliance queries, deployed on <b>Vercel</b> with Next.js for production availability.',
+            'Won hackathon recognition for practical SME tooling addressing real regulatory compliance gaps.',
+        ],
+    },
+    "yashb98/Prism": {
+        "title": "PRISM - Recursive Language Model Research Agent | Python | LangGraph",
+        "url": "https://github.com/yashb98/Prism",
+        "bullets": [
+            'Built production-grade agentic research system using <b>Recursive Language Model</b> paradigm, decomposing million-token corpora into verifiable reasoning chains.',
+            'Implemented step-level monitoring with process-recursive inference, enabling transparent audit trails for every research conclusion.',
+            'Designed multi-stage decomposition pipeline turning complex research queries into atomic, verifiable sub-tasks.',
+        ],
+    },
+    "yashb98/AI-ML-interview-Prep": {
+        "title": "AI/ML Interview Preparation | Python | Machine Learning",
+        "url": "https://github.com/yashb98/AI-ML-interview-Prep",
+        "bullets": [
+            'Curated comprehensive AI/ML interview preparation covering algorithms, system design, and practical coding problems.',
+            'Built implementations of core ML algorithms including neural networks, decision trees, and ensemble methods.',
+        ],
+    },
+    "yashb98/Machine-Learning_University_of_Dundee": {
+        "title": "Machine Learning Coursework | Python | Scikit-learn | NumPy",
+        "url": "https://github.com/yashb98/Machine-Learning_University_of_Dundee",
+        "bullets": [
+            'Completed <b>15+</b> lab exercises and assignments covering supervised learning, unsupervised learning, and neural networks at the University of Dundee.',
+            'Implemented classification, regression, and clustering algorithms from scratch using <b>NumPy</b> and <b>Scikit-learn</b>.',
+            'Built practical ML pipelines with cross-validation, feature engineering, and model evaluation workflows.',
+        ],
+    },
+    "yashb98/BrainWave": {
+        "title": "BrainWave - Modern UI/UX Website | React.js | Tailwind CSS",
+        "url": "https://github.com/yashb98/BrainWave",
+        "bullets": [
+            'Built modern UI/UX website with <b>React.js</b> and <b>Tailwind CSS</b>, featuring seamless animations and responsive design.',
+            'Implemented component-based architecture with Vite for fast development and optimised production builds.',
+        ],
+    },
+    "yashb98/pytorch": {
+        "title": "PyTorch Deep Learning Notebooks | Python | PyTorch",
+        "url": "https://github.com/yashb98/pytorch",
+        "bullets": [
+            'Built deep learning implementations in <b>PyTorch</b> covering CNNs, RNNs, and transfer learning architectures.',
+            'Implemented training pipelines with custom datasets, data augmentation, and performance benchmarking.',
+        ],
+    },
+    "yashb98/genvoice-connect": {
+        "title": "GenVoice Connect - AI Voice Assistant | TypeScript | Next.js | Generative AI",
+        "url": "https://github.com/yashb98/genvoice-connect",
+        "bullets": [
+            'Built intelligent virtual assistant enabling website navigation through conversational <b>voice commands</b> using Generative AI.',
+            'Designed voice-to-action pipeline replacing traditional skill-based interfaces with natural language understanding.',
+            'Deployed with <b>Next.js</b> for production-ready server-side rendering and real-time voice interaction.',
+        ],
+    },
 }
 
 
@@ -167,17 +263,22 @@ def get_best_projects_for_jd(
     required_skills: list[str],
     preferred_skills: list[str] | None = None,
     top_n: int = 4,
+    archetype: str | None = None,
 ) -> list[dict]:
     """Select the top N projects that best match the JD skills.
 
     Uses SkillGraphStore to find projects with highest skill overlap,
-    then looks up CV-ready entries from PORTFOLIO.
+    then looks up CV-ready entries from PORTFOLIO + auto-generated entries.
+
+    When archetype is provided, swaps in archetype-specific bullet variants
+    so the CV emphasises the aspects most relevant to the JD type.
 
     Returns list of dicts matching generate_cv_pdf's projects format:
         [{"title": "...", "url": "...", "bullets": ["...", ...]}, ...]
 
     Falls back to DEFAULT_PROJECTS from generate_cv.py if no matches found.
     """
+    from jobpulse.portfolio_variants import get_auto_entry, get_or_generate_variant_bullets
     from jobpulse.skill_graph_store import SkillGraphStore
 
     store = SkillGraphStore()
@@ -189,23 +290,32 @@ def get_best_projects_for_jd(
         logger.warning("project_portfolio: SkillGraphStore query failed: %s", exc)
         matches = []
 
-    # Sort matches: priority projects first (lower number = higher priority), then by skill overlap
     prioritized = []
     for match in matches:
         entry = PORTFOLIO.get(match.name)
+        if not entry:
+            entry = get_auto_entry(match.name)
         if entry:
+            # Priority is a soft boost (1.15x for priority=1), not a hard sort
             priority = entry.get("priority", 99)
-            prioritized.append((priority, match.skill_overlap, match, entry))
+            boost = 1.15 if priority == 1 else 1.0
+            score = match.relevance_score * boost
+            prioritized.append((score, match, entry))
 
-    # Sort by priority first (1 before 99), then by skill overlap desc
-    prioritized.sort(key=lambda x: (x[0], -x[1]))
+    prioritized.sort(key=lambda x: -x[0])
 
     selected: list[dict] = []
-    for _priority, _overlap, match, entry in prioritized:
+    for _score, match, entry in prioritized:
         if len(selected) >= top_n:
             break
         if entry:
             numbered = dict(entry)
+            if archetype:
+                numbered["bullets"] = get_or_generate_variant_bullets(
+                    match.name, archetype,
+                    entry["title"], entry["bullets"],
+                    required_skills,
+                )
             numbered["title"] = f"{len(selected) + 1}. {entry['title']}"
             selected.append(numbered)
 
