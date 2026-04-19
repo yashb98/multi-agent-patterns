@@ -773,6 +773,17 @@ def route_and_apply(
                         "location": listing.location,
                     },
                 },
+                job_context={
+                    "job_id": listing.job_id,
+                    "company": listing.company,
+                    "title": listing.title,
+                    "notion_page_id": notion_page_id,
+                    "cv_path": str(bundle.cv_path),
+                    "cover_letter_path": str(bundle.cover_letter_path) if bundle.cover_letter_path else None,
+                    "match_tier": tier,
+                    "ats_score": ats_score,
+                    "matched_projects": bundle.matched_project_names,
+                },
             )
             if result.get("success"):
                 applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
@@ -789,16 +800,7 @@ def route_and_apply(
                     notion_page_id=notion_page_id,
                     follow_up_date=follow_up,
                 )
-                if notion_page_id:
-                    try:
-                        update_application_page(
-                            notion_page_id,
-                            status="Applied",
-                            applied_date=date.today(),
-                            follow_up_date=date.today() + timedelta(days=7),
-                        )
-                    except Exception as exc:
-                        logger.warning("scan_pipeline: Notion applied update failed: %s", exc)
+                # Notion update now handled by post_apply_hook inside apply_job
                 logger.info(
                     "scan_pipeline: AUTO-APPLIED %s @ %s (ATS %.1f%%)",
                     listing.title, listing.company, ats_score,
