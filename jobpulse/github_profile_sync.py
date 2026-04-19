@@ -153,6 +153,89 @@ def sync_readme_skills(repos: list[dict], store) -> None:  # type: ignore[type-a
 
 
 # ---------------------------------------------------------------------------
+# Source 1c: Auto-portfolio generation for repos not in PORTFOLIO
+# ---------------------------------------------------------------------------
+
+
+def sync_portfolio_entries(repos: list[dict]) -> None:
+    """Generate PORTFOLIO entries for repos missing from the manual PORTFOLIO.
+
+    Fetches README content and generates CV-ready entries via LLM.
+    Archetype variants are NOT pre-generated here — they are generated
+    on-demand at CV time using actual JD skills for better tailoring.
+    """
+    import httpx
+
+    from jobpulse.config import GITHUB_TOKEN
+    from jobpulse.portfolio_variants import (
+        generate_portfolio_entry,
+        load_auto_portfolio,
+        save_auto_portfolio,
+    )
+    from jobpulse.project_portfolio import PORTFOLIO
+
+    headers = {"Accept": "application/vnd.github.raw"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    auto = load_auto_portfolio()
+    entries = auto.get("entries", {})
+    last_synced = auto.get("last_synced", {})
+    changed = False
+
+    for repo in repos:
+        repo_name = repo.get("name", "")
+        if not repo_name or "/" not in repo_name:
+            continue
+
+        url = repo.get("url", f"https://github.com/{repo_name}")
+        description = repo.get("description", "") or ""
+        languages = repo.get("languages", [])
+        topics = repo.get("topics", [])
+
+        pushed_at = repo.get("pushed_at", "")
+        if last_synced.get(repo_name) == pushed_at and repo_name in entries:
+            continue
+
+        if repo_name in PORTFOLIO:
+            last_synced[repo_name] = pushed_at
+            continue
+
+        if repo_name in entries:
+            last_synced[repo_name] = pushed_at
+            continue
+
+        readme = ""
+        try:
+            with httpx.Client(timeout=15) as client:
+                resp = client.get(
+                    f"https://api.github.com/repos/{repo_name}/readme",
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    readme = resp.text[:3000]
+        except Exception:
+            pass
+
+        entry = generate_portfolio_entry(
+            repo_name, description, readme, languages, topics, url,
+        )
+        if entry:
+            entries[repo_name] = entry
+            changed = True
+            logger.info("portfolio_sync: generated entry for %s", repo_name)
+        time.sleep(0.5)
+
+        last_synced[repo_name] = pushed_at
+
+    if changed:
+        auto["entries"] = entries
+        auto["last_synced"] = last_synced
+        save_auto_portfolio(auto)
+        logger.info("portfolio_sync: total auto entries=%d", len(entries))
+
+
+# ---------------------------------------------------------------------------
 # Source 2: Resume BASE_SKILLS
 # ---------------------------------------------------------------------------
 
@@ -289,6 +372,13 @@ def sync_profile() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.error("README skill sync failed: %s", exc)
 
+    # --- Source 1c: Auto-portfolio generation ---
+    if repos:
+        try:
+            sync_portfolio_entries(repos)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Portfolio auto-generation failed: %s", exc)
+
     # --- Source 2: Resume skills ---
     try:
         sync_resume_skills(store)
@@ -321,3 +411,12 @@ def sync_profile() -> None:
             logger.info("rate_monitor: cleaned up %d records older than 30 days", deleted)
     except Exception as exc:  # noqa: BLE001
         logger.error("rate_monitor cleanup failed: %s", exc)
+
+    # --- Nightly maintenance: recompute noise skills from extraction history ---
+    try:
+        from jobpulse.skill_extractor import compute_noise_skills
+        noise = compute_noise_skills()
+        if noise:
+            logger.info("Skill learning: flagged %d noise skills", len(noise))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Skill noise computation failed: %s", exc)

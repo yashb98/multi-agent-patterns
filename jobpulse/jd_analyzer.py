@@ -362,8 +362,12 @@ def analyze_jd(
 
     recruiter_email = extract_recruiter_email(jd_text)
 
-    from jobpulse.skill_extractor import extract_skills_hybrid
+    from jobpulse.skill_extractor import extract_skills_hybrid, record_extraction
     llm_data = extract_skills_hybrid(jd_text)
+
+    all_skills = llm_data["required_skills"] + llm_data["preferred_skills"]
+    if all_skills and company:
+        record_extraction(all_skills, company, title)
 
     logger.info(
         "analyze_jd completed job_id=%s title=%r seniority=%s ats=%s",

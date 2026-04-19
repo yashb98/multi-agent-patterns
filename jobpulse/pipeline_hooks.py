@@ -79,6 +79,7 @@ def with_archetype_detection(listing: Any) -> None:
         result = detect_archetype(
             getattr(listing, "description_raw", ""),
             getattr(listing, "required_skills", []),
+            title=getattr(listing, "title", ""),
         )
         listing.archetype = result.primary
         listing.archetype_secondary = result.secondary

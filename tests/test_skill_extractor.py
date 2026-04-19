@@ -1,6 +1,7 @@
 """Tests for jobpulse.skill_extractor — rule-based + LLM fallback skill extraction."""
 
 import json
+import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -171,3 +172,103 @@ class TestExtractSkillsHybrid:
             result = extract_skills_hybrid(VAGUE_JD)
             mock_llm.assert_called_once_with(VAGUE_JD)
             assert result["source"] == "llm_fallback"
+
+
+# --- Boilerplate / false positive filtering ---
+
+
+class TestBoilerplateFiltering:
+    def test_show_less_not_extracted(self, synonyms_file):
+        from jobpulse.skill_extractor import extract_skills_rule_based
+
+        jd = "## Requirements\nPython developer\n\nShow less"
+        result = extract_skills_rule_based(jd)
+        all_skills = [s.lower() for s in result["required_skills"]]
+        assert "less" not in all_skills
+
+    def test_false_positive_skills_excluded(self, synonyms_file):
+        from jobpulse.skill_extractor import extract_skills_rule_based
+
+        jd = "## Requirements\nWhat you'll do: build great software with Python"
+        result = extract_skills_rule_based(jd)
+        all_skills = [s.lower() for s in result["required_skills"]]
+        assert "do" not in all_skills
+        assert "go" not in all_skills
+
+
+# --- Learning loop ---
+
+
+class TestLearningLoop:
+    def test_record_and_load(self, tmp_path):
+        from jobpulse.skill_extractor import (
+            record_extraction, _load_learned_noise, _init_learning_db,
+        )
+
+        db = str(tmp_path / "test_learning.db")
+        _init_learning_db(db)
+        record_extraction(["Python", "SQL", "Docker"], "Spotify", "Data Scientist", db)
+        noise = _load_learned_noise(db)
+        assert isinstance(noise, set)
+
+    def test_compute_noise_not_enough_data(self, tmp_path):
+        from jobpulse.skill_extractor import (
+            record_extraction, compute_noise_skills, _init_learning_db,
+        )
+
+        db = str(tmp_path / "test_learning.db")
+        _init_learning_db(db)
+        record_extraction(["Python", "SQL"], "Spotify", "Data Scientist", db)
+        record_extraction(["Python", "React"], "Google", "SWE", db)
+        result = compute_noise_skills(min_companies=5, db_path=db)
+        assert result == []
+
+    def test_compute_noise_flags_ubiquitous_skill(self, tmp_path):
+        from jobpulse.skill_extractor import (
+            record_extraction, compute_noise_skills, _load_learned_noise, _init_learning_db,
+        )
+
+        db = str(tmp_path / "test_learning.db")
+        _init_learning_db(db)
+        companies = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+        for co in companies:
+            record_extraction(["Python", "Communication"], co, "SWE", db)
+        record_extraction(["React"], "alpha", "SWE", db)
+
+        result = compute_noise_skills(min_companies=5, min_frequency=0.80, db_path=db)
+        noise_skills = {r["skill"] for r in result}
+        assert "python" in noise_skills
+        assert "communication" in noise_skills
+        assert "react" not in noise_skills
+
+        loaded = _load_learned_noise(db)
+        assert "python" in loaded
+        assert "communication" in loaded
+
+    def test_load_learned_noise_no_db(self, tmp_path):
+        from jobpulse.skill_extractor import _load_learned_noise
+
+        noise = _load_learned_noise(str(tmp_path / "nonexistent.db"))
+        assert noise == set()
+
+    def test_noise_skills_filtered_from_extraction(self, tmp_path, synonyms_file):
+        from jobpulse.skill_extractor import extract_skills_rule_based
+
+        db = str(tmp_path / "test_learning.db")
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE noise_skills ("
+            "  skill TEXT PRIMARY KEY, frequency REAL, "
+            "  distinct_companies INTEGER, total_jds INTEGER, flagged_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO noise_skills VALUES ('python', 0.95, 10, 50, '2026-04-18')"
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("jobpulse.skill_extractor._LEARNING_DB_PATH", db):
+            result = extract_skills_rule_based(EXPLICIT_JD)
+            req = [s.lower() for s in result["required_skills"]]
+            assert "python" not in req
+            assert "react" in req

@@ -168,7 +168,10 @@ class PlaywrightDriver:
     async def navigate(self, url: str) -> dict:
         """Navigate to URL, wait for load, return snapshot."""
         await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await self._page.wait_for_load_state("networkidle", timeout=15000)
+        try:
+            await self._page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
         snapshot = await self.get_snapshot()
         return {"success": True, "snapshot": snapshot}
 

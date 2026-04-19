@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 
 from shared.logging_config import get_logger
@@ -29,6 +30,7 @@ _SOFT_SKILLS = {
 logger = get_logger(__name__)
 
 SYNONYMS_PATH: str = str(Path(__file__).parent.parent / "data" / "skill_synonyms.json")
+_LEARNING_DB_PATH: str = str(Path(__file__).parent.parent / "data" / "skill_learning.db")
 
 # Section header patterns
 _REQUIRED_HEADERS = re.compile(
@@ -56,6 +58,25 @@ _INDUSTRY_KEYWORDS: dict[str, list[str]] = {
     "saas": ["saas", "software as a service"],
     "data engineering": ["data engineering", "data pipeline", "etl", "data warehouse"],
 }
+
+
+_BOILERPLATE_PATTERNS = re.compile(
+    r"(?i)\b(?:show\s+(?:less|more)|read\s+(?:less|more)|see\s+(?:less|more)"
+    r"|click\s+(?:here|to\s+apply)|apply\s+now|sign\s+in|log\s+in"
+    r"|cookie\s+policy|privacy\s+policy|terms\s+of\s+(?:service|use)"
+    r"|equal\s+opportunity|we\s+are\s+an?\s+equal|disability\s+confident"
+    r"|powered\s+by|©\s*\d{4})\b"
+)
+
+_FALSE_POSITIVE_SKILLS = {
+    "less", "make", "do", "go", "r", "c", "self motivation",
+    "cv", "bs", "fp", "os", "dd", "eq", "ge", "ad",
+}
+
+
+def _strip_boilerplate(text: str) -> str:
+    """Remove common JD page boilerplate that triggers false skill matches."""
+    return _BOILERPLATE_PATTERNS.sub("", text)
 
 
 def _normalize(text: str) -> str:
@@ -128,15 +149,16 @@ def extract_skills_rule_based(jd_text: str) -> dict:
 
     def _match_skills(text: str) -> list[str]:
         """Find skills in text using word boundary or substring matching."""
-        norm_text = _normalize(text)
+        cleaned = _strip_boilerplate(text)
+        norm_text = _normalize(cleaned)
         found: set[str] = set()
         for term, canonical in lookup.items():
+            if term in _FALSE_POSITIVE_SKILLS:
+                continue
             if " " in term:
-                # Multi-word: substring match
                 if term in norm_text:
                     found.add(canonical)
             else:
-                # Single word: word boundary match
                 if re.search(r"\b" + re.escape(term) + r"\b", norm_text):
                     found.add(canonical)
         return sorted(found)
@@ -161,6 +183,12 @@ def extract_skills_rule_based(jd_text: str) -> dict:
     preferred_soft = [s for s in preferred_skills if _normalize(s) in _SOFT_SKILLS]
     preferred_skills = preferred_tech + preferred_soft
 
+    # Filter out learned noise skills (frequency-based)
+    learned_noise = _load_learned_noise()
+    if learned_noise:
+        required_skills = [s for s in required_skills if _normalize(s) not in learned_noise]
+        preferred_skills = [s for s in preferred_skills if _normalize(s) not in learned_noise]
+
     # Industry detection
     industry = _detect_industry(jd_text)
 
@@ -181,6 +209,115 @@ def _detect_industry(jd_text: str) -> str:
             if kw in norm:
                 return industry
     return "general"
+
+
+def _init_learning_db(db_path: str = _LEARNING_DB_PATH) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS extraction_log ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  skill TEXT NOT NULL,"
+        "  company TEXT NOT NULL,"
+        "  role_title TEXT NOT NULL,"
+        "  extracted_at TEXT NOT NULL"
+        ")"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS noise_skills ("
+        "  skill TEXT PRIMARY KEY,"
+        "  frequency REAL NOT NULL,"
+        "  distinct_companies INTEGER NOT NULL,"
+        "  total_jds INTEGER NOT NULL,"
+        "  flagged_at TEXT NOT NULL"
+        ")"
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_extraction(
+    skills: list[str], company: str, role_title: str,
+    db_path: str = _LEARNING_DB_PATH,
+) -> None:
+    """Record extracted skills for frequency analysis."""
+    from datetime import datetime, timezone
+
+    _init_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [(_normalize(s), _normalize(company), _normalize(role_title), now) for s in skills]
+    conn.executemany(
+        "INSERT INTO extraction_log (skill, company, role_title, extracted_at) VALUES (?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    logger.debug("Recorded %d skills for %s / %s", len(skills), company, role_title)
+
+
+def compute_noise_skills(
+    min_companies: int = 5,
+    min_frequency: float = 0.80,
+    db_path: str = _LEARNING_DB_PATH,
+) -> list[dict]:
+    """Identify skills appearing in >min_frequency of JDs across >min_companies.
+
+    Returns list of {skill, frequency, distinct_companies, total_jds}.
+    Also persists results to noise_skills table.
+    """
+    from datetime import datetime, timezone
+
+    _init_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+
+    total_jds = conn.execute(
+        "SELECT COUNT(DISTINCT company || '||' || role_title) FROM extraction_log"
+    ).fetchone()[0]
+
+    if total_jds < min_companies:
+        conn.close()
+        return []
+
+    rows = conn.execute(
+        "SELECT skill, COUNT(DISTINCT company || '||' || role_title) AS jd_count, "
+        "COUNT(DISTINCT company) AS company_count "
+        "FROM extraction_log GROUP BY skill"
+    ).fetchall()
+
+    now = datetime.now(timezone.utc).isoformat()
+    noise = []
+    for skill, jd_count, company_count in rows:
+        freq = jd_count / total_jds
+        if freq >= min_frequency and company_count >= min_companies:
+            noise.append({
+                "skill": skill, "frequency": freq,
+                "distinct_companies": company_count, "total_jds": jd_count,
+            })
+            conn.execute(
+                "INSERT OR REPLACE INTO noise_skills "
+                "(skill, frequency, distinct_companies, total_jds, flagged_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (skill, freq, company_count, jd_count, now),
+            )
+
+    conn.commit()
+    conn.close()
+    logger.info("Computed %d noise skills from %d JDs", len(noise), total_jds)
+    return noise
+
+
+def _load_learned_noise(db_path: str | None = None) -> set[str]:
+    """Load previously identified noise skills from SQLite."""
+    try:
+        conn = sqlite3.connect(db_path or _LEARNING_DB_PATH)
+        conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='noise_skills'"
+        )
+        rows = conn.execute("SELECT skill FROM noise_skills").fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
 
 
 def extract_skills_hybrid(jd_text: str) -> dict:

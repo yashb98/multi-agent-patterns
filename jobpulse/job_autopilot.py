@@ -178,6 +178,10 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         prescreen_listings,
         generate_materials,
     )
+    from jobpulse.pipeline_hooks import (
+        with_ghost_detection,
+        with_archetype_detection,
+    )
 
     trail = ProcessTrail("job_autopilot", "scan_window")
     notion_failures: list[str] = []
@@ -212,6 +216,16 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
     # --- Stage 2: analyze JDs and deduplicate ---
     new_listings = analyze_and_deduplicate(raw_jobs, db, trail)
 
+    # --- Stage 2.5: Ghost detection (F2) ---
+    pre_ghost = len(new_listings)
+    new_listings = with_ghost_detection(
+        new_listings,
+        {l.job_id: getattr(l, "description_raw", "") for l in new_listings},
+    )
+    ghost_blocked = pre_ghost - len(new_listings)
+    if ghost_blocked:
+        trail.log_step("decision", "Ghost detection", step_output=f"{ghost_blocked} blocked")
+
     # --- Stage 3: pre-screen (Gates 1-3 and Gate 4A) ---
     gate4_filtered, gate_rejected, gate_skipped, gate4_blocked = prescreen_listings(
         new_listings, db, trail,
@@ -224,6 +238,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
 
     for listing, screen in gate4_filtered:
         try:
+            with_archetype_detection(listing)
             bundle = generate_materials(listing, screen, db, repos, notion_failures)
             # Queue for manual review — no auto-apply or form filling
             _queue_for_review(listing, bundle.ats_score, review_batch)

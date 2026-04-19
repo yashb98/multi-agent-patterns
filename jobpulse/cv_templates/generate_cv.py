@@ -70,7 +70,7 @@ EDUCATION = [
     {
         "degree": "MSc Computer Science",
         "institution": "University of Dundee",
-        "dates": "Jan 2025 \u2013 Jan 2026",
+        "dates": "Jan 2025 - Jan 2026",
         "dissertation": "Deep Learning for Facial 3D Reconstruction - Simulator",
         "dissertation_url": "https://github.com/yashb98/Deep-Learning-for-Facial-3D-Reconstruction---Simulator",
         "modules": "Machine Learning | Advanced Programming Techniques | Design Methods | Software Engineering | Software Development | Web Development | Database Systems",
@@ -78,7 +78,7 @@ EDUCATION = [
     {
         "degree": "MBA (Finance)",
         "institution": "JECRC University",
-        "dates": "2019 \u2013 2021",
+        "dates": "2019 - 2021",
         "cgpa": "8.21/10",
     },
 ]
@@ -87,23 +87,23 @@ EXPERIENCE = [
     {
         "title": "Team Leader",
         "company": "Co-op",
-        "dates": "Apr 2025 \u2013 Present",
+        "dates": "Apr 2025 - Present",
         "bullets": [
-            '<b>Automated</b> analysis of sales trends and merchandising KPIs, identifying patterns that drive real operational impact.',
-            'Developed <b>forecasting</b> processes for stock replenishment, reducing stockout incidents by <b>20%</b> through data-driven decisions.',
-            'Worked with high <b>autonomy</b>, owning shift-level analytical decisions and translating complex data into strategic actions.',
-            'Delivered clear, <b>actionable insights</b> to area management, bridging data analysis with commercial execution.',
+            '<b>Led</b> a team of 8, coordinating shift operations through clear <b>communication</b> and collaborative <b>decision making</b> under time pressure.',
+            'Developed <b>forecasting</b> processes for stock replenishment, reducing stockout incidents by <b>20%</b> through data-driven decisions and <b>adaptability</b> to demand shifts.',
+            'Automated analysis of sales trends and merchandising KPIs, demonstrating <b>creativity</b> in identifying patterns that drive operational impact.',
+            'Delivered <b>actionable insights</b> to area management, bridging data analysis with commercial execution through strong <b>stakeholder communication</b>.',
         ],
     },
     {
         "title": "Market Research Analyst",
         "company": "Nidhi Herbal",
-        "dates": "Jul 2021 \u2013 Sep 2024",
+        "dates": "Jul 2021 - Sep 2024",
         "bullets": [
             'Built <b>Power BI</b> dashboards with <b>DAX</b> enabling real-time <b>insights</b> into sales performance, supplier ROI, and trend analysis.',
             'Automated <b>SQL</b> and Excel ETL workflows using <b>Python</b> and openpyxl, cutting monthly report prep time by <b>35%</b>.',
-            'Distilled complex <b>analytical findings</b> into clear, strategic recommendations for senior management and cross-functional teams.',
-            'Identified <b>correlations</b> and opportunities within large, messy supplier and market datasets driving business growth decisions.',
+            'Collaborated across cross-functional teams, translating complex <b>analytical findings</b> into clear recommendations through effective <b>teamwork</b> and <b>presentation skills</b>.',
+            'Applied <b>critical thinking</b> to identify correlations within large, messy supplier and market datasets, driving strategic <b>decision making</b> for business growth.',
         ],
     },
 ]
@@ -121,15 +121,15 @@ CERTIFICATIONS = [
 COMMUNITY = [
     {
         "title": "Quackathon 2025 Participant.",
-        "text": "Built a data-driven prototype in 4 hours, identifying performance patterns and delivering actionable insights under extreme time pressure.",
+        "text": "Built a data-driven prototype in 4 hours with a cross-functional team, demonstrating <b>adaptability</b>, <b>teamwork</b>, and rapid <b>decision making</b> under extreme time pressure.",
     },
     {
         "title": "Friends International, Dundee Chapter.",
-        "text": "Supported international students through community initiatives, strengthening cross-functional collaboration and async stakeholder communication.",
+        "text": "Led community initiatives supporting international students, strengthening <b>leadership</b>, cross-cultural <b>collaboration</b>, and <b>communication</b> with diverse stakeholders.",
     },
     {
         "title": "Peer Mentor for Coding Challenges.",
-        "text": "Mentored peers on Python, SQL, and statistical analysis techniques, distilling complex concepts into clear, digestible guidance.",
+        "text": "Mentored peers on Python, SQL, and statistical analysis, demonstrating <b>communication</b> skills by distilling complex technical concepts into clear, digestible guidance.",
     },
 ]
 
@@ -195,8 +195,8 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
         "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Scientist | Python | Machine Learning | SQL | NLP",
         "summary": (
             '<b>Data Scientist</b> with hands-on experience building production ML systems, '
-            'statistical models, and data pipelines. Built a <b>61,500+ LOC</b> autonomous system '
-            'with <b>488 tests</b> integrating ML-based classification, NLP pipelines, and '
+            'statistical models, and data pipelines. Built a <b>88,500+ LOC</b> autonomous system '
+            'with <b>2,350 tests</b> integrating ML-based classification, NLP pipelines, and '
             'experiential learning (GRPO). Specialises in <b>Python</b>, <b>SQL</b>, '
             '<b>machine learning</b>, and translating complex data into <b>actionable business insights</b>.'
         ),
@@ -214,8 +214,8 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
     "ml engineer": {
         "tagline": "MSc Computer Science (UOD) | 2+ YOE | ML Engineer | Python | PyTorch | MLOps | System Design",
         "summary": (
-            '<b>ML Engineer</b> who built a <b>61,500+ LOC</b> production AI system with '
-            '<b>488 tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
+            '<b>ML Engineer</b> who built a <b>88,500+ LOC</b> production AI system with '
+            '<b>2,350 tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
             '<b>GRPO experiential learning</b> and <b>persona evolution</b>. Deployed '
             '<b>10+ autonomous agents</b> running 24/7 with rate-limited automation, '
             'compiled policy gates, and <b>Docker</b>-based sandboxing.'
@@ -224,7 +224,7 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
     "ai engineer": {
         "tagline": "MSc Computer Science (UOD) | 2+ YOE | AI Engineer | Python | LangChain | RAG | Multi-Agent Systems",
         "summary": (
-            '<b>AI Engineer</b> who built a <b>61,500+ LOC</b> production multi-agent system with '
+            '<b>AI Engineer</b> who built a <b>88,500+ LOC</b> production multi-agent system with '
             '<b>4 LangGraph orchestration patterns</b>, <b>GRPO experiential learning</b>, and '
             '<b>RAG retrieval</b>. Shipped <b>10+ autonomous agents</b> with fact-checking, '
             'persona evolution, and human-in-the-loop approval flows. Specialises in '
@@ -235,7 +235,7 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
         "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Engineer | Python | SQL | ETL | Airflow | Cloud",
         "summary": (
             '<b>Data Engineer</b> with hands-on experience building data pipelines, ETL workflows, '
-            'and database systems. Built a <b>61,500+ LOC</b> autonomous system with '
+            'and database systems. Built a <b>88,500+ LOC</b> autonomous system with '
             '<b>20 SQLite databases</b>, automated data ingestion, and scheduled processing. '
             'Specialises in <b>Python</b>, <b>SQL</b>, <b>pipeline orchestration</b>, '
             'and <b>scalable data infrastructure</b>.'
@@ -244,8 +244,8 @@ _ROLE_PROFILES: dict[str, dict[str, str]] = {
     "software engineer": {
         "tagline": "MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | System Design | APIs | Testing",
         "summary": (
-            '<b>Software Engineer</b> who built a <b>61,500+ LOC</b> production system with '
-            '<b>488 tests</b>, <b>RESTful APIs</b>, and multi-service architecture. '
+            '<b>Software Engineer</b> who built a <b>88,500+ LOC</b> production system with '
+            '<b>2,350 tests</b>, <b>RESTful APIs</b>, and multi-service architecture. '
             'Designed modular components with clean interfaces, comprehensive testing, '
             'and CI/CD automation. Specialises in <b>Python</b>, <b>system design</b>, '
             '<b>API development</b>, and <b>production-grade software delivery</b>.'
@@ -294,6 +294,12 @@ def build_extra_skills(required_skills: list[str], preferred_skills: list[str]) 
             base_set.add(s_lower)
             if s_lower in _SYNONYMS:
                 base_set.add(_SYNONYMS[s_lower])
+
+    base_set.update({
+        "machine learning", "ai", "artificial intelligence", "deep learning",
+        "data science", "data analysis", "statistical analysis", "statistics",
+        "python programming", "sql querying",
+    })
 
     # Find JD skills not in base and not soft skills
     all_jd = required_skills + preferred_skills
@@ -358,6 +364,19 @@ def generate_cv_pdf(
     Returns Path to generated PDF.
     """
     _register_fonts()
+
+    if tagline:
+        tagline = normalize_text_for_ats(tagline)[0]
+    if summary:
+        summary = normalize_text_for_ats(summary)[0]
+    if projects:
+        projects = [
+            {**p, "title": normalize_text_for_ats(p["title"])[0],
+             "bullets": [normalize_text_for_ats(b)[0] for b in p["bullets"]]}
+            for p in projects
+        ]
+    if extra_skills:
+        extra_skills = {k: normalize_text_for_ats(v)[0] for k, v in extra_skills.items()}
 
     F = 'MyArial'
     SZ = 9.5
@@ -473,8 +492,8 @@ def generate_cv_pdf(
         el.append(Paragraph(summary, body_s))
     else:
         el.append(Paragraph(
-            f'{B("Software Engineer")} who built a {B("61,500+ LOC")} production AI system with '
-            f'{B("488 tests")} using {B("Claude Code")} as primary development tool. '
+            f'{B("Software Engineer")} who built a {B("88,500+ LOC")} production AI system with '
+            f'{B("2,350 tests")} using {B("Claude Code")} as primary development tool. '
             f'Researches and deploys emerging {B("AI tools")} ({I("Cursor")}, {I("Copilot")}, '
             f'{I("Codex")}) into working systems used by real teams. Specialises in '
             f'{B("rapid prototyping")}, {B("Python API integrations")}, and '
@@ -508,8 +527,10 @@ def generate_cv_pdf(
     # ── PROJECTS ──
     section('Projects')
     proj_list = projects or DEFAULT_PROJECTS
+    import re as _re
     for i, proj in enumerate(proj_list):
-        row(B(proj["title"]), L(proj["url"], '(Link)'), split=0.90)
+        title = _re.sub(r"^\d+\.\s*", "", proj["title"])
+        row(B(f"{i+1}. {title}"), L(proj["url"], '(Link)'), split=0.90)
         for b in proj["bullets"]:
             bul(b)
         if i < len(proj_list) - 1:
@@ -528,7 +549,7 @@ def generate_cv_pdf(
     # ── CERTIFICATIONS ──
     section('Certifications')
     for cert_name, cert_date, cert_url in CERTIFICATIONS:
-        verify_text = f'{cert_date} \u2013 {L(cert_url, "Verify")}' if cert_url else cert_date
+        verify_text = f'{cert_date} - {L(cert_url, "Verify")}' if cert_url else cert_date
         row(B(cert_name), verify_text, body_s, sr)
 
     # ── COMMUNITY AND LEADERSHIP ──
