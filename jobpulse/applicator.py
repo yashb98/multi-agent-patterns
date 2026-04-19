@@ -207,13 +207,14 @@ def apply_job(
         merged_answers.update(custom_answers)
 
     # Extract job context from custom_answers for dynamic screening resolution
-    job_context = (custom_answers or {}).get("_job_context")
+    # (falls back to the job_context parameter if not embedded in custom_answers)
+    _screening_job_context = (custom_answers or {}).get("_job_context") or job_context
 
     for key, value in list(merged_answers.items()):
         if isinstance(value, str) and value.endswith("?"):
             answer = get_answer(
                 value,
-                job_context,
+                _screening_job_context,
                 input_type=None,
                 platform=platform_key,
             )
