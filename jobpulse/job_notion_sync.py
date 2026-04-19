@@ -154,6 +154,7 @@ def build_update_payload(
     match_tier: str | None = None,
     matched_projects: list[str] | None = None,
     applied_date: date | None = None,
+    applied_time: str | None = None,
     follow_up_date: date | None = None,
     notes: str | None = None,
     ats_platform: str | None = None,
@@ -188,6 +189,11 @@ def build_update_payload(
 
     if applied_date is not None:
         properties["Applied Date"] = {"date": {"start": applied_date.isoformat()}}
+
+    if applied_time is not None:
+        properties["Applied Time"] = {
+            "rich_text": [{"text": {"content": applied_time}}]
+        }
 
     if follow_up_date is not None:
         properties["Follow Up Date"] = {"date": {"start": follow_up_date.isoformat()}}
