@@ -117,6 +117,9 @@ class FormFiller:
         # MV3 recovery: check if we have saved progress from a service worker restart
         current_url = snapshot.get("url", "") if isinstance(snapshot, dict) else getattr(snapshot, "url", "")
         filled_selectors: set[str] = set()
+        # Collect form metadata for post-apply learning
+        _seen_field_types: list[str] = []
+        _seen_screening_questions: list[str] = []
         if current_url:
             try:
                 saved_progress = await self.driver.get_form_progress(current_url)
@@ -139,7 +142,10 @@ class FormFiller:
             logger.info("Form page %d: state=%s", page_num, state)
 
             if state == ApplicationState.CONFIRMATION:
-                return {"success": True, "screenshot": last_screenshot, "pages_filled": page_num}
+                return {
+                    "success": True, "screenshot": last_screenshot, "pages_filled": page_num,
+                    "field_types": _seen_field_types, "screening_questions": _seen_screening_questions,
+                }
             if state == ApplicationState.VERIFICATION_WALL:
                 return {"success": False, "error": "CAPTCHA during form", "screenshot": last_screenshot}
             if state == ApplicationState.ERROR:
@@ -167,6 +173,17 @@ class FormFiller:
                     cl_path=str(cover_letter_path) if cover_letter_path else None,
                     form_intelligence=form_intelligence,
                 )
+
+            # Collect field types from this page's snapshot for learning
+            snap_dict = self._as_dict(snapshot)
+            for f in snap_dict.get("fields", []):
+                ftype = f.get("type", "unknown")
+                if ftype not in _seen_field_types:
+                    _seen_field_types.append(ftype)
+                # Screening questions: fields with question-like labels
+                label = f.get("label", "")
+                if label and "?" in label and label not in _seen_screening_questions:
+                    _seen_screening_questions.append(label)
 
             # If LLM returned no actions (page has fields but they're navigation/search),
             # try clicking the apply button — we may still be on the job listing page
@@ -276,7 +293,11 @@ class FormFiller:
 
             if state == ApplicationState.SUBMIT:
                 if dry_run:
-                    return {"success": True, "dry_run": True, "screenshot": last_screenshot, "pages_filled": page_num}
+                    return {
+                        "success": True, "dry_run": True, "screenshot": last_screenshot,
+                        "pages_filled": page_num,
+                        "field_types": _seen_field_types, "screening_questions": _seen_screening_questions,
+                    }
                 # ── Pre-submit validation gate ──
                 try:
                     validation = await self.driver.scan_validation_errors()
@@ -315,7 +336,11 @@ class FormFiller:
                                 await self.driver.clear_form_progress(current_url)
                             except (TimeoutError, ConnectionError):
                                 pass
-                        return {"success": True, "verified": True, "screenshot": last_screenshot, "pages_filled": page_num}
+                        return {
+                            "success": True, "verified": True, "screenshot": last_screenshot,
+                            "pages_filled": page_num,
+                            "field_types": _seen_field_types, "screening_questions": _seen_screening_questions,
+                        }
                     elif verification.get("reason") == "form_error":
                         logger.warning("Submit rejected: %s", verification)
                         # Don't return — let the loop continue to re-detect state
