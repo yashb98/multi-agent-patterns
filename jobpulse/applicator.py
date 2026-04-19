@@ -124,6 +124,7 @@ def apply_job(
     overrides: dict | None = None,
     dry_run: bool = False,
     engine: str = "extension",
+    job_context: dict | None = None,
 ) -> dict:
     """Submit a job application via the appropriate ATS adapter.
 
@@ -346,6 +347,32 @@ def apply_job(
             platform_name,
             result.get("error"),
         )
+
+    # Post-apply hook: record experience + Drive upload + Notion update
+    if result.get("success") and not dry_run:
+        ctx = job_context or {}
+        try:
+            from jobpulse.post_apply_hook import post_apply_hook
+
+            post_apply_hook(
+                result=result,
+                job_context={
+                    "job_id": ctx.get("job_id", ""),
+                    "company": ctx.get("company", ""),
+                    "title": ctx.get("title", ""),
+                    "url": result.get("external_url", url),
+                    "platform": platform_key,
+                    "ats_platform": ats_platform or platform_key,
+                    "notion_page_id": ctx.get("notion_page_id"),
+                    "cv_path": str(cv_path),
+                    "cover_letter_path": str(cover_letter_path) if cover_letter_path else None,
+                    "match_tier": ctx.get("match_tier"),
+                    "ats_score": ctx.get("ats_score"),
+                    "matched_projects": ctx.get("matched_projects"),
+                },
+            )
+        except Exception as exc:
+            logger.warning("post_apply_hook failed: %s — application still recorded", exc)
 
     if not dry_run:
         # Anti-detection: random delay between submissions (20-45s with jitter)
