@@ -29,7 +29,9 @@
 - company_blocklist.py — Notion Company Blocklist: spam detection
 - job_analytics.py — Conversion funnel, platform breakdown, gate stats
 - application_orchestrator.py — Full external application lifecycle: navigate → account → verify → fill → submit
+- form_experience_db.py — Per-domain form experience store (SQLite): adapter, pages, fields, timing
 - page_analyzer.py — Hybrid DOM+Vision page type detection (PageType enum: 8 types)
+- post_apply_hook.py — Unified post-apply: form experience DB, Drive upload, Notion update
 - cookie_dismisser.py — Pattern-based cookie banner detection and dismissal
 - account_manager.py — SQLite credential store per domain, ATS_ACCOUNT_PASSWORD
 - gmail_verify.py — Exponential backoff Gmail polling, HTML verification link extraction

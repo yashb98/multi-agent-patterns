@@ -162,6 +162,20 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - Verify the cron path (scan_pipeline.py) handles the same flow
 - Internal keys (_stream, _gotchas, _job_context) MUST be filtered before json.dumps
 
+## Post-Apply Hook (Automatic)
+- `post_apply_hook()` in `jobpulse/post_apply_hook.py` runs after EVERY successful submission
+- Called from `apply_job()` in `applicator.py` — both cron and manual paths get it automatically
+- Three concerns:
+  1. Form experience: records domain, adapter, pages, field types, screening questions, time to `data/form_experience.db`
+  2. Drive upload: uploads CV + CL PDFs to Google Drive, gets shareable links
+  3. Notion update: sets status=Applied, applied date+time, follow-up date (+7 days), CV/CL Drive links
+- `FormExperienceDB` in `jobpulse/form_experience_db.py` — per-domain form learning
+  - Cron jobs query this to know form shape before applying (skip LLM page detection for known domains)
+  - Success data never overwritten by failures (preserves what worked)
+  - Tracks apply_count per domain for confidence scoring
+- Hook is non-blocking: any failure is logged but doesn't affect the application result
+- Hook runs BEFORE the anti-detection delay so Drive/Notion work happens during the wait
+
 ## Dynamic Cover Letter
 - Cover letter NOT generated upfront — lazy generation via cl_generator callback
 - ATS form detection: Greenhouse/Lever adapters trigger generation when CL field found
