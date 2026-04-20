@@ -51,6 +51,16 @@ CLI uses direct SQLite (~50ms) vs `python -m` path (~4s, heavy `shared/__init__.
 - For multi-step tasks, state a brief plan with verification checks per step.
 - Loop until verified — weak criteria ("make it work") require clarification first.
 
+## Seven Engineering Principles (MANDATORY)
+Every feature, function, and file MUST satisfy all 7 principles. Full checklist: `.claude/rules/seven-principles.md`
+1. **System Design** — Clear boundaries, no import-time side effects, no duplicated logic
+2. **Tool & Contract Design** — Typed interfaces, centralized LLM factories, consistent return types
+3. **Retrieval Engineering** — Connection pooling, no N+1, cached lookups, lazy loading
+4. **Reliability Engineering** — Resource cleanup in finally, guarded LLM calls, bounded loops
+5. **Security & Safety** — No PII in source, no injection vectors, SSRF protection, parameterized SQL
+6. **Evaluation & Observability** — Cost tracking on all LLM calls, decision logging, structured errors
+7. **Product Thinking** — Dry-run-first, confirm_application(), OS-aware paths, user-actionable errors
+
 ## Critical Rules
 - Update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
 - Always HTTPS for external APIs | Tests NEVER touch data/*.db — use tmp_path
@@ -62,7 +72,7 @@ CLI uses direct SQLite (~50ms) vs `python -m` path (~4s, heavy `shared/__init__.
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~91,500 LOC | 421 Python files | 26 databases | 2397 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~93,000 LOC | 429 Python files | 29 databases | 2427 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
