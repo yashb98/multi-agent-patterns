@@ -38,7 +38,17 @@ def gate0_title_relevance(title: str, jd_text: str, config: dict) -> bool:
     # NOTE: Previously also checked JD body, but that was too aggressive — JDs
     # mention "senior" and "manager" when describing teammates, not the role itself.
     # Gate 1 (K1 seniority) handles "X+ years" requirements in JD body.
-    for kw in config.get("exclude_keywords", []):
+    exclude_keywords = list(config.get("exclude_keywords", []))
+
+    # Augment with learned avoidance rules from rejection analysis
+    try:
+        from jobpulse.agent_rules import AgentRulesDB
+        learned = AgentRulesDB().get_exclude_keywords()
+        exclude_keywords.extend(learned)
+    except Exception:
+        pass
+
+    for kw in exclude_keywords:
         if kw.lower() in title_lower:
             logger.debug("gate0: title '%s' killed by exclude keyword '%s'", title, kw)
             return False

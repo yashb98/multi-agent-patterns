@@ -19,7 +19,9 @@ from jobpulse.ext_models import FieldAnswer
 from jobpulse.screening_answers import COMMON_ANSWERS, _generate_answer, _resolve_placeholder
 
 if TYPE_CHECKING:
+    from jobpulse.correction_capture import CorrectionCapture
     from jobpulse.extension_bridge import ExtensionBridge
+    from jobpulse.field_audit import FieldAuditDB
     from jobpulse.semantic_cache import SemanticAnswerCache
 
 logger = get_logger(__name__)
@@ -55,13 +57,78 @@ def _generate_answer_llm(question: str, job_context: dict | None = None) -> str:
 class FormIntelligence:
     """Orchestrates the 5-tier answer resolution for form fields."""
 
+    _ESCALATION_THRESHOLD = 0.5
+    _ESCALATION_MIN_SAMPLES = 5
+
     def __init__(
         self,
         semantic_cache: SemanticAnswerCache | None = None,
         bridge: ExtensionBridge | None = None,
+        field_audit: FieldAuditDB | None = None,
+        correction_db: CorrectionCapture | None = None,
     ) -> None:
         self._cache = semantic_cache
         self._bridge = bridge
+        self._field_audit = field_audit
+        self._correction_db = correction_db
+
+    # ------------------------------------------------------------------
+    # Correction escalation check
+    # ------------------------------------------------------------------
+
+    def _should_escalate(self, question: str) -> bool:
+        """Check if this field has a high correction rate and should be escalated."""
+        if self._correction_db is None or self._field_audit is None:
+            return False
+        label = question.strip().lower()
+        total = self._field_audit.get_field_fill_count(label)
+        rate = self._correction_db.get_correction_rate(
+            label, total, min_samples=self._ESCALATION_MIN_SAMPLES,
+        )
+        if rate is not None and rate >= self._ESCALATION_THRESHOLD:
+            logger.info(
+                "Escalating field '%s' — correction rate %.0f%% (%d samples)",
+                label, rate * 100, total,
+            )
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Audit logging
+    # ------------------------------------------------------------------
+
+    def _log_audit(
+        self,
+        question: str,
+        result: FieldAnswer,
+        *,
+        application_url: str = "",
+        domain: str = "",
+        platform: str = "",
+    ) -> None:
+        if self._field_audit is None:
+            return
+        model = ""
+        if result.tier in (4, 5):
+            try:
+                from shared.agents import get_model_name
+                model = get_model_name()
+            except Exception:
+                pass
+        try:
+            self._field_audit.record_fill(
+                application_url=application_url,
+                domain=domain,
+                platform=platform,
+                field_label=question,
+                value=result.answer,
+                method=result.tier_name,
+                tier=result.tier,
+                confidence=result.confidence,
+                model=model,
+            )
+        except Exception as exc:
+            logger.debug("Field audit logging failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Tier 1 helper — pattern match
@@ -164,6 +231,7 @@ class FormIntelligence:
         input_type: str | None = None,
         platform: str | None = None,
         db: object | None = None,
+        application_url: str = "",
     ) -> FieldAnswer:
         """Sync path — Tiers 1, 2, 4.
 
@@ -173,6 +241,12 @@ class FormIntelligence:
         if not question or not question.strip():
             return FieldAnswer(answer="", tier=1, confidence=0.0, tier_name=_TIER_NAMES[1])
 
+        # Correction-weighted escalation: flag fields that users frequently override
+        if self._should_escalate(question):
+            return FieldAnswer(
+                answer="", tier=0, confidence=0.3, tier_name="escalated",
+            )
+
         company = (job_context or {}).get("company", "")
 
         # Tier 1 — pattern
@@ -180,15 +254,19 @@ class FormIntelligence:
             question, job_context, input_type=input_type, platform=platform, db=db
         )
         if result is not None:
+            self._log_audit(question, result, application_url=application_url, platform=platform or "")
             return result
 
         # Tier 2 — semantic cache (company-scoped)
         result = self._try_semantic_cache(question, company=company)
         if result is not None:
+            self._log_audit(question, result, application_url=application_url, platform=platform or "")
             return result
 
         # Tier 4 — LLM
-        return self._try_llm(question, job_context, company=company)
+        result = self._try_llm(question, job_context, company=company)
+        self._log_audit(question, result, application_url=application_url, platform=platform or "")
+        return result
 
     # ------------------------------------------------------------------
     # Public: async resolve (Tiers 1, 2, 3, 4, 5)
@@ -203,6 +281,7 @@ class FormIntelligence:
         platform: str | None = None,
         db: object | None = None,
         screenshot_b64: str | None = None,
+        application_url: str = "",
     ) -> FieldAnswer:
         """Async path — all 5 tiers.
 
@@ -213,9 +292,15 @@ class FormIntelligence:
             platform: ATS platform name.
             db: Optional JobDB instance.
             screenshot_b64: Base64-encoded screenshot for Tier 5 vision fallback.
+            application_url: Job URL for audit logging.
         """
         if not question or not question.strip():
             return FieldAnswer(answer="", tier=1, confidence=0.0, tier_name=_TIER_NAMES[1])
+
+        if self._should_escalate(question):
+            return FieldAnswer(
+                answer="", tier=0, confidence=0.3, tier_name="escalated",
+            )
 
         company = (job_context or {}).get("company", "")
 
@@ -224,11 +309,13 @@ class FormIntelligence:
             question, job_context, input_type=input_type, platform=platform, db=db
         )
         if result is not None:
+            self._log_audit(question, result, application_url=application_url, platform=platform or "")
             return result
 
         # Tier 2 — semantic cache (company-scoped)
         result = self._try_semantic_cache(question, company=company)
         if result is not None:
+            self._log_audit(question, result, application_url=application_url, platform=platform or "")
             return result
 
         # Tier 3 — Gemini Nano (on-device, via extension bridge)
@@ -242,12 +329,14 @@ class FormIntelligence:
                 )
                 if nano_answer:
                     logger.debug("Tier 3 Nano answer for '%s'", question[:60])
-                    return FieldAnswer(
+                    result = FieldAnswer(
                         answer=nano_answer,
                         tier=3,
                         confidence=0.8,
                         tier_name=_TIER_NAMES[3],
                     )
+                    self._log_audit(question, result, application_url=application_url, platform=platform or "")
+                    return result
             except Exception as exc:
                 logger.warning("Tier 3 Nano error: %s", exc)
 
@@ -264,13 +353,16 @@ class FormIntelligence:
                 )
                 if vision_answer:
                     logger.debug("Tier 5 Vision answer for '%s'", question[:60])
-                    return FieldAnswer(
+                    result = FieldAnswer(
                         answer=vision_answer,
                         tier=5,
                         confidence=0.85,
                         tier_name=_TIER_NAMES[5],
                     )
+                    self._log_audit(question, result, application_url=application_url, platform=platform or "")
+                    return result
             except Exception as exc:
                 logger.warning("Tier 5 Vision error: %s", exc)
 
+        self._log_audit(question, result, application_url=application_url, platform=platform or "")
         return result

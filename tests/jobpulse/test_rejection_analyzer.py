@@ -15,6 +15,7 @@ from jobpulse.rejection_analyzer import (
     compute_blocker_frequency,
     generate_recommendations,
     generate_full_report,
+    generate_avoidance_rules,
 )
 
 
@@ -254,3 +255,55 @@ class TestGenerateFullReport:
         report = generate_full_report(apps)
         total = sum(report["outcome_counts"].values())
         assert total == 4
+
+
+# ---------------------------------------------------------------------------
+# TestGenerateAvoidanceRules
+# ---------------------------------------------------------------------------
+
+class TestGenerateAvoidanceRules:
+    def test_high_frequency_blockers_produce_rules(self, tmp_path):
+        # 4 geo-blocked out of 10 total = 40% → above 20% threshold
+        apps = (
+            [{"status": "blocked", "block_reason": "requires visa sponsorship"}] * 4
+            + [{"status": "blocked", "block_reason": "overqualified"}] * 6
+        )
+        rules = generate_avoidance_rules(
+            apps, rules_db_path=str(tmp_path / "rules.db"),
+        )
+        assert len(rules) > 0
+        categories = {r["category"] for r in rules}
+        assert "geo-restriction" in categories
+
+    def test_below_threshold_no_rules(self, tmp_path):
+        # 1 geo-blocked out of 10 = 10% → below 20% threshold
+        apps = (
+            [{"status": "blocked", "block_reason": "requires visa sponsorship"}] * 1
+            + [{"status": "blocked", "block_reason": "overqualified"}] * 9
+        )
+        rules = generate_avoidance_rules(
+            apps, rules_db_path=str(tmp_path / "rules.db"),
+        )
+        geo_rules = [r for r in rules if r["category"] == "geo-restriction"]
+        assert len(geo_rules) == 0
+
+    def test_empty_applications(self, tmp_path):
+        rules = generate_avoidance_rules(
+            [], rules_db_path=str(tmp_path / "rules.db"),
+        )
+        assert rules == []
+
+    def test_rules_persisted_to_db(self, tmp_path):
+        from jobpulse.agent_rules import AgentRulesDB
+
+        db_path = str(tmp_path / "rules.db")
+        apps = (
+            [{"status": "blocked", "block_reason": "requires java expertise"}] * 3
+            + [{"status": "blocked", "block_reason": "overqualified"}] * 7
+        )
+        # 3/10 = 30% → above 15% threshold for stack-mismatch
+        generate_avoidance_rules(apps, rules_db_path=db_path)
+
+        db = AgentRulesDB(db_path=db_path)
+        keywords = db.get_exclude_keywords()
+        assert len(keywords) > 0

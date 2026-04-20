@@ -219,3 +219,76 @@ def generate_full_report(applications: list[dict[str, Any]]) -> dict[str, Any]:
         "blocker_frequency": blocker_frequency,
         "recommendations": recommendations,
     }
+
+
+# ---------------------------------------------------------------------------
+# Avoidance rule generation
+# ---------------------------------------------------------------------------
+
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "geo-restriction": ["visa", "right to work", "work authorization", "residency"],
+    "seniority-mismatch": ["staff", "principal", "director", "vp", "head of"],
+    "onsite-requirement": ["onsite", "on-site", "hybrid", "relocate", "in office"],
+    "stack-mismatch": ["java", "c++", "ruby", ".net", "php", "rust", "swift", "kotlin"],
+}
+
+_CATEGORY_THRESHOLDS: dict[str, float] = {
+    "geo-restriction": 20.0,
+    "stack-mismatch": 15.0,
+    "seniority-mismatch": 10.0,
+    "onsite-requirement": 15.0,
+}
+
+
+def generate_avoidance_rules(
+    applications: list[dict[str, Any]],
+    *,
+    rules_db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Auto-generate avoidance rules from blocker frequency.
+
+    For each blocker category that exceeds its threshold, writes an
+    exclude_keyword rule to AgentRulesDB.
+
+    Returns:
+        List of generated rule dicts.
+    """
+    blocker_freq = compute_blocker_frequency(applications)
+    if not blocker_freq:
+        return []
+
+    total_blocked = sum(b["count"] for b in blocker_freq.values())
+    if total_blocked == 0:
+        return []
+
+    try:
+        from jobpulse.agent_rules import AgentRulesDB
+    except ImportError:
+        logger.warning("agent_rules module not available — skipping rule generation")
+        return []
+
+    rules_db = AgentRulesDB(db_path=rules_db_path)
+    generated: list[dict[str, Any]] = []
+
+    for category, data in blocker_freq.items():
+        threshold = _CATEGORY_THRESHOLDS.get(category)
+        if threshold is None or data["pct"] < threshold:
+            continue
+
+        keywords = _CATEGORY_KEYWORDS.get(category, [])
+        for keyword in keywords:
+            rule = rules_db.auto_generate_from_blocker(
+                category=category,
+                pattern=keyword,
+                count=data["count"],
+                total=total_blocked,
+            )
+            generated.append(rule)
+
+    if generated:
+        logger.info(
+            "rejection_analyzer: generated %d avoidance rules from %d blocked apps",
+            len(generated), total_blocked,
+        )
+
+    return generated
