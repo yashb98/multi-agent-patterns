@@ -36,27 +36,8 @@ def is_aggregator_url(url: str) -> bool:
 # Global mutex — only one apply_job() call can run at a time
 _apply_lock = threading.Lock()
 
-# Work authorisation facts — injected into every application
-WORK_AUTH: dict[str, object] = {
-    "requires_sponsorship": False,
-    "visa_status": "Student Visa; converting to Graduate Visa from 9 May 2026 (valid 2 years)",
-    "right_to_work_uk": True,
-    "notice_period": "Immediately",
-    "salary_expectation": "28000",
-}
-
-# Applicant profile — used to pre-fill standard form fields
-PROFILE: dict[str, str] = {
-    "first_name": "Yash",
-    "last_name": "Bishnoi",
-    "email": "bishnoiyash274@gmail.com",
-    "phone": "07909445288",
-    "linkedin": "https://linkedin.com/in/yash-bishnoi-2ab36a1a5",
-    "github": "https://github.com/yashb98",
-    "portfolio": "https://yashbishnoi.io",
-    "education": "MSc Computer Science, University of Dundee (Jan 2025 - Jan 2026)",
-    "location": "Dundee, UK",
-}
+# Applicant profile and work auth loaded from env vars via config
+from jobpulse.config import APPLICANT_PROFILE as PROFILE, WORK_AUTH
 
 
 def classify_action(ats_score: float, easy_apply: bool) -> str:
@@ -250,6 +231,9 @@ def apply_job(
         elif "myworkdayjobs.com" in url:
             ats_platform = "workday"
             platform_key = "workday"
+        elif "smartrecruiters.com" in url:
+            ats_platform = "smartrecruiters"
+            platform_key = "smartrecruiters"
 
     # Load known form-filling gotchas for this ATS domain before starting
     # so the adapter can avoid known failure patterns
@@ -265,6 +249,15 @@ def apply_job(
                 merged_answers["_gotchas"] = _gotchas
     except Exception as _gotcha_exc:
         logger.debug("GotchasDB lookup failed: %s", _gotcha_exc)
+
+    # Load form hints from prior applications on this domain
+    try:
+        from jobpulse.form_prefetch import prefetch_form_hints
+        _form_hints = prefetch_form_hints(url)
+        if _form_hints.known_domain:
+            merged_answers["_form_hints"] = _form_hints.to_dict()
+    except Exception as _prefetch_exc:
+        logger.debug("form_prefetch failed: %s", _prefetch_exc)
 
     # Attach Telegram progress stream so the orchestrator can call stream_field()
     # per field during form filling. The stream is async but fire-and-forget from sync code.
@@ -382,4 +375,99 @@ def apply_job(
         time.sleep(delay)
 
     result["rate_limited"] = False
+    return result
+
+
+def confirm_application(
+    dry_run_result: dict,
+    url: str,
+    cv_path: Path,
+    cover_letter_path: Path | None = None,
+    job_context: dict | None = None,
+    ats_platform: str | None = None,
+    agent_mapping: dict[str, str] | None = None,
+    final_mapping: dict[str, str] | None = None,
+) -> dict:
+    """Finalize a dry-run application after manual user submission.
+
+    Call after the user reviews a dry_run=True form and manually clicks Submit.
+    Records quota usage, captures user corrections, and runs post_apply_hook.
+
+    Args:
+        agent_mapping: {field_label: value} as originally filled by the agent.
+        final_mapping: {field_label: value} as approved by the user (after corrections).
+            When both are provided, corrections are stored as reinforcement signals.
+    """
+    ctx = job_context or {}
+    platform_key = (ats_platform or ctx.get("platform", "generic")).lower()
+
+    with _apply_lock:
+        try:
+            from jobpulse.rate_limiter import RateLimiter
+            limiter = RateLimiter()
+            limiter.record_application(platform_key)
+        except Exception as exc:
+            logger.warning("confirm_application: rate limiter: %s", exc)
+
+    result = dict(dry_run_result)
+    result["success"] = True
+    result.pop("dry_run", None)
+
+    # Capture user corrections as reinforcement signals
+    if agent_mapping and final_mapping:
+        try:
+            from urllib.parse import urlparse
+            from jobpulse.correction_capture import CorrectionCapture
+
+            domain = urlparse(url).netloc.lower().removeprefix("www.")
+            cc = CorrectionCapture()
+            correction_result = cc.record_corrections(
+                domain=domain,
+                platform=platform_key,
+                agent_mapping=agent_mapping,
+                final_mapping=final_mapping,
+            )
+            result["corrections"] = correction_result
+
+            # Auto-generate agent rules from corrections (bridge to cron agents)
+            if correction_result.get("corrections"):
+                try:
+                    from jobpulse.agent_rules import AgentRulesDB
+                    rules = AgentRulesDB()
+                    for c in correction_result["corrections"]:
+                        rules.auto_generate_from_correction(
+                            field_label=c["field"],
+                            agent_value=c["agent"],
+                            user_value=c["user"],
+                            domain=domain,
+                            platform=platform_key,
+                        )
+                except Exception as rules_exc:
+                    logger.warning("confirm_application: agent rules generation: %s", rules_exc)
+        except Exception as exc:
+            logger.warning("confirm_application: correction capture: %s", exc)
+
+    try:
+        from jobpulse.post_apply_hook import post_apply_hook
+
+        post_apply_hook(
+            result=result,
+            job_context={
+                "job_id": ctx.get("job_id", ""),
+                "company": ctx.get("company", ""),
+                "title": ctx.get("title", ""),
+                "url": url,
+                "platform": platform_key,
+                "ats_platform": ats_platform or platform_key,
+                "notion_page_id": ctx.get("notion_page_id"),
+                "cv_path": str(cv_path),
+                "cover_letter_path": str(cover_letter_path) if cover_letter_path else None,
+                "match_tier": ctx.get("match_tier"),
+                "ats_score": ctx.get("ats_score"),
+                "matched_projects": ctx.get("matched_projects"),
+            },
+        )
+    except Exception as exc:
+        logger.warning("confirm_application: post_apply_hook failed: %s", exc)
+
     return result
