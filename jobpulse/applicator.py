@@ -256,6 +256,16 @@ def apply_job(
         _form_hints = prefetch_form_hints(url)
         if _form_hints.known_domain:
             merged_answers["_form_hints"] = _form_hints.to_dict()
+            if _form_hints.screening_questions:
+                for sq in _form_hints.screening_questions:
+                    if sq not in merged_answers:
+                        answer = get_answer(sq, _screening_job_context, platform=platform_key)
+                        if answer:
+                            merged_answers[sq] = answer
+                logger.info(
+                    "form_prefetch: pre-resolved %d screening questions",
+                    len(_form_hints.screening_questions),
+                )
     except Exception as _prefetch_exc:
         logger.debug("form_prefetch failed: %s", _prefetch_exc)
 
