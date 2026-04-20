@@ -467,6 +467,50 @@ voyageai>=0.3.0             # Embedding API client
 
 ---
 
+## Documentation Updates (Agent-Facing)
+
+The memory infrastructure is useless if agents don't know it exists. These documentation files are what AI agents read to discover and use the system. All must be updated as part of implementation.
+
+### Agent Memory Lifecycle
+
+Every agent must follow this loop. Documentation files must make it explicit:
+
+```
+READ  → memory_manager.get_context_for_agent(agent_name, topic, domain)
+        → injected into system prompt before execution
+        
+EXECUTE → agent runs with memory-enriched context
+
+WRITE → memory_manager.store_memory(tier, domain, content, score)
+        → records what was learned/discovered
+
+LINK  → AutonomousLinker discovers connections (async, automatic)
+        → no agent action needed
+```
+
+### Files to Update
+
+| File | Changes |
+|------|---------|
+| **shared/CLAUDE.md** | Add memory layer section: 3-engine architecture (SQLite/Qdrant/Neo4j), new modules (`_sqlite_store.py`, `_qdrant_store.py`, `_neo4j_store.py`, `_embedder.py`, `_linker.py`, `_forgetting.py`, `_sync.py`, `_query.py`), public API (`store_memory`, `query`, `pin_memory`), query routing rules |
+| **AGENTS.md** | Add memory briefing for subagents: "Before execution call `get_context_for_agent()`. After execution call `store_memory()` for any learned facts, procedures, or notable outcomes. Never query SQLite/Qdrant/Neo4j directly — always go through MemoryManager." |
+| **CLAUDE.md** (root) | Add to Module Context table: `shared/memory_layer/CLAUDE.md — 3-engine memory: SQLite (truth) + Qdrant (vectors) + Neo4j (graph)` |
+| **jobpulse/CLAUDE.md** | Add memory integration section: which agents record memories (form_experience → episodic, screening_answers cache → procedural, scan_learning → semantic), how `post_apply_hook` feeds the memory pipeline |
+| **patterns/CLAUDE.md** | Add memory integration section: how patterns call `get_context_for_agent()` before each agent node, how `learn_from_success()` fires at convergence/finish for scores >= 7.0 |
+| **.claude/rules/shared.md** | Add rule: "All memory access goes through MemoryManager — never query SQLite/Qdrant/Neo4j directly. Same principle as get_llm() for LLM calls." |
+| **shared/memory_layer/CLAUDE.md** | New file — module-specific docs for the memory layer: architecture overview, engine roles, file map, query routing, lifecycle stages, how to add new memory tiers |
+
+### Why This Matters
+
+Claude Code subagents get `AGENTS.md` auto-injected. If it doesn't mention the memory system, subagents will:
+- Not read from memory before execution (missing valuable context)
+- Not write to memory after execution (losing learnings)
+- Potentially bypass MemoryManager and query engines directly (breaking the abstraction)
+
+The documentation IS the agent's understanding of the system. No docs = no usage.
+
+---
+
 ## Testing Strategy
 
 - All tests use in-memory/tmp_path backends: SQLite `:memory:`, Qdrant in-memory mode, Neo4j testcontainers or mock
@@ -488,3 +532,5 @@ voyageai>=0.3.0             # Embedding API client
 5. System degrades gracefully when Qdrant or Neo4j is unavailable
 6. All existing tests pass without modification
 7. Production swap requires only env var changes
+8. All agent-facing docs updated — a new subagent spawned after this change naturally reads from and writes to memory without special instructions
+9. `AGENTS.md` memory briefing causes subagents to follow the read→execute→write→link lifecycle
