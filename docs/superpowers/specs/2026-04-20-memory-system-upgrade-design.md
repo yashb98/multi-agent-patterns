@@ -513,13 +513,265 @@ The documentation IS the agent's understanding of the system. No docs = no usage
 
 ## Testing Strategy
 
-- All tests use in-memory/tmp_path backends: SQLite `:memory:`, Qdrant in-memory mode, Neo4j testcontainers or mock
-- Never touch production `data/agent_memory/` from tests
-- Test each engine independently + integration test for full pipeline
-- Test graceful degradation: Qdrant down, Neo4j down, both down
-- Test forgetting: decay computation, promotion, tombstoning, revival
-- Test autonomous linking: rule-based classification, cross-tier discovery
-- Test contradiction: conflicting facts, confidence decay, tombstoning
+### Test Infrastructure
+
+All tests use isolated backends — **never** touch production `data/agent_memory/`:
+- SQLite: `:memory:` or `tmp_path / "test.db"`
+- Qdrant: `qdrant_client.QdrantClient(location=":memory:")`
+- Neo4j: `testcontainers-neo4j` (spins up disposable Docker container per test session) OR mock via `unittest.mock` for unit tests that don't need real graph traversal
+- Embeddings: mock `VoyageEmbedder` returns deterministic 1024-dim vectors (hash-based) so similarity tests are reproducible
+
+### Test Files
+
+```
+tests/shared/memory_layer/
+  test_sqlite_store.py        # SQLite backend CRUD + schema
+  test_qdrant_store.py        # Qdrant vector search + filtering
+  test_neo4j_store.py         # Neo4j graph ops + traversal
+  test_embedder.py            # Voyage + MiniLM fallback
+  test_linker.py              # Autonomous linking pipeline
+  test_forgetting.py          # Decay, promotion, tombstoning, revival
+  test_query_router.py        # Route selection per query type
+  test_sync.py                # 3-engine reconciliation
+  test_manager.py             # MemoryManager public API
+  test_integration.py         # Full pipeline end-to-end
+  test_degradation.py         # Engine failure graceful fallback
+  test_backwards_compat.py    # Old API still works
+  conftest.py                 # Shared fixtures
+```
+
+### Fixtures (conftest.py)
+
+```python
+@pytest.fixture
+def sqlite_store(tmp_path):
+    """Fresh SQLite backend per test."""
+    return SQLiteStore(str(tmp_path / "test_memories.db"))
+
+@pytest.fixture
+def qdrant_store():
+    """In-memory Qdrant per test."""
+    return QdrantStore(location=":memory:")
+
+@pytest.fixture
+def neo4j_store():
+    """Testcontainer Neo4j per test session (shared, cleaned between tests)."""
+    # Uses testcontainers-neo4j — real Neo4j, disposable
+    ...
+
+@pytest.fixture
+def mock_embedder():
+    """Deterministic embedder: same text → same vector (hash-based)."""
+    return MockEmbedder(dims=1024)
+
+@pytest.fixture
+def memory_manager(tmp_path, qdrant_store, neo4j_store, mock_embedder):
+    """Fully wired MemoryManager with all 3 engines."""
+    return MemoryManager(
+        storage_dir=str(tmp_path),
+        qdrant=qdrant_store,
+        neo4j=neo4j_store,
+        embedder=mock_embedder,
+    )
+```
+
+---
+
+### 1. SQLite Store Tests (test_sqlite_store.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_insert_and_retrieve` | Basic CRUD works | Insert entry, retrieve by ID, fields match |
+| `test_insert_creates_all_indexes` | Schema is complete | Query `sqlite_master` for all 4 indexes |
+| `test_tier_views_filter_correctly` | Views exclude tombstoned | Insert 3 entries (1 tombstoned), view returns 2 |
+| `test_domain_filter` | Domain queries use index | Insert 10 entries across 3 domains, query 1 domain, get correct subset |
+| `test_lifecycle_filter` | Lifecycle stages queryable | Insert STM + MTM + LTM entries, filter by lifecycle |
+| `test_decay_score_ordering` | Decay-ordered retrieval | Insert 5 entries with different decay scores, retrieve ordered desc |
+| `test_tombstone_soft_delete` | Tombstoned entries invisible to views | Tombstone entry, verify absent from views, present in raw table |
+| `test_payload_json_roundtrip` | Tier-specific payload survives storage | Insert with nested dict payload, retrieve, verify identical |
+| `test_update_access_metadata` | Access tracking works | Retrieve entry, verify `last_accessed` updated and `access_count` incremented |
+| `test_concurrent_writes` | Thread safety | 10 threads each insert 10 entries simultaneously, verify all 100 present |
+
+### 2. Qdrant Store Tests (test_qdrant_store.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_upsert_and_search` | Basic vector search works | Upsert 5 vectors, search with query vector, top result is most similar |
+| `test_collection_per_tier` | Tier isolation | Insert into episodic collection, search procedural collection, get 0 results |
+| `test_filtered_search_by_domain` | Payload filtering | Insert 10 vectors (5 domain A, 5 domain B), search with domain=A filter, get only A results |
+| `test_filtered_search_by_score` | Score floor filtering | Insert vectors with scores 3.0-9.0, search with min_score=7.0, only high-scorers returned |
+| `test_filtered_search_by_lifecycle` | Lifecycle filtering | Insert STM + Cold vectors, search with lifecycle=STM filter, Cold excluded |
+| `test_similarity_ordering` | Results ranked by similarity | Insert 3 vectors at known distances, verify order matches expected similarity |
+| `test_cross_tier_search` | Cross-collection search | Insert related content in episodic + procedural, cross-tier search finds both |
+| `test_delete_by_id` | Tombstone propagation | Upsert vector, delete it, search returns 0 |
+| `test_cosine_threshold` | Low-similarity excluded | Insert distant vector, search with threshold=0.75, not returned |
+| `test_10k_vectors_under_5ms` | Performance at scale | Insert 10,000 vectors, search completes in <5ms |
+
+### 3. Neo4j Store Tests (test_neo4j_store.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_create_node_and_retrieve` | Basic node CRUD | Create Memory node, retrieve by memory_id, properties match |
+| `test_create_edge` | Edge creation | Create 2 nodes + SIMILAR_TO edge, verify edge exists with properties |
+| `test_graph_expand_1_hop` | 1-hop expansion | Create A→B→C chain, expand from A depth=1, get {A, B} |
+| `test_graph_expand_2_hops` | 2-hop expansion | Create A→B→C chain, expand from A depth=2, get {A, B, C} |
+| `test_graph_expand_excludes_forgotten` | Forgotten nodes skipped | Create A→B→C, mark B as FORGOTTEN, expand from A depth=2, get {A} (C unreachable) |
+| `test_domain_neighbors` | Domain-scoped traversal | Create 5 nodes (3 domain=greenhouse, 2 domain=workday), domain query for greenhouse returns 3 |
+| `test_degree_count` | Connectivity signal | Create hub node with 7 edges, verify degree() returns 7 |
+| `test_downstream_scores` | Impact signal | Create A→(TAUGHT)→B (score 8.0), A→(TAUGHT)→C (score 6.0), avg_downstream_score(A) = 7.0 |
+| `test_count_similar` | Uniqueness signal | Create 4 nodes with SIMILAR_TO edges to target, count_similar returns 4 |
+| `test_platform_node_linking` | APPLIES_TO edges | Create procedure + Platform node, link with APPLIES_TO, traversal from platform finds procedure |
+| `test_contradicts_edge` | Contradiction edges | Create 2 semantic facts + CONTRADICTS edge, verify edge has similarity property |
+| `test_batch_edge_creation` | Bulk edge insert | Create 20 nodes, batch-create 15 edges in one call, all edges exist |
+
+### 4. Embedder Tests (test_embedder.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_voyage_embed_returns_1024_dims` | Correct vector size | Embed "test text", verify len == 1024 |
+| `test_same_text_same_vector` | Deterministic embeddings | Embed same text twice, vectors are identical |
+| `test_similar_text_high_cosine` | Semantic similarity | Embed "greenhouse form filling" and "filling greenhouse application forms", cosine > 0.8 |
+| `test_different_text_low_cosine` | Semantic dissimilarity | Embed "greenhouse form" and "budget categorization", cosine < 0.5 |
+| `test_fallback_to_minilm_on_api_failure` | Graceful degradation | Mock Voyage API to raise ConnectionError, verify MiniLM fallback produces 384-dim vector |
+| `test_fallback_logs_warning` | Degradation is observable | Trigger fallback, verify warning logged |
+| `test_batch_embed` | Multiple texts in one call | Embed 10 texts, get 10 vectors, all 1024 dims |
+
+### 5. Autonomous Linker Tests (test_linker.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_similar_same_tier_creates_similar_to` | Rule: same tier + high similarity → SIMILAR_TO | Insert 2 similar episodic memories, verify SIMILAR_TO edge created |
+| `test_episode_to_fact_creates_produced` | Rule: episodic → semantic = PRODUCED | Insert episode + semantic fact (same domain), verify PRODUCED edge |
+| `test_episode_to_procedure_creates_taught` | Rule: episodic → procedural = TAUGHT | Insert episode + procedure (same domain), verify TAUGHT edge |
+| `test_experience_to_episode_creates_extracted_from` | Rule: experience → episodic = EXTRACTED_FROM | Insert GRPO experience + episode, verify EXTRACTED_FROM edge |
+| `test_contradicting_facts_creates_contradicts` | Rule: conflicting semantic facts → CONTRADICTS | Insert "Workday has 5 pages" then "Workday has 3 pages", verify CONTRADICTS edge |
+| `test_higher_score_procedure_creates_supersedes` | Rule: better procedure → SUPERSEDES | Insert old procedure (score 6), new procedure (score 9, similar), verify SUPERSEDES |
+| `test_cross_tier_creates_related_to` | Rule: cross-tier relevance → RELATED_TO | Insert episodic + experience with high similarity, different domains, verify RELATED_TO |
+| `test_low_similarity_no_edge` | No edge for distant memories | Insert 2 unrelated memories (cosine < 0.5), verify 0 edges |
+| `test_llm_fallback_for_ambiguous_pairs` | LLM classification fires | Insert 2 memories where rules return None but similarity > 0.70, mock LLM, verify it was called |
+| `test_linking_is_idempotent` | No duplicate edges | Run linker twice on same memory, verify edge count is 1 not 2 |
+| `test_contradiction_handler_decays_confidence` | Contradiction resolution | Create contradicting fact, verify loser's confidence dropped by 0.2 |
+| `test_contradiction_tombstones_weak_fact` | Contradiction kills weak facts | Create fact with confidence 0.15, contradict it, verify tombstoned |
+
+### 6. Forgetting Engine Tests (test_forgetting.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_decay_score_fresh_memory_is_1` | New memory starts at max | Create memory, compute decay, score ~= 1.0 |
+| `test_decay_score_drops_over_time` | Time decay works | Create memory, advance clock 48h (mock), decay < 0.5 |
+| `test_access_count_increases_stability` | Frequent access resists decay | Create memory accessed 10 times, advance clock 48h, decay > 0.7 (vs 0.5 for single access) |
+| `test_quality_signal_boosts_decay` | High score decays slower | Create two memories (score 9.0 vs 3.0), advance clock 24h, high-scorer has higher decay |
+| `test_connectivity_signal_from_neo4j` | Hub nodes resist decay | Create memory with 6 Neo4j edges, verify connectivity signal = 1.0 |
+| `test_uniqueness_signal_last_survivor` | Only memory in cluster protected | Create 1 memory in domain, verify uniqueness = 1.0 |
+| `test_uniqueness_signal_redundant` | Redundant memories can decay | Create 4 similar memories, verify uniqueness = 0.3 for each |
+| `test_impact_signal_from_descendants` | Valuable children protect parent | Create episode → procedure (score 9.0), verify episode's impact signal > 0.8 |
+| `test_stm_tombstoned_below_threshold` | STM forgotten when decay < 0.3 | Create STM memory, advance clock until decay < 0.3, run sweep, verify tombstoned |
+| `test_mtm_tombstoned_below_threshold` | MTM harder to forget | Create MTM memory, verify it survives at decay 0.2 (STM would die), dies at 0.1 |
+| `test_ltm_only_dies_by_contradiction` | LTM protected | Create LTM memory, set decay to 0.05, run sweep, verify NOT tombstoned |
+| `test_promotion_stm_to_mtm` | Heat-based promotion works | Create STM memory, access 3 times within 24h, run sweep, verify lifecycle=MTM |
+| `test_promotion_mtm_to_ltm` | Validation-based promotion | Create MTM memory, access 10 times + validate 5 times, run sweep, verify lifecycle=LTM |
+| `test_demotion_ltm_to_cold` | Cold demotion works | Create unprotected LTM memory, set decay < 0.1, run sweep, verify lifecycle=COLD |
+| `test_cold_removes_from_qdrant` | Qdrant cleanup on demotion | Demote to Cold, verify Qdrant collection no longer has this vector |
+| `test_cold_keeps_neo4j_node` | Neo4j preserved on demotion | Demote to Cold, verify Neo4j node exists with :COLD label |
+| `test_protection_pinned_never_forgotten` | PINNED immunity | Pin memory, set decay to 0.0, run sweep, verify NOT tombstoned |
+| `test_protection_last_survivor` | Last-survivor immunity | Create 1 memory in domain, set decay to 0.01, run sweep, verify NOT tombstoned (PROTECTED) |
+| `test_protection_hub_node` | Hub node elevated | Create memory with 6 edges, verify threshold halved (ELEVATED) |
+| `test_revival_similar_tombstoned` | Revival mechanism | Tombstone memory, create similar new memory (cosine > 0.85), verify old memory revived, new not created |
+| `test_revival_boosts_stability` | Revived memory harder to forget | Revive memory, verify stability multiplied by 2.0 |
+| `test_revival_window_expired` | No revival after 30 days | Tombstone memory, advance clock 31 days, create similar, verify new memory created (no revival) |
+| `test_sweep_runs_promotion_and_demotion` | Full sweep cycle | Create mix of memories at various states, run sweep, verify promotions + demotions + tombstones all happened |
+
+### 7. Query Router Tests (test_query_router.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_exact_lookup_routes_to_sqlite` | ID query → SQLite only | Query with memory_id, verify plan has engines=[SQLITE] |
+| `test_semantic_query_routes_to_qdrant` | Similarity → Qdrant | Query with semantic_query, verify plan starts with VECTOR_SEARCH |
+| `test_graph_depth_adds_neo4j` | Graph expansion → Neo4j | Query with semantic_query + graph_depth=2, verify plan includes GRAPH_EXPAND |
+| `test_domain_only_routes_to_neo4j` | Domain dump → Neo4j | Query with domain only, verify plan uses DOMAIN_CLUSTER |
+| `test_fallback_to_sqlite_when_qdrant_down` | Degradation | Mark Qdrant unavailable, semantic query, verify plan falls back to SQLite FTS |
+| `test_fallback_skips_graph_when_neo4j_down` | Degradation | Mark Neo4j unavailable, combined query, verify plan skips GRAPH_EXPAND |
+| `test_min_decay_score_filter_applied` | Quality floor | Query with min_decay_score=0.3, verify only hot+warm memories returned |
+| `test_tier_filter_applied` | Tier scoping | Query with tiers=[SEMANTIC], verify only semantic facts returned |
+
+### 8. Sync Service Tests (test_sync.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_reconcile_backfills_qdrant` | Startup reconciliation | Insert 5 entries in SQLite (no Qdrant), run reconcile, verify all 5 in Qdrant |
+| `test_reconcile_backfills_neo4j` | Startup reconciliation | Insert 5 entries in SQLite (no Neo4j nodes), run reconcile, verify all 5 nodes created |
+| `test_reconcile_skips_already_synced` | No duplicate syncing | Insert entry in all 3, run reconcile, verify no duplicate vectors or nodes |
+| `test_tombstone_propagation` | Tombstone syncs to all engines | Tombstone in SQLite, run propagation, verify deleted from Qdrant + marked FORGOTTEN in Neo4j |
+| `test_queue_processes_async` | Non-blocking writes | Queue 10 vector upserts, verify they complete without blocking caller |
+
+### 9. MemoryManager Integration Tests (test_manager.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_store_memory_writes_to_all_engines` | Full write pipeline | Store memory, verify present in SQLite AND Qdrant AND Neo4j |
+| `test_get_context_for_agent_returns_rich_context` | End-to-end retrieval | Store 10 memories, call get_context_for_agent, verify output contains graph-expanded cluster |
+| `test_get_context_different_agents_get_different_slices` | Role-based memory | Store episodic + procedural + semantic, verify researcher gets episodic+semantic, writer gets procedural |
+| `test_pin_memory_prevents_forgetting` | Pin → protected | Pin memory, run forgetting sweep with zero decay, verify memory survives |
+| `test_health_reports_all_engines` | Health monitoring | Call health(), verify sqlite/qdrant/neo4j status fields present |
+| `test_startup_reconciles_engines` | Startup flow | Pre-populate SQLite with unsynced entries, call startup(), verify Qdrant+Neo4j backfilled |
+
+### 10. Full Pipeline End-to-End Tests (test_integration.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_full_lifecycle_stm_to_ltm` | Complete promotion chain | Store memory → access 3x (promotes to MTM) → access 7 more (promotes to LTM) → verify lifecycle=LTM in all engines |
+| `test_full_lifecycle_ltm_to_cold_to_archive` | Complete demotion chain | Create LTM memory → advance clock (decay drops) → sweep (demotes to Cold) → verify removed from Qdrant, still in Neo4j → advance more → sweep (Archive) |
+| `test_autonomous_linking_on_write` | Write triggers linking | Store episodic memory, then store related semantic fact, verify PRODUCED edge auto-created in Neo4j |
+| `test_contradiction_resolves_across_engines` | Contradiction propagates | Store fact A, store contradicting fact B, verify A's confidence dropped in SQLite, CONTRADICTS edge in Neo4j |
+| `test_graph_expanded_retrieval_finds_hidden_connections` | Graph adds value over flat search | Store 5 memories where only 2 are semantically similar to query, but 3 others are connected via graph edges → combined query returns all 5, plain vector search returns only 2 |
+| `test_revival_after_forgetting` | Forget-and-relearn cycle | Store memory → advance clock → sweep tombstones it → store similar memory → verify old revived with 2x stability |
+| `test_agent_context_enriched_by_graph` | Real agent workflow | Store 20 diverse memories about "Greenhouse", call get_context_for_agent("researcher", "Greenhouse application"), verify context contains episodic + semantic + procedural from graph cluster |
+| `test_10_agents_concurrent_memory_access` | Concurrency | 10 threads simultaneously store + retrieve memories, verify no data corruption, no duplicate edges |
+
+### 11. Graceful Degradation Tests (test_degradation.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_qdrant_down_semantic_search_falls_back` | Vector search degrades | Kill Qdrant, semantic query still returns results (from SQLite FTS) |
+| `test_neo4j_down_graph_expansion_skipped` | Graph expansion degrades | Kill Neo4j, combined query returns vector results only (no expansion) |
+| `test_both_down_sqlite_only` | Double failure | Kill Qdrant + Neo4j, queries still work via SQLite |
+| `test_voyage_api_down_minilm_fallback` | Embedding degrades | Mock Voyage failure, verify MiniLM produces embeddings, write pipeline completes |
+| `test_degraded_mode_logged` | Observability | Trigger each degradation, verify warning logged with engine name |
+| `test_recovery_after_engine_restart` | Self-healing | Kill Qdrant, store 5 memories (SQLite only), restart Qdrant, run reconcile, verify all 5 backfilled |
+
+### 12. Backwards Compatibility Tests (test_backwards_compat.py)
+
+| Test | What it verifies | Assert |
+|------|-----------------|--------|
+| `test_old_record_episode_still_works` | Legacy API compat | Call `memory_manager.record_episode(...)`, verify entry in all 3 engines |
+| `test_old_learn_fact_still_works` | Legacy API compat | Call `memory_manager.learn_fact(...)`, verify semantic entry stored |
+| `test_old_learn_procedure_still_works` | Legacy API compat | Call `memory_manager.learn_procedure(...)`, verify procedural entry stored |
+| `test_old_search_patterns_still_works` | Legacy API compat | Call `memory_manager.search_patterns(...)`, verify returns tuple |
+| `test_old_get_context_for_agent_same_signature` | API signature unchanged | Call with (agent_name, topic, domain), no TypeError |
+| `test_old_get_memory_report_includes_lifecycle` | Report upgraded | Call `get_memory_report()`, verify output includes lifecycle stage counts |
+| `test_migration_from_json_to_sqlite` | Data migration | Create old-format JSON files, start MemoryManager, verify all data migrated to SQLite |
+
+---
+
+### Test Counts
+
+| File | Tests | Type |
+|------|-------|------|
+| test_sqlite_store.py | 10 | Unit |
+| test_qdrant_store.py | 10 | Unit |
+| test_neo4j_store.py | 12 | Unit (mock) or Integration (testcontainer) |
+| test_embedder.py | 7 | Unit |
+| test_linker.py | 12 | Integration |
+| test_forgetting.py | 22 | Unit + Integration |
+| test_query_router.py | 8 | Unit |
+| test_sync.py | 5 | Integration |
+| test_manager.py | 6 | Integration |
+| test_integration.py | 8 | End-to-end |
+| test_degradation.py | 6 | Integration |
+| test_backwards_compat.py | 7 | Integration |
+| **Total** | **113** | |
+
+All tests must pass before the implementation is considered complete. Tests are part of the implementation plan, not an afterthought.
 
 ---
 
