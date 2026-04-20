@@ -1,11 +1,11 @@
 # Rules: Job Autopilot (jobpulse/job_**/*)
 
 ## Daily Rate Limits (updated 2026-03-31)
-- LinkedIn: 15/day, scanning via guest API (httpx + BeautifulSoup, no browser), Playwright only for Easy Apply submission
-- Greenhouse/Lever: 7/day, headed mode (not headless)
-- Indeed/Workday/Generic: 8/day, conservative — aggressive detection
-- Reed: 7/day, official API with 429 retry
-- Total: 30/day across all platforms
+- LinkedIn: 20/day, scanning via guest API (httpx + BeautifulSoup, no browser), Playwright only for Easy Apply submission
+- Greenhouse/Lever: 15/day, headed mode (not headless)
+- Indeed/Workday/Generic: 15/day, conservative — aggressive detection
+- Reed: 15/day, official API with 429 retry
+- Total: 50/day across all platforms
 
 ## Application Engine Modes
 - `APPLICATION_ENGINE=playwright` (default) — Playwright browser automation, headed mode
@@ -53,6 +53,8 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - Soft skills filtered from extra skills (customer focus, teamwork, etc. never appear in technical skills section)
 - Skills table separator: 29mm between category label and values
 - File naming: Yash_Bishnoi_{Company}.pdf (CV), Yash_Bishnoi_{Company}_CoverLetter.pdf (CL)
+- PDF metadata title MUST be human-readable: "Yash Bishnoi {Company}" (CV), "Cover Letter {Company}" (CL) — NEVER random numbers, UUIDs, or hash strings. Recruiters see the title.
+- When uploading via set_input_files(), always pass the descriptive filename — never a hash path. Use {name, mimeType, buffer} format with proper name.
 - All project URLs must link to CORRECT GitHub repo — verify before generating
 - No "JD Match" row in skills section
 - Section headers: teal (#1a5276) with thin line
@@ -154,17 +156,37 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
   - Docs: update this file + jobpulse/CLAUDE.md with the quirk
   - Cron: ensure scan_pipeline.py handles the same scenario
 
-## Dry Run → Approve → Learn Workflow
-- Every new platform/ATS: run `apply_job(dry_run=True)` first
-- Screenshot the filled form state for user review
-- On approval: save learnings to code (form_gotchas.db, state machines, native_form_filler)
-- Document the platform quirk in this file under "Platform-Specific Quirks"
-- Verify the cron path (scan_pipeline.py) handles the same flow
+## SmartRecruiters Platform Quirks
+- Web Components with Shadow DOM: `spl-*` custom elements (`spl-button`, `spl-autocomplete`, `spl-tag`)
+- Standard `querySelectorAll('input')` returns NOTHING — must use Playwright `get_by_label()` / `get_by_role()` which pierce shadow DOM
+- City autocomplete: type text → ArrowDown → Enter (shadow DOM element "outside viewport" won't click normally)
+- Gender/Disability: `spl-autocomplete` dropdowns — use `get_by_role('combobox')`, fill text, select via `get_by_role('option')`
+- Gender is multi-select with tag chips — `spl-tag` with close button in nested shadow DOM
+- Resume* mandatory field is SEPARATE from the auto-parse upload at the top
+- Experience + Education auto-parsed from CV upload — may need description edits
+- Screening questions on page 2: radio pairs (Yes/No), autocomplete dropdowns, privacy checkbox
+- Adapter: `jobpulse/ats_adapters/smartrecruiters.py` — uses Playwright CDP to existing Chrome
+- Platform auto-detected in `applicator.py` when URL contains `smartrecruiters.com`
+
+## Dry Run → Approve → Learn Workflow (MANDATORY for all applications)
+- ALL applications use `apply_job(dry_run=True)` — fill form, stop before Submit
+- User reviews filled form screenshot, makes corrections if needed, then approves
+- After user submits: call `confirm_application()` from `applicator.py` — this is MANDATORY
+- `confirm_application()` triggers the full post-apply learning pipeline:
+  1. Records quota in rate limiter
+  2. Runs `post_apply_hook()` which records form experience, uploads to Drive, updates Notion
+- NativeFormFiller now tracks `field_types`, `screening_questions`, and `time_seconds` in ALL result dicts (including dry_run)
+- The dry_run result dict is passed to `confirm_application()` — it contains all the form metadata needed for learning
+- After user makes manual corrections before Submit: scan the form state to capture what changed (reinforcement signal)
 - Internal keys (_stream, _gotchas, _job_context) MUST be filtered before json.dumps
+- Document any new platform quirks in this file under "Platform-Specific Quirks"
 
 ## Post-Apply Hook (Automatic)
 - `post_apply_hook()` in `jobpulse/post_apply_hook.py` runs after EVERY successful submission
-- Called from `apply_job()` in `applicator.py` — both cron and manual paths get it automatically
+- Two trigger paths:
+  1. `apply_job(dry_run=False)` in `applicator.py` — auto-submit path (cron)
+  2. `confirm_application()` in `applicator.py` — manual approval path (Claude Code sessions)
+- BOTH paths fire the same hook — no application should ever skip learning
 - Three concerns:
   1. Form experience: records domain, adapter, pages, field types, screening questions, time to `data/form_experience.db`
   2. Drive upload: uploads CV + CL PDFs to Google Drive, gets shareable links
@@ -175,6 +197,27 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
   - Tracks apply_count per domain for confidence scoring
 - Hook is non-blocking: any failure is logged but doesn't affect the application result
 - Hook runs BEFORE the anti-detection delay so Drive/Notion work happens during the wait
+
+## PDF Upload Compatibility
+- All CV/CL PDFs are sanitized via PyMuPDF after ReportLab generation (`_sanitize_pdf()`)
+- Sanitization: garbage collection, deflate compression, clean xref table, proper metadata (title, author, creator)
+- All `set_input_files()` calls use explicit `{name, mimeType: "application/pdf", buffer}` format — never bare path strings
+- Prevents LinkedIn/ATS platforms from serving corrupted UUID-named files on download
+
+## Manual Apply Session Workflow (Claude Code)
+When user asks to apply to jobs manually via Claude Code + Playwright CDP:
+1. **Write ONE comprehensive script** per form page — not 15 tiny scripts. One script should:
+   - Scan all fields on the page (DOM-first analysis)
+   - Fill ALL fields in top-to-bottom order
+   - Handle dropdowns, radios, checkboxes, file uploads
+   - Save/confirm each section
+   - Take a final screenshot
+2. **Stop ONLY before the Submit button** — show the filled form screenshot for review
+3. **Never ask for approval mid-form** — the user has already approved the application by asking you to apply
+4. **One script per page transition** — if the form has multiple pages (Next/Continue), write one script per page
+5. **Include error recovery** — if a field fill fails, log it and continue to the next field, report failures at the end
+6. **Send CV/CL to Telegram** at the start, before form filling begins
+7. After user approves the final form screenshot → submit → **ALWAYS call `confirm_application()`** → learnings recorded → next job
 
 ## Dynamic Cover Letter
 - Cover letter NOT generated upfront — lazy generation via cl_generator callback

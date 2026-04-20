@@ -85,14 +85,47 @@ PATH={PYTHON_BIN_DIR}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew
 """
 
 
+MARKER_BEGIN = "# >>> JOBPULSE BEGIN >>>"
+MARKER_END = "# <<< JOBPULSE END <<<"
+
+
+def _merge_crontab(new_block: str) -> str:
+    """Read existing crontab, strip old JobPulse block, insert new one."""
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    existing = result.stdout if result.returncode == 0 else ""
+
+    lines = existing.splitlines(keepends=True)
+    merged: list[str] = []
+    inside_block = False
+    for line in lines:
+        if MARKER_BEGIN in line:
+            inside_block = True
+            continue
+        if MARKER_END in line:
+            inside_block = False
+            continue
+        if not inside_block:
+            merged.append(line)
+
+    while merged and merged[-1].strip() == "":
+        merged.pop()
+
+    if merged:
+        merged.append("\n")
+    merged.append(f"{MARKER_BEGIN}\n")
+    merged.append(new_block.strip() + "\n")
+    merged.append(f"{MARKER_END}\n")
+    return "".join(merged)
+
+
 def main():
-    # Save Python path for restart_daemon.sh to use
     python_path_file = PROJECT_DIR / ".python_path"
     python_path_file.write_text(PYTHON)
     print(f"Saved Python path: {PYTHON} → {python_path_file}")
 
-    print("Installing JobPulse crontab...\n")
-    print(CRONTAB)
+    merged = _merge_crontab(CRONTAB)
+    print("Installing JobPulse crontab (preserving non-JobPulse entries)...\n")
+    print(merged)
 
     confirm = input("Install this crontab? (y/n): ").strip().lower()
     if confirm != "y":
@@ -101,7 +134,7 @@ def main():
 
     result = subprocess.run(
         ["crontab", "-"],
-        input=CRONTAB,
+        input=merged,
         text=True,
         capture_output=True,
     )

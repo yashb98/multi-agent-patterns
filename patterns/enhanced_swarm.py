@@ -33,13 +33,10 @@ THIS IS THE CUTTING-EDGE PATTERN. It combines:
 - Automated prompt optimization (DSPy/GEPA concepts)
 """
 
-import sys
 import json
 import os
 
 from pathlib import Path
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from langgraph.graph import StateGraph, START, END
 
@@ -70,6 +67,7 @@ from shared.persona_evolution import (
 from shared.prompt_optimizer import PromptOptimizer
 from shared.memory_layer import get_shared_memory_manager
 from shared.convergence import ConvergenceController
+from shared.cost_tracker import check_budget_from_state, BudgetExceededError
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
@@ -377,6 +375,16 @@ def enhanced_convergence(state: AgentState) -> dict:
     score = state.get("review_score", 0.0)
     accuracy_score = state.get("accuracy_score", 0.0)
     iteration = state.get("iteration", 0)
+
+    # Budget check before deciding to continue
+    try:
+        check_budget_from_state(state, estimated_next_cost=0.05)
+    except BudgetExceededError as e:
+        logger.warning("Budget exceeded in enhanced swarm: %s", e)
+        return {
+            "current_agent": "finish",
+            "agent_history": [f"Convergence: finish (budget cap exceeded: ${e.spent:.2f} > ${e.cap:.2f})"]
+        }
 
     # Adaptive threshold: raise bar when we have enough historical experience
     if len(_experience_memory) > 5:

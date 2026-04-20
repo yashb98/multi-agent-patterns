@@ -51,8 +51,13 @@ async def fill_file_upload(
 
         el = await page.query_selector(selector)
         if el is None:
-            # Try finding hidden file input in drag-drop zone
-            el = await page.query_selector("input[type='file']")
+            parent = await page.query_selector(f"{selector}:is(div, section, fieldset, label)")
+            if parent:
+                el = await parent.query_selector("input[type='file']")
+            if el is None:
+                el = await page.query_selector("input[type='file'][accept*='pdf'], input[type='file'][accept*='document']")
+            if el is None:
+                el = await page.query_selector("input[type='file']")
             if el is None:
                 return FillResult(
                     success=False, selector=selector,
@@ -69,7 +74,11 @@ async def fill_file_upload(
                 error=f"File type {file_path.suffix} not accepted. Allowed: {accept}",
             )
 
-        await el.set_input_files(str(file_path))
+        await el.set_input_files({
+            "name": file_path.name,
+            "mimeType": "application/pdf" if file_path.suffix.lower() == ".pdf" else "application/octet-stream",
+            "buffer": file_path.read_bytes(),
+        })
 
         # Wait for upload progress to finish (if any indicator exists)
         try:

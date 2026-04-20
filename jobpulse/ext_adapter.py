@@ -17,37 +17,9 @@ logger = get_logger(__name__)
 
 
 def _detect_ats_platform(url: str) -> str:
-    """Detect ATS platform from URL."""
-    url_lower = url.lower()
-    if "greenhouse" in url_lower:
-        return "greenhouse"
-    if "lever.co" in url_lower:
-        return "lever"
-    if "linkedin.com" in url_lower:
-        return "linkedin"
-    if "indeed.com" in url_lower:
-        return "indeed"
-    if "workday" in url_lower or "myworkdayjobs" in url_lower:
-        return "workday"
-    if "reed.co.uk" in url_lower:
-        return "reed"
-    if "totaljobs.com" in url_lower:
-        return "totaljobs"
-    if "glassdoor" in url_lower:
-        return "glassdoor"
-    if "smartrecruiters.com" in url_lower:
-        return "smartrecruiters"
-    if "bamboohr.com" in url_lower:
-        return "bamboohr"
-    if "ashbyhq.com" in url_lower or "jobs.ashby.com" in url_lower:
-        return "ashby"
-    if "jobvite.com" in url_lower:
-        return "jobvite"
-    if "icims.com" in url_lower:
-        return "icims"
-    if "taleo" in url_lower or "oracle.com/careers" in url_lower:
-        return "taleo"
-    return "generic"
+    """Detect ATS platform from URL. Delegates to jd_analyzer's canonical implementation."""
+    from jobpulse.jd_analyzer import detect_ats_platform
+    return detect_ats_platform(url) or "generic"
 
 
 class ExtensionAdapter(BaseATSAdapter):
@@ -107,6 +79,6 @@ class ExtensionAdapter(BaseATSAdapter):
                 form_intelligence=fi,
             )
         finally:
-            if engine == "playwright":
+            if engine == "playwright" and not dry_run:
                 await driver.close()
         return result

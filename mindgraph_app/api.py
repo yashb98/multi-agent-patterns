@@ -1,6 +1,8 @@
 """FastAPI routes for MindGraph — knowledge graph + simulation events + GraphRAG + process trails."""
 
+import ipaddress
 import httpx
+from urllib.parse import urlparse
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -9,6 +11,21 @@ from mindgraph_app import retriever as graphrag
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def _validate_url(url: str) -> None:
+    """Reject URLs that could cause SSRF (private IPs, non-HTTPS schemes)."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail=f"Unsupported URL scheme: {parsed.scheme}")
+    hostname = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            raise HTTPException(status_code=400, detail="URLs targeting private/internal networks are not allowed")
+    except ValueError:
+        if hostname in ("localhost", "metadata.google.internal"):
+            raise HTTPException(status_code=400, detail="URLs targeting internal hosts are not allowed")
 
 router = APIRouter(prefix="/api/mindgraph")
 process_router = APIRouter(prefix="/api/process")
@@ -39,12 +56,15 @@ async def ingest(text: str = Form(None), url: str = Form(None), file: UploadFile
     elif text:
         content_text = text
     elif url:
+        _validate_url(url)
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 content_text = resp.text
                 filename = url
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to fetch URL: {e}")
 
@@ -59,12 +79,15 @@ async def ingest(text: str = Form(None), url: str = Form(None), file: UploadFile
 async def ingest_json(body: IngestText):
     """JSON body alternative for ingest."""
     if body.url:
+        _validate_url(body.url)
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(body.url)
                 resp.raise_for_status()
                 text = resp.text
                 filename = body.url
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to fetch URL: {e}")
     elif body.text:
@@ -207,7 +230,9 @@ def search(q: str = ""):
 
 
 @router.delete("/clear")
-def clear():
+def clear(confirm: str = ""):
+    if confirm != "yes-delete-all":
+        raise HTTPException(status_code=400, detail="Pass ?confirm=yes-delete-all to confirm destructive operation")
     storage.clear_all()
     return {"status": "cleared"}
 
@@ -230,7 +255,8 @@ def get_simulation_events(date: str = None, agent: str = None, entity: str = Non
         else:
             return {"events": get_events_for_day(date_cls.today().isoformat())}
     except Exception as e:
-        return {"events": [], "error": str(e)}
+        logger.error("Failed to get simulation events: %s", e)
+        return {"events": [], "error": "Internal error retrieving events"}
 
 
 @router.get("/simulation/timeline")
@@ -240,7 +266,8 @@ def get_timeline():
         from jobpulse.event_logger import get_timeline_summary
         return {"timeline": get_timeline_summary()}
     except Exception as e:
-        return {"timeline": [], "error": str(e)}
+        logger.error("Failed to get timeline: %s", e)
+        return {"timeline": [], "error": "Internal error retrieving timeline"}
 
 
 # ── GraphRAG Retrieval Endpoint ──

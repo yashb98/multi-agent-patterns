@@ -100,55 +100,60 @@ class ScanLearningEngine:
         self.db_path = db_path or _DEFAULT_DB_PATH
         self._init_db()
 
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return a connection with WAL mode enabled."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
     def _init_db(self) -> None:
         """Create the three tables if they don't exist."""
-        conn = sqlite3.connect(self.db_path)
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS scan_events (
-                id TEXT PRIMARY KEY,
-                platform TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                time_of_day_bucket TEXT NOT NULL,
-                requests_in_session INTEGER NOT NULL,
-                avg_delay REAL NOT NULL,
-                session_age_seconds REAL NOT NULL,
-                user_agent_hash TEXT NOT NULL,
-                was_fresh_session INTEGER NOT NULL,
-                simulated_mouse INTEGER NOT NULL,
-                used_vpn INTEGER NOT NULL,
-                referrer_chain TEXT NOT NULL,
-                search_query TEXT NOT NULL,
-                pages_before_block INTEGER NOT NULL,
-                browser_fingerprint TEXT NOT NULL,
-                waited_for_page_load INTEGER NOT NULL,
-                page_load_time_ms INTEGER NOT NULL,
-                outcome TEXT NOT NULL,
-                wall_type TEXT
-            );
+        with self._get_conn() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS scan_events (
+                    id TEXT PRIMARY KEY,
+                    platform TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    time_of_day_bucket TEXT NOT NULL,
+                    requests_in_session INTEGER NOT NULL,
+                    avg_delay REAL NOT NULL,
+                    session_age_seconds REAL NOT NULL,
+                    user_agent_hash TEXT NOT NULL,
+                    was_fresh_session INTEGER NOT NULL,
+                    simulated_mouse INTEGER NOT NULL,
+                    used_vpn INTEGER NOT NULL,
+                    referrer_chain TEXT NOT NULL,
+                    search_query TEXT NOT NULL,
+                    pages_before_block INTEGER NOT NULL,
+                    browser_fingerprint TEXT NOT NULL,
+                    waited_for_page_load INTEGER NOT NULL,
+                    page_load_time_ms INTEGER NOT NULL,
+                    outcome TEXT NOT NULL,
+                    wall_type TEXT
+                );
 
-            CREATE TABLE IF NOT EXISTS learned_rules (
-                id TEXT PRIMARY KEY,
-                platform TEXT NOT NULL,
-                rule_text TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                recommendation TEXT NOT NULL,
-                source TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                times_applied INTEGER DEFAULT 0,
-                times_successful INTEGER DEFAULT 0
-            );
+                CREATE TABLE IF NOT EXISTS learned_rules (
+                    id TEXT PRIMARY KEY,
+                    platform TEXT NOT NULL,
+                    rule_text TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    recommendation TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    times_applied INTEGER DEFAULT 0,
+                    times_successful INTEGER DEFAULT 0
+                );
 
-            CREATE TABLE IF NOT EXISTS cooldowns (
-                platform TEXT PRIMARY KEY,
-                blocked_at TEXT NOT NULL,
-                cooldown_until TEXT NOT NULL,
-                consecutive_blocks INTEGER DEFAULT 1,
-                last_wall_type TEXT
-            );
-            """
-        )
-        conn.close()
+                CREATE TABLE IF NOT EXISTS cooldowns (
+                    platform TEXT PRIMARY KEY,
+                    blocked_at TEXT NOT NULL,
+                    cooldown_until TEXT NOT NULL,
+                    consecutive_blocks INTEGER DEFAULT 1,
+                    last_wall_type TEXT
+                );
+                """
+            )
 
     def record_event(
         self,
@@ -175,43 +180,41 @@ class ScanLearningEngine:
         now = datetime.now(timezone.utc)
         bucket = _time_bucket(now)
 
-        conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            """
-            INSERT INTO scan_events (
-                id, platform, timestamp, time_of_day_bucket,
-                requests_in_session, avg_delay, session_age_seconds,
-                user_agent_hash, was_fresh_session, used_vpn,
-                simulated_mouse, referrer_chain, search_query,
-                pages_before_block, browser_fingerprint,
-                waited_for_page_load, page_load_time_ms,
-                outcome, wall_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event_id,
-                platform,
-                now.isoformat(),
-                bucket,
-                requests_in_session,
-                avg_delay,
-                session_age_seconds,
-                user_agent_hash,
-                int(was_fresh_session),
-                int(used_vpn),
-                int(simulated_mouse),
-                referrer_chain,
-                search_query,
-                pages_before_block,
-                browser_fingerprint,
-                int(waited_for_page_load),
-                page_load_time_ms,
-                outcome,
-                wall_type,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO scan_events (
+                    id, platform, timestamp, time_of_day_bucket,
+                    requests_in_session, avg_delay, session_age_seconds,
+                    user_agent_hash, was_fresh_session, used_vpn,
+                    simulated_mouse, referrer_chain, search_query,
+                    pages_before_block, browser_fingerprint,
+                    waited_for_page_load, page_load_time_ms,
+                    outcome, wall_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    platform,
+                    now.isoformat(),
+                    bucket,
+                    requests_in_session,
+                    avg_delay,
+                    session_age_seconds,
+                    user_agent_hash,
+                    int(was_fresh_session),
+                    int(used_vpn),
+                    int(simulated_mouse),
+                    referrer_chain,
+                    search_query,
+                    pages_before_block,
+                    browser_fingerprint,
+                    int(waited_for_page_load),
+                    page_load_time_ms,
+                    outcome,
+                    wall_type,
+                ),
+            )
         logger.info(
             "Recorded scan event %s: platform=%s outcome=%s",
             event_id,
@@ -222,18 +225,17 @@ class ScanLearningEngine:
 
     def get_total_blocks(self, platform: str | None = None) -> int:
         """Count rows where outcome='blocked', optionally filtered by platform."""
-        conn = sqlite3.connect(self.db_path)
-        if platform is not None:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM scan_events WHERE outcome = 'blocked' AND platform = ?",
-                (platform,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM scan_events WHERE outcome = 'blocked'"
-            ).fetchone()
-        conn.close()
-        return row[0] if row else 0
+        with self._get_conn() as conn:
+            if platform is not None:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM scan_events WHERE outcome = 'blocked' AND platform = ?",
+                    (platform,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM scan_events WHERE outcome = 'blocked'"
+                ).fetchone()
+            return row[0] if row else 0
 
     # --- Cooldown Manager ---
 
@@ -242,48 +244,42 @@ class ScanLearningEngine:
 
     def can_scan_now(self, platform: str) -> bool:
         """Check if platform is NOT in cooldown."""
-        conn = sqlite3.connect(self.db_path)
-        row = conn.execute(
-            "SELECT cooldown_until FROM cooldowns WHERE platform = ?",
-            (platform,),
-        ).fetchone()
-        if row is None:
-            conn.close()
-            return True
-        cooldown_until = datetime.fromisoformat(row[0])
-        if datetime.now(timezone.utc) >= cooldown_until:
-            conn.execute("DELETE FROM cooldowns WHERE platform = ?", (platform,))
-            conn.commit()
-            conn.close()
-            return True
-        conn.close()
-        return False
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT cooldown_until FROM cooldowns WHERE platform = ?",
+                (platform,),
+            ).fetchone()
+            if row is None:
+                return True
+            cooldown_until = datetime.fromisoformat(row[0])
+            if datetime.now(timezone.utc) >= cooldown_until:
+                conn.execute("DELETE FROM cooldowns WHERE platform = ?", (platform,))
+                return True
+            return False
 
     def start_cooldown(self, platform: str, wall_type: str) -> None:
         """Start or extend cooldown for a platform after a block."""
         now = datetime.now(timezone.utc)
-        conn = sqlite3.connect(self.db_path)
-        row = conn.execute(
-            "SELECT consecutive_blocks FROM cooldowns WHERE platform = ?",
-            (platform,),
-        ).fetchone()
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT consecutive_blocks FROM cooldowns WHERE platform = ?",
+                (platform,),
+            ).fetchone()
 
-        consecutive = (row[0] + 1) if row else 1
-        hours = self._COOLDOWN_HOURS.get(consecutive, self._MAX_COOLDOWN_HOURS)
-        cooldown_until = now + timedelta(hours=hours)
+            consecutive = (row[0] + 1) if row else 1
+            hours = self._COOLDOWN_HOURS.get(consecutive, self._MAX_COOLDOWN_HOURS)
+            cooldown_until = now + timedelta(hours=hours)
 
-        conn.execute(
-            """INSERT INTO cooldowns (platform, blocked_at, cooldown_until, consecutive_blocks, last_wall_type)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(platform) DO UPDATE SET
-                   blocked_at = ?, cooldown_until = ?, consecutive_blocks = ?, last_wall_type = ?""",
-            (
-                platform, now.isoformat(), cooldown_until.isoformat(), consecutive, wall_type,
-                now.isoformat(), cooldown_until.isoformat(), consecutive, wall_type,
-            ),
-        )
-        conn.commit()
-        conn.close()
+            conn.execute(
+                """INSERT INTO cooldowns (platform, blocked_at, cooldown_until, consecutive_blocks, last_wall_type)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(platform) DO UPDATE SET
+                       blocked_at = ?, cooldown_until = ?, consecutive_blocks = ?, last_wall_type = ?""",
+                (
+                    platform, now.isoformat(), cooldown_until.isoformat(), consecutive, wall_type,
+                    now.isoformat(), cooldown_until.isoformat(), consecutive, wall_type,
+                ),
+            )
 
         logger.warning(
             "Cooldown started: %s blocked (%s), %dhr cooldown (block #%d), until %s",
@@ -292,10 +288,8 @@ class ScanLearningEngine:
 
     def reset_cooldown(self, platform: str) -> None:
         """Reset cooldown after a successful scan."""
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("DELETE FROM cooldowns WHERE platform = ?", (platform,))
-        conn.commit()
-        conn.close()
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM cooldowns WHERE platform = ?", (platform,))
         logger.info("Cooldown reset for %s after successful scan", platform)
 
     # --- Statistical Correlation Engine ---
@@ -318,13 +312,12 @@ class ScanLearningEngine:
 
     def compute_risk_factors(self, platform: str) -> list[dict[str, Any]]:
         """Compute block rate per signal bucket. Return factors above threshold."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM scan_events WHERE platform = ? ORDER BY timestamp DESC LIMIT 200",
-            (platform,),
-        ).fetchall()
-        conn.close()
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM scan_events WHERE platform = ? ORDER BY timestamp DESC LIMIT 200",
+                (platform,),
+            ).fetchall()
 
         if not rows:
             return []
@@ -367,34 +360,32 @@ class ScanLearningEngine:
             return 0
 
         count = 0
-        conn = sqlite3.connect(self.db_path)
-        for f in factors:
-            rule_id = hashlib.sha256(
-                f"{platform}:{f['signal']}:{f['bucket']}".encode()
-            ).hexdigest()[:16]
-            rule_text = (
-                f"High block rate ({f['block_rate']:.0%}) when "
-                f"{f['signal']} = {f['bucket']} "
-                f"({f['blocked_count']}/{f['sample_size']} sessions blocked)"
-            )
-            recommendation = (
-                f"Avoid {f['signal']} = {f['bucket']} — "
-                f"use alternative values or adjust timing"
-            )
-            now_iso = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                """INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at)
-                   VALUES (?, ?, ?, ?, ?, 'statistical', ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       rule_text = ?, confidence = ?, recommendation = ?, created_at = ?""",
-                (
-                    rule_id, platform, rule_text, f["block_rate"], recommendation, now_iso,
-                    rule_text, f["block_rate"], recommendation, now_iso,
-                ),
-            )
-            count += 1
-        conn.commit()
-        conn.close()
+        with self._get_conn() as conn:
+            for f in factors:
+                rule_id = hashlib.sha256(
+                    f"{platform}:{f['signal']}:{f['bucket']}".encode()
+                ).hexdigest()[:16]
+                rule_text = (
+                    f"High block rate ({f['block_rate']:.0%}) when "
+                    f"{f['signal']} = {f['bucket']} "
+                    f"({f['blocked_count']}/{f['sample_size']} sessions blocked)"
+                )
+                recommendation = (
+                    f"Avoid {f['signal']} = {f['bucket']} — "
+                    f"use alternative values or adjust timing"
+                )
+                now_iso = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    """INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at)
+                       VALUES (?, ?, ?, ?, ?, 'statistical', ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                           rule_text = ?, confidence = ?, recommendation = ?, created_at = ?""",
+                    (
+                        rule_id, platform, rule_text, f["block_rate"], recommendation, now_iso,
+                        rule_text, f["block_rate"], recommendation, now_iso,
+                    ),
+                )
+                count += 1
         logger.info("Updated %d learned rules for %s", count, platform)
         return count
 
@@ -409,13 +400,12 @@ class ScanLearningEngine:
 
     def run_llm_analysis(self, platform: str) -> None:
         """Run GPT-5o-mini analysis on recent events for a platform."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM scan_events WHERE platform = ? ORDER BY timestamp DESC LIMIT 20",
-            (platform,),
-        ).fetchall()
-        conn.close()
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM scan_events WHERE platform = ? ORDER BY timestamp DESC LIMIT 20",
+                (platform,),
+            ).fetchall()
 
         if not rows:
             return
@@ -470,15 +460,13 @@ class ScanLearningEngine:
             return
 
         rule_id = uuid.uuid4().hex[:16]
-        conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            """INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at)
-               VALUES (?, ?, ?, ?, ?, 'llm', ?)""",
-            (rule_id, platform, pattern, confidence, recommendation,
-             datetime.now(timezone.utc).isoformat()),
-        )
-        conn.commit()
-        conn.close()
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO learned_rules (id, platform, rule_text, confidence, recommendation, source, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'llm', ?)""",
+                (rule_id, platform, pattern, confidence, recommendation,
+                 datetime.now(timezone.utc).isoformat()),
+            )
 
         logger.info(
             "LLM analysis for %s: pattern='%s' confidence=%.2f",
@@ -487,13 +475,12 @@ class ScanLearningEngine:
 
     def get_cooldown_info(self, platform: str) -> dict[str, Any] | None:
         """Get current cooldown state for a platform."""
-        conn = sqlite3.connect(self.db_path)
-        row = conn.execute(
-            "SELECT blocked_at, cooldown_until, consecutive_blocks, last_wall_type "
-            "FROM cooldowns WHERE platform = ?",
-            (platform,),
-        ).fetchone()
-        conn.close()
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT blocked_at, cooldown_until, consecutive_blocks, last_wall_type "
+                "FROM cooldowns WHERE platform = ?",
+                (platform,),
+            ).fetchone()
         if row is None:
             return None
         return {
@@ -527,13 +514,11 @@ class ScanLearningEngine:
             params["cooldown_active"] = True
             params["cooldown_until"] = cooldown["cooldown_until"]
 
-        # Count active learned rules (confidence >= 0.50)
-        conn = sqlite3.connect(self.db_path)
-        rule_count = conn.execute(
-            "SELECT COUNT(*) FROM learned_rules WHERE platform = ? AND confidence >= 0.50",
-            (platform,),
-        ).fetchone()[0]
-        conn.close()
+        with self._get_conn() as conn:
+            rule_count = conn.execute(
+                "SELECT COUNT(*) FROM learned_rules WHERE platform = ? AND confidence >= 0.50",
+                (platform,),
+            ).fetchone()[0]
 
         if rule_count == 0:
             params["risk_level"] = "low"

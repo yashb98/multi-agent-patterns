@@ -33,7 +33,7 @@ def sanitize_user_input(text: str, source: str = "user") -> str:
         logger.warning("Input from %s truncated to %d chars", source, MAX_USER_INPUT_LENGTH)
 
     # Strip any existing XML-like boundary markers that could confuse parsing
-    text = re.sub(r'</?(user_input|system|assistant|instruction)[^>]*>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'</?(user_input|system|assistant|instruction|agent_output)[^>]*>', '', text, flags=re.IGNORECASE)
 
     return f"<user_input source=\"{source}\">\n{text}\n</user_input>"
 
@@ -48,6 +48,6 @@ def wrap_agent_output(text: str, agent_name: str) -> str:
         return ""
 
     # Strip any existing markers
-    text = re.sub(r'</?(user_input|system|assistant|instruction)[^>]*>', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'</?(user_input|system|assistant|instruction|agent_output)[^>]*>', '', text, flags=re.IGNORECASE)
 
     return f"<agent_output from=\"{agent_name}\">\n{text}\n</agent_output>"

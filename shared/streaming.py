@@ -244,8 +244,13 @@ def smart_llm_call(llm, messages, **kwargs):
     if is_streaming_enabled():
         callback = get_active_callback() or TerminalStreamCallback()
         text = stream_llm(llm, messages, callback=callback, **kwargs)
-        # Return a response-like object for compatibility
-        return _StreamResponse(text)
+        estimated_tokens = max(len(text) // 4, 1)
+        usage = {
+            "input_tokens": sum(len(m.content) // 4 for m in messages if hasattr(m, "content")),
+            "output_tokens": estimated_tokens,
+            "total_tokens": sum(len(m.content) // 4 for m in messages if hasattr(m, "content")) + estimated_tokens,
+        }
+        return _StreamResponse(text, usage_metadata=usage)
     else:
         from shared.llm_retry import resilient_llm_call
         return resilient_llm_call(llm, messages, **kwargs)
@@ -254,8 +259,7 @@ def smart_llm_call(llm, messages, **kwargs):
 class _StreamResponse:
     """Minimal response wrapper for streaming compatibility."""
 
-    def __init__(self, content: str):
+    def __init__(self, content: str, usage_metadata: dict | None = None):
         self.content = content
-        # Provide empty usage_metadata for cost tracking compatibility
-        self.usage_metadata = {}
+        self.usage_metadata = usage_metadata or {}
         self.response_metadata = {}

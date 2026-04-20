@@ -37,6 +37,85 @@ _PLATFORM_MIN_PAGE_TIME: dict[str, float] = {
 
 MAX_FORM_PAGES = 20
 
+# Deterministic label→profile_key mapping. Grows as the LLM discovers new labels.
+# Seed dict (always present), augmented by learned mappings from SQLite on first use.
+_SEED_LABEL_TO_PROFILE_KEY: dict[str, str] = {
+    "first name": "first_name", "last name": "last_name",
+    "email": "email", "email address": "email",
+    "confirm your email": "email", "confirm email": "email",
+    "phone": "phone", "phone number": "phone", "mobile number": "phone",
+    "linkedin": "linkedin", "linkedin url": "linkedin", "linkedin profile": "linkedin",
+    "website": "portfolio", "portfolio": "portfolio", "personal website": "portfolio",
+    "github": "github", "github url": "github",
+    "city": "location", "location": "location",
+    "headline": "headline", "current title": "headline",
+    "address": "address", "street address": "address",
+    "postcode": "postcode", "zip code": "postcode", "postal code": "postcode",
+    "country": "country",
+    "name": "full_name",
+}
+
+_FIELD_LABEL_TO_PROFILE_KEY: dict[str, str] = dict(_SEED_LABEL_TO_PROFILE_KEY)
+_label_db_loaded = False
+
+
+def _get_label_db_path() -> str:
+    from jobpulse.config import DATA_DIR
+    return str(DATA_DIR / "field_label_mappings.db")
+
+
+def _ensure_label_db() -> None:
+    """Load persisted label→profile_key mappings from SQLite on first use."""
+    global _label_db_loaded
+    if _label_db_loaded:
+        return
+    _label_db_loaded = True
+    import sqlite3
+    db_path = _get_label_db_path()
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS label_mappings (
+                    label TEXT PRIMARY KEY,
+                    profile_key TEXT NOT NULL,
+                    times_used INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            rows = conn.execute("SELECT label, profile_key FROM label_mappings").fetchall()
+            for label, key in rows:
+                if label not in _FIELD_LABEL_TO_PROFILE_KEY:
+                    _FIELD_LABEL_TO_PROFILE_KEY[label] = key
+        if rows:
+            logger.info("Loaded %d persisted label mappings from SQLite", len(rows))
+    except Exception as exc:
+        logger.debug("Could not load label mappings: %s", exc)
+
+
+def _persist_label_mapping(label: str, profile_key: str) -> None:
+    """Save a new label→profile_key mapping to SQLite for future sessions."""
+    import sqlite3
+    from datetime import datetime, timezone
+    try:
+        with sqlite3.connect(_get_label_db_path()) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS label_mappings (
+                    label TEXT PRIMARY KEY,
+                    profile_key TEXT NOT NULL,
+                    times_used INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                """INSERT INTO label_mappings (label, profile_key, times_used, created_at)
+                   VALUES (?, ?, 1, ?)
+                   ON CONFLICT(label) DO UPDATE SET
+                       times_used = times_used + 1""",
+                (label, profile_key, datetime.now(timezone.utc).isoformat()),
+            )
+    except Exception as exc:
+        logger.debug("Could not persist label mapping: %s", exc)
+
 
 def _get_field_gap(label_text: str = "") -> float:
     """Return delay in seconds based on label length (simulates reading)."""
@@ -61,15 +140,27 @@ class NativeFormFiller:
     def __init__(self, page: "Page", driver: Any) -> None:
         self._page = page
         self._driver = driver
+        self._correction_warning: str = ""
 
     # ── Label Extraction ──
 
     async def _get_accessible_name(self, locator: Any) -> str:
-        """Extract the label a screen reader would announce for this element."""
+        """Extract the label a screen reader would announce for this element.
+
+        Excludes aria-hidden children (e.g. required-field asterisks) so
+        the returned text matches what Playwright's get_by_label() sees.
+        """
         return await locator.evaluate(
-            "el => el.labels?.[0]?.textContent?.trim() || "
-            "el.getAttribute('aria-label') || "
-            "el.placeholder || ''"
+            "el => {"
+            "  const lbl = el.labels?.[0];"
+            "  if (lbl) {"
+            "    const clone = lbl.cloneNode(true);"
+            "    clone.querySelectorAll('[aria-hidden]').forEach(n => n.remove());"
+            "    const t = clone.textContent.trim();"
+            "    if (t) return t;"
+            "  }"
+            "  return el.getAttribute('aria-label') || el.placeholder || '';"
+            "}"
         )
 
     # ── Field Scanning ──
@@ -92,14 +183,22 @@ class NativeFormFiller:
                 "required": await loc.get_attribute("required") is not None,
             })
 
-        # Dropdowns (combobox role = native <select>)
+        # Dropdowns — native <select> (has <option> children) and React Select
+        # comboboxes (role=combobox on <input>, options rendered dynamically)
         for loc in await page.get_by_role("combobox").all():
             label = await self._get_accessible_name(loc)
-            options = await loc.locator("option").all_text_contents()
-            fields.append({
-                "label": label, "type": "select", "locator": loc,
-                "options": options, "value": await loc.input_value(),
-            })
+            tag = await loc.evaluate("el => el.tagName.toLowerCase()")
+            if tag == "select":
+                options = await loc.locator("option").all_text_contents()
+                fields.append({
+                    "label": label, "type": "select", "locator": loc,
+                    "options": options, "value": await loc.input_value(),
+                })
+            else:
+                fields.append({
+                    "label": label, "type": "combobox", "locator": loc,
+                    "value": await loc.input_value(),
+                })
 
         # Radio groups
         for loc in await page.get_by_role("radiogroup").all():
@@ -133,6 +232,23 @@ class NativeFormFiller:
             fields.append({"label": label, "type": "file", "locator": loc})
 
         return fields
+
+    # ── Auto-Gotcha Learning ──
+
+    def _save_gotcha(self, label: str, problem: str, solution: str) -> None:
+        """Auto-save a form-filling gotcha for the current domain."""
+        try:
+            from urllib.parse import urlparse
+            from jobpulse.form_engine.gotchas import GotchasDB
+
+            url = getattr(self._page, 'url', '') or ''
+            if not url:
+                return
+            domain = urlparse(url).netloc.lower().removeprefix("www.")
+            db = GotchasDB()
+            db.store(domain, label, problem, solution, engine="playwright")
+        except Exception as exc:
+            logger.debug("Could not save gotcha: %s", exc)
 
     # ── Human-Like Behavior (delegates to driver) ──
 
@@ -215,6 +331,11 @@ class NativeFormFiller:
                     try:
                         await el.select_option(index=matched_idx, timeout=5000)
                         selected = True
+                        # Auto-save gotcha: exact match failed, fuzzy worked
+                        self._save_gotcha(
+                            label, "select_exact_failed",
+                            f"Use option index {matched_idx} ('{options_stripped[matched_idx]}') for value '{value}'",
+                        )
                     except Exception:
                         pass
             # Try by value attribute
@@ -233,6 +354,17 @@ class NativeFormFiller:
                 await el.uncheck()
         elif input_type == "radio":
             await page.get_by_label(value).check()
+        elif await el.get_attribute("role") == "combobox":
+            await el.fill("")
+            await el.fill(value)
+            await asyncio.sleep(0.8)
+            option = page.get_by_role("option", name=value, exact=False)
+            if await option.count():
+                await option.first.click()
+            else:
+                await el.press("ArrowDown")
+                await asyncio.sleep(0.3)
+                await el.press("Enter")
         else:
             await el.fill(value)
 
@@ -249,17 +381,93 @@ class NativeFormFiller:
         verified = value[:10].lower() in actual.lower() if actual else False
         return {"success": True, "value_set": value, "value_verified": verified}
 
-    # ── LLM Calls ──
+    # ── Field Mapping (deterministic first, LLM fallback) ──
+
+    @staticmethod
+    def _learn_field_mapping(mapping: dict[str, str], profile: dict) -> None:
+        """Learn new label→profile_key associations from LLM results.
+
+        Persists new mappings to SQLite so future sessions skip the LLM.
+        """
+        from jobpulse.applicator import PROFILE
+        profile_flat = {**profile, **PROFILE}
+
+        value_to_key: dict[str, str] = {}
+        for k, v in profile_flat.items():
+            if v and isinstance(v, str):
+                value_to_key[v.strip().lower()] = k
+
+        new_count = 0
+        for label, value in mapping.items():
+            label_lower = label.lower()
+            if label_lower in _FIELD_LABEL_TO_PROFILE_KEY:
+                continue
+            val_lower = str(value).strip().lower()
+            profile_key = value_to_key.get(val_lower)
+            if profile_key:
+                _FIELD_LABEL_TO_PROFILE_KEY[label_lower] = profile_key
+                _persist_label_mapping(label_lower, profile_key)
+                new_count += 1
+
+        if new_count:
+            logger.info("Learned %d new field label mappings (persisted to SQLite)", new_count)
+
+    def _try_cached_mapping(
+        self, fields: list[dict], profile: dict, custom_answers: dict,
+    ) -> dict | None:
+        """Try to resolve field mapping from cached label→profile_key templates."""
+        _ensure_label_db()
+        try:
+            from jobpulse.form_experience_db import FormExperienceDB
+            url = getattr(self._page, 'url', '') or ''
+            if not url:
+                return None
+            db = FormExperienceDB()
+            exp = db.lookup(url)
+            if not exp or not exp.get("field_types"):
+                return None
+
+            from jobpulse.applicator import PROFILE, WORK_AUTH
+            profile_flat = {**profile, **PROFILE}
+            label_key_map = _FIELD_LABEL_TO_PROFILE_KEY
+
+            mapping: dict[str, str] = {}
+            unmapped: list[str] = []
+            for f in fields:
+                if f["type"] == "file" or f.get("value"):
+                    continue
+                label = f["label"]
+                key = label_key_map.get(label.lower())
+                if key and key in profile_flat:
+                    mapping[label] = profile_flat[key]
+                elif label.lower() in custom_answers:
+                    mapping[label] = custom_answers[label.lower()]
+                else:
+                    unmapped.append(label)
+
+            if unmapped:
+                return None
+            if mapping:
+                logger.info("Field mapping: %d fields resolved from cache (0 LLM calls)", len(mapping))
+            return mapping if mapping else None
+        except Exception:
+            return None
 
     async def _map_fields(
         self, fields: list[dict], profile: dict,
         custom_answers: dict, platform: str,
     ) -> dict:
-        """LLM Call 1: map profile data to form field labels.
+        """Map profile data to form field labels.
 
+        Tries deterministic cache first; falls back to LLM.
         Returns {"label": "value"} for each field the LLM can fill.
-        Skips file upload fields. Marks already-filled fields in the prompt.
         """
+        # Tier 1: deterministic mapping from known label→profile_key
+        cached = self._try_cached_mapping(fields, profile, custom_answers)
+        if cached is not None:
+            return cached
+
+        # Tier 2: LLM mapping (fallback)
         field_descriptions = []
         for f in fields:
             if f["type"] == "file":
@@ -285,19 +493,33 @@ class NativeFormFiller:
             f"Profile: {json.dumps(profile)}\n"
             f"Platform: {platform}\n"
             f"Known answers: {json.dumps({k: v for k, v in custom_answers.items() if not k.startswith('_')})}"
+            f"{self._correction_warning}"
         )
 
         client = get_openai_client()
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            max_tokens=2000,
-            temperature=0.0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
+        try:
+            response = client.chat.completions.create(
+                model=get_model_name(),
+                max_tokens=2000,
+                temperature=0.0,
+                timeout=30,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = response.choices[0].message.content.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            mapping = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.error("LLM returned invalid JSON for field mapping: %s", e)
+            return {}
+        except Exception as e:
+            logger.error("LLM field mapping call failed: %s", e)
+            return {}
+
+        # Learn: save label→profile_key for deterministic reuse
+        self._learn_field_mapping(mapping, profile)
+
+        return mapping
 
     async def _screen_questions(
         self, unresolved_fields: list[dict], job_context: str | None,
@@ -329,19 +551,40 @@ class NativeFormFiller:
             f"CRITICAL: JSON keys MUST be the EXACT question label text. "
             f"Choose ONLY from the given options when options are listed.\n"
             f'Return JSON {{"label": "answer"}}.'
+            f"{self._correction_warning}"
         )
 
         client = get_openai_client()
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            max_tokens=2000,
-            temperature=0.0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
+        try:
+            response = client.chat.completions.create(
+                model=get_model_name(),
+                max_tokens=2000,
+                temperature=0.0,
+                timeout=30,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = response.choices[0].message.content.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            answers = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.error("LLM returned invalid JSON for screening answers: %s", e)
+            return {}
+        except Exception as e:
+            logger.error("LLM screening answer call failed: %s", e)
+            return {}
+
+        # Cache LLM answers so the same questions never hit the LLM again
+        try:
+            from jobpulse.job_db import JobDB
+            db = JobDB()
+            for q, a in answers.items():
+                db.cache_answer(q, str(a))
+            logger.info("Cached %d screening answers from LLM", len(answers))
+        except Exception as exc:
+            logger.debug("Could not cache screening answers: %s", exc)
+
+        return answers
 
     async def _review_form(self) -> dict:
         """LLM Call 3: screenshot-based pre-submit review of the filled form.
@@ -395,21 +638,31 @@ class NativeFormFiller:
     ) -> None:
         """Upload CV and cover letter to file inputs (deterministic, no LLM).
 
-        Matches by label keyword. Skips autofill/drag-and-drop inputs.
-        Uploads CV at most once (deduplication).
+        Matches by label keyword, falling back to input id/name attributes.
+        Skips autofill/drag-and-drop inputs. Uploads CV at most once.
         """
-        file_inputs = await self._page.locator("input[type='file']").all()
+        file_meta = await self._page.evaluate("""() => {
+            return Array.from(document.querySelectorAll("input[type='file']")).map((el, idx) => ({
+                idx,
+                id: (el.id || '').toLowerCase(),
+                name: (el.name || '').toLowerCase(),
+                label: (el.labels?.[0]?.textContent?.trim() || el.getAttribute('aria-label') || '').toLowerCase(),
+            }));
+        }""")
         cv_uploaded = False
+        cl_uploaded = False
 
-        for fi in file_inputs:
-            label = await self._get_accessible_name(fi)
-            label_lower = label.lower()
+        for meta in file_meta:
+            identifiers = f"{meta['label']} {meta['id']} {meta['name']}"
 
-            if "autofill" in label_lower or "drag and drop" in label_lower:
+            if "autofill" in meta["label"] or "drag and drop" in meta["label"]:
                 continue
 
-            if "cover" in label_lower and cl_path:
+            fi = self._page.locator("input[type='file']").nth(meta["idx"])
+
+            if any(kw in identifiers for kw in ("cover", "cl", "letter")) and cl_path and not cl_uploaded:
                 await self._upload_pdf(fi, str(cl_path))
+                cl_uploaded = True
             elif cv_path and not cv_uploaded:
                 await self._upload_pdf(fi, str(cv_path))
                 cv_uploaded = True
@@ -561,6 +814,27 @@ class NativeFormFiller:
 
     # ── Public Interface ──
 
+    async def scan_current_values(self) -> dict[str, str]:
+        """Read current field values from the form — call after user corrections."""
+        fields = await self._scan_fields()
+        values: dict[str, str] = {}
+        for f in fields:
+            label = f["label"]
+            if not label or f["type"] == "file":
+                continue
+            if f["type"] == "checkbox":
+                values[label] = "checked" if f.get("checked") else "unchecked"
+            elif f["type"] == "radio":
+                for r in await f["locator"].get_by_role("radio").all():
+                    if await r.is_checked():
+                        values[label] = await self._get_accessible_name(r)
+                        break
+            else:
+                val = f.get("value") or ""
+                if val:
+                    values[label] = val
+        return values
+
     async def fill(
         self,
         platform: str,
@@ -584,17 +858,44 @@ class NativeFormFiller:
         9. Pre-submit review on final page (LLM Call 3)
         10. Click next/submit
         """
-        # 0. Handle modal-based CV upload (Reed Easy Apply pattern)
+        # 0. Build correction warning from form hints (once per fill)
+        hints = custom_answers.get("_form_hints")
+        if hints and hints.get("correction_accuracy") is not None:
+            acc = hints["correction_accuracy"]
+            if acc < 0.9:
+                bad_fields = hints.get("frequently_corrected_fields", [])
+                self._correction_warning = (
+                    f"\n\nWARNING: This domain has {acc*100:.0f}% historical accuracy. "
+                    f"Fields often corrected by user: {', '.join(bad_fields) if bad_fields else 'unknown'}. "
+                    f"Double-check these fields — prefer user-corrected values from Known answers."
+                )
+            else:
+                self._correction_warning = ""
+        else:
+            self._correction_warning = ""
+
+        # 0b. Handle modal-based CV upload (Reed Easy Apply pattern)
         await self._handle_modal_cv_upload(cv_path)
 
         seen_field_types: list[str] = []
         seen_screening: list[str] = []
+        all_agent_mappings: dict[str, str] = {}
+        total_fields_attempted = 0
+        total_fields_filled = 0
+        total_fill_failures: list[str] = []
         t0 = time.monotonic()
 
         def _result(base: dict) -> dict:
             base.setdefault("field_types", seen_field_types)
             base.setdefault("screening_questions", seen_screening)
             base.setdefault("time_seconds", round(time.monotonic() - t0, 1))
+            base.setdefault("agent_mapping", all_agent_mappings)
+            base["agent_fill_stats"] = {
+                "fields_attempted": total_fields_attempted,
+                "fields_filled": total_fields_filled,
+                "fields_failed": len(total_fill_failures),
+                "failed_labels": total_fill_failures,
+            }
             return base
 
         for page_num in range(1, MAX_FORM_PAGES + 1):
@@ -643,14 +944,24 @@ class NativeFormFiller:
                     for q, a in screening.items():
                         seen_screening.append(f"{q}:{a}")
 
+            # Track agent's original mapping for correction capture
+            all_agent_mappings.update({k: str(v) for k, v in mapping.items()})
+
             # 5. Fill each field by label
             fill_failures = []
             for label, value in mapping.items():
+                total_fields_attempted += 1
                 try:
-                    await self._fill_by_label(label, value)
+                    result = await self._fill_by_label(label, value)
+                    if result.get("success"):
+                        total_fields_filled += 1
+                    else:
+                        fill_failures.append(label)
+                        total_fill_failures.append(label)
                 except Exception as fill_err:
                     logger.warning("Field fill failed for '%s': %s", label, fill_err)
                     fill_failures.append(label)
+                    total_fill_failures.append(label)
 
             # 6. File uploads
             await self._upload_files(cv_path, cl_path)

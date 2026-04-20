@@ -211,6 +211,7 @@ To set up Google OAuth2:
         os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
         with open(token_path, "w") as f:
             f.write(creds.to_json())
+        os.chmod(token_path, 0o600)
 
         print(f"✅ Google OAuth2 complete — token saved to {token_path}")
         return True

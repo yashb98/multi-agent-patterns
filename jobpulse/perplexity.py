@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import re
 import sqlite3
 import time
@@ -99,22 +100,41 @@ class PerplexityClient:
         except Exception as exc:
             logger.debug("Cache store failed: %s", exc)
 
-    def _query(self, prompt: str, model: str | None = None) -> str:
-        """Make Perplexity Sonar API call."""
-        resp = httpx.post(
-            self.BASE_URL,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model or self.MODEL_FAST,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+    def _query(self, prompt: str, model: str | None = None, max_retries: int = 2) -> str:
+        """Make Perplexity Sonar API call with exponential backoff retry."""
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                resp = httpx.post(
+                    self.BASE_URL,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model or self.MODEL_FAST,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+            except Exception as exc:
+                last_error = exc
+                err_str = str(exc).lower()
+                retryable = any(k in err_str for k in (
+                    "timeout", "connection", "429", "too many requests",
+                    "rate limit", "service unavailable", "bad gateway",
+                ))
+                if attempt >= max_retries or not retryable:
+                    raise
+                delay = min(2 ** attempt, 30) * (0.5 + random.random())
+                logger.warning(
+                    "Perplexity call failed (attempt %d/%d): %s. Retrying in %.1fs...",
+                    attempt + 1, max_retries + 1, str(exc)[:100], delay,
+                )
+                time.sleep(delay)
+        raise last_error
 
     def research_company(self, company: str, deep: bool = False) -> CompanyResearch:
         """Research a company. Cached for 7 days."""

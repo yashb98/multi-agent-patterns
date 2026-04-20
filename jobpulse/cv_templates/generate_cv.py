@@ -22,23 +22,83 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 from jobpulse.config import DATA_DIR
+from jobpulse.cv_templates import sanitize_pdf as _sanitize_pdf
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Fonts
+# Fonts (cross-platform discovery)
 # ---------------------------------------------------------------------------
 
 _FONTS_REGISTERED = False
+
+# Search paths per OS
+_FONT_SEARCH_PATHS = {
+    "darwin": [
+        "/System/Library/Fonts/Supplemental",
+        "/System/Library/Fonts",
+        "/Library/Fonts",
+        "~/Library/Fonts",
+    ],
+    "linux": [
+        "/usr/share/fonts/truetype/msttcorefonts",
+        "/usr/share/fonts/truetype/dejavu",
+        "/usr/share/fonts/TTF",
+        "/usr/share/fonts",
+        "~/.fonts",
+        "~/.local/share/fonts",
+    ],
+    "win32": [
+        r"C:\Windows\Fonts",
+    ],
+}
+
+_FONT_ALIASES = {
+    "MyArial": ["arial.ttf", "Arial.ttf", "DejaVuSans.ttf", "DejaVu Sans.ttf"],
+    "MyArialB": ["arialbd.ttf", "Arial Bold.ttf", "DejaVuSans-Bold.ttf", "DejaVu Sans Bold.ttf"],
+    "MyArialI": ["ariali.ttf", "Arial Italic.ttf", "DejaVuSans-Oblique.ttf", "DejaVu Sans Oblique.ttf"],
+}
+
+
+def _discover_font(font_name: str) -> str | None:
+    """Find a font file on the current OS. Returns absolute path or None."""
+    import sys
+    import os
+
+    platform = sys.platform
+    search_dirs = _FONT_SEARCH_PATHS.get(platform, [])
+    candidates = _FONT_ALIASES.get(font_name, [])
+
+    for d in search_dirs:
+        d = os.path.expanduser(d)
+        if not os.path.isdir(d):
+            continue
+        for cand in candidates:
+            path = os.path.join(d, cand)
+            if os.path.isfile(path):
+                return path
+    return None
+
 
 def _register_fonts():
     global _FONTS_REGISTERED
     if _FONTS_REGISTERED:
         return
-    pdfmetrics.registerFont(TTFont('MyArial', '/System/Library/Fonts/Supplemental/Arial.ttf'))
-    pdfmetrics.registerFont(TTFont('MyArialB', '/System/Library/Fonts/Supplemental/Arial Bold.ttf'))
-    pdfmetrics.registerFont(TTFont('MyArialI', '/System/Library/Fonts/Supplemental/Arial Italic.ttf'))
+
+    normal = _discover_font("MyArial")
+    bold = _discover_font("MyArialB")
+    italic = _discover_font("MyArialI")
+
+    if normal is None:
+        raise RuntimeError(
+            "Could not find a suitable font (Arial or DejaVu Sans). "
+            "Install Microsoft core fonts or DejaVu fonts."
+        )
+
+    pdfmetrics.registerFont(TTFont('MyArial', normal))
+    pdfmetrics.registerFont(TTFont('MyArialB', bold or normal))
+    pdfmetrics.registerFont(TTFont('MyArialI', italic or normal))
     registerFontFamily('MyArial', normal='MyArial', bold='MyArialB', italic='MyArialI')
     _FONTS_REGISTERED = True
 
@@ -57,14 +117,18 @@ SUB_COLOR = '#444444'      # Gray for tagline
 # Fixed identity
 # ---------------------------------------------------------------------------
 
-IDENTITY = {
-    "name": "Yash Bishnoi",
-    "phone": "07909445288",
-    "email": "bishnoiyash274@gmail.com",
-    "linkedin": "https://linkedin.com/in/yash-bishnoi-2ab36a1a5",
-    "github": "https://github.com/yashb98",
-    "portfolio": "https://yashbishnoi.io",
-}
+def _build_identity() -> dict[str, str]:
+    from jobpulse.config import APPLICANT_PROFILE as _p
+    return {
+        "name": f"{_p['first_name']} {_p['last_name']}".strip(),
+        "phone": _p["phone"],
+        "email": _p["email"],
+        "linkedin": _p["linkedin"],
+        "github": _p["github"],
+        "portfolio": _p["portfolio"],
+    }
+
+IDENTITY = _build_identity()
 
 EDUCATION = [
     {
@@ -563,6 +627,8 @@ def generate_cv_pdf(
     el.append(Paragraph(f'{B(I("Available upon request"))}', center_s))
 
     doc.build(el)
+
+    _sanitize_pdf(cv_path)
     logger.info("CV generated: %s", cv_path)
     return cv_path
 

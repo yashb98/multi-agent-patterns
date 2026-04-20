@@ -206,6 +206,25 @@ async def apply_to_job(url: str) -> dict:
 
     print(f"Connected. Applying to: {url[:80]}")
 
+    # ── Setup rollback: ensure bridge is stopped on any exit path ──
+    try:
+        result = await _apply_to_job_inner(url, rb)
+    finally:
+        await rb.stop()
+
+    return result
+
+
+async def _apply_to_job_inner(url: str, rb) -> dict:
+    """Core application logic (bridge already connected, rollback handled by caller)."""
+    from jobpulse.application_orchestrator import ApplicationOrchestrator
+    from jobpulse.jd_analyzer import analyze_jd
+    from jobpulse.skill_graph_store import SkillGraphStore
+    from jobpulse.project_portfolio import get_best_projects_for_jd
+    from jobpulse.cv_templates.generate_cv import (
+        generate_cv_pdf, build_extra_skills, get_role_profile,
+    )
+
     # ── Step 1: Navigate to the page (single navigation) ──
     print("Step 1: Navigating to page...")
     snap = None
@@ -217,7 +236,6 @@ async def apply_to_job(url: str) -> dict:
         snap = await rb.get_snapshot(force_refresh=True)
 
     if not snap:
-        await rb.stop()
         return {"success": False, "error": "Could not load page"}
 
     # ── Step 1b: Check for verification wall / CAPTCHA ──
@@ -321,12 +339,13 @@ async def apply_to_job(url: str) -> dict:
     from jobpulse.form_intelligence import FormIntelligence
     fi = FormIntelligence(bridge=rb)
 
+    dry_run = "--submit" not in sys.argv
     orch = ApplicationOrchestrator(bridge=rb)
     result = await orch.apply(
         url=url,
         platform=platform,
         cv_path=cv_path,
-        dry_run=False,
+        dry_run=dry_run,
         form_intelligence=fi,
         pre_navigated_snapshot=snap_dict,
         custom_answers={
@@ -387,7 +406,36 @@ async def apply_to_job(url: str) -> dict:
         else:
             _send_msg(f"Application failed ({company}): {result.get('error', 'unknown')}")
 
-    await rb.stop()
+    # ── confirm_application flow for dry-run → manual submit ──
+    dry_run = "--submit" not in sys.argv
+    if dry_run and result.get("success"):
+        _send_msg("Dry run complete. Reply 'confirm' to record this application.")
+        last_id = _drain_updates()
+        reply, last_id = await _wait_for_reply(last_id, max_wait=120)
+        if reply and reply.lower() == "confirm":
+            from jobpulse.applicator import confirm_application
+            from pathlib import Path
+
+            confirm_result = confirm_application(
+                dry_run_result=result,
+                url=url,
+                cv_path=cv_path,
+                cover_letter_path=None,
+                job_context={
+                    "job_id": listing.job_id if hasattr(listing, "job_id") else "",
+                    "company": company,
+                    "title": title,
+                    "platform": platform,
+                },
+                ats_platform=platform,
+            )
+            if confirm_result.get("success"):
+                _send_msg(f"Application confirmed and recorded: {company} — {title}")
+            else:
+                _send_msg(f"Confirm failed: {confirm_result.get('error', 'unknown')}")
+        else:
+            _send_msg("Dry run not confirmed. No quota consumed.")
+
     return result
 
 

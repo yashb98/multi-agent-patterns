@@ -185,7 +185,6 @@ class SkillGraphStore:
         rows = conn.execute(
             "SELECT name FROM knowledge_entities WHERE entity_type = 'SKILL'"
         ).fetchall()
-        conn.close()
         return {row["name"].lower().strip() for row in rows}
 
     def get_projects_for_skills(self, jd_skills: list[str]) -> list[ProjectMatch]:
@@ -199,43 +198,56 @@ class SkillGraphStore:
         profile = self.get_skill_profile()
         conn = get_conn()
 
-        # Build IDF weights: how many projects demonstrate each skill
+        # Build IDF weights: how many projects demonstrate each skill (single batched query)
+        skill_counts = conn.execute(
+            "SELECT to_id, COUNT(*) as c FROM knowledge_relations WHERE type = 'DEMONSTRATES' GROUP BY to_id"
+        ).fetchall()
+        skill_id_to_count: dict[str, int] = {row["to_id"]: row["c"] for row in skill_counts}
+
         all_skills_rows = conn.execute(
             "SELECT id, name FROM knowledge_entities WHERE entity_type = 'SKILL'"
         ).fetchall()
         skill_project_count: dict[str, int] = {}
         for s in all_skills_rows:
-            cnt = conn.execute(
-                "SELECT COUNT(*) as c FROM knowledge_relations WHERE to_id = ? AND type = 'DEMONSTRATES'",
-                (s["id"],),
-            ).fetchone()["c"]
+            cnt = skill_id_to_count.get(s["id"], 0)
             skill_project_count[s["name"].lower().strip()] = max(cnt, 1)
 
         total_projects = conn.execute(
             "SELECT COUNT(*) as c FROM knowledge_entities WHERE entity_type = 'PROJECT'"
         ).fetchone()["c"] or 1
 
-        # Get all projects
+        # Get all projects + their demonstrated skills in two batched queries
         projects = conn.execute(
             "SELECT id, name, description FROM knowledge_entities WHERE entity_type = 'PROJECT'"
         ).fetchall()
 
+        # Batch-fetch all DEMONSTRATES relations for all projects at once
+        all_rels = conn.execute(
+            "SELECT from_id, to_id FROM knowledge_relations WHERE type = 'DEMONSTRATES'"
+        ).fetchall()
+        proj_to_skill_ids: dict[str, set[str]] = {}
+        for rel in all_rels:
+            proj_to_skill_ids.setdefault(rel["from_id"], set()).add(rel["to_id"])
+
+        # Batch-fetch all skill names for the skill IDs we need
+        needed_skill_ids = set()
+        for skill_ids in proj_to_skill_ids.values():
+            needed_skill_ids.update(skill_ids)
+        skill_id_to_name: dict[str, str] = {}
+        if needed_skill_ids:
+            placeholders = ",".join("?" * len(needed_skill_ids))
+            skill_rows = conn.execute(
+                f"SELECT id, name FROM knowledge_entities WHERE id IN ({placeholders})",
+                list(needed_skill_ids),
+            ).fetchall()
+            skill_id_to_name = {row["id"]: row["name"].lower().strip() for row in skill_rows}
+
         results: list[ProjectMatch] = []
         for proj in projects:
-            rels = conn.execute(
-                "SELECT to_id FROM knowledge_relations WHERE from_id = ? AND type = 'DEMONSTRATES'",
-                (proj["id"],),
-            ).fetchall()
-            proj_skill_ids = {r["to_id"] for r in rels}
-
+            proj_skill_ids = proj_to_skill_ids.get(proj["id"], set())
             if not proj_skill_ids:
                 continue
-            placeholders = ",".join("?" * len(proj_skill_ids))
-            skill_rows = conn.execute(
-                f"SELECT name FROM knowledge_entities WHERE id IN ({placeholders})",
-                list(proj_skill_ids),
-            ).fetchall()
-            proj_skills = {row["name"].lower().strip() for row in skill_rows}
+            proj_skills = {skill_id_to_name.get(sid, "") for sid in proj_skill_ids}
 
             matched = []
             relevance = 0.0
@@ -256,8 +268,6 @@ class SkillGraphStore:
                     relevance_score=round(relevance, 4),
                 ))
 
-        conn.close()
-
         results.sort(key=lambda m: m.relevance_score, reverse=True)
         return results
 
@@ -274,7 +284,6 @@ class SkillGraphStore:
         total_demonstrates = conn.execute(
             "SELECT COUNT(*) FROM knowledge_relations WHERE type = 'DEMONSTRATES'"
         ).fetchone()[0]
-        conn.close()
         return {
             "total_skills": total_skills,
             "total_projects": total_projects,

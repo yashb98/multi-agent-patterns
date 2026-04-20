@@ -115,7 +115,7 @@ def init_db():
 
 def add_transaction(amount: float, description: str, category: str,
                     section: str, txn_type: str) -> dict:
-    # Validate amount before touching the database
+    _ensure_budget_db()
     if not isinstance(amount, (int, float)) or amount <= 0:
         logger.warning("add_transaction: rejected invalid amount: %s", amount)
         return {"error": f"Invalid amount: {amount}. Must be a positive number."}
@@ -531,11 +531,8 @@ def check_budget_alerts() -> list[str]:
 # ── Undo Last Transaction ──
 
 def undo_last_transaction(pick: int = None) -> str:
-    """Show last 5 transactions for selection, or delete a specific one by number.
-
-    - undo         → shows last 5 with numbers
-    - undo 3       → deletes transaction #3 from the list
-    """
+    """Show last 5 transactions for selection, or delete a specific one by number."""
+    _ensure_budget_db()
     conn = _get_conn()
     recent = conn.execute(
         "SELECT * FROM transactions ORDER BY created_at DESC LIMIT 5"
@@ -607,4 +604,11 @@ from jobpulse.budget_salary import (  # noqa: F401 — re-exported for callers
 )
 
 
-init_db()
+_db_initialized = False
+
+
+def _ensure_budget_db():
+    global _db_initialized
+    if not _db_initialized:
+        init_db()
+        _db_initialized = True

@@ -10,17 +10,16 @@ Lightweight by design (~200 lines). Max 20 chunks.
 """
 
 import os
-import sys
 import json
 import re
 from typing import TypedDict, Annotated
 import operator
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-
 from langgraph.graph import StateGraph, START, END
 
-from shared.agents import get_llm, smart_llm_call, reviewer_node, fact_check_node
+from shared.agents import get_llm, smart_llm_call, reviewer_node, fact_check_node, compute_cost_summary
+from shared.state import prune_state
+from shared.cost_tracker import check_budget_from_state, BudgetExceededError
 from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.logging_config import get_logger, generate_run_id, set_run_id
 
@@ -86,6 +85,16 @@ def splitter_node(state: MapReduceState) -> dict:
 
 def map_node(state: MapReduceState) -> dict:
     """Process each chunk independently."""
+    # Budget check before parallel mapping
+    try:
+        check_budget_from_state(state, estimated_next_cost=0.02 * len(state["chunks"]))
+    except BudgetExceededError as e:
+        logger.warning("Budget exceeded in map_reduce: %s", e)
+        return {
+            "map_results": [],
+            "agent_history": [f"mapper: budget cap exceeded (${e.spent:.2f} > ${e.cap:.2f}), stopping"]
+        }
+
     llm = get_llm()
     results = []
     for i, chunk in enumerate(state["chunks"]):
@@ -175,12 +184,16 @@ def reconciler_node(state: MapReduceState) -> dict:
     except Exception:
         pass
 
-    logger.info("Reconciler completed: quality=%.1f, accuracy=%.1f", quality, accuracy)
+    cost = compute_cost_summary(state.get("token_usage", []))
+    prune_state(state)
+
+    logger.info("Reconciler completed: quality=%.1f, accuracy=%.1f, cost=$%.4f", quality, accuracy, cost["total_cost_usd"])
     return {
         "final_output": output,
         "quality_score": quality,
         "accuracy_score": accuracy,
-        "agent_history": [f"reconciler: resolved contradictions, quality={quality}, accuracy={accuracy}"],
+        "cost_estimate": cost,
+        "agent_history": [f"reconciler: resolved contradictions, quality={quality}, accuracy={accuracy}, cost=${cost['total_cost_usd']:.4f}"],
     }
 
 

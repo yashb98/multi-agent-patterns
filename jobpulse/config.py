@@ -53,6 +53,13 @@ DISCORD_USER_ID = os.getenv("DISCORD_USER_ID", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 CONVERSATION_MODEL = os.getenv("CONVERSATION_MODEL", "gpt-5-mini")
 
+# Multi-provider fallback
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+LLM_PROVIDER_FALLBACK = os.getenv("LLM_PROVIDER_FALLBACK", "openai,anthropic,gemini")
+
 # Paths
 DATA_DIR = PROJECT_DIR / "data"
 LOGS_DIR = PROJECT_DIR / "logs"
@@ -97,6 +104,37 @@ ATS_ACCOUNT_PASSWORD = os.getenv("JOB_APPLY_PASSWORD", "")
 GMAIL_VERIFY_TIMEOUT = int(os.getenv("GMAIL_VERIFY_TIMEOUT", "120"))
 GMAIL_VERIFY_POLL_INTERVAL = int(os.getenv("GMAIL_VERIFY_POLL_INTERVAL", "5"))
 PAGE_STABLE_TIMEOUT_MS = int(os.getenv("PAGE_STABLE_TIMEOUT_MS", "3000"))
+
+# Applicant profile — loaded from env vars, never hardcoded in source
+APPLICANT_FIRST_NAME = os.getenv("APPLICANT_FIRST_NAME", "")
+APPLICANT_LAST_NAME = os.getenv("APPLICANT_LAST_NAME", "")
+APPLICANT_EMAIL = os.getenv("APPLICANT_EMAIL", "")
+APPLICANT_PHONE = os.getenv("APPLICANT_PHONE", "")
+APPLICANT_LINKEDIN = os.getenv("APPLICANT_LINKEDIN", "")
+APPLICANT_GITHUB = os.getenv("APPLICANT_GITHUB", "")
+APPLICANT_PORTFOLIO = os.getenv("APPLICANT_PORTFOLIO", "")
+APPLICANT_LOCATION = os.getenv("APPLICANT_LOCATION", "")
+APPLICANT_EDUCATION = os.getenv("APPLICANT_EDUCATION", "")
+
+APPLICANT_PROFILE: dict[str, str] = {
+    "first_name": APPLICANT_FIRST_NAME,
+    "last_name": APPLICANT_LAST_NAME,
+    "email": APPLICANT_EMAIL,
+    "phone": APPLICANT_PHONE,
+    "linkedin": APPLICANT_LINKEDIN,
+    "github": APPLICANT_GITHUB,
+    "portfolio": APPLICANT_PORTFOLIO,
+    "education": APPLICANT_EDUCATION,
+    "location": APPLICANT_LOCATION,
+}
+
+WORK_AUTH: dict[str, object] = {
+    "requires_sponsorship": os.getenv("WORK_AUTH_REQUIRES_SPONSORSHIP", "false").lower() in ("true", "1"),
+    "visa_status": os.getenv("WORK_AUTH_VISA_STATUS", ""),
+    "right_to_work_uk": os.getenv("WORK_AUTH_RIGHT_TO_WORK", "true").lower() in ("true", "1"),
+    "notice_period": os.getenv("WORK_AUTH_NOTICE_PERIOD", ""),
+    "salary_expectation": os.getenv("WORK_AUTH_SALARY_EXPECTATION", ""),
+}
 
 # Salary / hours tracking
 HOURLY_RATE = float(os.getenv("HOURLY_RATE", "13.99"))

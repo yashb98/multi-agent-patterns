@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.logging_config import get_logger
+from shared.alerting import send_pipeline_alert
 
 from jobpulse.ats_adapters import get_adapter
 from jobpulse.ats_adapters.base import BaseATSAdapter
@@ -59,6 +60,32 @@ def classify_action(ats_score: float, easy_apply: bool) -> str:
 def select_adapter(ats_platform: str | None) -> BaseATSAdapter:
     """Return the appropriate ATS adapter for the given platform name."""
     return get_adapter(ats_platform)
+
+
+def _record_agent_performance(
+    result: dict, ctx: dict, url: str, platform: str,
+    dry_run: bool, claude_fields: int = 0,
+) -> None:
+    """Record agent vs Claude fill stats to agent_performance.db."""
+    try:
+        from jobpulse.agent_performance import AgentPerformanceDB
+        stats = result.get("agent_fill_stats", {})
+        if not stats.get("fields_attempted"):
+            return
+        db = AgentPerformanceDB()
+        db.record_session(
+            company=ctx.get("company", "Unknown"),
+            role=ctx.get("title"),
+            platform=platform,
+            url=url,
+            agent_stats=stats,
+            claude_fields_filled=claude_fields,
+            fill_time_seconds=result.get("time_seconds"),
+            dry_run=dry_run,
+            success=result.get("success", False),
+        )
+    except Exception as exc:
+        logger.debug("agent_performance recording failed: %s", exc)
 
 
 def _call_fill_and_submit(adapter: BaseATSAdapter, engine: str = "extension", **kwargs: Any) -> dict:
@@ -351,6 +378,14 @@ def apply_job(
             platform_name,
             result.get("error"),
         )
+        if not dry_run:
+            ctx = job_context or {}
+            send_pipeline_alert(
+                f"Application failed for {ctx.get('company', 'unknown')}:\n"
+                f"Error: {result.get('error', 'unknown')}",
+                severity="error",
+                category="apply",
+            )
 
     # Post-apply hook: record experience + Drive upload + Notion update
     if result.get("success") and not dry_run:
@@ -377,6 +412,11 @@ def apply_job(
             )
         except Exception as exc:
             logger.warning("post_apply_hook failed: %s — application still recorded", exc)
+
+    # Record agent performance stats
+    _record_agent_performance(
+        result, job_context or {}, url, platform_key, dry_run,
+    )
 
     if not dry_run:
         # Anti-detection: random delay between submissions (20-45s with jitter)
@@ -479,5 +519,11 @@ def confirm_application(
         )
     except Exception as exc:
         logger.warning("confirm_application: post_apply_hook failed: %s", exc)
+
+    # Count Claude corrections from the correction result
+    claude_count = len(result.get("corrections", {}).get("corrections", []))
+    _record_agent_performance(
+        result, ctx, url, platform_key, dry_run=False, claude_fields=claude_count,
+    )
 
     return result

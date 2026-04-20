@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from shared.logging_config import get_logger
 
 from jobpulse.form_engine.models import InputType
+
+if TYPE_CHECKING:
+    from playwright.async_api import ElementHandle
 
 logger = get_logger(__name__)
 
 _TEXT_LIKE_TYPES = {"text", "email", "tel", "url", "number", "password", "search", ""}
 
 
-async def detect_input_type(element) -> InputType:
+async def detect_input_type(element: ElementHandle) -> InputType:
     """Examine a DOM element and return its semantic InputType."""
     tag = await element.evaluate("el => el.tagName.toLowerCase()")
 

@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 from jobpulse.config import GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
 from jobpulse import event_logger
+from shared.google_retry import call_google_api_with_retry
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -41,14 +42,16 @@ def _get_calendar_service():
 def _fetch_events(service, start: datetime, end: datetime) -> list[dict]:
     """Fetch events between start and end."""
     try:
-        events_result = service.events().list(
-            calendarId="primary",
-            timeMin=start.isoformat() + "Z",
-            timeMax=end.isoformat() + "Z",
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=20,
-        ).execute()
+        events_result = call_google_api_with_retry(
+            lambda: service.events().list(
+                calendarId="primary",
+                timeMin=start.isoformat() + "Z",
+                timeMax=end.isoformat() + "Z",
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=20,
+            ).execute()
+        )
 
         events = []
         for event in events_result.get("items", []):

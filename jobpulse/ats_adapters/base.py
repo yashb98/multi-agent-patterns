@@ -2,11 +2,21 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+class FillSubmitResult(TypedDict, total=False):
+    success: bool
+    screenshot: Path | None
+    error: str | None
+    field_types: dict[str, str]
+    screening_questions: list[dict]
+    time_seconds: float
+    pages: int
 
 
 class BaseATSAdapter(ABC):
@@ -27,19 +37,13 @@ class BaseATSAdapter(ABC):
         overrides: dict[str, Any] | None = None,
         dry_run: bool = False,
         engine: str = "extension",
-    ) -> dict:
+    ) -> FillSubmitResult:
         """Fill form and submit.
 
         Args:
             overrides: learned fixes — selector overrides, wait adjustments,
                 strategy switches, field remaps, interaction mods.
                 Adapters can use resolve_selector() to apply selector overrides.
-
-        Returns:
-            dict with keys:
-                success (bool): whether submission succeeded
-                screenshot (Path | None): path to screenshot if taken
-                error (str | None): error message if failed
         """
 
     def resolve_selector(self, selector: str, overrides: dict[str, Any] | None = None) -> str:

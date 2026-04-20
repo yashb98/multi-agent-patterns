@@ -41,11 +41,21 @@ class PreClassification:
 
 # ── Rule Loading ──────────────────────────────────────────────────────────
 
+_rules_cache: dict | None = None
+_rules_mtime: float = 0.0
+
+
 def _load_rules() -> dict:
-    """Load static rules from JSON."""
+    """Load static rules from JSON, cached in memory until file changes."""
+    global _rules_cache, _rules_mtime
     try:
+        mtime = RULES_PATH.stat().st_mtime if RULES_PATH.exists() else 0.0
+        if _rules_cache is not None and mtime == _rules_mtime:
+            return _rules_cache
         with open(RULES_PATH) as f:
-            return json.load(f)
+            _rules_cache = json.load(f)
+            _rules_mtime = mtime
+            return _rules_cache
     except (FileNotFoundError, json.JSONDecodeError) as e:
         logger.warning("Could not load pre-classifier rules: %s", e)
         return {}
@@ -448,9 +458,8 @@ def increment_processed():
 
 def extract_patterns_from_email(sender: str, subject: str, body: str, category: str) -> dict:
     """During learning phase, LLM analyzes email to extract classification patterns."""
-    from shared.agents import get_openai_client
-
-    client = get_openai_client()
+    from shared.agents import get_llm, smart_llm_call
+    from langchain_core.messages import HumanMessage
 
     prompt = f"""Analyze this email classification to extract reusable patterns.
 
@@ -472,14 +481,10 @@ Extract:
 Respond in JSON only."""
 
     try:
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=600 if _is_local_llm else 300,
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        return json.loads(response.choices[0].message.content)
+        llm = get_llm(temperature=0, max_tokens=600 if _is_local_llm else 300)
+        llm = llm.bind(response_format={"type": "json_object"})
+        response = smart_llm_call(llm, [HumanMessage(content=prompt)])
+        return json.loads(response.content)
     except Exception as e:
         logger.error("Pattern extraction failed: %s", e)
         return {"sender_type": "unknown", "key_signals": [], "suggested_rule": None}

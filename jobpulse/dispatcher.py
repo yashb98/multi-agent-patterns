@@ -403,11 +403,13 @@ def _handle_export(cmd: ParsedCommand) -> str:
 
 def _handle_remote_shell(cmd: ParsedCommand) -> str:
     import re
-    from jobpulse.remote_shell import execute
-    # Strip prefix: run:, shell:, exec:, cmd:, or $
+    from jobpulse.remote_shell import execute, _is_allowed
     raw = cmd.raw.strip()
     command = re.sub(r"^(run|shell|exec|cmd):\s*", "", raw, flags=re.IGNORECASE)
     command = re.sub(r"^\$\s+", "", command)
+    allowed, reason = _is_allowed(command)
+    if not allowed:
+        return f"Blocked: {reason}"
     return execute(command)
 
 

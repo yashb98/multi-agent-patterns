@@ -75,38 +75,58 @@ def test_resolve_skill_text_field():
 
 def test_role_salary_data_scientist():
     ctx = {"job_title": "Data Scientist", "company": "Gousto"}
-    assert _resolve_role_salary(ctx, input_type="number") == "32000"
+    assert _resolve_role_salary(ctx, input_type="number") == "38000"
 
 
 def test_role_salary_data_analyst():
     ctx = {"job_title": "Data Analyst", "company": "Deloitte"}
-    assert _resolve_role_salary(ctx, input_type="number") == "28000"
+    assert _resolve_role_salary(ctx, input_type="number") == "30000"
 
 
 def test_role_salary_ml_engineer():
     ctx = {"job_title": "Machine Learning Engineer", "company": "Google"}
-    assert _resolve_role_salary(ctx, input_type="number") == "32000"
+    assert _resolve_role_salary(ctx, input_type="number") == "38000"
 
 
 def test_role_salary_default():
     ctx = {"job_title": "Unknown Role", "company": "Unknown"}
-    assert _resolve_role_salary(ctx, input_type="number") == "28000"
+    assert _resolve_role_salary(ctx, input_type="number") == "30000"
 
 
 def test_role_salary_none_context():
-    assert _resolve_role_salary(None, input_type="number") == "28000"
+    assert _resolve_role_salary(None, input_type="number") == "30000"
 
 
 def test_role_salary_text_field_data_scientist():
     ctx = {"job_title": "Data Scientist", "company": "Gousto"}
     result = _resolve_role_salary(ctx, input_type="text")
-    assert "30,000" in result or "30000" in result
+    assert "36,000" in result or "36000" in result
 
 
 def test_role_salary_text_field_default():
     ctx = {"job_title": "Unknown Role", "company": "Unknown"}
     result = _resolve_role_salary(ctx, input_type="text")
-    assert "26,000" in result or "26000" in result
+    assert "28,000" in result or "28000" in result
+
+
+def test_role_salary_graduate_data_scientist():
+    ctx = {"job_title": "Graduate Data Scientist", "company": "Barclays"}
+    assert _resolve_role_salary(ctx, input_type="number") == "35000"
+
+
+def test_role_salary_junior_ml_engineer():
+    ctx = {"job_title": "Junior ML Engineer", "company": "Revolut"}
+    assert _resolve_role_salary(ctx, input_type="number") == "37000"
+
+
+def test_role_salary_software_engineer_intern():
+    ctx = {"job_title": "Software Engineer Intern", "company": "Meta"}
+    assert _resolve_role_salary(ctx, input_type="number") == "25000"
+
+
+def test_role_salary_longest_match_wins():
+    ctx = {"job_title": "Graduate Software Engineer", "company": "HSBC"}
+    assert _resolve_role_salary(ctx, input_type="number") == "32000"
 
 
 # ------------------------------------------------------------------

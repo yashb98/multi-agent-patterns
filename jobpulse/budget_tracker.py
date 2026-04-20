@@ -107,21 +107,29 @@ def _load_known_stores() -> list[str]:
 
 
 def _save_new_store(store: str):
-    """Add a newly discovered store to the known stores list."""
-    stores = []
-    if KNOWN_STORES_FILE.exists():
-        try:
-            stores = json.loads(KNOWN_STORES_FILE.read_text())
-        except (json.JSONDecodeError, OSError) as e:
-            logger.debug("Failed to read known stores: %s", e)
+    """Add a newly discovered store to the known stores list (locked to prevent TOCTOU)."""
+    import fcntl
 
     store_lower = store.lower().strip()
-    if store_lower not in [s.lower() for s in stores] and store_lower not in [s.lower() for s in DEFAULT_STORES]:
-        stores.append(store_lower)
+    if store_lower in [s.lower() for s in DEFAULT_STORES]:
+        return
+
+    KNOWN_STORES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(KNOWN_STORES_FILE, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
         try:
-            KNOWN_STORES_FILE.write_text(json.dumps(stores, indent=2))
-        except OSError as e:
-            logger.warning("Failed to save known stores: %s", e)
+            f.seek(0)
+            content = f.read()
+            stores = json.loads(content) if content.strip() else []
+            if store_lower not in [s.lower() for s in stores]:
+                stores.append(store_lower)
+                f.seek(0)
+                f.truncate()
+                json.dump(stores, f, indent=2)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug("Failed to update known stores: %s", e)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def extract_items_and_store(description: str) -> dict:

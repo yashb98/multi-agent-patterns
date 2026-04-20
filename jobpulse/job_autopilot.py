@@ -33,13 +33,14 @@ from typing import Any
 from shared.logging_config import get_logger
 
 from jobpulse.applicator import apply_job
-from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_MAX_DAILY
+from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_AUTO_SUBMIT, JOB_AUTOPILOT_MAX_DAILY
 from jobpulse.cv_templates.generate_cv import build_extra_skills, get_role_profile
 from jobpulse.job_db import JobDB
 from jobpulse.job_notion_sync import update_application_page
 from jobpulse.job_scanner import load_search_config, save_search_config
 from jobpulse.process_logger import ProcessTrail
 from jobpulse.telegram_bots import send_jobs
+from shared.alerting import send_pipeline_alert
 
 logger = get_logger(__name__)
 
@@ -236,12 +237,25 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
     review_batch: list[dict[str, Any]] = []
     errors = 0
 
+    # --- Stage 4+5: generate materials and route by tier ---
+    auto_applied_count = 0
+    remaining_cap = max(0, JOB_AUTOPILOT_MAX_DAILY - already_applied)
+
     for listing, screen in gate4_filtered:
         try:
             with_archetype_detection(listing)
             bundle = generate_materials(listing, screen, db, repos, notion_failures)
-            # Queue for manual review — no auto-apply or form filling
-            _queue_for_review(listing, bundle.ats_score, review_batch)
+
+            if JOB_AUTOPILOT_AUTO_SUBMIT:
+                from jobpulse.scan_pipeline import route_and_apply
+                result = route_and_apply(
+                    listing, bundle, db, review_batch, remaining_cap, auto_applied_count
+                )
+                if result.action == "auto_applied":
+                    auto_applied_count += 1
+            else:
+                # Queue for manual review — no auto-apply or form filling
+                _queue_for_review(listing, bundle.ats_score, review_batch)
         except Exception as exc:
             logger.error(
                 "job_autopilot: unhandled error processing job %s @ %s: %s",
@@ -266,10 +280,16 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         f"New: {len(new_listings)} | Pre-screen: {gate_rejected} rejected, {gate_skipped} skipped",
         f"Gate 4: {gate4_blocked} blocked, {len(gate4_filtered)} passed",
         f"Processed: {len(gate4_filtered)}",
-        f"Ready for review: {len(review_batch)}",
+        f"Auto-applied: {auto_applied_count} | Ready for review: {len(review_batch)}",
     ]
     if errors:
         summary_lines.append(f"Errors: {errors}")
+        send_pipeline_alert(
+            f"Job scan encountered {errors} error(s) during processing.\n"
+            f"Check logs for details.",
+            severity="warning",
+            category="scan",
+        )
 
     # Add Job Tracker link
     try:
@@ -499,6 +519,12 @@ def approve_jobs(args: str) -> str:
         lines.append(f"❌ Failed to apply to {len(failed_titles)} job(s):")
         for t in failed_titles:
             lines.append(f"  • {t}")
+        send_pipeline_alert(
+            f"Failed to apply to {len(failed_titles)} job(s):\n" +
+            "\n".join(f"  • {t}" for t in failed_titles[:3]),
+            severity="error",
+            category="apply",
+        )
     if remaining:
         lines.append(f"\n{len(remaining)} job(s) still pending review.")
 

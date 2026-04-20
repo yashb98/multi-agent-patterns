@@ -10,12 +10,45 @@ Integrates with both OpenAI client and LangChain ChatOpenAI.
 """
 
 import random
+import threading
 import time
 from functools import wraps
 
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+class _CircuitBreaker:
+    """Trips after consecutive failures, recovers after a cooldown."""
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 60.0):
+        self._failure_count = 0
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout = recovery_timeout
+        self._last_failure_time = 0.0
+        self._lock = threading.Lock()
+
+    def record_success(self):
+        with self._lock:
+            self._failure_count = 0
+
+    def record_failure(self):
+        with self._lock:
+            self._failure_count += 1
+            self._last_failure_time = time.time()
+
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._failure_count < self._failure_threshold:
+                return False
+            if time.time() - self._last_failure_time > self._recovery_timeout:
+                self._failure_count = 0
+                return False
+            return True
+
+
+_circuit_breaker = _CircuitBreaker()
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -78,12 +111,21 @@ def retry_with_backoff(
     Raises:
         The last exception if all retries are exhausted
     """
+    if _circuit_breaker.is_open():
+        raise RuntimeError(
+            "Circuit breaker open — too many consecutive LLM failures. "
+            "Waiting for recovery cooldown before retrying."
+        )
+
     last_error = None
     for attempt in range(max_retries + 1):
         try:
-            return fn()
+            result = fn()
+            _circuit_breaker.record_success()
+            return result
         except Exception as e:
             last_error = e
+            _circuit_breaker.record_failure()
             if attempt >= max_retries or not is_retryable_error(e):
                 raise
 

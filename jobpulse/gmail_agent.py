@@ -3,13 +3,15 @@
 import json
 import base64
 from datetime import datetime
-from shared.agents import get_openai_client, get_model_name, is_local_llm
+from shared.agents import get_llm, smart_llm_call, get_model_name, is_local_llm
+from langchain_core.messages import HumanMessage
 from jobpulse.config import GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
 from jobpulse import db
 from jobpulse import telegram_agent
 from jobpulse import event_logger
 from jobpulse import auto_extract
 from jobpulse.email_preclassifier import preclassify, PreClassification
+from shared.google_retry import call_google_api_with_retry
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -59,8 +61,6 @@ def _get_gmail_service():
 
 def _classify_email(subject: str, body_snippet: str) -> str:
     """Use LLM to classify an email into one of 4 categories. Uses evolved persona if available."""
-    client = get_openai_client()
-
     # Inject evolved persona learnings
     extra_context = ""
     try:
@@ -84,13 +84,9 @@ Email body (first {2000 if is_local_llm() else 500} chars): {body_snippet[:2000]
 Respond with ONLY the category name. Nothing else."""
 
     try:
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=80 if is_local_llm() else 20,
-            temperature=0,
-        )
-        category = response.choices[0].message.content.strip().upper()
+        llm = get_llm(temperature=0, max_tokens=80 if is_local_llm() else 20)
+        response = smart_llm_call(llm, [HumanMessage(content=prompt)])
+        category = response.content.strip().upper()
         # Normalize
         if "SELECTED" in category:
             return SELECTED
@@ -151,7 +147,9 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
         with trail.step("api_call", "Fetch inbox since last check",
                          step_input=f"Since: {last_check[:10]}") as s:
             query = f"after:{last_check[:10].replace('-', '/')} in:inbox"
-            results = service.users().messages().list(userId="me", q=query, maxResults=50).execute()
+            results = call_google_api_with_retry(
+                lambda: service.users().messages().list(userId="me", q=query, maxResults=50).execute()
+            )
             messages = results.get("messages", [])
             s["output"] = f"Found {len(messages)} messages"
             s["metadata"] = {"email_count": len(messages)}
@@ -168,7 +166,9 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
             # Step: Read email
             with trail.step("api_call", f"Read email #{i+1}",
                              step_input=f"Email ID: {msg_id}") as s:
-                msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
+                msg = call_google_api_with_retry(
+                    lambda: service.users().messages().get(userId="me", id=msg_id, format="full").execute()
+                )
                 headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
                 subject = headers.get("subject", "(no subject)")
                 sender = headers.get("from", "unknown")

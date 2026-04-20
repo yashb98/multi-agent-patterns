@@ -16,12 +16,25 @@ logger = get_logger(__name__)
 
 MODEL_COSTS = {
     # model_prefix: (input_per_1M, output_per_1M)
+    # OpenAI
     "gpt-5-mini": (0.40, 1.60),
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.00),
     "gpt-4.1-mini": (0.40, 1.60),
     "gpt-4.1": (2.00, 8.00),
     "o3-mini": (1.10, 4.40),
+    # Anthropic
+    "claude-opus-4": (15.00, 75.00),
+    "claude-sonnet-4": (3.00, 15.00),
+    "claude-haiku-4": (0.80, 4.00),
+    # Voyage (embedding models — output cost is 0)
+    "voyage-3": (0.06, 0.0),
+    "voyage-3-lite": (0.02, 0.0),
+    "voyage-code-3": (0.06, 0.0),
+    # Local (Ollama — zero cost)
+    "gemma": (0.0, 0.0),
+    "llama": (0.0, 0.0),
+    "mistral": (0.0, 0.0),
 }
 
 
@@ -91,6 +104,25 @@ class BudgetExceededError(Exception):
         super().__init__(
             f"Budget exceeded: ${spent:.4f} spent + ${estimated:.4f} estimated > ${cap:.2f} cap"
         )
+
+
+def check_budget_from_state(state: dict, estimated_next_cost: float = 0.05) -> None:
+    """Check accumulated cost in state against the budget cap.
+
+    Raises BudgetExceededError if continuing would exceed the cap.
+    Call in pattern control nodes before deciding to continue another iteration.
+
+    Args:
+        state: LangGraph state dict (must contain token_usage list).
+        estimated_next_cost: Estimated cost of the next operation in USD.
+    """
+    cap = float(os.environ.get("LLM_BUDGET_CAP_USD", "10.00"))
+    if cap <= 0:
+        return
+    token_usage = state.get("token_usage", [])
+    total_cost = sum(u.get("cost_usd", 0) for u in token_usage)
+    if total_cost + estimated_next_cost > cap:
+        raise BudgetExceededError(total_cost, cap, estimated_next_cost)
 
 
 class CostEnforcer:

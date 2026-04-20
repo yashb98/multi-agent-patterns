@@ -7,6 +7,7 @@ of the five-tier memory architecture.
 import json
 import os
 import hashlib
+import tempfile
 from datetime import datetime
 from collections import deque
 
@@ -16,6 +17,23 @@ from shared.memory_layer._entries import (
 )
 
 logger = get_logger(__name__)
+
+
+def _atomic_json_write(path: str, data) -> None:
+    """Write JSON atomically via temp file + rename to prevent corruption."""
+    dir_name = os.path.dirname(path) or "."
+    os.makedirs(dir_name, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 class ShortTermMemory:
@@ -155,9 +173,7 @@ class EpisodicMemory:
                 }
                 for ep in self.episodes
             ]
-            os.makedirs(os.path.dirname(self.storage_path) or ".", exist_ok=True)
-            with open(self.storage_path, "w") as f:
-                json.dump(data, f, indent=2)
+            _atomic_json_write(self.storage_path, data)
         except Exception as e:
             logger.warning("Failed to save episodic memory: %s", e)
 
@@ -287,9 +303,7 @@ class SemanticMemory:
                 }
                 for fid, f in self.facts.items()
             }
-            os.makedirs(os.path.dirname(self.storage_path) or ".", exist_ok=True)
-            with open(self.storage_path, "w") as f:
-                json.dump(data, f, indent=2)
+            _atomic_json_write(self.storage_path, data)
         except Exception as e:
             logger.debug("Failed to save semantic memory: %s", e)
 
@@ -403,9 +417,7 @@ class ProceduralMemory:
                 }
                 for p in self.procedures
             ]
-            os.makedirs(os.path.dirname(self.storage_path) or ".", exist_ok=True)
-            with open(self.storage_path, "w") as f:
-                json.dump(data, f, indent=2)
+            _atomic_json_write(self.storage_path, data)
         except Exception as e:
             logger.debug("Failed to save procedural memory: %s", e)
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from shared.google_retry import call_google_api_with_retry
 from shared.logging_config import get_logger
 from jobpulse.config import (
     GOOGLE_DRIVE_RESUMES_FOLDER_ID,
@@ -100,11 +101,13 @@ def upload_to_drive(
         from googleapiclient.http import MediaFileUpload
 
         # Check for existing file (dedup)
-        existing = service.files().list(
-            q=f"name = '{upload_name}' and '{folder_id}' in parents and trashed = false",
-            pageSize=1,
-            fields="files(id, name)",
-        ).execute()
+        existing = call_google_api_with_retry(
+            lambda: service.files().list(
+                q=f"name = '{upload_name}' and '{folder_id}' in parents and trashed = false",
+                pageSize=1,
+                fields="files(id, name)",
+            ).execute()
+        )
 
         existing_files = existing.get("files", [])
         media = MediaFileUpload(str(local_path), mimetype="application/pdf")
@@ -112,10 +115,12 @@ def upload_to_drive(
         if existing_files:
             # Update existing file
             file_id = existing_files[0]["id"]
-            service.files().update(
-                fileId=file_id,
-                media_body=media,
-            ).execute()
+            call_google_api_with_retry(
+                lambda: service.files().update(
+                    fileId=file_id,
+                    media_body=media,
+                ).execute()
+            )
             logger.info(
                 "drive_uploader: updated existing file '%s' (id=%s)",
                 upload_name, file_id,
@@ -126,11 +131,13 @@ def upload_to_drive(
                 "name": upload_name,
                 "parents": [folder_id],
             }
-            result = service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields="id",
-            ).execute()
+            result = call_google_api_with_retry(
+                lambda: service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields="id",
+                ).execute()
+            )
             file_id = result["id"]
             logger.info(
                 "drive_uploader: uploaded new file '%s' (id=%s)",
@@ -138,10 +145,12 @@ def upload_to_drive(
             )
 
         # Set shareable permission (anyone with link can view)
-        service.permissions().create(
-            fileId=file_id,
-            body={"role": "reader", "type": "anyone"},
-        ).execute()
+        call_google_api_with_retry(
+            lambda: service.permissions().create(
+                fileId=file_id,
+                body={"role": "reader", "type": "anyone"},
+            ).execute()
+        )
 
         link = f"https://drive.google.com/file/d/{file_id}/view?usp=sharing"
         logger.info("drive_uploader: shareable link: %s", link)

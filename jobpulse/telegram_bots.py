@@ -8,7 +8,9 @@
 """
 
 import json
+import random
 import subprocess
+import time
 from shared.logging_config import get_logger
 from shared.telegram_client import telegram_url
 from jobpulse.config import (
@@ -23,24 +25,47 @@ logger = get_logger(__name__)
 MAX_MSG_LEN = 4000  # Telegram limit is 4096, leave room for safety
 
 
-def _send_one(token: str, text: str, chat_id: str) -> bool:
-    """Send a single message (must be under 4096 chars)."""
+def _send_one(token: str, text: str, chat_id: str, max_retries: int = 3) -> bool:
+    """Send a single message (must be under 4096 chars) with exponential backoff retry."""
     payload = json.dumps({"chat_id": chat_id, "text": text})
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-X", "POST",
-             telegram_url(token, "sendMessage"),
-             "-H", "Content-Type: application/json",
-             "-d", payload],
-            capture_output=True, text=True, timeout=15
-        )
-        resp = json.loads(result.stdout)
-        if not resp.get("ok"):
+    for attempt in range(max_retries + 1):
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "-X", "POST",
+                 telegram_url(token, "sendMessage"),
+                 "-H", "Content-Type: application/json",
+                 "-d", payload],
+                capture_output=True, text=True, timeout=15
+            )
+            resp = json.loads(result.stdout)
+            if resp.get("ok"):
+                return True
+            desc = resp.get("description", "").lower()
+            # Rate limit — respect retry_after if provided
+            retry_after = resp.get("parameters", {}).get("retry_after", 0)
+            if retry_after and attempt < max_retries:
+                logger.warning("Telegram rate limit (%s), retrying after %ds...", desc, retry_after)
+                time.sleep(retry_after + 1)
+                continue
+            # Other retryable errors
+            if any(k in desc for k in ("timeout", "connection", "network", "temporary", "bad gateway")):
+                if attempt < max_retries:
+                    delay = min(2 ** attempt, 30) * (0.5 + random.random())
+                    logger.warning("Telegram transient error, retrying in %.1fs...", delay)
+                    time.sleep(delay)
+                    continue
             logger.warning("Telegram API error: %s", resp.get("description", "unknown"))
-        return resp.get("ok", False)
-    except Exception as e:
-        logger.warning("Telegram send failed: %s", e)
-        return False
+            return False
+        except Exception as e:
+            if attempt < max_retries:
+                delay = min(2 ** attempt, 30) * (0.5 + random.random())
+                logger.warning("Telegram send failed (attempt %d/%d): %s. Retrying in %.1fs...",
+                               attempt + 1, max_retries + 1, e, delay)
+                time.sleep(delay)
+            else:
+                logger.warning("Telegram send failed after %d attempts: %s", max_retries + 1, e)
+                return False
+    return False
 
 
 def _send(token: str, text: str, chat_id: str = None) -> bool:
@@ -76,26 +101,35 @@ def _send(token: str, text: str, chat_id: str = None) -> bool:
     return all_ok
 
 
-def _get_updates(token: str, offset: int = 0, long_poll: bool = False) -> list[dict]:
-    """Get updates from a specific bot token."""
+def _get_updates(token: str, offset: int = 0, long_poll: bool = False, max_retries: int = 2) -> list[dict]:
+    """Get updates from a specific bot token with retry."""
     if not token:
         return []
     timeout_param = 30 if long_poll else 1
     curl_timeout = timeout_param + 10
 
-    try:
-        result = subprocess.run(
-            ["curl", "-s",
-             f"{telegram_url(token, 'getUpdates')}"
-             f"?offset={offset}&timeout={timeout_param}"],
-            capture_output=True, text=True, timeout=curl_timeout
-        )
-        data = json.loads(result.stdout)
-        return data.get("result", [])
-    except subprocess.TimeoutExpired:
-        return []
-    except Exception:
-        return []
+    for attempt in range(max_retries + 1):
+        try:
+            result = subprocess.run(
+                ["curl", "-s",
+                 f"{telegram_url(token, 'getUpdates')}"
+                 f"?offset={offset}&timeout={timeout_param}"],
+                capture_output=True, text=True, timeout=curl_timeout
+            )
+            data = json.loads(result.stdout)
+            return data.get("result", [])
+        except subprocess.TimeoutExpired:
+            return []  # Normal for long-poll when no messages
+        except Exception as e:
+            if attempt < max_retries:
+                delay = min(2 ** attempt, 10) * (0.5 + random.random())
+                logger.debug("Telegram get_updates failed (attempt %d): %s. Retrying in %.1fs...",
+                             attempt + 1, e, delay)
+                time.sleep(delay)
+            else:
+                logger.debug("Telegram get_updates failed after %d attempts: %s", max_retries + 1, e)
+                return []
+    return []
 
 
 # ── Convenience functions per bot ──
@@ -129,29 +163,46 @@ def send_jobs(text: str) -> bool:
     return _send(token, text)
 
 
-def send_jobs_photo(photo_path: str, caption: str = "") -> bool:
-    """Send a photo via jobs bot. Falls back to main if not configured."""
+def send_jobs_photo(photo_path: str, caption: str = "", max_retries: int = 2) -> bool:
+    """Send a photo via jobs bot with retry. Falls back to main if not configured."""
     token = TELEGRAM_JOBS_BOT_TOKEN or TELEGRAM_BOT_TOKEN
     cid = TELEGRAM_CHAT_ID
     if not token or not cid:
         return False
-    try:
-        cmd = [
-            "curl", "-s", "-X", "POST",
-            telegram_url(token, "sendPhoto"),
-            "-F", f"chat_id={cid}",
-            "-F", f"photo=@{photo_path}",
-        ]
-        if caption:
-            cmd.extend(["-F", f"caption={caption[:1024]}"])
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        resp = json.loads(result.stdout)
-        if not resp.get("ok"):
+    for attempt in range(max_retries + 1):
+        try:
+            cmd = [
+                "curl", "-s", "-X", "POST",
+                telegram_url(token, "sendPhoto"),
+                "-F", f"chat_id={cid}",
+                "-F", f"photo=@{photo_path}",
+            ]
+            if caption:
+                cmd.extend(["-F", f"caption={caption[:1024]}"])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            resp = json.loads(result.stdout)
+            if resp.get("ok"):
+                return True
+            desc = resp.get("description", "").lower()
+            retry_after = resp.get("parameters", {}).get("retry_after", 0)
+            if retry_after and attempt < max_retries:
+                time.sleep(retry_after + 1)
+                continue
+            if any(k in desc for k in ("timeout", "connection", "network", "temporary")):
+                if attempt < max_retries:
+                    delay = min(2 ** attempt, 10) * (0.5 + random.random())
+                    time.sleep(delay)
+                    continue
             logger.warning("Telegram sendPhoto error: %s", resp.get("description", "unknown"))
-        return resp.get("ok", False)
-    except Exception as e:
-        logger.warning("Telegram sendPhoto failed: %s", e)
-        return False
+            return False
+        except Exception as e:
+            if attempt < max_retries:
+                delay = min(2 ** attempt, 10) * (0.5 + random.random())
+                time.sleep(delay)
+            else:
+                logger.warning("Telegram sendPhoto failed after %d attempts: %s", max_retries + 1, e)
+                return False
+    return False
 
 
 # ── Intent → Bot mapping ──
@@ -182,25 +233,43 @@ ALERT_CATEGORIES = {
 }
 
 
-def send_chat_action_for_token(token: str, action: str = "typing", chat_id: str = None) -> bool:
-    """Send a typing/chat action via a specific bot token."""
+def send_chat_action_for_token(token: str, action: str = "typing", chat_id: str = None, max_retries: int = 2) -> bool:
+    """Send a typing/chat action via a specific bot token with retry."""
     cid = chat_id or TELEGRAM_CHAT_ID
     if not token or not cid:
         return False
     payload = json.dumps({"chat_id": cid, "action": action})
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-X", "POST",
-             telegram_url(token, "sendChatAction"),
-             "-H", "Content-Type: application/json",
-             "-d", payload],
-            capture_output=True, text=True, timeout=5
-        )
-        resp = json.loads(result.stdout)
-        return bool(resp.get("ok"))
-    except Exception as e:
-        logger.debug("send_chat_action_for_token failed: %s", e)
-        return False
+    for attempt in range(max_retries + 1):
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "-X", "POST",
+                 telegram_url(token, "sendChatAction"),
+                 "-H", "Content-Type: application/json",
+                 "-d", payload],
+                capture_output=True, text=True, timeout=5
+            )
+            resp = json.loads(result.stdout)
+            if resp.get("ok"):
+                return True
+            desc = resp.get("description", "").lower()
+            retry_after = resp.get("parameters", {}).get("retry_after", 0)
+            if retry_after and attempt < max_retries:
+                time.sleep(retry_after + 1)
+                continue
+            if any(k in desc for k in ("timeout", "connection", "network", "temporary")):
+                if attempt < max_retries:
+                    delay = min(2 ** attempt, 10) * (0.5 + random.random())
+                    time.sleep(delay)
+                    continue
+            return False
+        except Exception as e:
+            if attempt < max_retries:
+                delay = min(2 ** attempt, 10) * (0.5 + random.random())
+                time.sleep(delay)
+            else:
+                logger.debug("send_chat_action_for_token failed: %s", e)
+                return False
+    return False
 
 
 def send_for_intent(intent: str, text: str) -> bool:

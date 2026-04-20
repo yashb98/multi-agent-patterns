@@ -36,16 +36,21 @@ logger = get_logger(__name__)
 _ATS_PATTERNS: list[tuple[str, str]] = [
     (r"greenhouse\.io", "greenhouse"),
     (r"lever\.co", "lever"),
-    (r"myworkdayjobs\.com", "workday"),
+    (r"myworkdayjobs\.com|workday\.com", "workday"),
     (r"smartrecruiters\.com", "smartrecruiters"),
     (r"icims\.com", "icims"),
-    (r"taleo\.net", "taleo"),
+    (r"taleo\.net|taleo|oracle\.com/careers", "taleo"),
     (r"jobvite\.com", "jobvite"),
     (r"recruitee\.com", "recruitee"),
-    (r"ashbyhq\.com", "ashby"),
+    (r"ashbyhq\.com|jobs\.ashby\.com", "ashby"),
     (r"bamboohr\.com", "bamboohr"),
     (r"oraclecloud\.com/hcmUI", "oracle"),
     (r"successfactors\.com", "successfactors"),
+    (r"linkedin\.com", "linkedin"),
+    (r"indeed\.com|indeed\.co\.uk", "indeed"),
+    (r"reed\.co\.uk", "reed"),
+    (r"totaljobs\.com", "totaljobs"),
+    (r"glassdoor", "glassdoor"),
 ]
 
 # ---------------------------------------------------------------------------

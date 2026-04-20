@@ -34,12 +34,9 @@ WHEN NOT TO USE:
 ❌ Agents have identical capabilities (nothing to debate)
 """
 
-import sys
 import json
 import os
 from pathlib import Path
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from langgraph.graph import StateGraph, START, END
 
@@ -60,6 +57,7 @@ from shared.memory_layer import get_shared_memory_manager
 from shared.convergence import ConvergenceController
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
+from shared.cost_tracker import check_budget_from_state, BudgetExceededError
 
 logger = get_logger(__name__)
 
@@ -277,6 +275,16 @@ def convergence_check(state: AgentState) -> dict:
     accuracy_score = state.get("accuracy_score", 0)
     iteration = state.get("iteration", 0)
 
+    # Budget check before deciding to continue
+    try:
+        check_budget_from_state(state, estimated_next_cost=0.05)
+    except BudgetExceededError as e:
+        logger.warning("Budget exceeded in peer debate: %s", e)
+        return {
+            "current_agent": "finish",
+            "agent_history": [f"Convergence: finish (budget cap exceeded: ${e.spent:.2f} > ${e.cap:.2f})"]
+        }
+
     decision_obj = _convergence.check(state)
     decision = "finish" if decision_obj.should_stop else "continue"
     reason = decision_obj.reason
@@ -285,20 +293,20 @@ def convergence_check(state: AgentState) -> dict:
                 score, accuracy_score, iteration)
     logger.info("Decision: %s — %s", decision, reason)
 
-    # Extract experiential learning from high-scoring debate rounds
+    feedback = state.get("review_feedback", "")[:300]
+    label = "successful" if score >= 7.0 else "underperforming"
+    exp = Experience(
+        task_description=state.get("topic", "")[:200],
+        successful_pattern=(
+            f"Debate round {iteration} scored {score}/10 ({label}). "
+            f"Feedback: {feedback}"
+        ),
+        score=score,
+        domain="writing",
+    )
+    _experience_memory.add(exp)
+    logger.info("Stored debate experience (score: %s, %s)", score, label)
     if score >= 7.0:
-        exp = Experience(
-            task_description=state.get("topic", "")[:200],
-            successful_pattern=(
-                f"Debate round {iteration} scored {score}/10. "
-                f"Strengths: {state.get('review_feedback', '')[:300]}"
-            ),
-            score=score,
-            domain="writing",
-        )
-        _experience_memory.add(exp)
-        logger.info("Stored debate experience (score: %s)", score)
-        # Store successful procedure for future reuse
         _memory_manager.learn_procedure(
             domain="writing",
             strategy=(
@@ -309,11 +317,11 @@ def convergence_check(state: AgentState) -> dict:
             score=score,
             source="peer_debate",
         )
-        _memory_manager.record_step(
-            "convergence",
-            f"Round {iteration}: score={score}/10, decision={decision}",
-            score=score,
-        )
+    _memory_manager.record_step(
+        "convergence",
+        f"Round {iteration}: score={score}/10, decision={decision}",
+        score=score,
+    )
 
     # Prune state between debate rounds
     from shared.state import prune_state

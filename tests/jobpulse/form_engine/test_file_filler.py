@@ -26,7 +26,11 @@ async def test_fill_file_upload_basic(tmp_path):
 
     result = await fill_file_upload(page, "input[type='file']", cv_file)
     assert result.success is True
-    el.set_input_files.assert_called_once_with(str(cv_file))
+    el.set_input_files.assert_called_once()
+    call_arg = el.set_input_files.call_args[0][0]
+    assert call_arg["name"] == "cv.pdf"
+    assert call_arg["mimeType"] == "application/pdf"
+    assert call_arg["buffer"] == b"fake pdf"
 
 
 @pytest.mark.asyncio

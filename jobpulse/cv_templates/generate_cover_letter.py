@@ -29,6 +29,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 from jobpulse.config import DATA_DIR
+from jobpulse.cv_templates import sanitize_pdf as _sanitize_pdf
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -381,5 +382,7 @@ def generate_cover_letter_pdf(
     ]))
 
     doc.build([layout])
+
+    _sanitize_pdf(cl_path)
     logger.info("Cover letter generated: %s", cl_path)
     return cl_path

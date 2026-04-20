@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import subprocess
 from typing import Any
+from urllib.parse import urlencode, quote
 
 from shared.logging_config import get_logger
 
@@ -70,8 +71,7 @@ def telegram_get(token: str, method: str, params: dict[str, Any] | None = None,
     """
     url = telegram_url(token, method)
     if params:
-        qs = "&".join(f"{k}={v}" for k, v in params.items())
-        url = f"{url}?{qs}"
+        url = f"{url}?{urlencode(params, quote_via=quote)}"
     try:
         result = subprocess.run(
             ["curl", "-s", url],

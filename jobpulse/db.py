@@ -6,6 +6,7 @@ from jobpulse.config import DB_PATH
 
 
 def get_conn() -> sqlite3.Connection:
+    _ensure_db()
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -163,5 +164,11 @@ def get_audit_accuracy(limit: int = 100) -> float:
     return row["correct"] / row["total"]
 
 
-# Initialize on import
-init_db()
+_db_initialized = False
+
+
+def _ensure_db():
+    global _db_initialized
+    if not _db_initialized:
+        _db_initialized = True
+        init_db()

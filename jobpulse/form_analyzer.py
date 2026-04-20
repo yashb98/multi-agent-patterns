@@ -744,8 +744,8 @@ Return [] if no fields should be filled."""
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-5-mini",
-            max_tokens=2000,
+            model="gpt-4o-mini",
+            max_completion_tokens=2000,
             temperature=0.0,
             messages=[{"role": "user", "content": prompt}],
         )

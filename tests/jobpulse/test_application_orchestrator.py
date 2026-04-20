@@ -120,6 +120,11 @@ def orchestrator(bridge, tmp_path, monkeypatch):
     # Use temp GotchasDB to avoid touching production data
     from jobpulse.form_engine.gotchas import GotchasDB
     orch.gotchas = GotchasDB(db_path=str(tmp_path / "gotchas.db"))
+    # Mock form analyzer LLM to avoid real OpenAI API calls in tests
+    import jobpulse.form_analyzer as _fa
+    def _mock_analyze_remaining(*args, **kwargs):
+        return []
+    monkeypatch.setattr(_fa, "analyze_remaining_fields", _mock_analyze_remaining)
     return orch
 
 

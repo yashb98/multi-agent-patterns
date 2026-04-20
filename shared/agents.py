@@ -31,6 +31,17 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
+# Multi-provider imports — graceful degrade if packages not installed
+try:
+    from langchain_anthropic import ChatAnthropic
+except ImportError:
+    ChatAnthropic = None  # type: ignore[misc,assignment]
+
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:
+    ChatGoogleGenerativeAI = None  # type: ignore[misc,assignment]
+
 from shared.state import AgentState
 from shared.prompts import RESEARCHER_PROMPT, WRITER_PROMPT, REVIEWER_PROMPT
 from shared.logging_config import get_logger
@@ -84,6 +95,14 @@ _FALLBACK_MODELS = {
     "gpt-4.1-nano": "gpt-4o-mini",
 }
 
+# Multi-provider model defaults
+_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+
+# Provider fallback chain (when LLM_PROVIDER=auto and cloud)
+# Order: openai → anthropic → gemini
+_PROVIDER_FALLBACK_CHAIN = ["openai", "anthropic", "gemini"]
+
 
 def _probe_ollama() -> bool:
     """Check if Ollama is reachable (fast 2s timeout)."""
@@ -113,13 +132,22 @@ def _resolve_provider() -> str:
     return "openai"
 
 
-_LLM_PROVIDER = _resolve_provider()
-_is_local = _LLM_PROVIDER == "local"
-_use_fallback_models = not _is_local and os.environ.get("LLM_PROVIDER", "auto").lower() == "auto"
+_LLM_PROVIDER: str | None = None
+_is_local: bool | None = None
+_use_fallback_models: bool | None = None
+
+
+def _ensure_provider():
+    global _LLM_PROVIDER, _is_local, _use_fallback_models
+    if _LLM_PROVIDER is None:
+        _LLM_PROVIDER = _resolve_provider()
+        _is_local = _LLM_PROVIDER == "local"
+        _use_fallback_models = not _is_local and os.environ.get("LLM_PROVIDER", "auto").lower() == "auto"
 
 
 def is_local_llm() -> bool:
     """True when LLM_PROVIDER=local (Ollama). Use for conditional limits."""
+    _ensure_provider()
     return _is_local
 
 
@@ -131,6 +159,7 @@ def get_model_name(default: str = "gpt-5-mini") -> str:
     models (e.g. gpt-5-mini → gpt-4o-mini).
     When LLM_PROVIDER=openai (explicit), returns the provided default as-is.
     """
+    _ensure_provider()
     if _is_local:
         return _LOCAL_MODEL
     if _use_fallback_models:
@@ -138,10 +167,112 @@ def get_model_name(default: str = "gpt-5-mini") -> str:
     return default
 
 
+def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens: int) -> ChatOpenAI:
+    """Build an OpenAI LLM instance."""
+    effective_model = _FALLBACK_MODELS.get(model, model) if _use_fallback_models else model
+    effective_temp = temperature if not effective_model.startswith("gpt-5") else 1
+    return ChatOpenAI(
+        model=effective_model,
+        temperature=effective_temp,
+        request_timeout=timeout,
+        max_tokens=max_tokens,
+    )
+
+
+def _make_local_llm(temperature: float, model: str, timeout: float, max_tokens: int) -> ChatOpenAI:
+    """Build an Ollama (OpenAI-compatible) LLM instance."""
+    effective_model = _LOCAL_MODEL if model == "gpt-5-mini" else model
+    return ChatOpenAI(
+        model=effective_model,
+        temperature=temperature,
+        request_timeout=timeout,
+        max_tokens=max_tokens,
+        openai_api_base=_OLLAMA_BASE_URL,
+        openai_api_key="ollama",
+    )
+
+
+def _make_anthropic_llm(temperature: float, timeout: float, max_tokens: int):
+    """Build an Anthropic LLM instance if API key is available."""
+    if ChatAnthropic is None:
+        return None
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+    return ChatAnthropic(
+        model=_ANTHROPIC_MODEL,
+        temperature=temperature,
+        timeout=int(timeout),
+        max_tokens=max_tokens,
+        api_key=api_key,
+    )
+
+
+def _make_gemini_llm(temperature: float, timeout: float, max_tokens: int):
+    """Build a Gemini LLM instance if API key is available."""
+    if ChatGoogleGenerativeAI is None:
+        return None
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        return None
+    return ChatGoogleGenerativeAI(
+        model=_GEMINI_MODEL,
+        temperature=temperature,
+        timeout=int(timeout),
+        max_output_tokens=max_tokens,
+        google_api_key=api_key,
+    )
+
+
+class _MultiProviderLLM:
+    """LangChain-compatible LLM wrapper that transparently tries providers in order.
+
+    When the primary provider fails, automatically falls back to the next
+    provider in the chain. All providers must be LangChain BaseChatModel instances.
+    """
+
+    def __init__(self, providers: list):
+        self._providers = providers
+        self._provider_names = [getattr(p, "model", getattr(p, "model_name", str(p.__class__.__name__))) for p in providers]
+
+    def _try_providers(self, method_name: str, messages, **kwargs):
+        errors = []
+        for i, (llm, name) in enumerate(zip(self._providers, self._provider_names)):
+            try:
+                method = getattr(llm, method_name)
+                return method(messages, **kwargs)
+            except Exception as e:
+                errors.append((name, str(e)[:120]))
+                if i < len(self._providers) - 1:
+                    logger.warning(
+                        "LLM provider %s failed (%s). Falling back to %s...",
+                        name, str(e)[:80], self._provider_names[i + 1],
+                    )
+        # All failed
+        error_msg = "; ".join(f"{name}: {err}" for name, err in errors)
+        raise RuntimeError(f"All LLM providers failed: {error_msg}")
+
+    def invoke(self, messages, **kwargs):
+        return self._try_providers("invoke", messages, **kwargs)
+
+    def stream(self, messages, **kwargs):
+        return self._try_providers("stream", messages, **kwargs)
+
+    def bind(self, **kwargs):
+        """Return a new _MultiProviderLLM with bound kwargs on each provider."""
+        bound_providers = []
+        for p in self._providers:
+            if hasattr(p, "bind"):
+                bound_providers.append(p.bind(**kwargs))
+            else:
+                bound_providers.append(p)
+        return _MultiProviderLLM(bound_providers)
+
+
 def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
             timeout: float = 30.0, max_tokens: int = 4096):
     """
-    Factory function for LLM instances.
+    Factory function for LLM instances with multi-provider fallback.
 
     WHY a factory? Because different agents may need different configs:
     - Researcher: low temperature (0.3) for factual accuracy
@@ -152,29 +283,32 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     The ``model`` parameter is overridden by LOCAL_LLM_MODEL unless the
     caller explicitly passes a model name that doesn't match the default.
 
+    When falling back to cloud via auto-detection, builds a provider chain:
+      OpenAI → Anthropic → Gemini (whichever have API keys configured).
+
     timeout: seconds before the HTTP request is aborted (default 30s).
     """
+    _ensure_provider()
     if _is_local:
-        # Use local model unless caller explicitly requested a specific model
-        effective_model = _LOCAL_MODEL if model == "gpt-5-mini" else model
-        return ChatOpenAI(
-            model=effective_model,
-            temperature=temperature,
-            request_timeout=timeout,
-            max_tokens=max_tokens,
-            openai_api_base=_OLLAMA_BASE_URL,
-            openai_api_key="ollama",  # Ollama doesn't require a real key
-        )
-    # Cloud path: use fallback (older/cheaper) models when auto-detected
-    effective_model = _FALLBACK_MODELS.get(model, model) if _use_fallback_models else model
-    # gpt-5-mini only supports default temperature (1)
-    effective_temp = temperature if not effective_model.startswith("gpt-5") else 1
-    return ChatOpenAI(
-        model=effective_model,
-        temperature=effective_temp,
-        request_timeout=timeout,
-        max_tokens=max_tokens,
-    )
+        return _make_local_llm(temperature, model, timeout, max_tokens)
+
+    # Build provider chain
+    chain: list = []
+    chain.append(_make_openai_llm(temperature, model, timeout, max_tokens))
+
+    for provider_name in _PROVIDER_FALLBACK_CHAIN[1:]:
+        if provider_name == "anthropic":
+            llm = _make_anthropic_llm(temperature, timeout, max_tokens)
+        elif provider_name == "gemini":
+            llm = _make_gemini_llm(temperature, timeout, max_tokens)
+        else:
+            continue
+        if llm is not None:
+            chain.append(llm)
+
+    if len(chain) == 1:
+        return chain[0]
+    return _MultiProviderLLM(chain)
 
 
 def get_openai_client(timeout: float = 30.0) -> OpenAI:
@@ -183,6 +317,7 @@ def get_openai_client(timeout: float = 30.0) -> OpenAI:
     Centralizes all direct ``OpenAI()`` calls (previously 27 scattered copies).
     When LLM_PROVIDER=local, points at Ollama's OpenAI-compatible endpoint.
     """
+    _ensure_provider()
     if _LLM_PROVIDER == "local":
         return OpenAI(
             api_key="ollama",

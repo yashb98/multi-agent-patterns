@@ -96,6 +96,7 @@ async def test_scan_fields_select_with_options():
 
     select_el = AsyncMock()
     select_el.input_value = AsyncMock(return_value="")
+    select_el.evaluate = AsyncMock(return_value="select")
     option_locator = MagicMock()
     option_locator.all_text_contents = AsyncMock(return_value=["USA", "UK", "Canada"])
     select_el.locator = lambda sel: option_locator
@@ -190,6 +191,7 @@ async def test_fill_by_label_text_input():
 
     label_locator = MagicMock()
     label_locator.count = AsyncMock(return_value=1)
+    label_locator.nth = MagicMock(return_value=el)
     label_locator.first = el
 
     page.get_by_label = MagicMock(return_value=label_locator)
@@ -210,12 +212,16 @@ async def test_fill_by_label_select():
     filler = _make_filler(page_mock=page)
 
     el = AsyncMock()
-    el.evaluate = AsyncMock(side_effect=["select", "United States"])
+    el.evaluate = AsyncMock(side_effect=["input", "select", "United States"])
     el.get_attribute = AsyncMock(return_value=None)
     el.select_option = AsyncMock()
+    option_locator = AsyncMock()
+    option_locator.all_text_contents = AsyncMock(return_value=["United States", "Canada", "UK"])
+    el.locator = MagicMock(return_value=option_locator)
 
     label_locator = MagicMock()
     label_locator.count = AsyncMock(return_value=1)
+    label_locator.nth = MagicMock(return_value=el)
     label_locator.first = el
 
     page.get_by_label = MagicMock(return_value=label_locator)
@@ -226,7 +232,7 @@ async def test_fill_by_label_select():
         result = await filler._fill_by_label("Country", "United States")
 
     assert result["success"] is True
-    el.select_option.assert_called_once_with(label="United States")
+    el.select_option.assert_called_once_with(label="United States", timeout=5000)
 
 
 @pytest.mark.asyncio
@@ -260,6 +266,7 @@ async def test_fill_by_label_checkbox():
 
     label_locator = MagicMock()
     label_locator.count = AsyncMock(return_value=1)
+    label_locator.nth = MagicMock(return_value=el)
     label_locator.first = el
 
     page.get_by_label = MagicMock(return_value=label_locator)
@@ -290,6 +297,7 @@ async def test_fill_by_label_placeholder_fallback():
 
     placeholder_locator = MagicMock()
     placeholder_locator.count = AsyncMock(return_value=1)
+    placeholder_locator.nth = MagicMock(return_value=el)
     placeholder_locator.first = el
 
     page.get_by_label = MagicMock(return_value=empty_locator)
@@ -480,17 +488,17 @@ async def test_upload_files_cv_only():
     page = MagicMock()
     filler = _make_filler(page_mock=page)
 
-    fi = AsyncMock()
-    fi.set_input_files = AsyncMock()
+    page.evaluate = AsyncMock(return_value=[
+        {"idx": 0, "id": "resume", "name": "", "label": "upload resume"},
+    ])
+    fi = MagicMock()
+    nth_mock = MagicMock(return_value=fi)
+    page.locator = MagicMock(return_value=MagicMock(nth=nth_mock))
 
-    file_locator = MagicMock()
-    file_locator.all = AsyncMock(return_value=[fi])
-    page.locator = MagicMock(return_value=file_locator)
-
-    with patch.object(filler, "_get_accessible_name", return_value="Upload Resume"):
+    with patch.object(filler, "_upload_pdf", new_callable=AsyncMock) as mock_upload:
         await filler._upload_files("/tmp/cv.pdf", None)
 
-    fi.set_input_files.assert_called_once_with("/tmp/cv.pdf")
+    mock_upload.assert_called_once_with(fi, "/tmp/cv.pdf")
 
 
 @pytest.mark.asyncio
@@ -498,21 +506,21 @@ async def test_upload_files_cv_and_cl():
     page = MagicMock()
     filler = _make_filler(page_mock=page)
 
-    fi_cv = AsyncMock()
-    fi_cv.set_input_files = AsyncMock()
-    fi_cl = AsyncMock()
-    fi_cl.set_input_files = AsyncMock()
+    page.evaluate = AsyncMock(return_value=[
+        {"idx": 0, "id": "resume", "name": "", "label": "upload resume"},
+        {"idx": 1, "id": "cover_letter", "name": "", "label": "upload cover letter"},
+    ])
+    fi_cv = MagicMock()
+    fi_cl = MagicMock()
+    nth_mock = MagicMock(side_effect=lambda i: fi_cv if i == 0 else fi_cl)
+    page.locator = MagicMock(return_value=MagicMock(nth=nth_mock))
 
-    file_locator = MagicMock()
-    file_locator.all = AsyncMock(return_value=[fi_cv, fi_cl])
-    page.locator = MagicMock(return_value=file_locator)
-
-    labels = iter(["Upload Resume", "Upload Cover Letter"])
-    with patch.object(filler, "_get_accessible_name", side_effect=lambda _: next(labels)):
+    with patch.object(filler, "_upload_pdf", new_callable=AsyncMock) as mock_upload:
         await filler._upload_files("/tmp/cv.pdf", "/tmp/cl.pdf")
 
-    fi_cv.set_input_files.assert_called_once_with("/tmp/cv.pdf")
-    fi_cl.set_input_files.assert_called_once_with("/tmp/cl.pdf")
+    assert mock_upload.call_count == 2
+    mock_upload.assert_any_call(fi_cv, "/tmp/cv.pdf")
+    mock_upload.assert_any_call(fi_cl, "/tmp/cl.pdf")
 
 
 @pytest.mark.asyncio
@@ -520,17 +528,15 @@ async def test_upload_files_skips_autofill():
     page = MagicMock()
     filler = _make_filler(page_mock=page)
 
-    fi = AsyncMock()
-    fi.set_input_files = AsyncMock()
+    page.evaluate = AsyncMock(return_value=[
+        {"idx": 0, "id": "resume", "name": "", "label": "autofill from resume"},
+    ])
+    page.locator = MagicMock(return_value=MagicMock(nth=MagicMock()))
 
-    file_locator = MagicMock()
-    file_locator.all = AsyncMock(return_value=[fi])
-    page.locator = MagicMock(return_value=file_locator)
-
-    with patch.object(filler, "_get_accessible_name", return_value="Autofill from resume"):
+    with patch.object(filler, "_upload_pdf", new_callable=AsyncMock) as mock_upload:
         await filler._upload_files("/tmp/cv.pdf", None)
 
-    fi.set_input_files.assert_not_called()
+    mock_upload.assert_not_called()
 
 
 # ── _check_consent ──
@@ -763,7 +769,8 @@ async def test_fill_single_page_success():
         {"label": "Resume", "type": "file", "locator": AsyncMock()},
     ]
 
-    with patch.object(filler, "_scan_fields", return_value=fields), \
+    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+         patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
          patch.object(filler, "_map_fields", return_value={"Email": "test@test.com"}), \
          patch.object(filler, "_fill_by_label", return_value={"success": True}), \
@@ -779,6 +786,8 @@ async def test_fill_single_page_success():
         )
 
     assert result["success"] is True
+    assert "field_types" in result
+    assert "agent_mapping" in result
 
 
 @pytest.mark.asyncio
@@ -787,7 +796,8 @@ async def test_fill_dry_run_stops():
 
     fields = [{"label": "Name", "type": "text", "value": "", "required": True}]
 
-    with patch.object(filler, "_scan_fields", return_value=fields), \
+    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+         patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
          patch.object(filler, "_map_fields", return_value={"Name": "John"}), \
          patch.object(filler, "_fill_by_label", return_value={"success": True}), \
@@ -805,13 +815,15 @@ async def test_fill_dry_run_stops():
 
     assert result["success"] is True
     assert result["dry_run"] is True
+    assert "agent_mapping" in result
 
 
 @pytest.mark.asyncio
 async def test_fill_confirmation_page():
     filler = _make_filler()
 
-    with patch.object(filler, "_scan_fields", return_value=[]), \
+    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+         patch.object(filler, "_scan_fields", return_value=[]), \
          patch.object(filler, "_is_confirmation_page", return_value=True), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
 
@@ -829,7 +841,8 @@ async def test_fill_no_nav_button():
 
     fields = [{"label": "Name", "type": "text", "value": "", "required": True}]
 
-    with patch.object(filler, "_scan_fields", return_value=fields), \
+    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+         patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
          patch.object(filler, "_map_fields", return_value={"Name": "John"}), \
          patch.object(filler, "_fill_by_label", return_value={"success": True}), \
@@ -858,9 +871,11 @@ async def test_fill_calls_screening_for_unresolved():
         {"label": "Work auth?", "type": "radio", "options": ["Yes", "No"]},
     ]
 
-    with patch.object(filler, "_scan_fields", return_value=fields), \
+    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+         patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
          patch.object(filler, "_map_fields", return_value={"Email": "a@b.com"}), \
+         patch("jobpulse.screening_answers.try_instant_answer", return_value=None), \
          patch.object(filler, "_screen_questions", return_value={"Work auth?": "Yes"}) as mock_screen, \
          patch.object(filler, "_fill_by_label", return_value={"success": True}), \
          patch.object(filler, "_upload_files", new_callable=AsyncMock), \

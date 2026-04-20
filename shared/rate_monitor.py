@@ -41,7 +41,15 @@ def _init_db():
     conn.close()
 
 
-_init_db()
+_db_initialized = False
+
+
+def _ensure_db():
+    global _db_initialized
+    if not _db_initialized:
+        _init_db()
+        _db_initialized = True
+
 
 # Threshold below which we warn (fraction of total)
 WARN_THRESHOLD = 0.20
@@ -55,6 +63,7 @@ def record_rate_limit(
     limit_reset: str = None,
 ):
     """Record a rate limit snapshot from an API response."""
+    _ensure_db()
     conn = _get_conn()
     conn.execute(
         "INSERT INTO api_rate_limits (api_name, endpoint, limit_total, limit_remaining, limit_reset, recorded_at) VALUES (?,?,?,?,?,?)",
@@ -115,6 +124,7 @@ def record_from_headers(api_name: str, headers: dict, endpoint: str = ""):
 
 def get_current_limits() -> list[dict]:
     """Get the most recent rate limit snapshot per API."""
+    _ensure_db()
     conn = _get_conn()
     rows = conn.execute("""
         SELECT api_name, endpoint, limit_total, limit_remaining, limit_reset, recorded_at
@@ -130,6 +140,7 @@ def get_current_limits() -> list[dict]:
 
 def get_history(api_name: str, limit: int = 50) -> list[dict]:
     """Get rate limit history for a specific API."""
+    _ensure_db()
     conn = _get_conn()
     rows = conn.execute(
         "SELECT * FROM api_rate_limits WHERE api_name=? ORDER BY recorded_at DESC LIMIT ?",

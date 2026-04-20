@@ -1,60 +1,131 @@
-"""Lightweight alerting via Telegram for outages, cost spikes, quality drops."""
+"""Pipeline alerting — send escalation messages on critical failures.
+
+Uses the Telegram Alert bot for real-time notifications.
+Set ALERTING_ENABLED=false to disable.
+"""
+
+from __future__ import annotations
 
 import os
+import threading
 import time
-import enum
-import urllib.request
-import urllib.parse
+from enum import Enum
 
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+ALERTING_ENABLED = os.environ.get("ALERTING_ENABLED", "true").lower() in ("true", "1", "yes")
 
-class AlertLevel(enum.Enum):
-    INFO = "INFO"
-    WARNING = "WARNING"
-    CRITICAL = "CRITICAL"
+_SEVERITY_EMOJI = {
+    "warning": "⚠️",
+    "error": "❌",
+    "critical": "🚨",
+}
 
 
-def _send_telegram(message: str):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_ALERT_CHAT_ID",
-                              os.environ.get("TELEGRAM_CHAT_ID", ""))
-    if not token or not chat_id:
-        logger.warning("Alert not sent (no Telegram config): %s", message[:100])
-        return
-    query = urllib.parse.urlencode({"chat_id": chat_id, "text": message, "parse_mode": "HTML"})
-    url = f"https://api.telegram.org/bot{token}/sendMessage?{query}"
+class AlertLevel(Enum):
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+def _send_telegram(text: str) -> bool:
+    """Low-level Telegram send via alert bot."""
     try:
-        urllib.request.urlopen(url, timeout=10)
-    except Exception as exc:
-        logger.error("Failed to send alert: %s", exc)
+        from jobpulse.telegram_bots import send_alert
+        return send_alert(text)
+    except Exception as e:
+        logger.warning("Failed to send Telegram alert: %s", e)
+        return False
 
 
 class AlertManager:
-    """Deduplicating alert manager. Suppresses identical alerts within 5-min window."""
+    """Central alert manager with deduplication and rate limiting."""
 
-    def __init__(self, dedup_window: int = 300):
-        self._dedup_window = dedup_window
-        self._recent: dict[str, float] = {}  # key -> timestamp
+    def __init__(self):
+        self._last_alert: dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._dedup_window_s = 300.0  # 5 minutes
 
-    def alert(self, level: AlertLevel, message: str, source: str = ""):
+    def alert(self, level: AlertLevel, message: str, source: str = "") -> bool:
+        """Send an alert with deduplication."""
+        if not ALERTING_ENABLED:
+            return False
+
         key = f"{level.value}:{source}:{message}"
         now = time.time()
-        if key in self._recent and now - self._recent[key] < self._dedup_window:
-            return  # Suppressed
-        self._recent[key] = now
-        formatted = f"<b>[{level.value}]</b> {message}\nSource: {source}"
-        _send_telegram(formatted)
+        with self._lock:
+            last = self._last_alert.get(key, 0)
+            if now - last < self._dedup_window_s:
+                logger.debug("Alert deduplicated: %s", key)
+                return False
+            self._last_alert[key] = now
 
-    def cost_alert(self, spent: float, cap: float):
+        emoji = _SEVERITY_EMOJI.get(level.value, "⚠️")
+        full_msg = f"{emoji} ALERT ({level.value.upper()})"
+        if source:
+            full_msg += f" [{source}]"
+        full_msg += f"\n\n{message}"
+
+        result = _send_telegram(full_msg)
+        if result:
+            logger.info("Alert sent (%s): %s", level.value, message[:80])
+        return result
+
+    def cost_alert(self, spent: float, cap: float) -> bool:
+        """Send a cost/budget alert."""
         pct = (spent / cap * 100) if cap > 0 else 0
-        self.alert(
+        return self.alert(
             AlertLevel.WARNING,
-            f"LLM cost at {pct:.0f}% of budget (${spent:.2f}/${cap:.2f})",
+            f"Cost alert: ${spent:.2f} / ${cap:.2f} ({pct:.0f}%)",
             source="cost_enforcer",
         )
 
-    def outage_alert(self, provider: str):
-        self.alert(AlertLevel.CRITICAL, f"{provider} API down — circuit breaker OPEN", source="circuit_breaker")
+
+def send_pipeline_alert(
+    message: str,
+    severity: str = "warning",
+    category: str = "general",
+) -> bool:
+    """Send a pipeline failure alert via Telegram Alert bot.
+
+    Args:
+        message: Alert message text (keep concise).
+        severity: 'warning', 'error', or 'critical'.
+        category: Rate-limiting bucket (e.g. 'scan', 'apply', 'gmail').
+
+    Returns:
+        True if alert sent successfully.
+    """
+    if not ALERTING_ENABLED:
+        return False
+
+    now = time.time()
+
+    # Use a module-level singleton for rate limiting across calls
+    _state = getattr(send_pipeline_alert, "_state", None)
+    if _state is None:
+        _state = {"last_alert_ts": {}, "lock": threading.Lock()}
+        setattr(send_pipeline_alert, "_state", _state)
+
+    min_interval = 60.0
+    with _state["lock"]:
+        last = _state["last_alert_ts"].get(category, 0)
+        if now - last < min_interval:
+            logger.debug("Alert rate-limited for category '%s'", category)
+            return False
+        _state["last_alert_ts"][category] = now
+
+    try:
+        from jobpulse.telegram_bots import send_alert
+
+        emoji = _SEVERITY_EMOJI.get(severity, "⚠️")
+        full_msg = f"{emoji} PIPELINE ALERT ({severity.upper()})\n\n{message}"
+        result = send_alert(full_msg)
+        if result:
+            logger.info("Pipeline alert sent (%s): %s", severity, message[:80])
+        return result
+    except Exception as e:
+        logger.warning("Failed to send pipeline alert: %s", e)
+        return False

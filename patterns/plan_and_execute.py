@@ -11,17 +11,15 @@ Convergence: max 7 steps, max 3 replans, 7-minute total timeout.
 """
 
 import os
-import sys
 import time
 from typing import TypedDict, Annotated, Optional
 import operator
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-
 from langgraph.graph import StateGraph, START, END
 
-from shared.agents import get_llm, smart_llm_call, reviewer_node, fact_check_node
+from shared.agents import get_llm, smart_llm_call, reviewer_node, fact_check_node, compute_cost_summary
 from shared.state import prune_state
+from shared.cost_tracker import check_budget_from_state, BudgetExceededError
 from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.logging_config import get_logger, generate_run_id, set_run_id
 
@@ -219,6 +217,17 @@ def replanner_node(state: PlanExecuteState) -> dict:
     """Regenerate the remaining plan based on completed steps."""
     import json as _json
 
+    # Budget check before expensive replan
+    try:
+        check_budget_from_state(state, estimated_next_cost=0.05)
+    except BudgetExceededError as e:
+        logger.warning("Budget exceeded in plan_and_execute: %s", e)
+        return {
+            "plan": state["plan"][:state["current_step_index"]],
+            "replan_count": state["replan_count"],
+            "agent_history": [f"replanner: budget cap exceeded (${e.spent:.2f} > ${e.cap:.2f}), stopping"]
+        }
+
     completed_summary = "\n".join(
         f"Step {s['step_index']}: {s['output'][:200]}" for s in state["completed_steps"]
     )
@@ -308,12 +317,16 @@ def synthesizer_node(state: PlanExecuteState) -> dict:
         except Exception:
             pass
 
-    logger.info("Synthesizer completed: quality=%.1f, accuracy=%.1f", quality, accuracy)
+    cost = compute_cost_summary(state.get("token_usage", []))
+    prune_state(state)
+
+    logger.info("Synthesizer completed: quality=%.1f, accuracy=%.1f, cost=$%.4f", quality, accuracy, cost["total_cost_usd"])
     return {
         "final_output": final,
         "quality_score": quality,
         "accuracy_score": accuracy,
-        "agent_history": [f"synthesizer: quality={quality}, accuracy={accuracy}"],
+        "cost_estimate": cost,
+        "agent_history": [f"synthesizer: quality={quality}, accuracy={accuracy}, cost=${cost['total_cost_usd']:.4f}"],
     }
 
 

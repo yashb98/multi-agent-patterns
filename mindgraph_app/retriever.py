@@ -12,6 +12,7 @@ import sqlite3
 from datetime import datetime, date
 from pathlib import Path
 from mindgraph_app.storage import get_conn, get_full_graph, search_entities
+from mindgraph_app.retrieval_metrics import RetrievalTimer
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -19,99 +20,107 @@ logger = get_logger(__name__)
 
 def local_search(query: str, limit: int = 10) -> dict:
     """Search entities by name/description similarity. Returns matching entities + their connections."""
-    entities = search_entities(query)[:limit]
-    if not entities:
-        return {"entities": [], "relations": [], "method": "local_search"}
+    with RetrievalTimer(query, "local_search") as timer:
+        entities = search_entities(query)[:limit]
+        if not entities:
+            return {"entities": [], "relations": [], "method": "local_search"}
 
-    entity_ids = {e["id"] for e in entities}
+        entity_ids = {e["id"] for e in entities}
 
-    # Get relations connecting these entities
-    conn = get_conn()
-    placeholders = ",".join("?" for _ in entity_ids)
-    relations = conn.execute(
-        f"SELECT * FROM knowledge_relations WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})",
-        list(entity_ids) + list(entity_ids),
-    ).fetchall()
-
-    # Also grab neighbor entities
-    neighbor_ids = set()
-    for r in relations:
-        neighbor_ids.add(r["from_id"])
-        neighbor_ids.add(r["to_id"])
-    neighbor_ids -= entity_ids
-
-    if neighbor_ids:
-        np = ",".join("?" for _ in neighbor_ids)
-        neighbors = conn.execute(
-            f"SELECT * FROM knowledge_entities WHERE id IN ({np})", list(neighbor_ids)
+        # Get relations connecting these entities
+        conn = get_conn()
+        placeholders = ",".join("?" for _ in entity_ids)
+        relations = conn.execute(
+            f"SELECT * FROM knowledge_relations WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})",
+            list(entity_ids) + list(entity_ids),
         ).fetchall()
-        entities.extend([dict(n) for n in neighbors])
 
-    conn.close()
+        # Also grab neighbor entities
+        neighbor_ids = set()
+        for r in relations:
+            neighbor_ids.add(r["from_id"])
+            neighbor_ids.add(r["to_id"])
+        neighbor_ids -= entity_ids
 
-    return {
-        "entities": entities,
-        "relations": [dict(r) for r in relations],
-        "method": "local_search",
-        "query": query,
-    }
+        if neighbor_ids:
+            np = ",".join("?" for _ in neighbor_ids)
+            neighbors = conn.execute(
+                f"SELECT * FROM knowledge_entities WHERE id IN ({np})", list(neighbor_ids)
+            ).fetchall()
+            entities.extend([dict(n) for n in neighbors])
+
+        conn.close()
+
+        timer.entities_found = len(entities)
+        timer.relations_found = len(relations)
+
+        return {
+            "entities": entities,
+            "relations": [dict(r) for r in relations],
+            "method": "local_search",
+            "query": query,
+        }
 
 
 def multi_hop_search(entity_name: str, max_hops: int = 2) -> dict:
     """Graph traversal from a starting entity. Follows relationships up to N hops."""
-    conn = get_conn()
+    with RetrievalTimer(entity_name, "multi_hop") as timer:
+        conn = get_conn()
 
-    # Find the starting entity
-    start = conn.execute(
-        "SELECT * FROM knowledge_entities WHERE name LIKE ? LIMIT 1",
-        (f"%{entity_name}%",),
-    ).fetchone()
+        # Find the starting entity
+        start = conn.execute(
+            "SELECT * FROM knowledge_entities WHERE name LIKE ? LIMIT 1",
+            (f"%{entity_name}%",),
+        ).fetchone()
 
-    if not start:
-        conn.close()
-        return {"entities": [], "relations": [], "method": "multi_hop", "start": entity_name}
+        if not start:
+            conn.close()
+            return {"entities": [], "relations": [], "method": "multi_hop", "start": entity_name}
 
-    visited_ids = {start["id"]}
-    all_entities = [dict(start)]
-    all_relations = []
-    frontier = {start["id"]}
+        visited_ids = {start["id"]}
+        all_entities = [dict(start)]
+        all_relations = []
+        frontier = {start["id"]}
 
-    for hop in range(max_hops):
-        if not frontier:
-            break
-        placeholders = ",".join("?" for _ in frontier)
-        relations = conn.execute(
-            f"SELECT * FROM knowledge_relations WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})",
-            list(frontier) + list(frontier),
-        ).fetchall()
-
-        new_frontier = set()
-        for r in relations:
-            all_relations.append(dict(r))
-            for nid in [r["from_id"], r["to_id"]]:
-                if nid not in visited_ids:
-                    visited_ids.add(nid)
-                    new_frontier.add(nid)
-
-        # Fetch new entities
-        if new_frontier:
-            np = ",".join("?" for _ in new_frontier)
-            new_entities = conn.execute(
-                f"SELECT * FROM knowledge_entities WHERE id IN ({np})", list(new_frontier)
+        for hop in range(max_hops):
+            if not frontier:
+                break
+            placeholders = ",".join("?" for _ in frontier)
+            relations = conn.execute(
+                f"SELECT * FROM knowledge_relations WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})",
+                list(frontier) + list(frontier),
             ).fetchall()
-            all_entities.extend([dict(e) for e in new_entities])
 
-        frontier = new_frontier
+            new_frontier = set()
+            for r in relations:
+                all_relations.append(dict(r))
+                for nid in [r["from_id"], r["to_id"]]:
+                    if nid not in visited_ids:
+                        visited_ids.add(nid)
+                        new_frontier.add(nid)
 
-    conn.close()
+            # Fetch new entities
+            if new_frontier:
+                np = ",".join("?" for _ in new_frontier)
+                new_entities = conn.execute(
+                    f"SELECT * FROM knowledge_entities WHERE id IN ({np})", list(new_frontier)
+                ).fetchall()
+                all_entities.extend([dict(e) for e in new_entities])
 
-    return {
-        "entities": all_entities,
-        "relations": all_relations,
-        "method": "multi_hop",
-        "start": entity_name,
-        "hops": max_hops,
-    }
+            frontier = new_frontier
+
+        conn.close()
+
+        timer.entities_found = len(all_entities)
+        timer.relations_found = len(all_relations)
+
+        return {
+            "entities": all_entities,
+            "relations": all_relations,
+            "method": "multi_hop",
+            "start": entity_name,
+            "hops": max_hops,
+        }
 
 
 def temporal_search(target_date: str = None) -> dict:
@@ -174,9 +183,10 @@ def deep_query(query: str) -> str:
     """
     import os
 
-    # Step 1: Get seed entities via local search
-    seeds = local_search(query, limit=20)
-    seed_entities = seeds.get("entities", [])
+    with RetrievalTimer(query, "deep_query") as timer:
+        # Step 1: Get seed entities via local search
+        seeds = local_search(query, limit=20)
+        seed_entities = seeds.get("entities", [])
 
     if not seed_entities:
         return f"No relevant entities found for: {query}"
@@ -221,49 +231,60 @@ def deep_query(query: str) -> str:
     except Exception as e:
         logger.debug("Failed to get recent events for deep query: %s", e)
 
-    # Step 5: Use RLM if context is large (>10K chars), else direct LLM
-    try:
-        if len(subgraph_text) > 10000:
-            from rlm import RLM
-            backend = os.getenv("RLM_BACKEND", "openai")
-            rlm = RLM(
-                backend=backend,
-                backend_kwargs={"model": os.getenv("RLM_ROOT_MODEL", "gpt-4o-mini")},
-                max_depth=1,
-                max_iterations=int(os.getenv("RLM_MAX_ITERATIONS", "10")),
-                max_budget=float(os.getenv("RLM_MAX_BUDGET", "0.10")),
-                verbose=False,
-            )
-            prompt = (
-                f"You have a knowledge graph with {len(expanded_entities)} entities "
-                f"and {len(seen_rels)} relationships.\n\n"
-                f"{subgraph_text}\n\n"
-                f"Question: {query}\n\n"
-                f"Analyze the graph data recursively. Break it into chunks by entity type, "
-                f"summarize each chunk, then synthesize a comprehensive answer."
-            )
-            result = rlm.completion(prompt)
-            rlm.close()
-            return result.choices[0].message.content
-    except ImportError:
-        logger.debug("RLM package not available, falling back to direct LLM")
-    except Exception as e:
-        logger.warning("RLM error: %s", e)
+        # Step 5: Use RLM if context is large (>10K chars), else direct LLM
+        try:
+            if len(subgraph_text) > 10000:
+                from rlm import RLM
+                backend = os.getenv("RLM_BACKEND", "openai")
+                rlm = RLM(
+                    backend=backend,
+                    backend_kwargs={"model": os.getenv("RLM_ROOT_MODEL", "gpt-4o-mini")},
+                    max_depth=1,
+                    max_iterations=int(os.getenv("RLM_MAX_ITERATIONS", "10")),
+                    max_budget=float(os.getenv("RLM_MAX_BUDGET", "0.10")),
+                    verbose=False,
+                )
+                prompt = (
+                    f"You have a knowledge graph with {len(expanded_entities)} entities "
+                    f"and {len(seen_rels)} relationships.\n\n"
+                    f"{subgraph_text}\n\n"
+                    f"Question: {query}\n\n"
+                    f"Analyze the graph data recursively. Break it into chunks by entity type, "
+                    f"summarize each chunk, then synthesize a comprehensive answer."
+                )
+                result = rlm.completion(prompt)
+                rlm.close()
+                timer.entities_found = len(expanded_entities)
+                timer.relations_found = len(seen_rels)
+                timer.answer_source = "rlm"
+                return result.choices[0].message.content
+        except ImportError:
+            logger.debug("RLM package not available, falling back to direct LLM")
+        except Exception as e:
+            logger.warning("RLM error: %s", e)
 
-    # Direct LLM fallback (small graphs or RLM unavailable)
-    try:
-        import litellm
-        response = litellm.completion(
-            model=os.getenv("RLM_ROOT_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": "You are a knowledge graph analyst. Answer questions based on the provided graph data."},
-                {"role": "user", "content": f"Based on this knowledge graph:\n\n{subgraph_text[:8000]}\n\nAnswer: {query}"},
-            ],
-            max_tokens=1000,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Query processed. Found {len(expanded_entities)} entities, {len(seen_rels)} relations. Error generating answer: {e}"
+        # Direct LLM fallback (small graphs or RLM unavailable)
+        try:
+            from shared.agents import get_llm, smart_llm_call
+            from langchain_core.messages import SystemMessage, HumanMessage
+
+            llm = get_llm(temperature=0.3, max_tokens=1000)
+            response = smart_llm_call(
+                llm,
+                [
+                    SystemMessage(content="You are a knowledge graph analyst. Answer questions based on the provided graph data."),
+                    HumanMessage(content=f"Based on this knowledge graph:\n\n{subgraph_text[:8000]}\n\nAnswer: {query}"),
+                ],
+            )
+            timer.entities_found = len(expanded_entities)
+            timer.relations_found = len(seen_rels)
+            timer.answer_source = "llm_fallback"
+            return response.content
+        except Exception as e:
+            timer.entities_found = len(expanded_entities)
+            timer.relations_found = len(seen_rels)
+            timer.answer_source = "none"
+            return f"Query processed. Found {len(expanded_entities)} entities, {len(seen_rels)} relations. Error generating answer: {e}"
 
 
 def _row_to_dict(row) -> dict:

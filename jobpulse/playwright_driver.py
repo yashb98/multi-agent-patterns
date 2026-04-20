@@ -322,9 +322,15 @@ class PlaywrightDriver:
         return {"success": True, "value_set": value, "value_verified": value[:10] in actual}
 
     async def upload_file(self, selector: str, path: str) -> dict:
-        """Upload a file to a file input."""
+        """Upload a file to a file input with explicit MIME type."""
+        from pathlib import Path as _Path
         el = await self._page.query_selector(selector)
         if not el:
             return {"success": False, "error": f"Element {selector} not found"}
-        await el.set_input_files(path)
+        p = _Path(path)
+        await el.set_input_files({
+            "name": p.name,
+            "mimeType": "application/pdf" if p.suffix.lower() == ".pdf" else "application/octet-stream",
+            "buffer": p.read_bytes(),
+        })
         return {"success": True, "value_set": path}

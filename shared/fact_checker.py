@@ -100,20 +100,35 @@ def web_verify_claim(claim: str) -> dict:
         return {"source": None, "supports": False, "snippet": "Web search unavailable"}
 
 
+_cache_conn: sqlite3.Connection | None = None
+
+
+def _is_cache_conn_valid() -> bool:
+    if _cache_conn is None:
+        return False
+    try:
+        _cache_conn.execute("SELECT 1")
+        return True
+    except sqlite3.ProgrammingError:
+        return False
+
+
 def _get_cache_conn():
-    conn = sqlite3.connect(str(CACHE_DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""CREATE TABLE IF NOT EXISTS verified_facts (
-        claim_hash TEXT PRIMARY KEY,
-        claim TEXT NOT NULL,
-        verdict TEXT NOT NULL,
-        evidence TEXT,
-        source_url TEXT,
-        confidence REAL,
-        verified_at TEXT DEFAULT (datetime('now'))
-    )""")
-    return conn
+    global _cache_conn
+    if not _is_cache_conn_valid():
+        _cache_conn = sqlite3.connect(str(CACHE_DB_PATH))
+        _cache_conn.row_factory = sqlite3.Row
+        _cache_conn.execute("PRAGMA journal_mode=WAL")
+        _cache_conn.execute("""CREATE TABLE IF NOT EXISTS verified_facts (
+            claim_hash TEXT PRIMARY KEY,
+            claim TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            evidence TEXT,
+            source_url TEXT,
+            confidence REAL,
+            verified_at TEXT DEFAULT (datetime('now'))
+        )""")
+    return _cache_conn
 
 
 def _claim_hash(claim: str) -> str:

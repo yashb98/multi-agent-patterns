@@ -142,11 +142,14 @@ def _get_extension_adapter() -> BaseATSAdapter:
 
 
 def get_adapter(ats_platform: str | None = None) -> BaseATSAdapter:
-    """Return the extension adapter.
+    """Return the appropriate adapter for the ATS platform.
 
-    The ats_platform parameter is retained for interface compatibility
-    but is not used for routing.
+    SmartRecruiters uses its own Playwright CDP adapter (shadow DOM).
+    Everything else routes through the extension adapter.
     """
+    if ats_platform == "smartrecruiters":
+        from jobpulse.ats_adapters.smartrecruiters import SmartRecruitersAdapter
+        return SmartRecruitersAdapter()
     return _get_extension_adapter()
 
 

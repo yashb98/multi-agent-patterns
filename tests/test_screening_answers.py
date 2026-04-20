@@ -49,11 +49,11 @@ def test_current_salary():
 
 def test_expected_salary_numeric():
     ctx = {"job_title": "Data Scientist", "company": "Gousto"}
-    assert get_answer("What is your expected salary?", ctx, input_type="number") == "32000"
+    assert get_answer("What is your expected salary?", ctx, input_type="number") == "38000"
 
 
 def test_expected_salary_default_numeric():
-    assert get_answer("What is your expected salary?", input_type="number") == "28000"
+    assert get_answer("What is your expected salary?", input_type="number") == "30000"
 
 
 # ------------------------------------------------------------------

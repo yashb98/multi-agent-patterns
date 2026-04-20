@@ -39,12 +39,9 @@ WHEN NOT TO USE:
 ❌ Debugging opacity is unacceptable
 """
 
-import sys
 import json
 import os
 from pathlib import Path
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from langgraph.graph import StateGraph, START, END
 
@@ -61,6 +58,7 @@ from shared.agents import (
 from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.memory_layer import get_shared_memory_manager
 from shared.convergence import ConvergenceController
+from shared.cost_tracker import check_budget_from_state, BudgetExceededError
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
 
@@ -170,7 +168,17 @@ AGENT HISTORY (last 5 actions):
             "pending_tasks": [],
             "agent_history": ["Task Analyzer: Max iterations reached, stopping"]
         }
-    
+
+    # Budget check before decomposing further
+    try:
+        check_budget_from_state(state, estimated_next_cost=0.05)
+    except BudgetExceededError as e:
+        logger.warning("Budget exceeded in dynamic swarm: %s", e)
+        return {
+            "pending_tasks": [],
+            "agent_history": [f"Task Analyzer: Budget cap exceeded (${e.spent:.2f} > ${e.cap:.2f}), stopping"]
+        }
+
     # Inject memory context for task analysis before LLM call
     memory_context = _memory_manager.get_context_for_agent(
         "task_analysis", state.get("topic", "")
@@ -207,10 +215,10 @@ AGENT HISTORY (last 5 actions):
     for t in tasks:
         logger.info("  [%s] %s: %s", t.get("priority", "?"), t.get("agent", "?"), t.get("description", "?"))
     
-    # Prune state between analysis rounds
     from shared.state import prune_state
     result = {
         "pending_tasks": tasks,
+        "iteration": iteration + 1,
         "agent_history": [f"Task Analyzer: generated {len(tasks)} tasks"]
     }
     result.update(prune_state(state))

@@ -27,7 +27,9 @@
 - drive_uploader.py — Google Drive auto-upload for CV/CL PDFs
 - gate4_quality.py — Gate 4: JD quality, company blocklist, CV scrutiny, LLM review
 - company_blocklist.py — Notion Company Blocklist: spam detection
+- correction_capture.py — Reinforcement learning from user corrections: diffs agent vs user values, caches corrections, feeds back into screening answers
 - job_analytics.py — Conversion funnel, platform breakdown, gate stats
+- ats_adapters/smartrecruiters.py — SmartRecruiters adapter (shadow DOM, spl-* web components, Playwright CDP)
 - application_orchestrator.py — Full external application lifecycle: navigate → account → verify → fill → submit
 - form_experience_db.py — Per-domain form experience store (SQLite): adapter, pages, fields, timing
 - page_analyzer.py — Hybrid DOM+Vision page type detection (PageType enum: 8 types)

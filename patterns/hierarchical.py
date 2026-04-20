@@ -36,11 +36,8 @@ WHEN NOT TO USE:
 ❌ The supervisor becomes a bottleneck in high-throughput systems
 """
 
-import sys
 import json
 import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from langgraph.graph import StateGraph, START, END
 
@@ -61,6 +58,7 @@ from shared.memory_layer import get_shared_memory_manager
 from shared.convergence import ConvergenceController
 from langchain_core.messages import SystemMessage, HumanMessage
 from shared.logging_config import get_logger
+from shared.cost_tracker import check_budget_from_state, BudgetExceededError
 
 logger = get_logger(__name__)
 
@@ -121,7 +119,17 @@ def supervisor_node_rule_based(state: AgentState) -> dict:
     logger.info("Draft exists: %s", bool(draft))
     logger.info("Review passed: %s", review_passed)
     logger.info("Iteration: %d", iteration)
-    
+
+    # ── Budget check ──
+    try:
+        check_budget_from_state(state, estimated_next_cost=0.05)
+    except BudgetExceededError as e:
+        logger.warning("Budget exceeded in hierarchical pattern: %s", e)
+        return {
+            "current_agent": "FINISH",
+            "agent_history": [f"Supervisor → FINISH (budget cap: ${e.spent:.2f} > ${e.cap:.2f})"]
+        }
+
     # ── Decision logic ──
     if not research:
         next_agent = "researcher"

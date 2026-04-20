@@ -60,14 +60,40 @@ SKILL_EXPERIENCE: dict[str, int] = {
 # Role-aware salary expectations
 # ---------------------------------------------------------------------------
 ROLE_SALARY: dict[str, int] = {
-    "data scientist": 32000,
-    "machine learning engineer": 32000,
-    "ml engineer": 32000,
-    "ai engineer": 32000,
-    "data analyst": 28000,
-    "data engineer": 30000,
-    "software engineer": 30000,
-    "default": 28000,
+    # --- Data Science ---
+    "data scientist": 38000,
+    "graduate data scientist": 35000,
+    "junior data scientist": 36000,
+    "early careers data scientist": 35000,
+    "data science intern": 25000,
+    # --- ML Engineering ---
+    "machine learning engineer": 38000,
+    "ml engineer": 38000,
+    "graduate ml engineer": 35000,
+    "junior ml engineer": 37000,
+    "early careers ml engineer": 35000,
+    "machine learning intern": 25000,
+    # --- AI Engineering ---
+    "ai engineer": 38000,
+    "graduate ai engineer": 35000,
+    "junior ai engineer": 35000,
+    "early careers ai engineer": 35000,
+    "ai intern": 25000,
+    # --- Data Engineering ---
+    "data engineer": 35000,
+    "graduate data engineer": 32000,
+    "junior data engineer": 35000,
+    "early careers data engineer": 32000,
+    "data engineer intern": 24000,
+    # --- Software Engineering ---
+    "software engineer": 35000,
+    "graduate software engineer": 32000,
+    "junior software engineer": 33000,
+    "early careers software engineer": 32000,
+    "software engineer intern": 25000,
+    # --- Other ---
+    "data analyst": 30000,
+    "default": 30000,
 }
 
 # ---------------------------------------------------------------------------
@@ -293,10 +319,11 @@ def _resolve_role_salary(
     """Return salary expectation based on job title and input type."""
     title = ((job_context or {}).get("job_title") or "").lower()
     salary = ROLE_SALARY["default"]
+    best_len = 0
     for role_key, role_salary in ROLE_SALARY.items():
-        if role_key != "default" and role_key in title:
+        if role_key != "default" and role_key in title and len(role_key) > best_len:
             salary = role_salary
-            break
+            best_len = len(role_key)
 
     if input_type == "number":
         return str(salary)
@@ -414,15 +441,34 @@ def get_answer(
                 )
                 logger.debug("Pattern match for '%s' -> '%s'", normalised[:60], resolved[:80])
                 return with_tone_filter(resolved, normalised, None)
-            # Matched but needs LLM (answer is None)
+            # Matched but needs LLM (answer is None) — cache result for reuse
             logger.debug("Pattern match (LLM-required) for '%s'", normalised[:60])
-            return with_tone_filter(_generate_answer(normalised, job_context), normalised, None)
+            _db_tier1 = db or JobDB()
+            llm_answer = _generate_answer(normalised, job_context)
+            _db_tier1.cache_answer(normalised, llm_answer)
+            logger.info("Generated + cached Tier 1 answer for '%s'", normalised[:60])
+            return with_tone_filter(llm_answer, normalised, None)
+
+    # --- Tier 1.5: agent rules (learned from corrections) -----------------
+    try:
+        from jobpulse.agent_rules import AgentRulesDB
+        _rules_db = AgentRulesDB()
+        _matching = _rules_db.get_rules(
+            category="screening", field_label=normalised, platform=platform,
+        )
+        if _matching:
+            _rule = _matching[0]
+            _rule_val = _rules_db.apply_rule(_rule, "", None)
+            if _rule_val is not None:
+                logger.debug("Agent rule match for '%s' -> '%s'", normalised[:60], _rule_val[:80])
+                return with_tone_filter(_rule_val, normalised, None)
+    except Exception:
+        pass
 
     # --- Tier 2: cache lookup --------------------------------------------
     _db = db or JobDB()
     cached = _db.get_cached_answer(normalised)
     if cached is not None:
-        _db.cache_answer(normalised, cached)
         logger.debug("Cache hit for '%s'", normalised[:60])
         return with_tone_filter(cached, normalised, None)
 
@@ -514,6 +560,11 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
         logger.debug("LLM generated answer: %s", answer[:80])
         return answer
     except Exception as exc:
-        logger.error("LLM answer generation failed: %s", exc)
-        # Fallback: return a safe generic response
-        return "Please refer to my CV for details."
+        logger.error("LLM answer generation failed for '%s': %s", question[:60], exc)
+        if any(kw in question.lower() for kw in ("salary", "compensation", "pay")):
+            return WORK_AUTH.get("salary_expectation", "Open to discussion")
+        if any(kw in question.lower() for kw in ("notice", "start date", "availability")):
+            return WORK_AUTH.get("notice_period", "Flexible")
+        if any(kw in question.lower() for kw in ("visa", "sponsor", "right to work", "authoriz")):
+            return WORK_AUTH.get("visa_status", "Yes, I have the right to work")
+        return "Yes"

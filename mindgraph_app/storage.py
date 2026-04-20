@@ -10,13 +10,28 @@ from shared.paths import DATA_DIR as _DATA_DIR
 DB_PATH = _DATA_DIR / "mindgraph.db"
 
 
+_conn: sqlite3.Connection | None = None
+
+
+def _is_conn_valid(conn: sqlite3.Connection | None) -> bool:
+    if conn is None:
+        return False
+    try:
+        conn.execute("SELECT 1")
+        return True
+    except sqlite3.ProgrammingError:
+        return False
+
+
 def get_conn() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    global _conn
+    if not _is_conn_valid(_conn):
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _conn = sqlite3.connect(str(DB_PATH))
+        _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA foreign_keys=ON")
+    return _conn
 
 
 def init_db():

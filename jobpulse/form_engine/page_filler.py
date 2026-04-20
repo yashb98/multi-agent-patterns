@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from shared.logging_config import get_logger
 
@@ -10,11 +11,14 @@ from jobpulse.form_engine import checkbox_filler, date_filler, file_filler, mult
 from jobpulse.form_engine import radio_filler, select_filler, text_filler
 from jobpulse.form_engine.models import FillResult, FieldInfo, InputType
 
+if TYPE_CHECKING:
+    from playwright.async_api import Page
+
 logger = get_logger(__name__)
 
 
 async def fill_field_by_type(
-    page,
+    page: Page,
     field: FieldInfo,
     value: str,
     file_path: Path | None = None,

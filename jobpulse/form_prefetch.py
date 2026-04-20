@@ -26,6 +26,8 @@ class FormHints:
     apply_count: int = 0
     avg_time_seconds: float = 0.0
     has_file_upload: bool = False
+    correction_accuracy: float | None = None
+    frequently_corrected_fields: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -94,6 +96,28 @@ def prefetch_form_hints(
             hints.nav_steps = steps
     except Exception as exc:
         logger.debug("form_prefetch: navigation lookup failed: %s", exc)
+
+    # 4. Correction accuracy for this domain
+    try:
+        from urllib.parse import urlparse
+        from jobpulse.correction_capture import CorrectionCapture
+
+        domain = urlparse(url).netloc.lower().removeprefix("www.") if "://" in url else url
+        cc = CorrectionCapture()
+        accuracy = cc.get_domain_accuracy(domain)
+        if accuracy is not None:
+            hints.correction_accuracy = accuracy
+            corrected = cc.get_field_corrections_by_domain(domain)
+            hints.frequently_corrected_fields = [
+                c["field_label"] for c in corrected[:5]
+            ]
+            if accuracy < 0.8:
+                logger.info(
+                    "form_prefetch: LOW ACCURACY domain %s (%.0f%%) — %d fields often corrected",
+                    domain, accuracy * 100, len(hints.frequently_corrected_fields),
+                )
+    except Exception as exc:
+        logger.debug("form_prefetch: correction accuracy lookup failed: %s", exc)
 
     _stats["total_lookups"] += 1
     if hints.known_domain:
