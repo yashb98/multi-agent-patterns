@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import random
+import time
 from typing import TYPE_CHECKING, Any
 
 from shared.agents import get_openai_client, get_model_name
@@ -27,7 +28,7 @@ logger = get_logger(__name__)
 # Per-platform minimum page times (seconds) — kept in sync with orchestrator
 _PLATFORM_MIN_PAGE_TIME: dict[str, float] = {
     "workday": 45.0,
-    "linkedin": 8.0,
+    "linkedin": 3.0,
     "greenhouse": 5.0,
     "lever": 5.0,
     "indeed": 10.0,
@@ -169,7 +170,25 @@ class NativeFormFiller:
             logger.warning("No field found for label '%s'", label)
             return {"success": False, "error": f"No field for '{label}'"}
 
-        el = locator.first
+        # Find the first fillable element among matches (skip icons, images, etc.)
+        _FILLABLE_TAGS = {"input", "textarea", "select"}
+        el = None
+        try:
+            for i in range(await locator.count()):
+                candidate = locator.nth(i)
+                t = await candidate.evaluate("el => el.tagName.toLowerCase()")
+                if t in _FILLABLE_TAGS or await candidate.get_attribute("contenteditable"):
+                    el = candidate
+                    break
+        except Exception:
+            pass
+        if el is None:
+            locator = page.get_by_placeholder(label, exact=False)
+            if not await locator.count():
+                logger.warning("No fillable field found for label '%s'", label)
+                return {"success": False, "error": f"No fillable field for '{label}'"}
+            el = locator.first
+
         await self._smart_scroll(el)
         await self._move_mouse_to(el)
 
@@ -177,7 +196,36 @@ class NativeFormFiller:
         input_type = await el.get_attribute("type") or ""
 
         if tag == "select":
-            await el.select_option(label=value)
+            selected = False
+            options = await el.locator("option").all_text_contents()
+            options_stripped = [o.strip() for o in options]
+            # Try exact label match
+            try:
+                await el.select_option(label=value, timeout=5000)
+                selected = True
+            except Exception:
+                pass
+            # Try fuzzy substring match
+            if not selected:
+                matched_idx = next(
+                    (i for i, o in enumerate(options_stripped) if value.lower() in o.lower()),
+                    next((i for i, o in enumerate(options_stripped) if o.lower() in value.lower()), None),
+                )
+                if matched_idx is not None:
+                    try:
+                        await el.select_option(index=matched_idx, timeout=5000)
+                        selected = True
+                    except Exception:
+                        pass
+            # Try by value attribute
+            if not selected:
+                try:
+                    await el.select_option(value=value, timeout=5000)
+                    selected = True
+                except Exception:
+                    pass
+            if not selected:
+                logger.warning("Could not select '%s' for '%s' — options: %s", value, label, options_stripped)
         elif input_type == "checkbox":
             if value.lower() in ("true", "yes", "1"):
                 await el.check()
@@ -230,7 +278,9 @@ class NativeFormFiller:
 
         prompt = (
             f'Map profile data to form fields. Return JSON {{"label": "value"}}.\n'
-            f"Skip already-filled fields. Skip file upload fields.\n\n"
+            f"CRITICAL: JSON keys MUST be the EXACT label text from the Fields list below. "
+            f"Do NOT rename, normalize, or invent keys. Only include fields that appear in the list.\n"
+            f"Skip fields marked [already filled]. Skip file upload fields.\n\n"
             f"Fields:\n{chr(10).join(field_descriptions)}\n\n"
             f"Profile: {json.dumps(profile)}\n"
             f"Platform: {platform}\n"
@@ -262,11 +312,23 @@ class NativeFormFiller:
             opts = f.get("options", "free text")
             questions.append(f"Q: {f['label']} Options: {opts}")
 
+        from jobpulse.applicator import PROFILE, WORK_AUTH
+        applicant_bg = (
+            f"Name: {PROFILE['first_name']} {PROFILE['last_name']}. "
+            f"Education: {PROFILE['education']}. Location: {PROFILE['location']}. "
+            f"Visa: {WORK_AUTH['visa_status']}. Notice: {WORK_AUTH['notice_period']}. "
+            f"Willing to relocate: Yes, anywhere in the UK. "
+            f"Commuting: Yes, willing to commute to any UK office. "
+            f"Right to work UK: Yes."
+        )
         prompt = (
             f"Answer these screening questions for a job application.\n"
-            f"Context: {job_context or 'Not provided'}\n\n"
+            f"Context: {job_context or 'Not provided'}\n"
+            f"Applicant: {applicant_bg}\n\n"
             f"{chr(10).join(questions)}\n\n"
-            f'Return JSON {{"label": "answer"}}. Be truthful.'
+            f"CRITICAL: JSON keys MUST be the EXACT question label text. "
+            f"Choose ONLY from the given options when options are listed.\n"
+            f'Return JSON {{"label": "answer"}}.'
         )
 
         client = get_openai_client()
@@ -317,6 +379,17 @@ class NativeFormFiller:
 
     # ── Deterministic Helpers ──
 
+    @staticmethod
+    async def _upload_pdf(locator, file_path: str) -> None:
+        """Upload a PDF with explicit MIME type and filename for ATS compatibility."""
+        from pathlib import Path
+        p = Path(file_path)
+        await locator.set_input_files({
+            "name": p.name,
+            "mimeType": "application/pdf",
+            "buffer": p.read_bytes(),
+        })
+
     async def _upload_files(
         self, cv_path: str | None, cl_path: str | None,
     ) -> None:
@@ -336,9 +409,9 @@ class NativeFormFiller:
                 continue
 
             if "cover" in label_lower and cl_path:
-                await fi.set_input_files(str(cl_path))
+                await self._upload_pdf(fi, str(cl_path))
             elif cv_path and not cv_uploaded:
-                await fi.set_input_files(str(cv_path))
+                await self._upload_pdf(fi, str(cv_path))
                 cv_uploaded = True
 
     async def _check_consent(self) -> None:
@@ -393,14 +466,20 @@ class NativeFormFiller:
             async with self._page.expect_file_chooser(timeout=10000) as fc_info:
                 await choose_btn.click()
             file_chooser = await fc_info.value
-            await file_chooser.set_files(str(cv_path))
+            from pathlib import Path as _Path
+            _p = _Path(cv_path)
+            await file_chooser.set_files({
+                "name": _p.name,
+                "mimeType": "application/pdf",
+                "buffer": _p.read_bytes(),
+            })
             logger.info("Uploaded tailored CV via modal file chooser")
             await asyncio.sleep(3)
             return True
 
         file_inputs = await self._page.locator("input[type='file']").all()
         if file_inputs:
-            await file_inputs[0].set_input_files(str(cv_path))
+            await self._upload_pdf(file_inputs[0], str(cv_path))
             logger.info("Uploaded tailored CV via hidden file input")
             await asyncio.sleep(3)
             return True
@@ -443,7 +522,7 @@ class NativeFormFiller:
         page = self._page
         button_names = [
             ("submit", ["Submit Application", "Submit", "Apply"]),
-            ("next", ["Save & Continue", "Continue", "Next", "Proceed"]),
+            ("next", ["Review", "Save & Continue", "Continue", "Next", "Proceed"]),
         ]
 
         for action, names in button_names:
@@ -454,9 +533,15 @@ class NativeFormFiller:
                         return "dry_run_stop"
                     await self._move_mouse_to(btn.first)
                     await btn.first.click()
-                    await page.wait_for_load_state(
-                        "networkidle", timeout=10000,
-                    )
+                    # Modal-based forms (LinkedIn Easy Apply) don't trigger
+                    # full page navigation — use a short sleep instead of
+                    # networkidle which would timeout on modal overlays.
+                    try:
+                        await page.wait_for_load_state(
+                            "networkidle", timeout=5000,
+                        )
+                    except Exception:
+                        await asyncio.sleep(2)
                     return "submitted" if action == "submit" else "next"
 
         # Fallback: links with submit-like text
@@ -464,9 +549,12 @@ class NativeFormFiller:
             link = page.get_by_role("link", name=name, exact=False)
             if await link.count() and await link.first.is_visible():
                 await link.first.click()
-                await page.wait_for_load_state(
-                    "networkidle", timeout=10000,
-                )
+                try:
+                    await page.wait_for_load_state(
+                        "networkidle", timeout=5000,
+                    )
+                except Exception:
+                    await asyncio.sleep(2)
                 return "next"
 
         return ""
@@ -499,33 +587,70 @@ class NativeFormFiller:
         # 0. Handle modal-based CV upload (Reed Easy Apply pattern)
         await self._handle_modal_cv_upload(cv_path)
 
+        seen_field_types: list[str] = []
+        seen_screening: list[str] = []
+        t0 = time.monotonic()
+
+        def _result(base: dict) -> dict:
+            base.setdefault("field_types", seen_field_types)
+            base.setdefault("screening_questions", seen_screening)
+            base.setdefault("time_seconds", round(time.monotonic() - t0, 1))
+            return base
+
         for page_num in range(1, MAX_FORM_PAGES + 1):
             # 1. Scan fields
             fields = await self._scan_fields()
 
+            # Track field types for form experience learning
+            for f in fields:
+                ft = f"{f['type']}:{f['label'].lower().replace(' ', '_')[:40]}"
+                seen_field_types.append(ft)
+
             # 2. Confirmation page?
             if await self._is_confirmation_page():
-                return {"success": True, "pages_filled": page_num}
+                return _result({"success": True, "pages_filled": page_num})
 
             # 3. LLM Call 1: map fields
             mapping = await self._map_fields(
                 fields, profile, custom_answers, platform,
             )
 
-            # 4. LLM Call 2: screening for unresolved non-file fields
+            # 4. Screening: cache/pattern first, LLM only for remainder
             unresolved = [
                 f for f in fields
                 if f["label"] not in mapping and f["type"] != "file"
             ]
             if unresolved:
-                screening = await self._screen_questions(
-                    unresolved, custom_answers.get("_job_context"),
-                )
-                mapping.update(screening)
+                from jobpulse.screening_answers import try_instant_answer
+                _job_ctx_raw = custom_answers.get("_job_context")
+                _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+                still_unresolved = []
+                for f in unresolved:
+                    cached = try_instant_answer(
+                        f["label"], _job_ctx,
+                        input_type=f.get("type"), platform=platform,
+                    )
+                    if cached:
+                        mapping[f["label"]] = cached
+                        seen_screening.append(f"{f['label']}:{cached}")
+                    else:
+                        still_unresolved.append(f)
+                if still_unresolved:
+                    screening = await self._screen_questions(
+                        still_unresolved, custom_answers.get("_job_context"),
+                    )
+                    mapping.update(screening)
+                    for q, a in screening.items():
+                        seen_screening.append(f"{q}:{a}")
 
             # 5. Fill each field by label
+            fill_failures = []
             for label, value in mapping.items():
-                await self._fill_by_label(label, value)
+                try:
+                    await self._fill_by_label(label, value)
+                except Exception as fill_err:
+                    logger.warning("Field fill failed for '%s': %s", label, fill_err)
+                    fill_failures.append(label)
 
             # 6. File uploads
             await self._upload_files(cv_path, cl_path)
@@ -540,10 +665,10 @@ class NativeFormFiller:
             # 9. Pre-submit review on final page
             if await self._is_submit_page():
                 if dry_run:
-                    return {
+                    return _result({
                         "success": True, "dry_run": True,
                         "pages_filled": page_num,
-                    }
+                    })
                 review = await self._review_form()
                 if not review.get("pass"):
                     logger.warning(
@@ -553,19 +678,19 @@ class NativeFormFiller:
             # 10. Click next/submit
             clicked = await self._click_navigation(dry_run)
             if clicked == "submitted":
-                return {"success": True, "pages_filled": page_num}
+                return _result({"success": True, "pages_filled": page_num})
             if clicked == "dry_run_stop":
-                return {
+                return _result({
                     "success": True, "dry_run": True,
                     "pages_filled": page_num,
-                }
+                })
             if not clicked:
-                return {
+                return _result({
                     "success": False,
                     "error": f"No navigation button on page {page_num}",
-                }
+                })
 
-        return {
+        return _result({
             "success": False,
             "error": f"Exhausted {MAX_FORM_PAGES} form pages",
-        }
+        })

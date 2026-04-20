@@ -446,6 +446,36 @@ def get_cached_answer(question: str, *, db: JobDB | None = None) -> str | None:
     return _db.get_cached_answer(question)
 
 
+def try_instant_answer(
+    question: str,
+    job_context: dict | None = None,
+    *,
+    db: JobDB | None = None,
+    input_type: str | None = None,
+    platform: str | None = None,
+) -> str | None:
+    """Pattern match + cache lookup only (no LLM). Returns ``None`` on miss."""
+    if not question or not question.strip():
+        return None
+    normalised = question.strip()
+
+    for pattern, answer in COMMON_ANSWERS.items():
+        if re.search(pattern, normalised, re.IGNORECASE):
+            if answer is not None:
+                return _resolve_placeholder(
+                    answer, normalised, job_context,
+                    input_type=input_type, platform=platform, db=db,
+                )
+            return None
+
+    _db = db or JobDB()
+    cached = _db.get_cached_answer(normalised)
+    if cached is not None:
+        return cached
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
