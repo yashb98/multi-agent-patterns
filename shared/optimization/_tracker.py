@@ -41,9 +41,10 @@ class DomainStats:
 class PerformanceTracker:
     """Measures before/after impact of every learning action."""
 
-    def __init__(self, db_path: str, memory_manager=None):
+    def __init__(self, db_path: str, memory_manager=None, signal_bus=None):
         self._db_path = db_path
         self._memory = memory_manager
+        self._signal_bus = signal_bus
         self._init_db()
 
     def _init_db(self):
@@ -125,11 +126,13 @@ class PerformanceTracker:
             + ", ".join(f"{k}={v}" for k, v in metrics.items())
         )
         try:
-            self._memory.learn_fact(
+            memory_id = self._memory.learn_fact(
                 domain=f"optimization_baseline_{domain}",
                 fact=content,
                 run_id=f"baseline_{loop_name}_{domain}",
             )
+            if memory_id and hasattr(self._memory, "pin"):
+                self._memory.pin(memory_id)
         except Exception as e:
             logger.warning("Failed to store baseline: %s", e)
 
@@ -166,32 +169,61 @@ class PerformanceTracker:
         if not common_keys:
             return {"improvement": 0, "regression": False, "improved": False}
 
-        key = next(iter(common_keys))
-        before_val = float(before[key])
-        after_val = float(after[key])
-        diff = after_val - before_val
+        any_regression = False
+        any_improved = False
+        deltas = {}
+        for key in sorted(common_keys):
+            before_val = float(before[key])
+            after_val = float(after[key])
+            diff = after_val - before_val
 
-        if before_val == 0:
-            pct_change = 1.0 if diff > 0 else (-1.0 if diff < 0 else 0.0)
-        else:
-            pct_change = abs(diff) / abs(before_val)
+            if before_val == 0:
+                pct_change = 1.0 if diff > 0 else (-1.0 if diff < 0 else 0.0)
+            else:
+                pct_change = abs(diff) / abs(before_val)
 
-        is_rate_metric = "rate" in key
-        if is_rate_metric:
-            regression = after_val > before_val and pct_change > _REGRESSION_THRESHOLD
-            improved = after_val < before_val and pct_change > 0.10
-        else:
-            regression = after_val < before_val and pct_change > _REGRESSION_THRESHOLD
-            improved = after_val > before_val and pct_change > 0.10
+            is_rate_metric = "rate" in key
+            if is_rate_metric:
+                if after_val > before_val and pct_change > _REGRESSION_THRESHOLD:
+                    any_regression = True
+                if after_val < before_val and pct_change > 0.10:
+                    any_improved = True
+            else:
+                if after_val < before_val and pct_change > _REGRESSION_THRESHOLD:
+                    any_regression = True
+                if after_val > before_val and pct_change > 0.10:
+                    any_improved = True
+            deltas[key] = diff
 
         return {
-            "improvement": diff,
-            "regression": regression,
-            "improved": improved,
+            "improvement": deltas,
+            "regression": any_regression,
+            "improved": any_improved,
             "before": before,
             "after": after,
             "action_id": action_id,
         }
+
+    def get_recent_actions(self, limit: int = 50) -> list[dict]:
+        """Return recent completed learning actions for regression checking."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM learning_actions WHERE after_metrics IS NOT NULL "
+                "ORDER BY completed_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "action_id": r["action_id"],
+                "loop_name": r["loop_name"],
+                "domain": r["domain"],
+                "before_metrics": json.loads(r["before_metrics"]),
+                "after_metrics": json.loads(r["after_metrics"]),
+                "started_at": r["started_at"],
+                "completed_at": r["completed_at"],
+            }
+            for r in rows
+        ]
 
     def get_snapshots(self, loop_name: str, domain: str,
                       limit: int = 100) -> list[PerformanceSnapshot]:
@@ -280,12 +312,24 @@ class PerformanceTracker:
             elif _rate(1) < 0.50:
                 forced = 2
 
+        correction_rate = 0.0
+        if self._signal_bus:
+            try:
+                corr = self._signal_bus.count(
+                    domain=domain, source_loop="correction_capture",
+                )
+                all_signals = self._signal_bus.count(domain=domain)
+                if all_signals > 0:
+                    correction_rate = corr / all_signals
+            except Exception:
+                pass
+
         return DomainStats(
             domain=domain, agent_name=agent_name, sample_size=total,
             l0_success_rate=_rate(0), l1_success_rate=_rate(1),
             l2_success_rate=_rate(2), l3_success_rate=_rate(3),
             forced_level=forced,
-            avg_correction_rate=0.0,
+            avg_correction_rate=correction_rate,
             escalation_frequency=escalated_count / total if total else 0.0,
             last_updated=datetime.now(timezone.utc).isoformat(),
         )

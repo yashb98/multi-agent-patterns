@@ -190,12 +190,46 @@ class TrajectoryStore:
             clauses.append("final_outcome = ?")
             params.append(final_outcome)
         where = " AND ".join(clauses) if clauses else "1=1"
-        sql = f"""SELECT trajectory_id FROM trajectories
+        sql = f"""SELECT * FROM trajectories
                   WHERE {where} ORDER BY timestamp DESC LIMIT ?"""
         params.append(str(limit))
         with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [self._load(r["trajectory_id"]) for r in rows]
+            traj_rows = conn.execute(sql, params).fetchall()
+            if not traj_rows:
+                return []
+            tids = [r["trajectory_id"] for r in traj_rows]
+            placeholders = ",".join("?" * len(tids))
+            step_rows = conn.execute(
+                f"""SELECT * FROM trajectory_steps
+                    WHERE trajectory_id IN ({placeholders})
+                    ORDER BY trajectory_id, step_index""",
+                tids,
+            ).fetchall()
+
+        steps_by_tid: dict[str, list[TrajectoryStep]] = {}
+        for s in step_rows:
+            tid = s["trajectory_id"]
+            steps_by_tid.setdefault(tid, []).append(TrajectoryStep(
+                step_index=s["step_index"], action=s["action"],
+                target=s["target"], input_value=s["input_value"],
+                output_value=s["output_value"], outcome=s["outcome"],
+                duration_ms=s["duration_ms"],
+                metadata=json.loads(s["metadata"]),
+            ))
+
+        return [
+            Trajectory(
+                trajectory_id=r["trajectory_id"],
+                pipeline=r["pipeline"], domain=r["domain"],
+                agent_name=r["agent_name"], session_id=r["session_id"],
+                steps=steps_by_tid.get(r["trajectory_id"], []),
+                final_outcome=r["final_outcome"],
+                final_score=r["final_score"],
+                total_duration_ms=r["total_duration_ms"],
+                total_cost=r["total_cost"], timestamp=r["timestamp"],
+            )
+            for r in traj_rows
+        ]
 
     def prune(self, max_age_days: int = 90):
         cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
@@ -215,7 +249,8 @@ class TrajectoryStore:
                     f"DELETE FROM trajectories WHERE trajectory_id IN ({placeholders})",
                     tid_list,
                 )
-        logger.info("Pruned %d trajectories older than %d days", len(tid_list) if 'tid_list' in dir() else 0, max_age_days)
+        pruned_count = len(tid_list) if tid_list else 0
+        logger.info("Pruned %d trajectories older than %d days", pruned_count, max_age_days)
 
     def export_jsonl(self, path: str, domain: str = "", pipeline: str = ""):
         trajectories = self.query(domain=domain, pipeline=pipeline, limit=10000)

@@ -1,7 +1,5 @@
 """SignalAggregator — detects cross-loop patterns from the signal bus."""
 
-import json
-import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -57,15 +55,10 @@ class SignalAggregator:
 
     def check_regressions(self) -> list[AggregatedInsight]:
         insights: list[AggregatedInsight] = []
-        with sqlite3.connect(self._bus._db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM learning_actions WHERE after_metrics IS NOT NULL "
-                "ORDER BY completed_at DESC LIMIT 50",
-            ).fetchall()
+        rows = self._tracker.get_recent_actions(limit=50)
         for row in rows:
-            before = json.loads(row["before_metrics"])
-            after = json.loads(row["after_metrics"])
+            before = row["before_metrics"]
+            after = row["after_metrics"]
             common = set(before.keys()) & set(after.keys())
             for key in common:
                 b_val = float(before[key])
@@ -97,7 +90,6 @@ class SignalAggregator:
         signals = self._filter_paused(self._bus.query(since=since, limit=2000))
         insights.extend(self._detect_persona_drift(signals))
         insights.extend(self._detect_redundant(signals))
-        insights.extend(self._detect_platform_change(signals))
         insights.extend(self._detect_repeated_failures(signals))
         return insights
 

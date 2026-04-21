@@ -9,7 +9,7 @@ from shared.optimization._signals import LearningSignal, SignalBus
 from shared.optimization._trajectory import TrajectoryStore, Trajectory, TrajectoryStep
 from shared.optimization._tracker import PerformanceTracker, DomainStats
 from shared.optimization._aggregator import SignalAggregator
-from shared.optimization._policy import OptimizationPolicy, OptimizationBudget
+from shared.optimization._policy import OptimizationPolicy, OptimizationBudget, PolicyAction
 
 logger = get_logger(__name__)
 
@@ -41,6 +41,7 @@ class OptimizationEngine:
             self._trajectory = TrajectoryStore(db_path=self._db_path)
             self._tracker = PerformanceTracker(
                 db_path=self._db_path, memory_manager=memory_manager,
+                signal_bus=self._bus,
             )
             self._aggregator = SignalAggregator(
                 signal_bus=self._bus, tracker=self._tracker,
@@ -51,13 +52,19 @@ class OptimizationEngine:
                 cognitive_engine=cognitive_engine,
                 budget=budget,
             )
+            self._action_counts = {"insights": 0, "actions_executed": 0, "errors": 0}
         else:
             self._bus = _NoOpBus()
             self._trajectory = _NoOpTrajectory()
             self._tracker = _NoOpTracker()
             self._aggregator = None
             self._policy = None
+            self._action_counts = {}
             logger.info("OptimizationEngine disabled via OPTIMIZATION_ENABLED=false")
+
+    # ------------------------------------------------------------------
+    # Signal emission
+    # ------------------------------------------------------------------
 
     def emit(self, signal_type: str, source_loop: str, domain: str,
              agent_name: str = "", payload: dict = None,
@@ -75,6 +82,10 @@ class OptimizationEngine:
         )
         self._bus.emit(signal)
 
+    # ------------------------------------------------------------------
+    # Before/after learning measurement
+    # ------------------------------------------------------------------
+
     def before_learning_action(self, loop_name: str, domain: str,
                                metrics: dict) -> str:
         if not self._enabled:
@@ -85,6 +96,10 @@ class OptimizationEngine:
         if not self._enabled:
             return {}
         return self._tracker.after_learning_action(action_id, metrics)
+
+    # ------------------------------------------------------------------
+    # Trajectory logging
+    # ------------------------------------------------------------------
 
     def start_trajectory(self, pipeline: str, domain: str,
                          agent_name: str, session_id: str) -> str:
@@ -107,6 +122,10 @@ class OptimizationEngine:
             total_duration_ms, total_cost,
         )
 
+    # ------------------------------------------------------------------
+    # Cognitive outcome tracking
+    # ------------------------------------------------------------------
+
     def record_cognitive_outcome(self, domain: str, agent_name: str,
                                  level: int, success: bool,
                                  escalated: bool = False):
@@ -119,15 +138,57 @@ class OptimizationEngine:
     def get_domain_stats(self, domain: str, agent_name: str) -> DomainStats:
         return self._tracker.get_domain_stats(domain, agent_name)
 
+    # ------------------------------------------------------------------
+    # Memory lifecycle operations
+    # ------------------------------------------------------------------
+
+    def promote_memory(self, memory_id: str):
+        if not self._enabled or not self._memory:
+            return
+        self._policy.promote_memory(memory_id)
+
+    def demote_memory(self, memory_id: str):
+        if not self._enabled or not self._memory:
+            return
+        self._policy.demote_memory(memory_id, check_pinned=True)
+
+    def revive_memory(self, memory_id: str):
+        if not self._enabled or not self._memory:
+            return
+        try:
+            self._memory.revive(memory_id)
+        except Exception as e:
+            logger.warning("Memory revive failed: %s", e)
+
+    def resolve_contradiction(self, new_id: str, old_id: str,
+                              new_stronger: bool = True):
+        if not self._enabled:
+            return
+        self._policy.resolve_contradiction(new_id, old_id, new_stronger)
+
+    # ------------------------------------------------------------------
+    # Optimization cycle (B2: adds sweep, B3: executes actions, W12: flushes)
+    # ------------------------------------------------------------------
+
     def optimize(self) -> dict:
         if not self._enabled:
             return {"insights": [], "actions": []}
+
         insights = self._aggregator.check_realtime()
         insights.extend(self._aggregator.check_regressions())
-        all_actions = []
+        insights.extend(self._aggregator.sweep())
+
+        all_actions: list[PolicyAction] = []
         for insight in insights:
             actions = self._policy.decide(insight)
             all_actions.extend(actions)
+
+        self._action_counts["insights"] += len(insights)
+
+        executed = self._execute_actions(all_actions)
+
+        self.flush_sync()
+
         return {
             "insights": [
                 {"type": i.pattern_type, "domain": i.domain,
@@ -135,10 +196,52 @@ class OptimizationEngine:
                 for i in insights
             ],
             "actions": [
-                {"type": a.action_type, "target": a.target, "domain": a.domain}
+                {"type": a.action_type, "target": a.target,
+                 "domain": a.domain, "executed": a.action_type in executed}
                 for a in all_actions
             ],
         }
+
+    def _execute_actions(self, actions: list[PolicyAction]) -> set[str]:
+        """Execute policy actions. Returns set of action_types that were executed."""
+        executed: set[str] = set()
+        for action in actions:
+            try:
+                self._execute_one(action)
+                executed.add(action.action_type)
+                self._action_counts["actions_executed"] += 1
+            except Exception as e:
+                self._action_counts["errors"] += 1
+                logger.warning("Action %s failed: %s", action.action_type, e)
+        return executed
+
+    def _execute_one(self, action: PolicyAction):
+        t = action.action_type
+        if t == "generate_insight" and self._memory:
+            self._memory.learn_fact(
+                domain=action.domain,
+                fact=action.evidence,
+                run_id=f"opt_insight_{action.domain}",
+            )
+        elif t == "alert_human":
+            logger.warning("OPTIMIZATION ALERT [%s]: %s", action.domain, action.evidence)
+        elif t == "pause_loop" and self._aggregator:
+            self._aggregator.pause_loop(action.target)
+        elif t == "escalate_cognitive":
+            logger.info("Escalation recommended for %s: %s", action.domain, action.evidence)
+        elif t == "demote_memory" and self._memory:
+            logger.info("Memory demote recommended for %s", action.domain)
+        elif t == "rollback" or t == "rollback_persona":
+            self.emit("rollback", source_loop="optimization_policy",
+                      domain=action.domain,
+                      payload={"target": action.target, "evidence": action.evidence})
+            logger.info("Rollback signal emitted for %s: %s", action.domain, action.target)
+        elif t == "merge_actions":
+            logger.info("Merge recommended for %s: %s", action.domain, action.evidence)
+
+    # ------------------------------------------------------------------
+    # Reports & maintenance (W7: fleshed out daily_report)
+    # ------------------------------------------------------------------
 
     def get_report(self, domain: str = "", period: str = "week") -> dict:
         signal_count = self._bus.count(domain=domain)
@@ -146,14 +249,34 @@ class OptimizationEngine:
             "domain": domain or "all",
             "period": period,
             "signal_count": signal_count,
+            "action_counts": dict(self._action_counts),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
     def daily_report(self) -> dict:
+        if not self._enabled:
+            return {"type": "daily", "enabled": False}
+        total = self._bus.count()
+        by_type = {}
+        for st in ("correction", "failure", "success", "adaptation", "score_change", "rollback"):
+            by_type[st] = self._bus.count(source_loop="") if st == "all" else 0
+            try:
+                sigs = self._bus.query(signal_type=st, limit=10000)
+                by_type[st] = len(sigs)
+            except Exception:
+                pass
+
+        domains: set[str] = set()
+        for sig in self._bus.recent():
+            domains.add(sig.domain)
+
         return {
             "type": "daily",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "signal_count": self._bus.count(),
+            "signal_count": total,
+            "by_signal_type": by_type,
+            "active_domains": sorted(domains),
+            "action_counts": dict(self._action_counts),
         }
 
     def weekly_maintenance(self, export_dir: str = "",
@@ -171,6 +294,10 @@ class OptimizationEngine:
             )
         return {"pruned": True, "max_age_days": max_age_days}
 
+    # ------------------------------------------------------------------
+    # Flush & loop control
+    # ------------------------------------------------------------------
+
     async def flush(self):
         if self._cognitive:
             await self._cognitive.flush()
@@ -186,6 +313,18 @@ class OptimizationEngine:
     def resume_loop(self, loop_name: str):
         if self._aggregator:
             self._aggregator.resume_loop(loop_name)
+
+    # ------------------------------------------------------------------
+    # Self-monitoring (D7)
+    # ------------------------------------------------------------------
+
+    def health(self) -> dict:
+        return {
+            "enabled": self._enabled,
+            "signal_count": self._bus.count() if self._enabled else 0,
+            "action_counts": dict(self._action_counts) if self._enabled else {},
+            "paused_loops": sorted(self._aggregator._paused_loops) if self._aggregator else [],
+        }
 
 
 class _NoOpBus:
@@ -209,6 +348,10 @@ class _NoOpTracker:
     def after_learning_action(self, *a, **kw): return {}
     def snapshot(self, *a, **kw): return None
     def record_cognitive_outcome(self, *a, **kw): pass
+    def get_recent_actions(self, **kw): return []
+    def get_snapshots(self, *a, **kw): return []
+    def get_avg_metric(self, *a, **kw): return None
+    def get_trend(self, *a, **kw): return "insufficient_data"
     def get_domain_stats(self, domain, agent_name):
         from shared.optimization._tracker import DomainStats
         return DomainStats(

@@ -30,7 +30,7 @@ class TestPerformanceTracker:
             action_id=action_id,
             metrics={"avg_score_trend": 8.0},
         )
-        assert delta["improvement"] == pytest.approx(0.5, abs=0.01)
+        assert delta["improvement"]["avg_score_trend"] == pytest.approx(0.5, abs=0.01)
 
     def test_regression_detected_on_decline(self, tracker):
         action_id = tracker.before_learning_action(

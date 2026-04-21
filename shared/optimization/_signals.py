@@ -37,6 +37,11 @@ class LearningSignal:
                 f"Invalid signal_type '{self.signal_type}'. "
                 f"Must be one of: {', '.join(sorted(VALID_SIGNAL_TYPES))}"
             )
+        if self.severity not in VALID_SEVERITIES:
+            raise ValueError(
+                f"Invalid severity '{self.severity}'. "
+                f"Must be one of: {', '.join(sorted(VALID_SEVERITIES))}"
+            )
         if not self.signal_id:
             self.signal_id = str(uuid.uuid4())
         if not self.timestamp:
