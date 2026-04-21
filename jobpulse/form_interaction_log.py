@@ -142,6 +142,18 @@ class FormInteractionLog:
             "form_interactions: page %d/%s on %s — %d fields, buttons=%s",
             page_num, page_title or "?", domain, len(field_labels), nav_buttons,
         )
+        try:
+            from shared.optimization import get_optimization_engine
+            get_optimization_engine().emit(
+                signal_type="success",
+                source_loop="form_interaction_log",
+                domain=domain,
+                agent_name="form_filler",
+                payload={"action": "log_page_structure", "page_num": page_num, "field_count": len(field_labels)},
+                session_id=f"fil_{domain}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+            )
+        except Exception as e:
+            logger.debug("Optimization signal failed: %s", e)
 
     def get_replay(self, domain_or_url: str) -> list[dict]:
         """Get the most recent session's ordered steps for a domain."""

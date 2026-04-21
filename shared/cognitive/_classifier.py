@@ -43,7 +43,27 @@ class EscalationClassifier:
         self._domain_stats: dict[str, dict] = {}
 
     def classify(self, task: str, domain: str, stakes: str) -> ThinkLevel:
-        # Step 0: check classifier self-improvement memory
+        # Step 0a: check optimization engine DomainStats override
+        try:
+            from shared.optimization import get_optimization_engine
+            opt_stats = get_optimization_engine().get_domain_stats(domain, domain)
+            if opt_stats.forced_level is not None and opt_stats.sample_size >= 20:
+                level = ThinkLevel(opt_stats.forced_level)
+                logger.debug(
+                    "Optimization override: %s forced to %s (n=%d)",
+                    domain, level.name, opt_stats.sample_size,
+                )
+                return self._budget.clamp(level)
+            if opt_stats.l0_success_rate >= 0.95 and opt_stats.sample_size >= 20:
+                logger.debug(
+                    "Optimization L0 fast-path: %s success=%.0f%% (n=%d)",
+                    domain, opt_stats.l0_success_rate * 100, opt_stats.sample_size,
+                )
+                return self._budget.clamp(ThinkLevel.L0_MEMORY)
+        except Exception:
+            pass  # degrade gracefully — fall through to local stats
+
+        # Step 0b: check classifier self-improvement memory
         stats = self._domain_stats.get(domain)
         if stats and stats.get("l0_success_rate", 0) >= _L0_SKIP_THRESHOLD \
            and stats.get("sample_size", 0) >= 10:

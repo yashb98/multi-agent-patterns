@@ -75,6 +75,18 @@ class NavigationLearner:
                 (domain, steps_json, int(success), now, now),
             )
         logger.info("Saved navigation sequence for %s (success=%s, %d steps)", domain, success, len(steps))
+        try:
+            from shared.optimization import get_optimization_engine
+            get_optimization_engine().emit(
+                signal_type="adaptation",
+                source_loop="navigation_learner",
+                domain=domain,
+                agent_name="navigator",
+                payload={"param": "navigation_path", "old_value": "", "new_value": f"{len(steps)}_steps", "reason": "learned_navigation"},
+                session_id=f"nl_{domain}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+            )
+        except Exception as e:
+            logger.debug("Optimization signal failed: %s", e)
 
     def mark_failed(self, domain_or_url: str):
         """Mark a learned sequence as failed (invalidate it)."""

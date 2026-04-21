@@ -361,6 +361,23 @@ def synthesis_node(state: AgentState) -> dict:
     logger.info("Debate exchanges: %d", debate_rounds)
     logger.info("Total cost: $%.4f (%d LLM calls)", cost["total_cost_usd"], cost["calls"])
 
+    # Emit success signal to optimization engine
+    try:
+        from shared.optimization import get_optimization_engine
+        get_optimization_engine().emit(
+            signal_type="success",
+            source_loop="experience_memory",
+            domain=state.get("topic", "unknown"),
+            agent_name="peer_debate",
+            payload={
+                "score": state.get("review_score", 0.0),
+                "iterations": state.get("iteration", 0),
+            },
+            session_id=f"pattern_{state.get('topic', 'unknown')}",
+        )
+    except Exception:
+        pass
+
     return {
         "final_output": draft,
         "total_cost_usd": cost["total_cost_usd"],

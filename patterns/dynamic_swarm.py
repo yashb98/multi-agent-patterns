@@ -446,6 +446,23 @@ def swarm_finish_node(state: AgentState) -> dict:
         score=score,
     )
 
+    # Emit success signal to optimization engine
+    try:
+        from shared.optimization import get_optimization_engine
+        get_optimization_engine().emit(
+            signal_type="success",
+            source_loop="experience_memory",
+            domain=state.get("topic", "unknown"),
+            agent_name="dynamic_swarm",
+            payload={
+                "score": state.get("review_score", 0.0),
+                "iterations": state.get("iteration", 0),
+            },
+            session_id=f"pattern_{state.get('topic', 'unknown')}",
+        )
+    except Exception:
+        pass
+
     return {
         "final_output": draft,
         "total_cost_usd": cost["total_cost_usd"],

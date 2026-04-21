@@ -100,6 +100,18 @@ class FormExperienceDB:
             "form_experience: recorded %s (platform=%s, pages=%d, success=%s, fields=%d)",
             domain, platform, pages_filled, success, len(field_types),
         )
+        try:
+            from shared.optimization import get_optimization_engine
+            get_optimization_engine().emit(
+                signal_type="success" if success else "failure",
+                source_loop="form_experience",
+                domain=domain,
+                agent_name="form_filler",
+                payload={"action": "record_experience", "adapter": adapter, "pages": pages_filled},
+                session_id=f"fe_{domain}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+            )
+        except Exception as e:
+            logger.debug("Optimization signal failed: %s", e)
 
     def lookup(self, domain_or_url: str) -> dict | None:
         domain = self.normalize_domain(domain_or_url)
