@@ -41,13 +41,8 @@ def sanitize_user_input(text: str, source: str = "user") -> str:
 def wrap_agent_output(text: str, agent_name: str) -> str:
     """Wrap agent output before passing to another agent.
 
-    In multi-agent systems, one agent's output is another's input.
-    This prevents a compromised agent from injecting instructions.
+    Delegates to shared.governance._output_sanitizer.sanitize_agent_output.
+    Kept here for backwards compatibility.
     """
-    if not text:
-        return ""
-
-    # Strip any existing markers
-    text = re.sub(r'</?(user_input|system|assistant|instruction|agent_output)[^>]*>', '', text, flags=re.IGNORECASE)
-
-    return f"<agent_output from=\"{agent_name}\">\n{text}\n</agent_output>"
+    from shared.governance._output_sanitizer import sanitize_agent_output
+    return sanitize_agent_output(text, agent_name)

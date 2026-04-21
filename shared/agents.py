@@ -46,6 +46,7 @@ from shared.state import AgentState
 from shared.prompts import RESEARCHER_PROMPT, WRITER_PROMPT, REVIEWER_PROMPT
 from shared.logging_config import get_logger
 from shared.prompt_defense import sanitize_user_input
+from shared.governance._output_sanitizer import sanitize_agent_output
 
 # Re-export from split modules for backward compatibility
 from shared.cost_tracker import (  # noqa: F401
@@ -372,7 +373,7 @@ details, current trends, and notable perspectives."""
     logger.info("Research produced: %d characters ($%.4f)", len(research), usage["cost_usd"])
 
     return {
-        "research_notes": [research],
+        "research_notes": [sanitize_agent_output(research, "researcher")],
         "current_agent": "researcher",
         "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Researcher completed"],
         "token_usage": [usage],
@@ -438,7 +439,7 @@ Write a complete, polished technical blog article based on these research notes.
     logger.info("Draft produced: %d characters, ~%d words ($%.4f)", len(draft), len(draft.split()), usage["cost_usd"])
 
     return {
-        "draft": draft,
+        "draft": sanitize_agent_output(draft, "writer"),
         "iteration": iteration + 1,
         "current_agent": "writer",
         "agent_history": [f"[{datetime.now().strftime('%H:%M:%S')}] Writer completed (iteration {iteration + 1})"],
