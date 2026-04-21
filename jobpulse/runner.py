@@ -289,8 +289,10 @@ def main():
 
     elif command == "optimize":
         from shared.optimization import get_optimization_engine
+        from jobpulse.telegram_bots import send_alert
 
         engine = get_optimization_engine()
+        engine.set_alert_fn(lambda msg: send_alert(f"🔧 {msg}"))
         result = engine.optimize()
         logger.info(
             "Optimization: %d insights, %d actions",

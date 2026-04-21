@@ -1,5 +1,6 @@
 """SignalAggregator — detects cross-loop patterns from the signal bus."""
 
+import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -35,13 +36,37 @@ class SignalAggregator:
         self._bus = signal_bus
         self._tracker = tracker
         self._memory = memory_manager
-        self._paused_loops: set[str] = set()
+        self._db_path = signal_bus._db_path
+        self._init_paused_table()
+        self._paused_loops: set[str] = self._load_paused_loops()
+
+    def _init_paused_table(self):
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS paused_loops (
+                    loop_name TEXT PRIMARY KEY,
+                    paused_at TEXT NOT NULL
+                )
+            """)
+
+    def _load_paused_loops(self) -> set[str]:
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute("SELECT loop_name FROM paused_loops").fetchall()
+        return {r[0] for r in rows}
 
     def pause_loop(self, loop_name: str):
         self._paused_loops.add(loop_name)
+        ts = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO paused_loops (loop_name, paused_at) VALUES (?, ?)",
+                (loop_name, ts),
+            )
 
     def resume_loop(self, loop_name: str):
         self._paused_loops.discard(loop_name)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute("DELETE FROM paused_loops WHERE loop_name = ?", (loop_name,))
 
     def _filter_paused(self, signals: list[LearningSignal]) -> list[LearningSignal]:
         return [s for s in signals if s.source_loop not in self._paused_loops]

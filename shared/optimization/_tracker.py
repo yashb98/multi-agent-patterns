@@ -89,6 +89,16 @@ class PerformanceTracker:
                 "CREATE INDEX IF NOT EXISTS idx_cog_domain "
                 "ON cognitive_outcomes(domain, agent_name)"
             )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS forced_level_overrides (
+                    domain TEXT NOT NULL,
+                    agent_name TEXT NOT NULL,
+                    forced_level INTEGER NOT NULL,
+                    reason TEXT,
+                    set_at TEXT NOT NULL,
+                    PRIMARY KEY (domain, agent_name)
+                )
+            """)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -267,6 +277,25 @@ class PerformanceTracker:
             return "declining"
         return "stable"
 
+    def set_forced_level(self, domain: str, agent_name: str,
+                         level: int, reason: str = ""):
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO forced_level_overrides
+                   (domain, agent_name, forced_level, reason, set_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (domain, agent_name, level, reason, ts),
+            )
+        logger.info("Forced level %d for %s/%s: %s", level, domain, agent_name, reason)
+
+    def clear_forced_level(self, domain: str, agent_name: str):
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM forced_level_overrides WHERE domain = ? AND agent_name = ?",
+                (domain, agent_name),
+            )
+
     def record_cognitive_outcome(self, domain: str, agent_name: str,
                                  level: int, success: bool,
                                  escalated: bool = False):
@@ -304,8 +333,17 @@ class PerformanceTracker:
             return sum(1 for r in at_level if r["success"]) / len(at_level)
 
         escalated_count = sum(1 for r in rows if r["escalated"])
+        # Check manual overrides first (set by escalate_cognitive action)
         forced = None
-        if total >= 20:
+        with self._connect() as conn:
+            override = conn.execute(
+                "SELECT forced_level FROM forced_level_overrides "
+                "WHERE domain = ? AND agent_name = ?",
+                (domain, agent_name),
+            ).fetchone()
+        if override:
+            forced = override["forced_level"]
+        elif total >= 20:
             l0_rate = _rate(0)
             if l0_rate >= 0.95:
                 forced = 0

@@ -1,5 +1,6 @@
 """OptimizationPolicy — decides actions based on aggregated insights."""
 
+import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -33,15 +34,67 @@ class OptimizationPolicy:
     """Rule-based policy with CognitiveEngine fallback for novel decisions."""
 
     def __init__(self, memory_manager=None, cognitive_engine=None,
-                 budget: Optional[OptimizationBudget] = None):
+                 budget: Optional[OptimizationBudget] = None,
+                 db_path: Optional[str] = None):
         self._memory = memory_manager
         self._cognitive = cognitive_engine
         self._budget = budget or OptimizationBudget()
+        self._db_path = db_path
         self._rollback_count = 0
         self._rule_gen_count = 0
         self._llm_call_count = 0
         self._window_start = time.monotonic()
         self._last_rollback_time = 0.0
+        if db_path:
+            self._init_budget_table()
+            self._load_budget_state()
+
+    def _init_budget_table(self):
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS budget_state (
+                    key TEXT PRIMARY KEY,
+                    value REAL NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+    def _load_budget_state(self):
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                rows = conn.execute("SELECT key, value FROM budget_state").fetchall()
+            state = {r[0]: r[1] for r in rows}
+            self._rollback_count = int(state.get("rollback_count", 0))
+            self._rule_gen_count = int(state.get("rule_gen_count", 0))
+            self._llm_call_count = int(state.get("llm_call_count", 0))
+            self._last_rollback_time = state.get("last_rollback_time", 0.0)
+            saved_window = state.get("window_start", 0.0)
+            if saved_window > 0:
+                elapsed = time.monotonic() - (time.time() - saved_window)
+                if elapsed < 3600:
+                    self._window_start = time.monotonic() - (time.time() - saved_window)
+        except Exception:
+            pass
+
+    def _save_budget_state(self):
+        if not self._db_path:
+            return
+        ts = time.time()
+        items = [
+            ("rollback_count", self._rollback_count),
+            ("rule_gen_count", self._rule_gen_count),
+            ("llm_call_count", self._llm_call_count),
+            ("last_rollback_time", self._last_rollback_time),
+            ("window_start", ts - (time.monotonic() - self._window_start)),
+        ]
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            for key, val in items:
+                conn.execute(
+                    "INSERT OR REPLACE INTO budget_state (key, value, updated_at) VALUES (?, ?, ?)",
+                    (key, val, now),
+                )
 
     def _maybe_reset_window(self):
         if time.monotonic() - self._window_start >= 3600:
@@ -49,6 +102,7 @@ class OptimizationPolicy:
             self._rollback_count = 0
             self._rule_gen_count = 0
             self._llm_call_count = 0
+            self._save_budget_state()
 
     def _in_cooldown(self) -> bool:
         if self._last_rollback_time == 0:
@@ -100,6 +154,7 @@ class OptimizationPolicy:
         if insight.confidence < _CONFIDENCE_THRESHOLD_FOR_LLM and self._cognitive:
             if self._llm_call_count < self._budget.max_llm_policy_calls_per_hour:
                 self._llm_call_count += 1
+                self._save_budget_state()
                 context_parts = [
                     f"Pattern: {insight.pattern_type}",
                     f"Domain: {insight.domain}",
@@ -134,6 +189,7 @@ class OptimizationPolicy:
         actions = []
         if self._rule_gen_count < self._budget.max_rule_generations_per_hour:
             self._rule_gen_count += 1
+            self._save_budget_state()
             actions.append(PolicyAction(
                 action_type="generate_insight",
                 target="semantic_memory",
@@ -166,6 +222,7 @@ class OptimizationPolicy:
 
         self._rollback_count += 1
         self._last_rollback_time = time.monotonic()
+        self._save_budget_state()
         actions.append(PolicyAction(
             action_type="rollback",
             target=insight.recommended_action,

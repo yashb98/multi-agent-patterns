@@ -170,3 +170,24 @@ class TestPerformanceTracker:
         )
         stats = tracker.get_domain_stats(domain="workday", agent_name="form_filler")
         assert stats.l2_success_rate == 1.0
+
+    def test_forced_level_override(self, tracker):
+        """Manual forced_level override takes precedence over computed."""
+        # Record outcomes that would compute forced=0 (high L0 success)
+        for _ in range(25):
+            tracker.record_cognitive_outcome(
+                domain="override_test", agent_name="agent",
+                level=0, success=True,
+            )
+        stats = tracker.get_domain_stats("override_test", "agent")
+        assert stats.forced_level == 0  # computed from L0 success rate
+
+        # Set manual override to L2
+        tracker.set_forced_level("override_test", "agent", 2, reason="regression detected")
+        stats = tracker.get_domain_stats("override_test", "agent")
+        assert stats.forced_level == 2  # manual override wins
+
+        # Clear override — falls back to computed
+        tracker.clear_forced_level("override_test", "agent")
+        stats = tracker.get_domain_stats("override_test", "agent")
+        assert stats.forced_level == 0  # back to computed

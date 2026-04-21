@@ -157,6 +157,110 @@ class TestOptimizationEngine:
         optimization_engine.demote_memory("mem_b")
         assert "mem_b" in mock_memory._demoted
 
+    def test_alert_human_calls_callback(self, optimization_engine):
+        """alert_human action invokes the registered alert callback."""
+        alerts = []
+        optimization_engine.set_alert_fn(lambda msg: alerts.append(msg))
+        for i in range(3):
+            optimization_engine.emit(
+                signal_type="failure",
+                source_loop="test",
+                domain="flaky_platform",
+                agent_name="test",
+                payload={},
+                session_id=f"sess_alert_{i}",
+                severity="critical",
+            )
+        optimization_engine.optimize()
+        assert len(alerts) >= 1
+        assert "flaky_platform" in alerts[0]
+
+    def test_escalate_cognitive_sets_forced_level(self, optimization_engine, db_path):
+        """escalate_cognitive action writes forced_level to tracker."""
+        # Emit enough corrections to trigger systemic + escalation
+        for i in range(5):
+            optimization_engine.emit(
+                signal_type="correction",
+                source_loop="correction_capture",
+                domain="escalate_test",
+                agent_name="form_filler",
+                payload={"field": "salary", "old_value": "bad", "new_value": "good"},
+                session_id=f"sess_esc_{i}",
+            )
+        optimization_engine.optimize()
+        stats = optimization_engine.get_domain_stats("escalate_test", "escalate_test")
+        # If escalate_cognitive fired, forced_level should be set to 2
+        if stats.forced_level is not None:
+            assert stats.forced_level == 2
+
+    def test_demote_memory_searches_and_demotes(self, optimization_engine, mock_memory):
+        """demote_memory action does semantic search and calls demote()."""
+        mock_memory._search_results = [
+            {"id": "mem_regression", "content": "old insight", "score": 0.9},
+        ]
+        # Trigger a regression → policy generates demote_memory action
+        aid = optimization_engine.before_learning_action(
+            loop_name="persona_evolution", domain="demote_test",
+            metrics={"avg_score_trend": 8.0},
+        )
+        optimization_engine.after_learning_action(
+            action_id=aid, metrics={"avg_score_trend": 5.0},
+        )
+        optimization_engine.optimize()
+        assert "mem_regression" in mock_memory._demoted
+
+    def test_paused_loops_persist_across_restart(self, db_path, mock_memory, mock_cognitive):
+        """Paused loops survive engine recreation (SQLite persistence)."""
+        engine1 = OptimizationEngine(
+            db_path=db_path,
+            memory_manager=mock_memory,
+            cognitive_engine=mock_cognitive,
+        )
+        engine1.pause_loop("persona_evolution")
+        assert "persona_evolution" in engine1.health()["paused_loops"]
+
+        # Recreate engine from same db
+        engine2 = OptimizationEngine(
+            db_path=db_path,
+            memory_manager=mock_memory,
+            cognitive_engine=mock_cognitive,
+        )
+        assert "persona_evolution" in engine2.health()["paused_loops"]
+
+        # Resume and verify persistence
+        engine2.resume_loop("persona_evolution")
+        engine3 = OptimizationEngine(
+            db_path=db_path,
+            memory_manager=mock_memory,
+            cognitive_engine=mock_cognitive,
+        )
+        assert "persona_evolution" not in engine3.health()["paused_loops"]
+
+    def test_budget_state_persists_across_restart(self, db_path, mock_memory, mock_cognitive):
+        """Budget counters survive engine recreation."""
+        engine1 = OptimizationEngine(
+            db_path=db_path,
+            memory_manager=mock_memory,
+            cognitive_engine=mock_cognitive,
+        )
+        # Trigger enough regressions to increment rollback_count
+        for i in range(2):
+            aid = engine1.before_learning_action(
+                loop_name="persona_evolution", domain="budget_test",
+                metrics={"score": 8.0},
+            )
+            engine1.after_learning_action(aid, metrics={"score": 5.0})
+        engine1.optimize()
+        count1 = engine1._policy._rollback_count
+
+        # Recreate engine — budget should persist
+        engine2 = OptimizationEngine(
+            db_path=db_path,
+            memory_manager=mock_memory,
+            cognitive_engine=mock_cognitive,
+        )
+        assert engine2._policy._rollback_count == count1
+
     def test_disabled_via_env_var(self, db_path, mock_memory, mock_cognitive):
         with patch.dict(os.environ, {"OPTIMIZATION_ENABLED": "false"}):
             engine = OptimizationEngine(

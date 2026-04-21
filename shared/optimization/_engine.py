@@ -36,6 +36,8 @@ class OptimizationEngine:
         self._memory = memory_manager
         self._cognitive = cognitive_engine
 
+        self._alert_fn = None
+
         if self._enabled:
             self._bus = SignalBus(db_path=self._db_path)
             self._trajectory = TrajectoryStore(db_path=self._db_path)
@@ -51,6 +53,7 @@ class OptimizationEngine:
                 memory_manager=memory_manager,
                 cognitive_engine=cognitive_engine,
                 budget=budget,
+                db_path=self._db_path,
             )
             self._action_counts = {"insights": 0, "actions_executed": 0, "errors": 0}
         else:
@@ -61,6 +64,10 @@ class OptimizationEngine:
             self._policy = None
             self._action_counts = {}
             logger.info("OptimizationEngine disabled via OPTIMIZATION_ENABLED=false")
+
+    def set_alert_fn(self, fn):
+        """Register a callback for alert_human actions (e.g., Telegram send_alert)."""
+        self._alert_fn = fn
 
     # ------------------------------------------------------------------
     # Signal emission
@@ -224,18 +231,38 @@ class OptimizationEngine:
                 run_id=f"opt_insight_{action.domain}",
             )
         elif t == "alert_human":
-            logger.warning("OPTIMIZATION ALERT [%s]: %s", action.domain, action.evidence)
+            msg = f"[{action.domain}] {action.evidence}"
+            logger.warning("OPTIMIZATION ALERT: %s", msg)
+            if self._alert_fn:
+                try:
+                    self._alert_fn(msg)
+                except Exception as e:
+                    logger.debug("Alert callback failed: %s", e)
         elif t == "pause_loop" and self._aggregator:
             self._aggregator.pause_loop(action.target)
         elif t == "escalate_cognitive":
-            logger.info("Escalation recommended for %s: %s", action.domain, action.evidence)
+            self._tracker.set_forced_level(
+                domain=action.domain,
+                agent_name=action.domain,
+                level=2,
+                reason=action.evidence,
+            )
         elif t == "demote_memory" and self._memory:
-            logger.info("Memory demote recommended for %s", action.domain)
+            try:
+                results = self._memory.search_semantic(
+                    query=action.evidence,
+                    domain=action.domain,
+                    limit=1,
+                )
+                if results and results[0].get("id"):
+                    self._memory.demote(results[0]["id"])
+                    logger.info("Demoted memory %s for %s", results[0]["id"], action.domain)
+            except Exception as e:
+                logger.debug("Memory demote search failed: %s", e)
         elif t == "rollback" or t == "rollback_persona":
             self.emit("rollback", source_loop="optimization_policy",
                       domain=action.domain,
                       payload={"target": action.target, "evidence": action.evidence})
-            logger.info("Rollback signal emitted for %s: %s", action.domain, action.target)
         elif t == "merge_actions":
             logger.info("Merge recommended for %s: %s", action.domain, action.evidence)
 
