@@ -195,6 +195,18 @@ class ExperienceMemory:
 
         self.conn.commit()
         logger.debug("Stored experience (domain=%s, score=%.1f)", experience.domain, experience.score)
+        try:
+            from shared.optimization import get_optimization_engine
+            get_optimization_engine().emit(
+                signal_type="success",
+                source_loop="experience_memory",
+                domain=experience.domain,
+                agent_name="grpo",
+                payload={"score": experience.score, "pattern": experience.successful_pattern[:100]},
+                session_id=f"exp_{experience.domain}",
+            )
+        except Exception as e:
+            logger.debug("Optimization signal failed: %s", e)
 
     def retrieve(self, domain: str, n: int = 3) -> list[Experience]:
         """Retrieve top-N experiences for a domain. Updates last_accessed (LRU)."""

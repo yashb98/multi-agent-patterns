@@ -119,6 +119,18 @@ Return ONLY the evolved prompt text. No explanation."""
         if len(evolved) > 50:  # Sanity check
             store_persona(agent_name, evolved, generation, score)
             logger.info("%s evolved to generation %d (quick)", agent_name, generation)
+            try:
+                from shared.optimization import get_optimization_engine
+                get_optimization_engine().emit(
+                    signal_type="score_change",
+                    source_loop="persona_evolution",
+                    domain=agent_name,
+                    agent_name=agent_name,
+                    payload={"new_score": score, "generation": generation},
+                    session_id=f"pe_{agent_name}_{generation}",
+                )
+            except Exception as e2:
+                logger.debug("Optimization signal failed: %s", e2)
 
     except Exception as e:
         logger.warning("Evolution failed for %s: %s", agent_name, e)

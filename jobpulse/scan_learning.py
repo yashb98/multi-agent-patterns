@@ -221,6 +221,20 @@ class ScanLearningEngine:
             platform,
             outcome,
         )
+        if outcome == "blocked":
+            try:
+                from shared.optimization import get_optimization_engine
+                get_optimization_engine().emit(
+                    signal_type="failure",
+                    source_loop="scan_learning",
+                    domain=platform,
+                    agent_name="scanner",
+                    severity="critical",
+                    payload={"action": "scan", "error": wall_type or "unknown"},
+                    session_id=event_id,
+                )
+            except Exception as e:
+                logger.debug("Optimization signal failed: %s", e)
         return event_id
 
     def get_total_blocks(self, platform: str | None = None) -> int:

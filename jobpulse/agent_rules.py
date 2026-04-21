@@ -112,6 +112,18 @@ class AgentRulesDB:
             "agent_rules: generated blocker rule #%d category=%s pattern=%s confidence=%.2f",
             rule_id, category, pattern, confidence,
         )
+        try:
+            from shared.optimization import get_optimization_engine
+            get_optimization_engine().emit(
+                signal_type="adaptation",
+                source_loop="agent_rules",
+                domain=category,
+                agent_name="agent_rules",
+                payload={"pattern": pattern, "action": "generate_rule", "confidence": confidence},
+                session_id=f"ar_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+            )
+        except Exception as e:
+            logger.debug("Optimization signal failed: %s", e)
         return {
             "rule_id": rule_id,
             "category": category,

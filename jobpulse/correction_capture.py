@@ -92,6 +92,20 @@ class CorrectionCapture:
                 "correction_capture: %d corrections, %d unchanged (domain=%s)",
                 len(corrections), unchanged, domain,
             )
+            try:
+                from shared.optimization import get_optimization_engine
+                engine = get_optimization_engine()
+                for c in corrections:
+                    engine.emit(
+                        signal_type="correction",
+                        source_loop="correction_capture",
+                        domain=domain,
+                        agent_name="form_filler",
+                        payload={"field": c["field"], "old": c["agent"], "new": c["user"], "platform": platform},
+                        session_id=f"cc_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+                    )
+            except Exception as e:
+                logger.debug("Optimization signal failed: %s", e)
 
         return {"corrections": corrections, "unchanged": unchanged}
 

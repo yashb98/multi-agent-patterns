@@ -86,6 +86,19 @@ def record_result(test_name: str, variant: str, score: float, metadata: dict = N
     )
     conn.commit()
     conn.close()
+    try:
+        from shared.optimization import get_optimization_engine
+        get_optimization_engine().emit(
+            signal_type="score_change",
+            source_loop="ab_testing",
+            domain=test_name,
+            agent_name=test_name,
+            payload={"variant": variant, "score": score},
+            session_id=f"ab_{test_name}",
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Optimization signal failed: %s", e)
 
 
 def get_results(test_name: str) -> dict:
