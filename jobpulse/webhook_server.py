@@ -20,6 +20,9 @@ app = FastAPI(
     description="JobPulse automation — papers, GitHub, health, and Telegram webhook.",
 )
 
+from shared.governance._api_auth import require_auth
+require_auth(app)
+
 # Mount sub-routers
 from jobpulse.health_api import health_router
 from jobpulse.analytics_api import analytics_router

@@ -67,6 +67,9 @@ def create_gateway_app() -> FastAPI:
     """Create the MCP Gateway FastAPI application."""
     app = FastAPI(title="MCP Gateway", version="1.0.0")
 
+    from shared.governance._api_auth import require_auth
+    require_auth(app)
+
     @app.get("/health")
     def health():
         servers_status = {

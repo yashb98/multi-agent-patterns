@@ -27,6 +27,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from shared.governance._api_auth import require_auth
+require_auth(app)
+
 # New CodeGraph endpoints (primary)
 app.include_router(codegraph_router)
 
