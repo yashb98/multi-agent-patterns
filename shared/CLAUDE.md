@@ -60,6 +60,17 @@ All memory access goes through MemoryManager — never query engines directly.
 - Budget caps: 20 L2/hour, 5 L3/hour, $0.50/hour. Kill switch: COGNITIVE_ENABLED=false
 - Full docs: `shared/cognitive/CLAUDE.md`
 
+## Optimization Engine (shared/optimization/)
+Continuous learning & optimization — Pillar 3 of 6.
+- Signal-driven: learning loops emit → aggregator detects patterns → policy acts → tracker measures
+- `OptimizationEngine` facade: `get_optimization_engine()` returns shared singleton
+- Signal types: correction | failure | success | adaptation | score_change | rollback
+- Wrap learning actions with `before_learning_action()` / `after_learning_action()`
+- TrajectoryStore logs structured action sequences, exports ShareGPT JSONL
+- DomainStats feeds CognitiveEngine's EscalationClassifier with success rates
+- Kill switch: `OPTIMIZATION_ENABLED=false` makes engine full no-op
+- Full docs: `shared/optimization/CLAUDE.md`
+
 ## Rules
 - NEVER import from patterns/, jobpulse/, or mindgraph_app/
 - NEVER instantiate ChatOpenAI directly — always use get_llm() from agents.py

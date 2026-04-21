@@ -136,6 +136,7 @@ Checkpoints:
 - [ ] Error degradation returns structured context, not "Data unavailable" strings
 - [ ] Verification/validation results logged with before/after values
 - [ ] Memory and learning recorded for ALL score ranges, not just high scores
+- [ ] Learning actions tracked via OptimizationEngine.before_learning_action() / after_learning_action()
 
 Known violations (FIXED 2026-04-20 unless noted):
 - ~~`shared/agents.py:254`~~ — `_StreamResponse` now estimates token usage from content length ✅

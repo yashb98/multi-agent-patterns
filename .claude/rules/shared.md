@@ -51,6 +51,11 @@ SQLite-backed ExperienceMemory shared across all 4 patterns:
 All memory access goes through MemoryManager — never query SQLite/Qdrant/Neo4j directly.
 Same principle as get_llm() for LLM calls: single entry point, no direct engine access.
 
+## Optimization Engine (shared/optimization/)
+All optimization access goes through OptimizationEngine — never query data/optimization.db directly.
+Same principle as MemoryManager and CognitiveEngine: single facade, no direct component access.
+All learning loops MUST emit signals. All learning actions MUST use before/after measurement.
+
 ## Fact Checker (shared/fact_checker.py)
 Unified module used by both patterns/ and jobpulse/.
 - 3-level verification: research notes → external (Semantic Scholar, web search) → cache

@@ -82,4 +82,5 @@ Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 - `shared/CLAUDE.md` — Cross-cutting utilities, NLP, fact-checker
 - `shared/cognitive/CLAUDE.md` — 4-level cognitive engine: memory recall, single shot, reflexion, tree of thought
 - `shared/memory_layer/CLAUDE.md` — 3-engine memory: SQLite (truth) + Qdrant (vectors) + Neo4j (graph)
+- `shared/optimization/CLAUDE.md` — Continuous learning: signal bus, aggregator, tracker, policy, trajectories
 - `.claude/rules/` — Domain-specific rules (jobs, testing, patterns, shared, frontend, error-handling)
