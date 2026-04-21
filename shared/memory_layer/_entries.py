@@ -9,13 +9,105 @@ Each entry type represents a different tier of the five-tier memory architecture
 """
 
 import hashlib
+import json as _json
+from enum import Enum
 from typing import Optional
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import uuid4
 
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+class MemoryTier(str, Enum):
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
+    PROCEDURAL = "procedural"
+    PATTERN = "pattern"
+    EXPERIENCE = "experience"
+
+
+class Lifecycle(str, Enum):
+    STM = "stm"
+    MTM = "mtm"
+    LTM = "ltm"
+    COLD = "cold"
+    ARCHIVED = "archived"
+
+
+class EdgeType(str, Enum):
+    SIMILAR_TO = "SIMILAR_TO"
+    PRODUCED = "PRODUCED"
+    TAUGHT = "TAUGHT"
+    EXTRACTED_FROM = "EXTRACTED_FROM"
+    CONTRADICTS = "CONTRADICTS"
+    REINFORCES = "REINFORCES"
+    SUPERSEDES = "SUPERSEDES"
+    RELATED_TO = "RELATED_TO"
+    APPLIES_TO = "APPLIES_TO"
+
+
+class ProtectionLevel(int, Enum):
+    NONE = 0
+    ELEVATED = 1
+    PROTECTED = 2
+    PINNED = 3
+
+
+@dataclass
+class MemoryEntry:
+    """Unified memory entry across all tiers."""
+    memory_id: str
+    tier: MemoryTier
+    lifecycle: Lifecycle
+    domain: str
+    content: str
+    embedding: list[float]
+
+    created_at: datetime
+    last_accessed: datetime
+    access_count: int
+    decay_score: float
+
+    score: float
+    confidence: float
+
+    payload: dict
+    is_tombstoned: bool
+
+    @staticmethod
+    def create(
+        tier: MemoryTier,
+        domain: str,
+        content: str,
+        score: float = 0.0,
+        confidence: float = 0.7,
+        payload: dict | None = None,
+        embedding: list[float] | None = None,
+    ) -> "MemoryEntry":
+        now = datetime.now()
+        return MemoryEntry(
+            memory_id=uuid4().hex[:12],
+            tier=tier,
+            lifecycle=Lifecycle.STM,
+            domain=domain,
+            content=content,
+            embedding=embedding or [],
+            created_at=now,
+            last_accessed=now,
+            access_count=0,
+            decay_score=1.0,
+            score=score,
+            confidence=confidence,
+            payload=payload or {},
+            is_tombstoned=False,
+        )
+
+    def touch(self):
+        self.last_accessed = datetime.now()
+        self.access_count += 1
 
 
 @dataclass
