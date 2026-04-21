@@ -29,3 +29,8 @@ from shared.optimization._aggregator import (  # noqa: F401
     SignalAggregator,
     AggregatedInsight,
 )
+from shared.optimization._policy import (  # noqa: F401
+    OptimizationPolicy,
+    OptimizationBudget,
+    PolicyAction,
+)
