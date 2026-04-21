@@ -107,3 +107,34 @@ class TestEventStore:
             prefix="scan:", start_event="scan.window_started", end_event="scan.window_done"
         )
         assert incomplete == ["scan:b"]
+
+
+class TestCompaction:
+    def test_compact_stream_creates_snapshot(self, event_store):
+        from shared.execution._projectors import ScanProjector
+        event_store.emit("scan:old", "scan.window_started", {"platforms": ["linkedin"]})
+        event_store.emit("scan:old", "scan.platform_started", {"platform": "linkedin"})
+        event_store.emit("scan:old", "scan.platform_done", {"platform": "linkedin", "count": 5})
+        event_store.emit("scan:old", "scan.window_done", {"total": 5})
+        event_store.compact_stream("scan:old", ScanProjector())
+        snap = event_store.load_snapshot("scan:old")
+        assert snap is not None
+        assert snap["snapshot_state"]["platforms_done"] == ["linkedin"]
+
+    def test_compact_removes_old_events(self, event_store):
+        from shared.execution._projectors import ScanProjector
+        event_store.emit("scan:old", "scan.window_started", {"platforms": []})
+        event_store.emit("scan:old", "scan.window_done", {"total": 0})
+        event_store.compact_stream("scan:old", ScanProjector())
+        events = event_store.get_stream("scan:old")
+        assert len(events) == 0
+
+    def test_project_from_snapshot_plus_new_events(self, event_store):
+        from shared.execution._projectors import ScanProjector, project_stream
+        event_store.emit("scan:s", "scan.platform_done", {"platform": "linkedin", "count": 3})
+        event_store.compact_stream("scan:s", ScanProjector())
+        event_store.emit("scan:s", "scan.platform_done", {"platform": "indeed", "count": 5})
+        state = project_stream(event_store, "scan:s", ScanProjector())
+        assert "linkedin" in state["platforms_done"]
+        assert "indeed" in state["platforms_done"]
+        assert state["jobs_found"] == 8

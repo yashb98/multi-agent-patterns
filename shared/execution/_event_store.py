@@ -186,6 +186,22 @@ class EventStore:
             "created_at": row["created_at"],
         }
 
+    def compact_stream(self, stream_id: str, projector) -> None:
+        """Compact a stream: project state, save snapshot, delete old events."""
+        from shared.execution._projectors import project_stream
+        state = project_stream(self, stream_id, projector)
+        events = self.get_stream(stream_id)
+        if not events:
+            return
+        last_id = events[-1]["event_id"]
+        self.save_snapshot(stream_id, state, last_id)
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM events WHERE stream_id = ?", (stream_id,)
+            )
+            self._conn.commit()
+        logger.info("Compacted stream %s: %d events → snapshot", stream_id, len(events))
+
     def close(self) -> None:
         """Close the database connection."""
         self._conn.close()
