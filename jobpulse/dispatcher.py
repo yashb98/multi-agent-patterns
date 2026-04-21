@@ -821,6 +821,48 @@ def _handle_interview_prep(cmd: ParsedCommand) -> str:
     return format_prep_telegram(report)
 
 
+def _handle_learning_status(cmd: ParsedCommand) -> str:
+    from shared.optimization import get_optimization_engine
+    h = get_optimization_engine().health()
+    enabled = "ON" if h["enabled"] else "OFF"
+    lines = [
+        f"Optimization: {enabled}",
+        f"Signals: {h['signal_count']}",
+        f"Actions: {h['action_counts']}",
+    ]
+    if h["paused_loops"]:
+        lines.append(f"Paused: {', '.join(h['paused_loops'])}")
+    return "\n".join(lines)
+
+
+def _handle_learning_report(cmd: ParsedCommand) -> str:
+    from shared.optimization import get_optimization_engine
+    report = get_optimization_engine().daily_report()
+    lines = ["Learning Report"]
+    lines.append(f"Signals by type: {report.get('by_signal_type', {})}")
+    lines.append(f"Active domains: {report.get('active_domains', [])}")
+    lines.append(f"Actions: {report.get('action_counts', {})}")
+    return "\n".join(lines)
+
+
+def _handle_learning_pause(cmd: ParsedCommand) -> str:
+    from shared.optimization import get_optimization_engine
+    loop_name = cmd.args.strip()
+    if not loop_name:
+        return "Usage: learning pause <loop_name>"
+    get_optimization_engine().pause_loop(loop_name)
+    return f"Paused learning loop: {loop_name}"
+
+
+def _handle_learning_resume(cmd: ParsedCommand) -> str:
+    from shared.optimization import get_optimization_engine
+    loop_name = cmd.args.strip()
+    if not loop_name:
+        return "Usage: learning resume <loop_name>"
+    get_optimization_engine().resume_loop(loop_name)
+    return f"Resumed learning loop: {loop_name}"
+
+
 def _handle_unknown(cmd: ParsedCommand) -> str:
     """Suggest the closest matching command when intent is unknown."""
     text = cmd.raw.lower().strip()

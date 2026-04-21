@@ -15,7 +15,7 @@ def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
         logger.info(
-            "Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, ext-bridge, chrome-pw, test"
+            "Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, optimize, learning-report, learning-maintenance, ext-bridge, chrome-pw, test"
         )
         logger.info("  python -m jobpulse.runner chrome-pw     # Launch Chrome with CDP for Playwright engine")
         sys.exit(1)
@@ -286,6 +286,31 @@ def main():
         print(f"\n{len(pending)} skills pending review:")
         for p in pending:
             print(f"  {p['skill']:<30} seen {p['times_seen']}x  ({p['source_jds']})")
+
+    elif command == "optimize":
+        from shared.optimization import get_optimization_engine
+
+        engine = get_optimization_engine()
+        result = engine.optimize()
+        logger.info(
+            "Optimization: %d insights, %d actions",
+            len(result.get("insights", [])),
+            len(result.get("actions", [])),
+        )
+
+    elif command == "learning-report":
+        from shared.optimization import get_optimization_engine
+
+        report = get_optimization_engine().daily_report()
+        logger.info("Learning report: %s", report)
+
+    elif command == "learning-maintenance":
+        from shared.optimization import get_optimization_engine
+
+        export_dir = os.path.join("data", "optimization_exports")
+        os.makedirs(export_dir, exist_ok=True)
+        result = get_optimization_engine().weekly_maintenance(export_dir=export_dir)
+        logger.info("Weekly maintenance: %s", result)
 
     elif command == "test":
         from jobpulse.telegram_agent import send_message

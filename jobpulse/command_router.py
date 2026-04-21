@@ -64,6 +64,10 @@ class Intent(str, Enum):
     ENGINE_COMPARE = "engine_compare"
     ENGINE_LEARNING = "engine_learning"
     ENGINE_RESET = "engine_reset"
+    LEARNING_STATUS = "learning_status"
+    LEARNING_REPORT = "learning_report"
+    LEARNING_PAUSE = "learning_pause"
+    LEARNING_RESUME = "learning_resume"
     JOB_PATTERNS = "job_patterns"
     FOLLOW_UPS = "follow_ups"
     INTERVIEW_PREP = "interview_prep"
@@ -253,6 +257,23 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"engine reset",
         r"(clear|reset)\s*(ab|a/b|engine)\s*(data|tracking)?",
     ]),
+    (Intent.LEARNING_STATUS, [
+        r"learning\s*(status|health)",
+        r"optimization\s*(status|health)",
+    ]),
+    (Intent.LEARNING_REPORT, [
+        r"learning\s*report",
+        r"optimization\s*report",
+        r"daily\s*learning",
+    ]),
+    (Intent.LEARNING_PAUSE, [
+        r"(pause|stop)\s*learning\s+(.+)",
+        r"learning\s+pause\s+(.+)",
+    ]),
+    (Intent.LEARNING_RESUME, [
+        r"(resume|start|unpause)\s*learning\s+(.+)",
+        r"learning\s+resume\s+(.+)",
+    ]),
     (Intent.JOB_PATTERNS, [
         r"(rejection|reject)\s*(pattern|analysis|reason|why)",
         r"why.+(rejected|failing|blocked)",
@@ -408,6 +429,10 @@ JOB_DETAIL — user wants details on a specific job number
 JOB_PATTERNS — user wants rejection pattern analysis, why applications are failing
 FOLLOW_UPS — user wants to check pending follow-ups for job applications
 INTERVIEW_PREP — user wants interview preparation, STAR stories, or behavioral prep for a company
+LEARNING_STATUS — user wants to see optimization/learning engine health and status
+LEARNING_REPORT — user wants a daily learning/optimization report
+LEARNING_PAUSE — user wants to pause a specific learning loop
+LEARNING_RESUME — user wants to resume a paused learning loop
 UNKNOWN — doesn't match any of the above
 
 Message: {sanitize_user_input(text, source="telegram")}

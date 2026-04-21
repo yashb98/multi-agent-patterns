@@ -408,6 +408,33 @@
     "reset engine data",
     "clear ab tracking"
   ],
+  "learning_status": [
+    "learning status",
+    "optimization status",
+    "learning health",
+    "how is learning doing",
+    "is optimization running",
+    "check learning engine"
+  ],
+  "learning_report": [
+    "learning report",
+    "optimization report",
+    "daily learning report",
+    "show learning insights",
+    "what has the system learned"
+  ],
+  "learning_pause": [
+    "pause learning correction_capture",
+    "stop learning persona_evolution",
+    "pause learning for scan_learning",
+    "learning pause correction_capture"
+  ],
+  "learning_resume": [
+    "resume learning correction_capture",
+    "start learning persona_evolution",
+    "unpause learning scan_learning",
+    "learning resume correction_capture"
+  ],
   "job_patterns": [
     "show rejection patterns",
     "why am I getting rejected",
