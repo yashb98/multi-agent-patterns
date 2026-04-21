@@ -230,7 +230,7 @@ class ScanLearningEngine:
                     domain=platform,
                     agent_name="scanner",
                     severity="critical",
-                    payload={"action": "scan", "error": wall_type or "unknown"},
+                    payload={"action": "scan", "error": wall_type or "unknown", "stage": "scan_window", "recoverable": True},
                     session_id=event_id,
                 )
             except Exception as e:
@@ -401,6 +401,19 @@ class ScanLearningEngine:
                 )
                 count += 1
         logger.info("Updated %d learned rules for %s", count, platform)
+        if count > 0:
+            try:
+                from shared.optimization import get_optimization_engine
+                get_optimization_engine().emit(
+                    signal_type="adaptation",
+                    source_loop="scan_learning",
+                    domain=platform,
+                    agent_name="scanner",
+                    payload={"action": "update_rules", "rules_count": count, "platform": platform},
+                    session_id=f"sl_rules_{platform}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}",
+                )
+            except Exception as e:
+                logger.debug("Optimization signal failed: %s", e)
         return count
 
     # --- LLM Pattern Analyzer ---

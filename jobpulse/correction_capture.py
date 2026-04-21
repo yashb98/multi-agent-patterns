@@ -101,7 +101,7 @@ class CorrectionCapture:
                         source_loop="correction_capture",
                         domain=domain,
                         agent_name="form_filler",
-                        payload={"field": c["field"], "old": c["agent"], "new": c["user"], "platform": platform},
+                        payload={"field": c["field"], "old_value": c["agent"], "new_value": c["user"], "platform": platform},
                         session_id=f"cc_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
                     )
             except Exception as e:

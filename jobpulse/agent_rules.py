@@ -119,7 +119,7 @@ class AgentRulesDB:
                 source_loop="agent_rules",
                 domain=category,
                 agent_name="agent_rules",
-                payload={"pattern": pattern, "action": "generate_rule", "confidence": confidence},
+                payload={"param": "blocker_avoidance", "old_value": "", "new_value": pattern, "reason": f"confidence={confidence:.2f}"},
                 session_id=f"ar_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
             )
         except Exception as e:
@@ -194,6 +194,18 @@ class AgentRulesDB:
             "agent_rules: correction rule #%d field=%s domain=%s action=%s",
             rule_id, field_label, domain, action,
         )
+        try:
+            from shared.optimization import get_optimization_engine
+            get_optimization_engine().emit(
+                signal_type="adaptation",
+                source_loop="agent_rules",
+                domain=field_label,
+                agent_name="agent_rules",
+                payload={"field": field_label, "old_value": agent_value, "new_value": user_value, "platform": platform},
+                session_id=f"ar_corr_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+            )
+        except Exception as e:
+            logger.debug("Optimization signal failed: %s", e)
         return {"rule_id": rule_id, "field_label": field_label, "action": action}
 
     def get_active_rules(self, rule_type: str | None = None) -> list[dict]:

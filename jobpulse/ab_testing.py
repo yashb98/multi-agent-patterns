@@ -86,15 +86,25 @@ def record_result(test_name: str, variant: str, score: float, metadata: dict = N
     )
     conn.commit()
     conn.close()
+    # Look up actual agent name for signal emission
+    _agent = test_name
+    try:
+        _conn = _get_conn()
+        _row = _conn.execute("SELECT agent_name FROM ab_tests WHERE test_name=? LIMIT 1", (test_name,)).fetchone()
+        _conn.close()
+        if _row:
+            _agent = _row["agent_name"]
+    except Exception:
+        pass
     try:
         from shared.optimization import get_optimization_engine
         get_optimization_engine().emit(
             signal_type="score_change",
             source_loop="ab_testing",
             domain=test_name,
-            agent_name=test_name,
-            payload={"variant": variant, "score": score},
-            session_id=f"ab_{test_name}",
+            agent_name=_agent,
+            payload={"old_score": 0.0, "new_score": score, "variant": variant, "source": "ab_test"},
+            session_id=f"ab_{test_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         )
     except Exception as e:
         import logging
@@ -166,6 +176,18 @@ def promote_winner(test_name: str) -> bool:
 
     logger.info("Promoted variant %s for '%s' (agent=%s, gen=%d, score=%.2f)",
                 result["winner"], test_name, agent_name, gen, avg)
+    try:
+        from shared.optimization import get_optimization_engine
+        get_optimization_engine().emit(
+            signal_type="adaptation",
+            source_loop="ab_testing",
+            domain=test_name,
+            agent_name=agent_name,
+            payload={"param": "persona_prompt", "old_value": "variant_" + ("B" if result["winner"] == "A" else "A"), "new_value": "variant_" + result["winner"], "reason": f"avg_score={avg:.2f}"},
+            session_id=f"ab_promote_{test_name}",
+        )
+    except Exception as e:
+        logger.debug("Optimization signal failed: %s", e)
     return True
 
 

@@ -126,7 +126,7 @@ Return ONLY the evolved prompt text. No explanation."""
                     source_loop="persona_evolution",
                     domain=agent_name,
                     agent_name=agent_name,
-                    payload={"new_score": score, "generation": generation},
+                    payload={"old_score": get_avg_score(agent_name) or 0.0, "new_score": score, "generation": generation, "source": "quick_evolve"},
                     session_id=f"pe_{agent_name}_{generation}",
                 )
             except Exception as e2:
@@ -215,6 +215,18 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
                 agent_name, generation,
                 result.original_score, result.optimized_score, result.improvement_pct,
             )
+            try:
+                from shared.optimization import get_optimization_engine
+                get_optimization_engine().emit(
+                    signal_type="score_change",
+                    source_loop="persona_evolution",
+                    domain=agent_name,
+                    agent_name=agent_name,
+                    payload={"old_score": result.original_score, "new_score": result.optimized_score, "generation": generation, "source": "deep_optimize"},
+                    session_id=f"pe_{agent_name}_{generation}",
+                )
+            except Exception as e2:
+                logger.debug("Optimization signal failed: %s", e2)
         else:
             # No improvement — keep current prompt but bump generation
             store_persona(agent_name, current_prompt, generation, result.original_score)
@@ -222,6 +234,18 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
                 "%s deep-optimization found no improvement (%.1f → %.1f), keeping current",
                 agent_name, result.original_score, result.optimized_score,
             )
+            try:
+                from shared.optimization import get_optimization_engine
+                get_optimization_engine().emit(
+                    signal_type="score_change",
+                    source_loop="persona_evolution",
+                    domain=agent_name,
+                    agent_name=agent_name,
+                    payload={"old_score": result.original_score, "new_score": result.optimized_score, "generation": generation, "source": "deep_optimize"},
+                    session_id=f"pe_{agent_name}_{generation}",
+                )
+            except Exception as e2:
+                logger.debug("Optimization signal failed: %s", e2)
 
     except Exception as e:
         logger.warning("Deep optimization failed for %s: %s", agent_name, e)

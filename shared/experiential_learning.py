@@ -201,9 +201,9 @@ class ExperienceMemory:
                 signal_type="success",
                 source_loop="experience_memory",
                 domain=experience.domain,
-                agent_name="grpo",
-                payload={"score": experience.score, "pattern": experience.successful_pattern[:100]},
-                session_id=f"exp_{experience.domain}",
+                agent_name=experience.domain,
+                payload={"action": "store_experience", "score": experience.score, "cost": 0.0, "duration_ms": 0.0},
+                session_id=f"exp_{experience.domain}_{experience.timestamp.replace(' ', '_').replace(':', '')}",
             )
         except Exception as e:
             logger.debug("Optimization signal failed: %s", e)
