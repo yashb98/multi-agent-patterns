@@ -28,7 +28,8 @@ class TestBudgetTracker:
         for _ in range(2):
             tracker.record(ThinkLevel.L3_TREE_OF_THOUGHT, cost=0.03)
         assert not tracker.allows(ThinkLevel.L3_TREE_OF_THOUGHT)
-        assert tracker.clamp(ThinkLevel.L3_TREE_OF_THOUGHT) == ThinkLevel.L2_REFLEXION
+        # Cooldown triggers after hitting limit — restricts to L1
+        assert tracker.clamp(ThinkLevel.L3_TREE_OF_THOUGHT) == ThinkLevel.L1_SINGLE
 
     def test_cost_cap_blocks_escalation(self):
         budget = CognitiveBudget(max_cost_per_hour=0.10)

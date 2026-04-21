@@ -87,11 +87,11 @@ class EscalationClassifier:
             return self._budget.clamp(ThinkLevel.L1_SINGLE)
 
     def should_escalate(
-        self, current_level: ThinkLevel, score: float, confidence: float,
+        self, current_level: ThinkLevel, score: float, task: str, domain: str,
     ) -> tuple[bool, ThinkLevel]:
         if current_level == ThinkLevel.L0_MEMORY and score < 6.0:
             return True, ThinkLevel.L1_SINGLE
-        if current_level == ThinkLevel.L1_SINGLE and confidence < 0.7:
+        if current_level == ThinkLevel.L1_SINGLE and score < 7.0:
             return True, ThinkLevel.L2_REFLEXION
         if current_level == ThinkLevel.L2_REFLEXION and score < 5.0:
             return True, ThinkLevel.L3_TREE_OF_THOUGHT
@@ -142,13 +142,16 @@ class EscalationClassifier:
         Called by CognitiveEngine.__init__ to restore cross-session stats.
         Parses SEMANTIC tier entries with domain='cognitive_classifier'.
         """
-        if not hasattr(self._memory, "semantic"):
-            return
         try:
-            facts = self._memory.semantic.facts if hasattr(self._memory.semantic, "facts") else {}
-            for fact_id, entry in (facts.items() if isinstance(facts, dict) else []):
+            sem = getattr(self._memory, "semantic", None)
+            if sem is None:
+                return
+            facts = getattr(sem, "facts", None)
+            if not isinstance(facts, dict):
+                return
+            for _fact_id, entry in facts.items():
                 if getattr(entry, "domain", "") == "cognitive_classifier":
-                    self._parse_persisted_fact(entry.fact if hasattr(entry, "fact") else "")
+                    self._parse_persisted_fact(getattr(entry, "fact", ""))
         except Exception as e:
             logger.debug("Failed to load persisted classifier stats: %s", e)
 
@@ -168,9 +171,11 @@ class EscalationClassifier:
 
     @staticmethod
     def _resolve_stakes(domain: str, explicit_stakes: str) -> str:
+        # Explicit stakes always take priority
         if explicit_stakes in ("high", "medium", "low"):
-            for level, domains in STAKES_REGISTRY.items():
-                if domain in domains:
-                    return level
             return explicit_stakes
+        # Fall back to registry lookup
+        for level, domains in STAKES_REGISTRY.items():
+            if domain in domains:
+                return level
         return "medium"

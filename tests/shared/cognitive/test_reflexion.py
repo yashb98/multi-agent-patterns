@@ -160,7 +160,7 @@ class TestReflexionLoop:
         assert len(mock_memory.learn_procedure_calls) >= 1
         stored = mock_memory.learn_procedure_calls[-1]
         assert stored["domain"] == "email"
-        assert stored["source"] == "reflexion"
+        assert stored["source"] == "test_agent"
 
     @pytest.mark.asyncio
     async def test_stores_failure_pattern(self, mock_memory):

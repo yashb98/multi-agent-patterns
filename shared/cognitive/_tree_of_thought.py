@@ -16,8 +16,9 @@ _SCORE_COST = 0.0002
 async def _llm_generate(prompt: str, model: str = None) -> str:
     from shared.agents import get_llm
     from shared.streaming import smart_llm_call
+    from langchain_core.messages import HumanMessage
     llm = get_llm(model=model or "gpt-4.1-mini", temperature=0.7, timeout=30.0)
-    messages = [{"role": "user", "content": prompt}]
+    messages = [HumanMessage(content=prompt)]
     response = smart_llm_call(llm, messages)
     return response.content
 
@@ -54,24 +55,25 @@ class TreeOfThought:
     def _generate_branches_via_grpo(
         self, system_prompt: str, task: str, strategies: list[str],
     ) -> list[str]:
-        """Use GRPO's parallel candidate generation for branch diversity."""
+        """Use parallel generation with per-strategy prompts for branch diversity."""
         try:
-            from shared.parallel_executor import parallel_grpo_candidates
             from shared.agents import get_llm
-
-            def make_variant(temp):
-                return get_llm(model="gpt-4.1-mini", temperature=temp, timeout=30.0)
+            from langchain_core.messages import HumanMessage
+            from concurrent.futures import ThreadPoolExecutor
 
             temps = [0.3 + i * 0.15 for i in range(len(strategies))]
-            prompts_with_strategy = [
+            prompts = [
                 f"{system_prompt}\n\n## Reasoning approach\n{s}\n\n## Task\n{task}"
                 for s in strategies
             ]
-            # parallel_grpo_candidates generates one output per temp
-            outputs = parallel_grpo_candidates(
-                make_variant, system_prompt, task, temps,
-            )
-            return outputs
+
+            def generate_one(i: int) -> str:
+                llm = get_llm(model="gpt-4.1-mini", temperature=temps[i], timeout=30.0)
+                result = llm.invoke([HumanMessage(content=prompts[i])])
+                return result.content if result else ""
+
+            with ThreadPoolExecutor(max_workers=len(strategies)) as pool:
+                return list(pool.map(generate_one, range(len(strategies))))
         except (ImportError, Exception):
             return []
 
@@ -146,20 +148,21 @@ class TreeOfThought:
         # Extract strategy template from winner
         strategy_template = f"Winning approach for '{task[:50]}': {winner.output[:150]}"
 
-        # Store success with STRATEGY_PAYLOAD fields in context
-        payload_context = (
-            f"agent_name={self._agent_name}|trigger={task[:50]}|"
-            f"times_used=1|times_succeeded=1|success_rate=1.0|"
-            f"avg_score={winner.score:.1f}|source=tot|"
-            f"pruned_count={pruned_count}|branches={len(all_branches)}"
-        )
-        self._memory.learn_procedure(
-            domain=domain,
-            strategy=strategy_template,
-            context=payload_context,
-            score=winner.score,
-            source="tot",
-        )
+        # Only store when winner exceeds quality threshold
+        if winner.score >= 7.0:
+            payload_context = (
+                f"agent_name={self._agent_name}|trigger={task[:50]}|"
+                f"times_used=1|times_succeeded=1|success_rate=1.0|"
+                f"avg_score={winner.score:.1f}|source=tot|"
+                f"pruned_count={pruned_count}|branches={len(all_branches)}"
+            )
+            self._memory.learn_procedure(
+                domain=domain,
+                strategy=strategy_template,
+                context=payload_context,
+                score=winner.score,
+                source=self._agent_name,
+            )
 
         return ToTResult(
             winner=winner,

@@ -14,14 +14,6 @@ STRATEGY_PAYLOAD_KEYS = {
 }
 
 
-def _get_base_prompt(agent_name: str) -> str:
-    try:
-        from jobpulse.persona_evolution import get_evolved_prompt
-        return get_evolved_prompt(agent_name)
-    except (ImportError, Exception):
-        return ""
-
-
 @dataclass
 class ComposedPrompt:
     text: str
@@ -43,8 +35,9 @@ class StrategyComposer:
         max_templates: int = 5,
         max_anti_patterns: int = 3,
         max_strategy_tokens: int = 500,
+        prompt_resolver=None,
     ) -> ComposedPrompt:
-        base_prompt = _get_base_prompt(agent_name)
+        base_prompt = prompt_resolver(agent_name) if prompt_resolver else ""
 
         # Step 1: Retrieve and rank strategy templates
         procs = memory_manager.get_procedural_entries(domain) \
@@ -54,8 +47,18 @@ class StrategyComposer:
         cross = [p for p in procs if p not in own]
 
         def rank_key(p):
+            recency = 0.5
+            created = getattr(p, "created_at", "")
+            if created:
+                try:
+                    from datetime import datetime
+                    age_days = (datetime.now() - datetime.fromisoformat(created)).days
+                    recency = max(0.0, 1.0 - age_days / 90.0)
+                except (ValueError, TypeError):
+                    pass
             return getattr(p, "success_rate", 0.5) * 0.6 + \
-                   getattr(p, "avg_score_when_used", 5.0) / 10.0 * 0.3
+                   getattr(p, "avg_score_when_used", 5.0) / 10.0 * 0.3 + \
+                   recency * 0.1
 
         own.sort(key=rank_key, reverse=True)
         cross.sort(key=rank_key, reverse=True)

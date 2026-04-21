@@ -73,6 +73,8 @@ class BudgetTracker:
 
     def allows(self, level: ThinkLevel) -> bool:
         self._maybe_reset_window()
+        if time.monotonic() < self._cooldown_until:
+            return level <= ThinkLevel.L1_SINGLE
         if level <= ThinkLevel.L1_SINGLE:
             return True
         if self._cost_total >= self._budget.max_cost_per_hour:

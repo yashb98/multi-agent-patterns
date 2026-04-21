@@ -21,8 +21,9 @@ _GENERATE_COST = 0.001
 async def _llm_generate(prompt: str, model: str = None) -> str:
     from shared.agents import get_llm
     from shared.streaming import smart_llm_call
+    from langchain_core.messages import HumanMessage
     llm = get_llm(model=model or "gpt-4.1-mini", temperature=0.3, timeout=30.0)
-    messages = [{"role": "user", "content": prompt}]
+    messages = [HumanMessage(content=prompt)]
     response = smart_llm_call(llm, messages)
     return response.content
 
@@ -54,9 +55,11 @@ class CognitiveEngine:
         memory_manager,
         agent_name: str,
         budget: Optional[CognitiveBudget] = None,
+        prompt_resolver: Optional[Callable] = None,
     ):
         self._memory = memory_manager
         self._agent_name = agent_name
+        self._prompt_resolver = prompt_resolver
         bgt = budget or CognitiveBudget.from_env()
         self._budget_tracker = BudgetTracker(bgt)
         self._classifier = EscalationClassifier(memory_manager, self._budget_tracker)
@@ -91,7 +94,10 @@ class CognitiveEngine:
 
         # 2. Compose prompt from strategy templates
         try:
-            composed = self._composer.compose(task, domain, self._agent_name, self._memory)
+            composed = self._composer.compose(
+                task, domain, self._agent_name, self._memory,
+                prompt_resolver=self._prompt_resolver,
+            )
         except Exception as e:
             logger.warning("Composition failed, using base prompt: %s", e)
             composed = ComposedPrompt(text=task)
@@ -102,7 +108,7 @@ class CognitiveEngine:
         # 4. Post-execution: auto-escalate if score too low
         if result.score < 6.0 and level < ThinkLevel.L3_TREE_OF_THOUGHT:
             should, next_level = self._classifier.should_escalate(
-                level, result.score, result.score / 10.0,
+                level, result.score, task, domain,
             )
             if should and self._budget_tracker.allows(next_level):
                 escalated_result = await self._execute(
@@ -121,6 +127,17 @@ class CognitiveEngine:
         result.composed_prompt = composed
         self._classifier.update_domain_stats(domain, level, escalated=False)
         self._record_level(level, result.cost)
+
+        # L1 successes get queued for batch-write via flush()
+        if result.level == ThinkLevel.L1_SINGLE and result.score >= _DEFAULT_SCORE_THRESHOLD:
+            self._pending_writes.append({
+                "domain": domain,
+                "strategy": f"For '{task[:50]}' tasks: {result.answer[:150]}",
+                "context": f"agent_name={self._agent_name}|trigger={task[:50]}|source=l1_success",
+                "score": result.score,
+                "source": self._agent_name,
+            })
+
         return result
 
     async def _execute(
@@ -155,18 +172,16 @@ class CognitiveEngine:
                         answer=answer, score=score,
                         level=ThinkLevel.L0_MEMORY, cost=0.0, latency_ms=0,
                     )
-        answer = composed.text[:500]
-        score = scorer(answer) if scorer else 5.0
+        # No template match — return low score to trigger auto-escalation to L1
         return ThinkResult(
-            answer=answer, score=score,
+            answer="", score=0.0,
             level=ThinkLevel.L0_MEMORY, cost=0.0, latency_ms=0,
         )
 
     async def _execute_l1(
         self, task: str, composed: ComposedPrompt, scorer: Optional[Callable],
     ) -> ThinkResult:
-        prompt = f"{composed.text}\n\nTask: {task}"
-        answer = await _llm_generate(prompt)
+        answer = await _llm_generate(composed.text)
         score = scorer(answer) if scorer else 5.0
         return ThinkResult(
             answer=answer, score=score,
@@ -216,6 +231,29 @@ class CognitiveEngine:
             "budget": self._budget_tracker.report(),
         }
 
+    def think_sync(
+        self,
+        task: str,
+        domain: str,
+        stakes: str = "medium",
+        scorer: Optional[Callable] = None,
+        force_level: Optional[ThinkLevel] = None,
+    ) -> ThinkResult:
+        """Synchronous wrapper around think() for non-async agents."""
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(
+                    asyncio.run,
+                    self.think(task, domain, stakes, scorer, force_level),
+                ).result()
+        return asyncio.run(self.think(task, domain, stakes, scorer, force_level))
+
     async def flush(self):
         for write in self._pending_writes:
             try:
@@ -223,3 +261,33 @@ class CognitiveEngine:
             except Exception as e:
                 logger.warning("Failed to flush strategy template: %s", e)
         self._pending_writes.clear()
+
+    def flush_sync(self):
+        """Synchronous wrapper around flush() for non-async agents."""
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(asyncio.run, self.flush()).result()
+        else:
+            asyncio.run(self.flush())
+
+
+def get_cognitive_engine(
+    agent_name: str,
+    budget: Optional[CognitiveBudget] = None,
+    prompt_resolver: Optional[Callable] = None,
+) -> CognitiveEngine:
+    """Factory that creates a CognitiveEngine with the shared MemoryManager."""
+    from shared.memory_layer import get_shared_memory_manager
+    memory = get_shared_memory_manager()
+    return CognitiveEngine(
+        memory_manager=memory,
+        agent_name=agent_name,
+        budget=budget,
+        prompt_resolver=prompt_resolver,
+    )

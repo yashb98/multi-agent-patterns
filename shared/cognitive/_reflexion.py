@@ -16,8 +16,9 @@ _CRITIQUE_COST = 0.0002
 async def _llm_generate(prompt: str, model: str = None) -> str:
     from shared.agents import get_llm
     from shared.streaming import smart_llm_call
+    from langchain_core.messages import HumanMessage
     llm = get_llm(model=model or "gpt-4.1-mini", temperature=0.3, timeout=30.0)
-    messages = [{"role": "user", "content": prompt}]
+    messages = [HumanMessage(content=prompt)]
     response = smart_llm_call(llm, messages)
     return response.content
 
@@ -52,6 +53,7 @@ class ReflexionLoop:
         best_score = -1.0
         critiques: list[str] = []
         total_cost = 0.0
+        attempt = 0
 
         # Retrieve failure patterns for this domain
         failure_context = self._get_failure_context(domain)
@@ -102,7 +104,7 @@ class ReflexionLoop:
         return ReflexionResult(
             answer=best_answer,
             score=best_score,
-            attempts=min(attempt, max_attempts) if 'attempt' in dir() else 1,
+            attempts=attempt,
             critiques=critiques,
             strategy_template=best_answer[:200] if best_score >= score_threshold else "",
             cost=total_cost,
@@ -134,7 +136,7 @@ class ReflexionLoop:
             strategy=strategy,
             context=payload_context,
             score=score,
-            source="reflexion",
+            source=self._agent_name,
         )
 
     def _store_failure(self, task: str, domain: str, answer: str,

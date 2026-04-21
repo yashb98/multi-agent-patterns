@@ -276,6 +276,14 @@ class MemoryManager:
         )
         self.procedural.store(proc)
 
+    def get_procedural_entries(self, domain: str) -> list[ProceduralEntry]:
+        """Retrieve procedural templates for a domain (cognitive engine API)."""
+        return self.procedural.recall(domain)
+
+    def get_episodic_entries(self, domain: str) -> list[EpisodicEntry]:
+        """Retrieve episodic memories for a domain (cognitive engine API)."""
+        return self.episodic.recall("", domain)
+
     def start_new_session(self):
         """Clear short-term memory for a new session."""
         self.short_term.clear()

@@ -527,8 +527,35 @@ def try_instant_answer(
 # ---------------------------------------------------------------------------
 
 
+def _score_screening_answer(answer: str) -> float:
+    if not answer or len(answer.strip()) < 5:
+        return 2.0
+    if any(kw in answer.lower() for kw in ("error", "sorry", "cannot", "i don't know")):
+        return 3.0
+    return 8.0
+
+
+_screening_engine = None
+
+
+def _get_screening_engine():
+    global _screening_engine
+    if _screening_engine is not None:
+        return _screening_engine
+    import os
+    if os.getenv("COGNITIVE_ENABLED", "true").lower() == "false":
+        return None
+    try:
+        from shared.cognitive import get_cognitive_engine
+        _screening_engine = get_cognitive_engine(agent_name="screening_answers")
+        return _screening_engine
+    except Exception as e:
+        logger.debug("Cognitive engine unavailable for screening: %s", e)
+        return None
+
+
 def _generate_answer(question: str, job_context: dict | None = None) -> str:
-    """Call OpenAI to generate a concise screening-question answer."""
+    """Use CognitiveEngine (if available) or direct LLM for screening answers."""
     context_line = ""
     if job_context:
         title = job_context.get("job_title", "the role")
@@ -542,17 +569,31 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
         f"Visa: {WORK_AUTH['visa_status']}."
     )
 
-    prompt = (
+    task = (
         "Answer this job application screening question concisely (1-3 sentences). "
         f"Be professional and positive. Question: {question}.{context_line} "
         f"Applicant background: {profile_summary}"
     )
 
+    engine = _get_screening_engine()
+    if engine:
+        try:
+            result = engine.think_sync(
+                task=task, domain="screening_answers", stakes="medium",
+                scorer=_score_screening_answer,
+            )
+            engine.flush_sync()
+            logger.debug("Cognitive L%d screening answer (score=%.1f, cost=$%.4f)",
+                         result.level.value, result.score, result.cost)
+            return result.answer.strip()
+        except Exception as e:
+            logger.warning("Cognitive engine failed for screening, falling back: %s", e)
+
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
             model=get_model_name(),
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": task}],
             max_tokens=600 if is_local_llm() else 200,
             temperature=0.4,
         )

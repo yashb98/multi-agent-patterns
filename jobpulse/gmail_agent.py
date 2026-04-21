@@ -59,42 +59,86 @@ def _get_gmail_service():
         return None
 
 
-def _classify_email(subject: str, body_snippet: str) -> str:
-    """Use LLM to classify an email into one of 4 categories. Uses evolved persona if available."""
-    # Inject evolved persona learnings
-    extra_context = ""
+def _normalize_category(raw: str) -> str:
+    """Normalize raw LLM output to a valid email category."""
+    category = raw.strip().upper()
+    if "SELECTED" in category:
+        return SELECTED
+    elif "INTERVIEW" in category or "SCHEDULING" in category:
+        return INTERVIEW
+    elif "REJECTED" in category:
+        return REJECTED
+    return OTHER
+
+
+_cognitive_engine = None
+
+
+def _get_cognitive_engine():
+    global _cognitive_engine
+    if _cognitive_engine is not None:
+        return _cognitive_engine
+    import os
+    if os.getenv("COGNITIVE_ENABLED", "true").lower() == "false":
+        return None
     try:
+        from shared.cognitive import get_cognitive_engine
         from jobpulse.persona_evolution import get_evolved_prompt
-        evolved = get_evolved_prompt("gmail_agent")
-        if evolved:
-            extra_context = f"\n\nLearned patterns:\n{evolved}\n"
+        _cognitive_engine = get_cognitive_engine(
+            agent_name="gmail_agent", prompt_resolver=get_evolved_prompt,
+        )
+        return _cognitive_engine
     except Exception as e:
-        logger.debug("Persona evolution unavailable: %s", e)
+        logger.debug("Cognitive engine unavailable: %s", e)
+        return None
 
-    prompt = f"""Classify this email into EXACTLY ONE category:{extra_context}
 
-SELECTED_NEXT_ROUND — congratulations, selected, moving forward, pleased to inform, progressed, next stage, shortlisted
-INTERVIEW_SCHEDULING — availability, schedule an interview, book a slot, calendar link, time slots, when are you free
-REJECTED — unfortunately, regret to inform, not selected, decided not to proceed, other candidates, not moving forward
-OTHER — newsletters, promotions, social media, receipts, anything NOT about job applications
+def _score_classification(answer: str) -> float:
+    """Score an email classification answer — valid category gets 8.0, invalid gets 3.0."""
+    cat = _normalize_category(answer)
+    return 8.0 if cat != OTHER or "other" in answer.strip().lower() else 3.0
 
-Email subject: {subject}
-Email body (first {2000 if is_local_llm() else 500} chars): {body_snippet[:2000] if is_local_llm() else body_snippet[:500]}
 
-Respond with ONLY the category name. Nothing else."""
+def _classify_email(subject: str, body_snippet: str) -> str:
+    """Use CognitiveEngine (if available) or direct LLM to classify email."""
+    snippet = body_snippet[:2000] if is_local_llm() else body_snippet[:500]
+    task = (
+        f"Classify this email into EXACTLY ONE category:\n\n"
+        f"SELECTED_NEXT_ROUND — congratulations, selected, moving forward, pleased to inform\n"
+        f"INTERVIEW_SCHEDULING — availability, schedule an interview, book a slot\n"
+        f"REJECTED — unfortunately, regret to inform, not selected, not moving forward\n"
+        f"OTHER — newsletters, promotions, social media, not about job applications\n\n"
+        f"Email subject: {subject}\n"
+        f"Email body (first {len(snippet)} chars): {snippet}\n\n"
+        f"Respond with ONLY the category name. Nothing else."
+    )
+
+    engine = _get_cognitive_engine()
+    if engine:
+        try:
+            result = engine.think_sync(
+                task=task, domain="email_classification",
+                stakes="medium", scorer=_score_classification,
+            )
+            logger.debug("Cognitive L%d classified email (score=%.1f, cost=$%.4f)",
+                         result.level.value, result.score, result.cost)
+            return _normalize_category(result.answer)
+        except Exception as e:
+            logger.warning("Cognitive engine failed, falling back to direct LLM: %s", e)
 
     try:
+        extra_context = ""
+        try:
+            from jobpulse.persona_evolution import get_evolved_prompt
+            evolved = get_evolved_prompt("gmail_agent")
+            if evolved:
+                extra_context = f"\n\nLearned patterns:\n{evolved}\n"
+        except Exception:
+            pass
+        prompt = f"{extra_context}{task}" if extra_context else task
         llm = get_llm(temperature=0, max_tokens=80 if is_local_llm() else 20)
         response = smart_llm_call(llm, [HumanMessage(content=prompt)])
-        category = response.content.strip().upper()
-        # Normalize
-        if "SELECTED" in category:
-            return SELECTED
-        elif "INTERVIEW" in category or "SCHEDULING" in category:
-            return INTERVIEW
-        elif "REJECTED" in category:
-            return REJECTED
-        return OTHER
+        return _normalize_category(response.content)
     except Exception as e:
         logger.error("LLM classification error: %s", e)
         return OTHER
@@ -317,6 +361,14 @@ def check_emails(trigger: str = "scheduled_check") -> list[dict]:
     if graduated:
         state = db.get_preclassifier_state()
         trail_suffix = f" Pre-classifier graduated ({state['total_correct']}/{state['total_audited']} audits correct)."
+
+    # Flush cognitive engine pending writes
+    cog_engine = _get_cognitive_engine()
+    if cog_engine:
+        try:
+            cog_engine.flush_sync()
+        except Exception:
+            pass
 
     trail.finalize(f"Processed {len(messages)} emails. "
                    f"Recruiter: {len(new_recruiter_emails)}. Alerts sent: {len(new_recruiter_emails)}.{trail_suffix}")
