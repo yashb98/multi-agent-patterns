@@ -17,7 +17,13 @@ from shared.memory_layer._entries import (  # noqa: F401
     ProceduralEntry,
     ShortTermEntry,
     PatternEntry,
+    MemoryEntry,
+    MemoryTier,
+    Lifecycle,
+    EdgeType,
+    ProtectionLevel,
 )
+from shared.memory_layer._query import MemoryQuery  # noqa: F401
 from shared.memory_layer._stores import (  # noqa: F401
     ShortTermMemory,
     EpisodicMemory,

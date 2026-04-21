@@ -11,14 +11,26 @@ import hashlib
 from typing import Optional
 from datetime import datetime
 
+from typing import TYPE_CHECKING
+
 from shared.logging_config import get_logger
-from shared.memory_layer._entries import EpisodicEntry, ProceduralEntry, PatternEntry
+from shared.memory_layer._entries import (
+    EpisodicEntry, ProceduralEntry, PatternEntry,
+    MemoryEntry, MemoryTier, Lifecycle,
+)
 from shared.memory_layer._stores import (
     ShortTermMemory, EpisodicMemory, SemanticMemory, ProceduralMemory,
 )
 from shared.memory_layer._pattern import PatternMemory
 from shared.memory_layer._router import TieredRouter
 from shared.paths import DATA_DIR
+
+if TYPE_CHECKING:
+    from shared.memory_layer._embedder import MemoryEmbedder
+    from shared.memory_layer._neo4j_store import Neo4jStore
+    from shared.memory_layer._qdrant_store import QdrantStore
+    from shared.memory_layer._query import MemoryQuery
+    from shared.memory_layer._sqlite_store import SQLiteStore
 
 logger = get_logger(__name__)
 
@@ -57,10 +69,18 @@ class MemoryManager:
         memory.learn_procedure("physics", "Always cite Nature/Science for quantum claims")
     """
 
-    def __init__(self, storage_dir: str = _DEFAULT_STORAGE_DIR):
+    def __init__(
+        self,
+        storage_dir: str = _DEFAULT_STORAGE_DIR,
+        sqlite_store: "SQLiteStore | None" = None,
+        qdrant: "QdrantStore | None" = None,
+        neo4j: "Neo4jStore | None" = None,
+        embedder: "MemoryEmbedder | None" = None,
+    ):
         self.storage_dir = storage_dir
         os.makedirs(storage_dir, exist_ok=True)
 
+        # Old JSON-based stores (always initialised for backwards compat)
         self.short_term = ShortTermMemory(max_size=30)
         self.episodic = EpisodicMemory(
             storage_path=os.path.join(storage_dir, "episodic.json")
@@ -75,6 +95,23 @@ class MemoryManager:
             storage_path=os.path.join(storage_dir, "patterns.json")
         )
         self.router = TieredRouter(self.patterns, self.episodic)
+
+        # New 3-engine system (optional — None means old-style JSON mode)
+        self._sqlite = sqlite_store
+        self._qdrant = qdrant
+        self._neo4j = neo4j
+        self._embedder = embedder
+        self._sync = None
+        self._linker = None
+        self._forgetting = None
+
+        if sqlite_store:
+            from shared.memory_layer._sync import SyncService
+            from shared.memory_layer._linker import AutonomousLinker
+            from shared.memory_layer._forgetting import ForgettingEngine
+            self._sync = SyncService(sqlite_store, qdrant, neo4j, embedder)
+            self._linker = AutonomousLinker(neo4j=neo4j)
+            self._forgetting = ForgettingEngine(neo4j=neo4j)
 
     def get_context_for_agent(
         self,
@@ -276,7 +313,129 @@ class MemoryManager:
                         f"avg score {stats.get('avg_score', 0):.1f}"
                     )
 
+        # Lifecycle stats from new engine
+        if self._sqlite:
+            total = self._sqlite.count()
+            lines.append(f"\n3-Engine Memory: {total} entries in SQLite")
+            for lc in Lifecycle:
+                entries = self._sqlite.query_by_lifecycle(lc, limit=0)
+                # count via a direct query instead
+            lines.append("Engines: SQLite (active)")
+            if self._qdrant:
+                lines.append("  + Qdrant (active)")
+            if self._neo4j:
+                lines.append("  + Neo4j (active)")
+
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # New 3-engine methods
+    # ------------------------------------------------------------------
+
+    def store_memory(
+        self,
+        tier: MemoryTier,
+        domain: str,
+        content: str,
+        score: float = 0.0,
+        confidence: float = 0.7,
+        payload: dict | None = None,
+    ) -> str:
+        """Write a memory to all 3 engines. Returns memory_id."""
+        entry = MemoryEntry.create(
+            tier=tier, domain=domain, content=content,
+            score=score, confidence=confidence, payload=payload,
+        )
+
+        if self._sqlite:
+            self._sqlite.insert(entry)
+
+        if self._sync:
+            self._sync.sync_to_secondary(entry)
+
+        return entry.memory_id
+
+    def query(self, query: "MemoryQuery") -> list[MemoryEntry]:
+        """Routed retrieval across engines."""
+        from shared.memory_layer._query import QueryRouter, Engine, Step
+
+        if not self._sqlite:
+            return []
+
+        router = QueryRouter(
+            qdrant_available=self._qdrant is not None,
+            neo4j_available=self._neo4j is not None,
+        )
+        plan = router.route(query)
+
+        # Exact lookup
+        if query.memory_id:
+            entry = self._sqlite.get_by_id(query.memory_id)
+            return [entry] if entry else []
+
+        memory_ids: set[str] = set()
+
+        # Vector search
+        if Step.VECTOR_SEARCH in plan.steps and self._qdrant and self._embedder:
+            vec = self._embedder.embed(query.semantic_query)
+            tiers = query.tiers or [MemoryTier.EPISODIC, MemoryTier.SEMANTIC, MemoryTier.PROCEDURAL]
+            for tier in tiers:
+                results = self._qdrant.search(tier, vec, top_k=query.top_k)
+                memory_ids.update(mid for mid, _ in results)
+
+        # FTS fallback
+        if Step.FTS_SEARCH in plan.steps:
+            for entry in self._sqlite.query_active(min_decay=query.min_decay_score):
+                if query.semantic_query and query.semantic_query.lower() in entry.content.lower():
+                    memory_ids.add(entry.memory_id)
+
+        # Graph expansion
+        if Step.GRAPH_EXPAND in plan.steps and self._neo4j and memory_ids:
+            expanded = self._neo4j.expand(list(memory_ids), depth=query.graph_depth)
+            memory_ids.update(expanded)
+
+        # Domain cluster
+        if Step.DOMAIN_CLUSTER in plan.steps and self._neo4j and query.domain:
+            neighbors = self._neo4j.domain_neighbors(query.domain, limit=query.top_k)
+            memory_ids.update(neighbors)
+
+        # Hydrate from SQLite
+        results = []
+        for mid in memory_ids:
+            entry = self._sqlite.get_by_id(mid)
+            if entry and entry.decay_score >= query.min_decay_score:
+                if not query.tiers or entry.tier in query.tiers:
+                    results.append(entry)
+
+        results.sort(key=lambda e: e.decay_score, reverse=True)
+        return results[:query.top_k]
+
+    def pin_memory(self, memory_id: str) -> None:
+        """Mark a memory as pinned (never auto-deleted)."""
+        if not self._sqlite:
+            return
+        entry = self._sqlite.get_by_id(memory_id)
+        if entry:
+            entry.payload["pinned"] = True
+            self._sqlite.insert(entry)  # upsert
+
+    def startup(self) -> dict:
+        """Verify engines and run reconciliation."""
+        stats = {}
+        if self._sync:
+            stats = self._sync.reconcile()
+        return stats
+
+    def health(self) -> dict:
+        """Engine status and counts."""
+        report = {
+            "sqlite": "active" if self._sqlite else "not configured",
+            "qdrant": "active" if self._qdrant else "not configured",
+            "neo4j": "active" if self._neo4j else "not configured",
+        }
+        if self._sqlite:
+            report["sqlite_count"] = self._sqlite.count()
+        return report
 
 
 # ---------------------------------------------------------------------------
