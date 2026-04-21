@@ -85,6 +85,20 @@ class TestEventStore:
     def test_snapshot_returns_none_when_missing(self, event_store):
         assert event_store.load_snapshot("nonexistent") is None
 
+    def test_get_stream_with_event_type_filter(self, event_store):
+        event_store.emit("s:1", "a.done", {"x": 1})
+        event_store.emit("s:1", "b.done", {"x": 2})
+        events = event_store.get_stream("s:1", event_type="a.done")
+        assert len(events) == 1
+        assert events[0]["event_type"] == "a.done"
+
+    def test_get_stream_with_after_event_id_filter(self, event_store):
+        id1 = event_store.emit("s:1", "test.step", {"i": 0})
+        event_store.emit("s:1", "test.step", {"i": 1})
+        events = event_store.get_stream("s:1", after_event_id=id1)
+        assert len(events) == 1
+        assert events[0]["payload"]["i"] == 1
+
     def test_incomplete_streams(self, event_store):
         event_store.emit("scan:a", "scan.window_started", {})
         event_store.emit("scan:a", "scan.window_done", {})
