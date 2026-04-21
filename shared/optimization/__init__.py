@@ -25,3 +25,7 @@ from shared.optimization._tracker import (  # noqa: F401
     PerformanceSnapshot,
     DomainStats,
 )
+from shared.optimization._aggregator import (  # noqa: F401
+    SignalAggregator,
+    AggregatedInsight,
+)
