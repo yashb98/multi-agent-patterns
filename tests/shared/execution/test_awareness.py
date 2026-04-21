@@ -141,7 +141,7 @@ class TestTaskRunner:
             "skill_id": "test",
             "timeout_s": 30,
         }
-        result = asyncio.get_event_loop().run_until_complete(runner.run(task))
+        result = asyncio.run(runner.run(task))
         assert result["success"] is True
 
     def test_timeout_produces_failure(self, event_store):
@@ -164,6 +164,6 @@ class TestTaskRunner:
             "skill_id": "test",
             "timeout_s": 1,
         }
-        result = asyncio.get_event_loop().run_until_complete(runner.run(task))
+        result = asyncio.run(runner.run(task))
         assert result["success"] is False
         assert "timeout" in result["failure_reason"]

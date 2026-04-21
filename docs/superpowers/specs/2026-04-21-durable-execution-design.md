@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-21
 **Pillar:** 4 of 6 (Autonomous Agent Infrastructure)
-**Status:** Design approved, pending implementation plan
+**Status:** Implemented — plan at docs/superpowers/plans/2026-04-21-durable-execution-implementation.md
 **Depends on:** Pillar 1 (Memory) for pre-flight recall, Pillar 2 (Cognitive) for complexity assessment, Pillar 3 (Optimization) for domain stats. Soft dependencies — Phase 1 works standalone.
 
 ---
