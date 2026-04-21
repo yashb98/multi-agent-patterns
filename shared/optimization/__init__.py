@@ -9,3 +9,19 @@ detects patterns → policy decides actions → tracker measures impact.
     engine.emit("correction", source_loop="correction_capture",
         domain="greenhouse", payload={...})
 """
+
+from shared.optimization._signals import (  # noqa: F401
+    LearningSignal,
+    SignalBus,
+    VALID_SIGNAL_TYPES,
+)
+from shared.optimization._trajectory import (  # noqa: F401
+    TrajectoryStore,
+    Trajectory,
+    TrajectoryStep,
+)
+from shared.optimization._tracker import (  # noqa: F401
+    PerformanceTracker,
+    PerformanceSnapshot,
+    DomainStats,
+)
