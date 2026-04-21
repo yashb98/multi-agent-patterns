@@ -72,7 +72,7 @@ Every feature, function, and file MUST satisfy all 7 principles. Full checklist:
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~98,500 LOC | 465 Python files | 32 databases | 2556 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~98,500 LOC | 467 Python files | 32 databases | 2566 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
