@@ -569,10 +569,28 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
         f"Visa: {WORK_AUTH['visa_status']}."
     )
 
+    # Read optimization correction insights for this domain before generating
+    correction_context = ""
+    try:
+        from shared.optimization import get_optimization_engine
+        _opt_domain = (job_context or {}).get("company", "screening")
+        engine = get_optimization_engine()
+        insights = engine._bus.query(signal_type="correction", domain=_opt_domain, limit=10)
+        if insights:
+            corrections = [
+                f"- {s.payload.get('field', '')}: use '{s.payload.get('new_value', '')}' not '{s.payload.get('old_value', '')}'"
+                for s in insights if s.payload.get("field")
+            ]
+            if corrections:
+                correction_context = " Past corrections for this domain:\n" + "\n".join(corrections[:5])
+    except Exception:
+        pass
+
     task = (
         "Answer this job application screening question concisely (1-3 sentences). "
         f"Be professional and positive. Question: {question}.{context_line} "
         f"Applicant background: {profile_summary}"
+        f"{correction_context}"
     )
 
     engine = _get_screening_engine()

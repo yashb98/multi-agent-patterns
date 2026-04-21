@@ -81,6 +81,18 @@ def evolve_prompt(agent_name: str, current_result: str, score: float):
 def _quick_evolve(agent_name: str, current_prompt: str, experiences: list,
                   current_result: str, score: float, generation: int):
     """Single-step prompt evolution from latest experience."""
+    # Check for recent rollback signals — skip evolution if optimization detected regression
+    try:
+        from shared.optimization import get_optimization_engine
+        engine = get_optimization_engine()
+        rollbacks = engine._bus.query(signal_type="rollback", domain=agent_name, limit=5)
+        recent_rollbacks = [r for r in rollbacks if r.source_loop == "optimization_policy"]
+        if recent_rollbacks:
+            logger.info("Skipping persona evolution for %s — recent rollback signal", agent_name)
+            return
+    except Exception:
+        pass
+
     exp_lines = "\n".join(f"- {e['pattern']} (score: {e['score']:.1f})" for e in experiences[:5])
 
     try:
@@ -146,6 +158,18 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
     4. LLM rewrites prompt to fix failures while preserving successes
     5. Repeat for up to 5 iterations
     """
+    # Check for recent rollback signals — skip deep optimization if regression detected
+    try:
+        from shared.optimization import get_optimization_engine
+        engine = get_optimization_engine()
+        rollbacks = engine._bus.query(signal_type="rollback", domain=agent_name, limit=5)
+        recent_rollbacks = [r for r in rollbacks if r.source_loop == "optimization_policy"]
+        if recent_rollbacks:
+            logger.info("Skipping deep optimization for %s — recent rollback signal", agent_name)
+            return
+    except Exception:
+        pass
+
     try:
         from shared.agents import get_llm
         from shared.prompt_optimizer import PromptOptimizer

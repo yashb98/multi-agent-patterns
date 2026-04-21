@@ -99,30 +99,66 @@ class ApplicationOrchestrator:
         and the snapshot is used directly (avoids double-navigation which kills
         the MV3 service worker connection).
         """
+        import time as _time
+
         profile = profile or {}
         custom_answers = custom_answers or {}
         navigation_steps: list[dict] = []
+
+        # Start trajectory logging
+        _tid = ""
+        _step_idx = 0
+        _t0 = _time.monotonic()
+        try:
+            from shared.optimization import get_optimization_engine
+            from shared.optimization._trajectory import TrajectoryStep
+            _opt_engine = get_optimization_engine()
+            _domain = extract_domain(url)
+            _tid = _opt_engine.start_trajectory(
+                pipeline="job_application", domain=_domain,
+                agent_name="orchestrator", session_id=f"apply_{_domain}_{platform}",
+            )
+        except Exception:
+            _opt_engine = None
 
         # Phase 1: Navigate to application form
         if pre_navigated_snapshot is not None:
             if hasattr(self.driver, '_snapshot'):
                 self.driver._snapshot = self._to_page_snapshot(pre_navigated_snapshot)
+        _nav_t0 = _time.monotonic()
         nav_result = await self._navigator.navigate_to_form(
             url, platform, navigation_steps,
             skip_initial_navigate=pre_navigated_snapshot is not None,
         )
         page_type = nav_result["page_type"]
 
+        try:
+            if _tid and _opt_engine:
+                _opt_engine.log_step(_tid, TrajectoryStep(
+                    step_index=_step_idx, action="navigate_to_form",
+                    target=url, input_value=platform,
+                    output_value=str(page_type),
+                    outcome="success" if page_type == PageType.APPLICATION_FORM else "failure",
+                    duration_ms=(_time.monotonic() - _nav_t0) * 1000, metadata={},
+                ))
+                _step_idx += 1
+        except Exception:
+            pass
+
         if page_type == PageType.VERIFICATION_WALL:
+            self._complete_trajectory(_tid, _opt_engine, "failure_captcha", 0.0, _t0)
             return {"success": False, "error": "CAPTCHA wall", "screenshot": nav_result.get("screenshot")}
 
         if page_type == PageType.UNKNOWN:
+            self._complete_trajectory(_tid, _opt_engine, "failure_unknown_page", 0.0, _t0)
             return {"success": False, "error": "Unknown page — could not reach application form", "screenshot": nav_result.get("screenshot")}
 
         if page_type != PageType.APPLICATION_FORM:
+            self._complete_trajectory(_tid, _opt_engine, f"failure_stuck_{page_type}", 0.0, _t0)
             return {"success": False, "error": f"Stuck on {page_type}", "screenshot": nav_result.get("screenshot")}
 
         # Phase 2: Multi-page form filling
+        _fill_t0 = _time.monotonic()
         result = await self._filler.fill_application(
             platform=platform,
             snapshot=nav_result["snapshot"],
@@ -135,19 +171,48 @@ class ApplicationOrchestrator:
             form_intelligence=form_intelligence,
         )
 
+        try:
+            if _tid and _opt_engine:
+                _opt_engine.log_step(_tid, TrajectoryStep(
+                    step_index=_step_idx, action="form_fill",
+                    target=url, input_value=f"pages={result.get('pages_filled', 0)}",
+                    output_value="success" if result.get("success") else result.get("error", "unknown"),
+                    outcome="success" if result.get("success") else "failure",
+                    duration_ms=(_time.monotonic() - _fill_t0) * 1000, metadata={},
+                ))
+                _step_idx += 1
+        except Exception:
+            pass
+
         # Phase 3: Pre-submit quality gate — review filled answers before submitting
         if result.get("success") and not dry_run and company_research is not None:
+            _gate_t0 = _time.monotonic()
             gate_result = self._run_pre_submit_gate(
                 custom_answers=custom_answers,
                 jd_keywords=jd_keywords or [],
                 company_research=company_research,
             )
+
+            try:
+                if _tid and _opt_engine:
+                    _opt_engine.log_step(_tid, TrajectoryStep(
+                        step_index=_step_idx, action="pre_submit_gate",
+                        target=url, input_value=f"score={gate_result.score:.1f}",
+                        output_value="passed" if gate_result.passed else "blocked",
+                        outcome="success" if gate_result.passed else "failure",
+                        duration_ms=(_time.monotonic() - _gate_t0) * 1000, metadata={},
+                    ))
+                    _step_idx += 1
+            except Exception:
+                pass
+
             if not gate_result.passed:
                 logger.warning(
                     "PreSubmitGate blocked submission (score=%.1f): %s",
                     gate_result.score,
                     gate_result.weaknesses,
                 )
+                self._complete_trajectory(_tid, _opt_engine, "failure_gate_blocked", gate_result.score, _t0)
                 return {
                     "success": False,
                     "needs_human_review": True,
@@ -164,7 +229,25 @@ class ApplicationOrchestrator:
             domain = extract_domain(url)
             self.learner.save_sequence(domain, navigation_steps, success=True)
 
+        # Complete trajectory
+        _outcome = "success" if result.get("success") else "failure"
+        _score = result.get("gate_score", 8.0 if result.get("success") else 0.0)
+        self._complete_trajectory(_tid, _opt_engine, _outcome, _score, _t0)
+
         return result
+
+    @staticmethod
+    def _complete_trajectory(tid: str, engine, outcome: str, score: float, t0: float):
+        """Safely complete a trajectory, suppressing all errors."""
+        try:
+            import time as _time
+            if tid and engine:
+                engine.complete_trajectory(
+                    tid, final_outcome=outcome, final_score=score,
+                    total_duration_ms=(_time.monotonic() - t0) * 1000,
+                )
+        except Exception:
+            pass
 
     @staticmethod
     def _run_pre_submit_gate(
