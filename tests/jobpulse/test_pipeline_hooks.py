@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, patch
 
 
 class TestFeatureEnabled:
-    def test_returns_false_by_default(self):
+    def test_returns_false_by_default(self, monkeypatch):
+        monkeypatch.delenv("JOBPULSE_GHOST_DETECTION", raising=False)
         from jobpulse.pipeline_hooks import feature_enabled
 
         assert feature_enabled("JOBPULSE_GHOST_DETECTION") is False
@@ -57,7 +58,8 @@ class TestWithGhostDetection:
 
 
 class TestEnhancedGenerateMaterials:
-    def test_delegates_to_original_when_disabled(self):
+    def test_delegates_to_original_when_disabled(self, monkeypatch):
+        monkeypatch.delenv("JOBPULSE_ATS_NORMALIZE", raising=False)
         from jobpulse.pipeline_hooks import enhanced_generate_materials
 
         mock_original = MagicMock(return_value="original_result")

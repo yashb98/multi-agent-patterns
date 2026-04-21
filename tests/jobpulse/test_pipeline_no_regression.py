@@ -4,8 +4,9 @@ import pytest
 
 
 class TestPipelineNoRegression:
-    def test_generate_materials_unchanged_when_flags_off(self):
+    def test_generate_materials_unchanged_when_flags_off(self, monkeypatch):
         """With all flags off, enhanced_generate_materials just delegates."""
+        monkeypatch.delenv("JOBPULSE_ATS_NORMALIZE", raising=False)
         from jobpulse.pipeline_hooks import enhanced_generate_materials
 
         mock_bundle = MagicMock()
@@ -31,7 +32,8 @@ class TestPipelineNoRegression:
         result = with_ghost_detection(listings, {})
         assert len(result) == 3
 
-    def test_archetype_noop_when_off(self):
+    def test_archetype_noop_when_off(self, monkeypatch):
+        monkeypatch.delenv("JOBPULSE_ARCHETYPE_ENGINE", raising=False)
         from jobpulse.pipeline_hooks import with_archetype_detection
 
         listing = MagicMock(spec=[])

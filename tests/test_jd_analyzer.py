@@ -79,7 +79,7 @@ def test_detect_ats_platform() -> None:
     assert detect_ats_platform("https://boards.greenhouse.io/barclays/123") == "greenhouse"
     assert detect_ats_platform("https://jobs.lever.co/revolut/456") == "lever"
     assert detect_ats_platform("https://barclays.wd3.myworkdayjobs.com/en-US/jobs/1") == "workday"
-    assert detect_ats_platform("https://linkedin.com/jobs/123") is None
+    assert detect_ats_platform("https://linkedin.com/jobs/123") == "linkedin"
 
 
 # ---------------------------------------------------------------------------

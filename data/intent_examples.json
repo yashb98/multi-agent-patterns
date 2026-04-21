@@ -453,5 +453,13 @@
     "analyze trade-offs in distributed training",
     "research federated learning privacy guarantees",
     "compare RLHF vs DPO vs GRPO for alignment"
+  ],
+  "cancel": [
+    "cancel",
+    "cancel that",
+    "never mind",
+    "stop that",
+    "forget it",
+    "abort that"
   ]
 }

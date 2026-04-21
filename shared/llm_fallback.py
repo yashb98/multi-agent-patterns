@@ -7,7 +7,7 @@ falls back to next provider. Records failure in circuit breaker.
 import os
 from shared.logging_config import get_logger
 from shared.circuit_breaker import get_breaker
-from shared.alerting import AlertManager
+from shared.alerting import AlertManager, AlertLevel
 
 logger = get_logger(__name__)
 _alert_mgr = AlertManager()
@@ -42,7 +42,7 @@ class FallbackLLM:
                 if breaker:
                     breaker.record_failure()
                 logger.warning("Provider %s failed: %s", provider, e)
-                _alert_mgr.outage_alert(provider)
+                _alert_mgr.alert(AlertLevel.ERROR, f"Provider {provider} failed", source="llm_fallback")
         raise last_error or ProviderError("No providers available")
 
     def _call_openai(self, prompt: str, **kwargs) -> str:

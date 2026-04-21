@@ -183,16 +183,18 @@ async def test_fill_date_verifies():
 
 
 @pytest.mark.asyncio
-async def test_upload_file():
+async def test_upload_file(tmp_path):
+    cv = tmp_path / "cv.pdf"
+    cv.write_bytes(b"%PDF-1.4 test")
     driver = PlaywrightDriver()
     mock_el = MagicMock()
     mock_el.set_input_files = AsyncMock()
     mock_page = MagicMock()
     mock_page.query_selector = AsyncMock(return_value=mock_el)
     driver._page = mock_page
-    result = await driver.upload_file("#file", "/tmp/cv.pdf")
+    result = await driver.upload_file("#file", str(cv))
     assert result["success"] is True
-    assert result["value_set"] == "/tmp/cv.pdf"
+    assert result["value_set"] == str(cv)
 
 
 def test_fuzzy_match_exact():

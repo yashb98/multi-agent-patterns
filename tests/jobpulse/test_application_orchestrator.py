@@ -404,11 +404,13 @@ class TestStuckDetection:
         orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
         bridge.fill.return_value = MagicMock(success=True)
 
-        result = await orchestrator.apply(
-            url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/Data-Analyst_R-12345",
-            platform="workday",
-            cv_path=cv_path,
-        )
+        with patch("jobpulse.application_orchestrator_pkg._form_filler.asyncio.sleep"), \
+             patch("jobpulse.application_orchestrator_pkg._navigator.asyncio.sleep"):
+            result = await orchestrator.apply(
+                url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/Data-Analyst_R-12345",
+                platform="workday",
+                cv_path=cv_path,
+            )
         assert result["success"] is False
         assert "Stuck" in result.get("error", "")
 
@@ -502,11 +504,13 @@ class TestMaxPages:
         orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
         bridge.fill.return_value = MagicMock(success=True)
 
-        result = await orchestrator.apply(
-            url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/ML-Engineer_R-67890",
-            platform="workday",
-            cv_path=cv_path,
-        )
+        with patch("jobpulse.application_orchestrator_pkg._form_filler.asyncio.sleep"), \
+             patch("jobpulse.application_orchestrator_pkg._navigator.asyncio.sleep"):
+            result = await orchestrator.apply(
+                url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/ML-Engineer_R-67890",
+                platform="workday",
+                cv_path=cv_path,
+            )
         assert result["success"] is False
 
 
