@@ -2,14 +2,6 @@
 
 Event-sourced state management with crash recovery, MCP production server,
 and A2A agent coordination protocol.
-
-Public API:
-    get_event_store()   -- shared EventStore singleton
-    emit()              -- emit an event (shorthand)
-    EventStore, Event   -- event store and event type
-    ScanProjector, FormProjector, PatternProjector, project_stream -- state projection
-    EventStoreCheckpointer -- LangGraph checkpointing bridge
-    RedisClient         -- optional fast cache + pub/sub
 """
 
 from shared.execution._event_store import EventStore, Event
@@ -18,6 +10,16 @@ from shared.execution._projectors import (
 )
 from shared.execution._checkpointer import EventStoreCheckpointer
 from shared.execution._redis import RedisClient
+from shared.execution._mcp_gateway import (
+    CapabilityServer, create_gateway_app, register_capability_server,
+)
+from shared.execution._a2a_card import AgentCard, AgentSkill, FileAgentRegistry
+from shared.execution._a2a_task import A2ATask, TaskManager, TASK_TIMEOUTS
+from shared.execution._awareness import (
+    TaskPlan, ConfidenceTracker, TaskPreFlight, TaskPostFlight, TaskRunner, Decision,
+)
+from shared.execution._verifier import FormVerifier, VerifyResult
+from shared.execution._rescue import RescueAgent
 
 _store: EventStore | None = None
 
