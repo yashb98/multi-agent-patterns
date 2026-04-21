@@ -39,6 +39,14 @@ MCP tools query pre-indexed SQLite (1-28ms). Grep scans 581 files every time (35
 - Grep/Glob only for non-Python files or raw regex in configs
 - Never use Explore agents for code understanding — they can't access MCP tools
 
+## Cognitive Reasoning (shared/cognitive/)
+4-level graduated escalation: L0 Memory Recall → L1 Single Shot → L2 Reflexion → L3 Tree of Thought.
+- `CognitiveEngine.think(task, domain, stakes)` — single entry point
+- EscalationClassifier picks level via heuristic (memory → novelty → stakes)
+- StrategyComposer assembles prompts from templates + anti-patterns
+- Budget caps: 20 L2/hour, 5 L3/hour, $0.50/hour. Kill switch: COGNITIVE_ENABLED=false
+- Full docs: `shared/cognitive/CLAUDE.md`
+
 ## Rules
 - NEVER import from patterns/, jobpulse/, or mindgraph_app/
 - NEVER instantiate ChatOpenAI directly — always use get_llm() from agents.py

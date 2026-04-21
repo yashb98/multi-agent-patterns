@@ -80,4 +80,5 @@ Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 - `patterns/CLAUDE.md` — 4 LangGraph orchestration patterns
 - `mindgraph_app/CLAUDE.md` — Code Review Graph, risk scoring, Mermaid/DOT viz
 - `shared/CLAUDE.md` — Cross-cutting utilities, NLP, fact-checker
+- `shared/cognitive/CLAUDE.md` — 4-level cognitive engine: memory recall, single shot, reflexion, tree of thought
 - `.claude/rules/` — Domain-specific rules (jobs, testing, patterns, shared, frontend, error-handling)

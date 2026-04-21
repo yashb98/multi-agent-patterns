@@ -29,6 +29,11 @@ python shared/code_intel_cli.py recent_changes [n]         # Git log + graph con
 - Production DBs live in `data/*.db` — NEVER modify or touch these directly
 - All test fixtures must use `tmp_path` or monkeypatch DB paths
 
+## Cognitive Reasoning (opt-in)
+Use `CognitiveEngine.think(task, domain, stakes)` for tasks that benefit from self-improvement.
+Call `flush()` at end of run to persist strategy templates.
+Import: `from shared.cognitive import CognitiveEngine`
+
 ## Dual Dispatcher Rule
 
 When investigating intents or dispatch: check BOTH `jobpulse/dispatcher.py` AND `jobpulse/swarm_dispatcher.py`.

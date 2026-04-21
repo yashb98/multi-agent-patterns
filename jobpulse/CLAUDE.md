@@ -46,6 +46,11 @@
 - followup_tracker.py — Follow-up cadence tracker: urgency tiers (urgent/overdue/waiting/cold), SQLite
 - interview_prep.py — STAR+Reflection interview prep: skill-to-project mapping, story templates
 
+## Cognitive Engine Integration
+Agents using CognitiveEngine: gmail_agent (email classification), job_autopilot (form strategy).
+Cron runs create engine → think per sub-task → flush() at end. Templates persist across runs.
+Kill switch: `COGNITIVE_ENABLED=false`
+
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.
 IMPORTANT: New intents MUST be added to BOTH dispatcher.py AND swarm_dispatcher.py.
