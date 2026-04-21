@@ -26,4 +26,4 @@ from shared.cognitive._strategy import (  # noqa: F401
 )
 from shared.cognitive._reflexion import ReflexionResult  # noqa: F401
 from shared.cognitive._tree_of_thought import ToTResult, Branch  # noqa: F401
-from shared.cognitive._engine import CognitiveEngine, ThinkResult  # noqa: F401
+from shared.cognitive._engine import CognitiveEngine, ThinkResult, get_cognitive_engine  # noqa: F401

@@ -67,7 +67,8 @@ class TestEscalationClassifier:
         """Post-execution: L0 scored poorly → should escalate."""
         classifier = self._make_classifier()
         should, next_level = classifier.should_escalate(
-            current_level=ThinkLevel.L0_MEMORY, score=4.0, confidence=0.3,
+            current_level=ThinkLevel.L0_MEMORY, score=4.0,
+            task="classify email", domain="email",
         )
         assert should is True
         assert next_level == ThinkLevel.L1_SINGLE

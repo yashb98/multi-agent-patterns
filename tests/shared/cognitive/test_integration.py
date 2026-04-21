@@ -60,10 +60,20 @@ class TestIntegration:
                 return "MISTAKE: Missed edge case\nFIX: Check boundaries"
             return "bad answer"
 
+        # Mock ToT as well — auto-escalation from L2 (score 3.0) triggers L3
+        tot_winner = Branch(branch_id="b0", reasoning="r", output="still bad",
+                            score=3.0, depth=0)
+        tot_result = ToTResult(
+            winner=tot_winner, all_branches=[tot_winner],
+            strategy_template="", pruned_count=0, cost=0.01,
+        )
+
         with patch("shared.cognitive._reflexion._llm_generate",
                    side_effect=mock_gen_fail), \
              patch("shared.cognitive._engine._llm_generate",
-                   new_callable=AsyncMock, return_value="bad"):
+                   new_callable=AsyncMock, return_value="bad"), \
+             patch.object(engine._tot, "explore", new_callable=AsyncMock,
+                          return_value=tot_result):
             await engine.think(
                 task="classify", domain="email_classification",
                 stakes="medium", scorer=lambda x: 3.0,

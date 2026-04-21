@@ -97,6 +97,14 @@ Navigation learning replays per domain (SQLite). Max 10 nav steps, 20 form pages
 - Internal dict keys (_stream, _gotchas, _job_context) filtered before JSON serialization
 - Platform quirks documented in `.claude/rules/jobs.md` under "Platform-Specific Quirks"
 
+## Cognitive Reasoning Integration
+Agents opt into `shared/cognitive/CognitiveEngine` for self-improving reasoning:
+- `gmail_agent.py` — email classification (domain: `email_classification`, medium stakes)
+- `screening_answers.py` — LLM fallback for screening questions (domain: `screening_answers`, medium stakes)
+- Kill switch: `COGNITIVE_ENABLED=false` disables everywhere, falls back to direct LLM
+- Both agents use lazy singleton init — zero overhead if cognitive engine isn't needed
+- Engine calls `flush_sync()` is the caller's responsibility at end of batch/cron run
+
 ## Commands
 ```
 python -m jobpulse.runner daemon         # Start Telegram daemon

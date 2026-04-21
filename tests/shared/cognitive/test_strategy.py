@@ -88,11 +88,11 @@ class TestStrategyComposer:
 
     def test_compose_includes_base_prompt(self, mock_memory):
         """Evolved base prompt is the first section."""
-        with patch("shared.cognitive._strategy._get_base_prompt",
-                   return_value="You are a precise email classifier."):
-            composer = StrategyComposer()
-            result = composer.compose("task", "email", "gmail_agent", mock_memory)
-            assert result.text.startswith("You are a precise email classifier")
+        resolver = lambda name: "You are a precise email classifier."
+        composer = StrategyComposer()
+        result = composer.compose("task", "email", "gmail_agent", mock_memory,
+                                  prompt_resolver=resolver)
+        assert result.text.startswith("You are a precise email classifier")
 
     def test_template_update_on_success(self, mock_memory):
         """Successful use increments times_used and times_succeeded."""
@@ -138,10 +138,10 @@ class TestStrategyComposer:
 
     def test_empty_memory_returns_base_only(self, mock_memory):
         """No templates, no failures → just the base prompt + task."""
-        with patch("shared.cognitive._strategy._get_base_prompt",
-                   return_value="Base prompt."):
-            composer = StrategyComposer()
-            result = composer.compose("do the task", "unknown", "agent", mock_memory)
-            assert "Base prompt." in result.text
-            assert len(result.templates_used) == 0
-            assert len(result.anti_patterns_used) == 0
+        resolver = lambda name: "Base prompt."
+        composer = StrategyComposer()
+        result = composer.compose("do the task", "unknown", "agent", mock_memory,
+                                  prompt_resolver=resolver)
+        assert "Base prompt." in result.text
+        assert len(result.templates_used) == 0
+        assert len(result.anti_patterns_used) == 0
