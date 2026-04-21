@@ -132,6 +132,14 @@ def _applied_today(db: JobDB) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _get_event_store():
+    try:
+        from shared.execution import get_event_store
+        return get_event_store()
+    except Exception:
+        return None
+
+
 _scan_lock = threading.Lock()
 
 
@@ -210,9 +218,25 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         logger.info("job_autopilot: %s", msg)
         return msg
 
+    _evt = _get_event_store()
+    _stream_id = f"scan:{datetime.now(UTC).strftime('%Y-%m-%dT%H:%M')}" if _evt else ""
+    if _evt:
+        _evt.emit(_stream_id, "scan.window_started", {
+            "platforms": platforms or ["linkedin", "indeed", "reed"],
+            "daily_cap": JOB_AUTOPILOT_MAX_DAILY,
+            "already_applied": already_applied,
+        })
+
     # --- Stage 1: fetch and filter ---
     search_config = load_search_config()
     raw_jobs, total_found, gate0_rejected = fetch_and_filter_jobs(platforms, search_config, trail)
+
+    if _evt:
+        _evt.emit(_stream_id, "scan.jobs_found", {
+            "total_found": total_found,
+            "gate0_rejected": gate0_rejected,
+            "raw_count": len(raw_jobs),
+        })
 
     # --- Stage 2: analyze JDs and deduplicate ---
     new_listings = analyze_and_deduplicate(raw_jobs, db, trail)
@@ -331,6 +355,14 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
 
     if notion_failures:
         logger.warning("job_autopilot: %d Notion sync failures this run", len(notion_failures))
+
+    if _evt:
+        _evt.emit(_stream_id, "scan.window_done", {
+            "total_found": total_found,
+            "auto_applied": auto_applied_count,
+            "review_count": len(review_batch),
+            "errors": errors,
+        })
 
     return summary_msg
 
