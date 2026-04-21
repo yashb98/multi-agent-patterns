@@ -1,0 +1,15 @@
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    ports:
+      - "7687:7687"
+      - "7474:7474"
+    environment:
+      NEO4J_AUTH: neo4j/jobpulse
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+    mem_limit: 512m
+
+volumes:
+  neo4j_data:
