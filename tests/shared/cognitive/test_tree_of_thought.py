@@ -39,7 +39,8 @@ class TestTreeOfThought:
                   "ext A": 8.5, "ext C": 9.0, "default": 5.0}
 
         with patch("shared.cognitive._tree_of_thought._llm_generate",
-                   side_effect=mock_generate):
+                   side_effect=mock_generate), \
+             patch.object(tot, "_generate_branches_via_grpo", return_value=[]):
             result = await tot.explore(
                 task="test", domain="test", context="ctx",
                 num_branches=4, prune_threshold=5.0, extend_top_n=2,
@@ -152,7 +153,8 @@ class TestTreeOfThought:
             return "output"
 
         with patch("shared.cognitive._tree_of_thought._llm_generate",
-                   side_effect=mock_generate):
+                   side_effect=mock_generate), \
+             patch.object(tot, "_generate_branches_via_grpo", return_value=[]):
             await tot.explore(
                 task="test", domain="test", context="ctx",
                 num_branches=4, extend_top_n=0,
@@ -178,7 +180,8 @@ class TestTreeOfThought:
             return s
 
         with patch("shared.cognitive._tree_of_thought._llm_generate",
-                   side_effect=mock_generate):
+                   side_effect=mock_generate), \
+             patch.object(tot, "_generate_branches_via_grpo", return_value=[]):
             await tot.explore(
                 task="test", domain="test", context="ctx",
                 num_branches=4, prune_threshold=5.0, extend_top_n=2,
