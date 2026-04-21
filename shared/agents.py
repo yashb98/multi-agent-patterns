@@ -508,11 +508,16 @@ specified in your instructions."""
 
     try:
         review = json.loads(raw)
-        score = float(review.get("overall_score", 0))
+        from shared.governance._score_validator import validate_review
+        validated = validate_review(review)
+        score = validated.overall_score
+        accuracy = validated.accuracy_score
         passed = review.get("passed", False)
         feedback_text = json.dumps(review, indent=2)
 
-        logger.info("Score: %s/10 | Passed: %s", score, passed)
+        if validated.anomalies:
+            logger.warning("Review anomalies: %s", validated.anomalies)
+        logger.info("Score: %s/10 (accuracy: %s) | Passed: %s", score, accuracy, passed)
         if not passed:
             improvements = review.get("improvements_needed", [])
             for imp in improvements[:3]:

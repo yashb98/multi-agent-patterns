@@ -93,3 +93,13 @@ class TestAnomalyTracking:
         reset_anomaly_counter()
         validate_review({"overall_score": 999})
         assert get_anomaly_count() >= 1
+
+
+class TestReviewerIntegration:
+    def test_reviewer_output_uses_validate_review(self):
+        """Verify that the reviewer node returns clamped scores."""
+        from shared.governance._score_validator import validate_review
+        raw = {"overall_score": 999, "accuracy_score": -5, "passed": True}
+        result = validate_review(raw)
+        assert result.overall_score == 10.0
+        assert result.accuracy_score == 0.0
