@@ -39,6 +39,19 @@ MCP tools query pre-indexed SQLite (1-28ms). Grep scans 581 files every time (35
 - Grep/Glob only for non-Python files or raw regex in configs
 - Never use Explore agents for code understanding — they can't access MCP tools
 
+## Memory Layer (shared/memory_layer/)
+3-engine hybrid: SQLite (truth) + Qdrant (vectors) + Neo4j (graph).
+- `_sqlite_store.py` — Source of truth CRUD
+- `_qdrant_store.py` — Filtered HNSW vector search
+- `_neo4j_store.py` — Graph traversal + signals
+- `_embedder.py` — Voyage 3 Large + MiniLM fallback
+- `_linker.py` — Autonomous graph linking (A-MEM)
+- `_forgetting.py` — 6-signal decay + lifecycle promotion
+- `_query.py` — QueryRouter picks engine(s) per query
+- `_sync.py` — 3-engine reconciliation
+- `_manager.py` — MemoryManager facade (single entry point)
+All memory access goes through MemoryManager — never query engines directly.
+
 ## Cognitive Reasoning (shared/cognitive/)
 4-level graduated escalation: L0 Memory Recall → L1 Single Shot → L2 Reflexion → L3 Tree of Thought.
 - `CognitiveEngine.think(task, domain, stakes)` — single entry point

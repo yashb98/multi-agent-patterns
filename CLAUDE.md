@@ -81,4 +81,5 @@ Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 - `mindgraph_app/CLAUDE.md` — Code Review Graph, risk scoring, Mermaid/DOT viz
 - `shared/CLAUDE.md` — Cross-cutting utilities, NLP, fact-checker
 - `shared/cognitive/CLAUDE.md` — 4-level cognitive engine: memory recall, single shot, reflexion, tree of thought
+- `shared/memory_layer/CLAUDE.md` — 3-engine memory: SQLite (truth) + Qdrant (vectors) + Neo4j (graph)
 - `.claude/rules/` — Domain-specific rules (jobs, testing, patterns, shared, frontend, error-handling)

@@ -34,6 +34,12 @@ Use `CognitiveEngine.think(task, domain, stakes)` for tasks that benefit from se
 Call `flush()` at end of run to persist strategy templates.
 Import: `from shared.cognitive import CognitiveEngine`
 
+## Memory System
+
+Before agent execution, call `memory_manager.get_context_for_agent(agent_name, topic, domain)` to get relevant context. After execution, call `memory_manager.store_memory(tier, domain, content, score)` for any learned facts, procedures, or notable outcomes.
+
+Never query SQLite/Qdrant/Neo4j directly — always go through MemoryManager. Same principle as get_llm() for LLM calls.
+
 ## Dual Dispatcher Rule
 
 When investigating intents or dispatch: check BOTH `jobpulse/dispatcher.py` AND `jobpulse/swarm_dispatcher.py`.

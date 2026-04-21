@@ -47,6 +47,10 @@ SQLite-backed ExperienceMemory shared across all 4 patterns:
 - 250+ examples across 41 intents.
 - Strip trailing punctuation before classification (Whisper adds ".", "!", "?").
 
+## Memory Layer (shared/memory_layer/)
+All memory access goes through MemoryManager — never query SQLite/Qdrant/Neo4j directly.
+Same principle as get_llm() for LLM calls: single entry point, no direct engine access.
+
 ## Fact Checker (shared/fact_checker.py)
 Unified module used by both patterns/ and jobpulse/.
 - 3-level verification: research notes → external (Semantic Scholar, web search) → cache
