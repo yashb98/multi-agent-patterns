@@ -111,7 +111,8 @@ class SignalAggregator:
             if self._dedup_with_memory(domain, field_key):
                 continue
 
-            confidence = 0.8
+            # D1: Scale confidence by sample size — 3 sessions = 0.7, 10+ = 0.9
+            confidence = min(0.6 + 0.03 * len(sessions), 0.9)
             cross = self._cross_domain_search(field_key)
             if cross:
                 same_domain = any(c.get("domain") == domain for c in cross)
@@ -171,18 +172,29 @@ class SignalAggregator:
             # Sort ascending by timestamp so first half = older, second half = newer
             ordered = sorted(sigs, key=lambda s: s.timestamp)
             new_scores = [s.payload.get("new_score", 0) for s in ordered]
-            if len(new_scores) >= _PERSONA_DRIFT_WINDOW:
-                mid = len(new_scores) // 2
-                first = sum(new_scores[:mid]) / mid
-                second = sum(new_scores[mid:]) / (len(new_scores) - mid)
-                if second < first * 0.95:
+            n = len(new_scores)
+            if n >= _PERSONA_DRIFT_WINDOW:
+                # D4: Linear regression slope — more robust than half-split
+                x_mean = (n - 1) / 2.0
+                y_mean = sum(new_scores) / n
+                num = sum((i - x_mean) * (y - y_mean) for i, y in enumerate(new_scores))
+                den = sum((i - x_mean) ** 2 for i in range(n))
+                slope = num / den if den else 0
+                # Negative slope means declining; threshold: -0.1 per data point
+                if slope < -0.1:
+                    first_score = new_scores[0]
+                    last_score = new_scores[-1]
                     insights.append(AggregatedInsight(
                         pattern_type="persona_drift",
-                        confidence=0.8,
+                        confidence=min(0.7 + 0.02 * n, 0.95),
                         contributing_signals=[s.signal_id for s in ordered],
                         domain=domain,
                         recommended_action="rollback_persona",
-                        evidence=f"Score declining for {domain}: {first:.1f} → {second:.1f}",
+                        evidence=(
+                            f"Score declining for {domain}: "
+                            f"{first_score:.1f} → {last_score:.1f} "
+                            f"(slope={slope:.2f}, n={n})"
+                        ),
                     ))
         return insights
 

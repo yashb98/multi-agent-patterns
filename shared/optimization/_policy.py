@@ -100,8 +100,24 @@ class OptimizationPolicy:
         if insight.confidence < _CONFIDENCE_THRESHOLD_FOR_LLM and self._cognitive:
             if self._llm_call_count < self._budget.max_llm_policy_calls_per_hour:
                 self._llm_call_count += 1
+                context_parts = [
+                    f"Pattern: {insight.pattern_type}",
+                    f"Domain: {insight.domain}",
+                    f"Evidence: {insight.evidence}",
+                    f"Confidence: {insight.confidence:.2f}",
+                    f"Recommended: {insight.recommended_action}",
+                ]
+                if actions:
+                    context_parts.append(
+                        f"Rule-based actions so far: "
+                        f"{', '.join(a.action_type for a in actions)}"
+                    )
+                task_str = (
+                    "Decide the best optimization action.\n"
+                    + "\n".join(context_parts)
+                )
                 result = await self._cognitive.think(
-                    task=f"Decide optimization action for: {insight.evidence}",
+                    task=task_str,
                     domain="optimization",
                     stakes="medium",
                 )
