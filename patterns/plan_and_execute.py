@@ -342,7 +342,7 @@ def _route_after_eval(state: PlanExecuteState) -> str:
     return "synthesizer"
 
 
-def build_plan_execute_graph():
+def build_plan_execute_graph(checkpointer=None):
     """Build the plan-and-execute LangGraph."""
     graph = StateGraph(PlanExecuteState)
 
@@ -363,7 +363,7 @@ def build_plan_execute_graph():
     graph.add_edge("replanner", "step_executor")
     graph.add_edge("synthesizer", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def run_plan_execute(topic: str) -> dict:

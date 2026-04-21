@@ -485,7 +485,7 @@ def route_after_convergence(state: AgentState) -> str:
 
 # ─── BUILD THE GRAPH ────────────────────────────────────────────
 
-def build_enhanced_swarm_graph():
+def build_enhanced_swarm_graph(checkpointer=None):
     """
     Build the enhanced adaptive swarm graph.
     
@@ -520,7 +520,7 @@ def build_enhanced_swarm_graph():
     
     graph.add_edge("finish", END)
     
-    compiled = graph.compile()
+    compiled = graph.compile(checkpointer=checkpointer)
     logger.info("Enhanced Adaptive Swarm compiled successfully")
     return compiled
 

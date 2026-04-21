@@ -334,7 +334,7 @@ def finish_node(state: AgentState) -> dict:
 #
 # This creates the hub-and-spoke pattern.
 
-def build_hierarchical_graph(use_llm_supervisor: bool = False):
+def build_hierarchical_graph(use_llm_supervisor: bool = False, checkpointer=None):
     """
     Constructs the LangGraph StateGraph for the hierarchical pattern.
     
@@ -400,8 +400,8 @@ def build_hierarchical_graph(use_llm_supervisor: bool = False):
     #    - All referenced nodes exist
     #    - All conditional edge outputs are valid node names
     #    - The graph is reachable from START to END
-    compiled = graph.compile()
-    
+    compiled = graph.compile(checkpointer=checkpointer)
+
     logger.info("Hierarchical graph compiled successfully")
     logger.info("Nodes: supervisor, researcher, writer, reviewer, finish")
     logger.info("Supervisor type: %s", "LLM-based" if use_llm_supervisor else "Rule-based")

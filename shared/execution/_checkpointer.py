@@ -6,8 +6,10 @@ storage. Each checkpoint is stored as a pattern.checkpoint event.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Iterator
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.base import CheckpointTuple
 
 from shared.execution._event_store import EventStore
 from shared.logging_config import get_logger
@@ -15,22 +17,15 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-@dataclass
-class CheckpointTuple:
-    config: dict
-    checkpoint: dict
-    metadata: dict
-    parent_config: dict | None = None
-
-
-class EventStoreCheckpointer:
+class EventStoreCheckpointer(BaseCheckpointSaver):
     """LangGraph-compatible checkpoint saver using EventStore.
 
-    Implements the essential methods of BaseCheckpointSaver without
-    inheriting from it (avoids tight coupling to langgraph internals).
+    Inherits from BaseCheckpointSaver so LangGraph's compile()
+    validation accepts it as a valid checkpointer.
     """
 
     def __init__(self, event_store: EventStore):
+        super().__init__()
         self._store = event_store
 
     def put(

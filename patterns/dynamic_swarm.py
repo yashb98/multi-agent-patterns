@@ -492,7 +492,7 @@ def swarm_finish_node(state: AgentState) -> dict:
 # 3. After the queue drains, re-analysis might find NEW tasks
 #    based on what the agents discovered
 
-def build_swarm_graph():
+def build_swarm_graph(checkpointer=None):
     """
     Constructs the LangGraph StateGraph for the dynamic swarm pattern.
     
@@ -537,8 +537,8 @@ def build_swarm_graph():
     # ── Terminal ──
     graph.add_edge("finish", END)
     
-    compiled = graph.compile()
-    
+    compiled = graph.compile(checkpointer=checkpointer)
+
     logger.info("Dynamic Swarm graph compiled successfully")
     logger.info("Nodes: analyzer, executor, finish")
     logger.info("Loop: analyzer -> executor -> (executor | analyzer | finish)")

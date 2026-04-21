@@ -199,7 +199,7 @@ def reconciler_node(state: MapReduceState) -> dict:
 
 # ── Graph Construction ──
 
-def build_map_reduce_graph():
+def build_map_reduce_graph(checkpointer=None):
     """Build the map-reduce LangGraph."""
     graph = StateGraph(MapReduceState)
 
@@ -214,7 +214,7 @@ def build_map_reduce_graph():
     graph.add_edge("reducer", "reconciler")
     graph.add_edge("reconciler", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def run_map_reduce(topic: str) -> dict:

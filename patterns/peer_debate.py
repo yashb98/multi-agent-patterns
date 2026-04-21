@@ -415,7 +415,7 @@ def route_after_convergence(state: AgentState) -> str:
 # When convergence says "continue", we loop back.
 # When it says "finish", we break out to synthesis.
 
-def build_debate_graph():
+def build_debate_graph(checkpointer=None):
     """
     Constructs the LangGraph StateGraph for the peer debate pattern.
     
@@ -476,8 +476,8 @@ def build_debate_graph():
     # ── Terminal ──
     graph.add_edge("synthesis", END)
     
-    compiled = graph.compile()
-    
+    compiled = graph.compile(checkpointer=checkpointer)
+
     logger.info("Peer Debate graph compiled successfully")
     logger.info("Nodes: researcher, writer, reviewer, debate_researcher, debate_writer, convergence, synthesis")
     logger.info("Loop: debate_researcher -> debate_writer -> reviewer -> convergence -> (loop or finish)")
