@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-21
 **Pillars:** 5 and 6 of 6 (Autonomous Agent Infrastructure)
-**Status:** Design approved, pending implementation plan
+**Status:** Implemented — plan at docs/superpowers/plans/2026-04-21-security-governance-adversarial-eval.md
 **Depends on:** Pillar 4 (Durable Execution) for event emission. Pillar 3 (Optimization) for cost tracking. Soft dependencies — surgical fixes work standalone.
 
 ---
