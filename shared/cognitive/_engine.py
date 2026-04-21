@@ -81,12 +81,20 @@ class CognitiveEngine:
         self._total_calls += 1
 
         # 1. Classify
-        level = force_level if force_level is not None else \
-            self._classifier.classify(task, domain, stakes)
+        try:
+            level = force_level if force_level is not None else \
+                self._classifier.classify(task, domain, stakes)
+        except Exception as e:
+            logger.warning("Classification failed, falling back to L1: %s", e)
+            level = ThinkLevel.L1_SINGLE
         original_level = level
 
         # 2. Compose prompt from strategy templates
-        composed = self._composer.compose(task, domain, self._agent_name, self._memory)
+        try:
+            composed = self._composer.compose(task, domain, self._agent_name, self._memory)
+        except Exception as e:
+            logger.warning("Composition failed, using base prompt: %s", e)
+            composed = ComposedPrompt(text=task)
 
         # 3. Execute at classified level
         result = await self._execute(level, task, domain, composed, scorer)
