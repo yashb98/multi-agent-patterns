@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-21
 **Pillar:** 2 of 6 (Autonomous Agent Infrastructure)
-**Status:** Design approved, pending implementation plan
+**Status:** Design approved, plan at `docs/superpowers/plans/2026-04-21-cognitive-reasoning-engines.md`
 **Depends on:** Pillar 1 (Memory System Upgrade) — strategy templates stored in PROCEDURAL tier
 
 ---
