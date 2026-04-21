@@ -84,13 +84,13 @@ class TestOptimizationPolicy:
         actions1 = policy.decide(insight)
         assert any(a.action_type in ("rollback", "rollback_persona", "demote_memory")
                     for a in actions1)
-        # Second rollback within cooldown should be blocked
+        # Second rollback within cooldown should degrade to alert_human
         actions2 = policy.decide(insight)
         rollbacks = [a for a in actions2
                      if a.action_type in ("rollback", "rollback_persona")]
-        if rollbacks:
-            # Cooldown may degrade to alert_human
-            pass
+        assert len(rollbacks) == 0, "Rollback should be blocked during cooldown"
+        alerts = [a for a in actions2 if a.action_type == "alert_human"]
+        assert len(alerts) >= 1, "Should alert human when budget/cooldown blocks rollback"
 
     @pytest.mark.asyncio
     async def test_llm_fallback_for_novel_situations(self, policy, mock_cognitive):

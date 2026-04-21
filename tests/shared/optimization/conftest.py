@@ -26,6 +26,7 @@ class MockMemoryManager:
         self._pinned: list[str] = []
         self._contradicted: list[tuple[str, str]] = []
         self._search_results: list[dict] = []
+        self._should_fail: bool = False
 
     def store_memory(self, tier: str, domain: str, content: str,
                      score: float = 7.0, **kwargs):
@@ -35,7 +36,11 @@ class MockMemoryManager:
         })
 
     def learn_fact(self, domain: str, fact: str, run_id: str = "optimization"):
-        self._stored.append({"tier": "SEMANTIC", "domain": domain, "content": fact})
+        if self._should_fail:
+            raise RuntimeError("MockMemoryManager simulated failure")
+        mid = f"mem_{len(self._stored)}"
+        self._stored.append({"tier": "SEMANTIC", "domain": domain, "content": fact, "id": mid})
+        return mid
 
     def learn_procedure(self, domain: str, strategy: str, context: str = "",
                         score: float = 7.0, source: str = "optimization"):
@@ -62,6 +67,9 @@ class MockMemoryManager:
         self._revived.append(memory_id)
 
     def pin_memory(self, memory_id: str):
+        self._pinned.append(memory_id)
+
+    def pin(self, memory_id: str):
         self._pinned.append(memory_id)
 
     def contradict(self, old_id: str):

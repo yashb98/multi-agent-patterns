@@ -18,7 +18,7 @@ class TestIntegration:
                 source_loop="correction_capture",
                 domain="workday",
                 agent_name="form_filler",
-                payload={"field": "salary", "old": "45,000", "new": "45000"},
+                payload={"field": "salary", "old_value": "45,000", "new_value": "45000"},
                 session_id=f"sess_int_{i}",
             )
         result = optimization_engine.optimize()
@@ -94,7 +94,7 @@ class TestIntegration:
     def test_cross_domain_transfer_via_qdrant(
         self, optimization_engine, mock_memory,
     ):
-        """Workday insight found when querying for Indeed."""
+        """Workday insight found when querying for Indeed — dedup suppresses."""
         mock_memory._search_results = [
             {"content": "Workday salary requires integer", "domain": "workday", "score": 0.9},
         ]
@@ -104,11 +104,14 @@ class TestIntegration:
                 source_loop="correction_capture",
                 domain="indeed",
                 agent_name="form_filler",
-                payload={"field": "compensation", "old": "$45k", "new": "45000"},
+                payload={"field": "compensation", "old_value": "$45k", "new_value": "45000"},
                 session_id=f"sess_cross_{i}",
             )
         result = optimization_engine.optimize()
-        assert isinstance(result, dict)
+        systemic = [i for i in result["insights"] if i["type"] == "systemic_failure"]
+        # Cross-domain match from workday found → confidence boosted (0.87)
+        if systemic:
+            assert systemic[0]["confidence"] >= 0.85
 
     def test_l3_cost_reduction_over_time(self, optimization_engine):
         """Track L3 outcomes — verify stats accumulate."""
@@ -122,11 +125,16 @@ class TestIntegration:
         )
         assert stats.l3_success_rate == 1.0
 
-    def test_contradiction_resolution_with_neo4j(
+    def test_contradiction_resolution(
         self, optimization_engine, mock_memory,
     ):
-        """New vs old insight → policy resolves."""
-        optimization_engine._policy.resolve_contradiction(
+        """New vs old insight → policy resolves via memory contradict."""
+        optimization_engine.resolve_contradiction(
             new_id="new_insight", old_id="old_insight", new_stronger=True,
         )
         assert "old_insight" in mock_memory._contradicted
+        # When new is NOT stronger, nothing happens
+        optimization_engine.resolve_contradiction(
+            new_id="weak", old_id="strong", new_stronger=False,
+        )
+        assert len(mock_memory._contradicted) == 1

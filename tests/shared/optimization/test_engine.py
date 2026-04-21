@@ -96,6 +96,9 @@ class TestOptimizationEngine:
             )
         report = optimization_engine.daily_report()
         assert isinstance(report, dict)
+        assert "by_signal_type" in report
+        assert "active_domains" in report
+        assert "action_counts" in report
 
     def test_weekly_maintenance_prunes_and_exports(self, optimization_engine, tmp_path):
         optimization_engine.emit(
@@ -110,6 +113,49 @@ class TestOptimizationEngine:
             export_dir=str(tmp_path),
         )
         assert isinstance(result, dict)
+
+    def test_optimize_executes_actions(self, optimization_engine, mock_memory):
+        """optimize() executes policy actions, not just returns them."""
+        for i in range(3):
+            optimization_engine.emit(
+                signal_type="correction",
+                source_loop="correction_capture",
+                domain="workday",
+                agent_name="form_filler",
+                payload={"field": "salary", "old_value": "45k", "new_value": "45000"},
+                session_id=f"sess_exec_{i}",
+            )
+        result = optimization_engine.optimize()
+        if result["insights"]:
+            executed = [a for a in result["actions"] if a.get("executed")]
+            assert len(executed) >= 1
+
+    def test_health_returns_engine_state(self, optimization_engine):
+        h = optimization_engine.health()
+        assert h["enabled"] is True
+        assert h["signal_count"] == 0
+        assert h["paused_loops"] == []
+
+    def test_memory_failure_degrades_gracefully(self, optimization_engine, mock_memory):
+        """Engine doesn't crash when memory fails."""
+        mock_memory._should_fail = True
+        for i in range(3):
+            optimization_engine.emit(
+                signal_type="correction",
+                source_loop="correction_capture",
+                domain="test",
+                agent_name="test",
+                payload={"field": "f", "old_value": "a", "new_value": "b"},
+                session_id=f"sess_fail_{i}",
+            )
+        result = optimization_engine.optimize()
+        assert isinstance(result, dict)
+
+    def test_promote_demote_via_facade(self, optimization_engine, mock_memory):
+        optimization_engine.promote_memory("mem_a")
+        assert "mem_a" in mock_memory._promoted
+        optimization_engine.demote_memory("mem_b")
+        assert "mem_b" in mock_memory._demoted
 
     def test_disabled_via_env_var(self, db_path, mock_memory, mock_cognitive):
         with patch.dict(os.environ, {"OPTIMIZATION_ENABLED": "false"}):
