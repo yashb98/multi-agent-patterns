@@ -6,9 +6,18 @@ and A2A agent coordination protocol.
 Public API:
     get_event_store()   -- shared EventStore singleton
     emit()              -- emit an event (shorthand)
+    EventStore, Event   -- event store and event type
+    ScanProjector, FormProjector, PatternProjector, project_stream -- state projection
+    EventStoreCheckpointer -- LangGraph checkpointing bridge
+    RedisClient         -- optional fast cache + pub/sub
 """
 
 from shared.execution._event_store import EventStore, Event
+from shared.execution._projectors import (
+    ScanProjector, FormProjector, PatternProjector, project_stream,
+)
+from shared.execution._checkpointer import EventStoreCheckpointer
+from shared.execution._redis import RedisClient
 
 _store: EventStore | None = None
 
