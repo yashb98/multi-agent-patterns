@@ -668,17 +668,29 @@ class NativeFormFiller:
                 cv_uploaded = True
 
     async def _check_consent(self) -> None:
-        """Auto-check unchecked consent/terms/privacy checkboxes."""
-        consent_keywords = [
-            "agree", "consent", "terms", "privacy", "accept", "acknowledge",
-        ]
+        """Auto-check unchecked *required* consent checkboxes.
+
+        Policy lives in ``jobpulse.form_engine.consent_policy``:
+        - Marketing / newsletter / third-party-sharing / future-role opt-ins
+          are left unchecked (GDPR exposure we don't get to opt out of).
+        - Only required application consents (terms of service, privacy
+          policy, data processing for this application) are auto-ticked.
+        - Ambiguous labels default to unchecked so the user can handle them
+          manually and the correction-capture flow can learn from it.
+        """
+        from jobpulse.form_engine.consent_policy import is_required_consent
+
         checkboxes = await self._page.get_by_role("checkbox").all()
 
         for cb in checkboxes:
             label = await self._get_accessible_name(cb)
-            if any(kw in label.lower() for kw in consent_keywords):
-                if not await cb.is_checked():
-                    await cb.check()
+            if not is_required_consent(label):
+                if label.strip():
+                    logger.debug("consent: skipping non-required checkbox: %r", label)
+                continue
+            if not await cb.is_checked():
+                logger.info("consent: auto-ticking required consent: %r", label)
+                await cb.check()
 
     # ── Modal CV Upload (Reed, etc.) ──
 

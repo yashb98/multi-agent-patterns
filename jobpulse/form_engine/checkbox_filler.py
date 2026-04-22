@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
-import re
-
 from shared.logging_config import get_logger
 
+from jobpulse.form_engine.consent_policy import is_required_consent
 from jobpulse.form_engine.models import FillResult
 
 logger = get_logger(__name__)
 
-_CONSENT_KEYWORDS = re.compile(
-    r"agree|consent|terms|privacy|gdpr|accept|acknowledge|policy|conditions",
-    re.IGNORECASE,
-)
-
 
 def _is_consent_checkbox(label_text: str) -> bool:
-    """Return True if the label indicates a consent/terms checkbox."""
-    return bool(_CONSENT_KEYWORDS.search(label_text))
+    """Return True if the label is a *required* application consent.
+
+    Marketing / newsletter / third-party-sharing opt-ins never qualify —
+    see ``jobpulse.form_engine.consent_policy`` for the deny/allow rules.
+    """
+    return is_required_consent(label_text)
 
 
 async def fill_checkbox(
