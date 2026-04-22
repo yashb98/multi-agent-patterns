@@ -10,6 +10,7 @@ import threading
 from datetime import datetime
 from typing import Optional
 
+from shared.logging_config import get_trajectory_id
 from shared.memory_layer._entries import Lifecycle, MemoryEntry, MemoryTier
 
 _TS_FMT = "%Y-%m-%d %H:%M:%S.%f"
@@ -47,6 +48,17 @@ CREATE VIEW IF NOT EXISTS semantic_facts AS
 
 CREATE VIEW IF NOT EXISTS procedures AS
     SELECT * FROM memories WHERE tier = 'procedural' AND is_tombstoned = 0;
+
+CREATE TABLE IF NOT EXISTS memory_access_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    trajectory_id TEXT NOT NULL,
+    accessed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_access_traj ON memory_access_log (trajectory_id);
+CREATE INDEX IF NOT EXISTS idx_mem_access_memory ON memory_access_log (memory_id);
 """
 
 
@@ -100,6 +112,23 @@ class SQLiteStore:
             payload=json.loads(row["payload"]),
             is_tombstoned=bool(row["is_tombstoned"]),
         )
+
+    def _record_read(self, memory_ids: list[str], action: str) -> None:
+        trajectory_id = get_trajectory_id()
+        if trajectory_id == "no_trajectory" or not memory_ids:
+            return
+        with self._write_lock:
+            conn = self._get_conn()
+            now = datetime.now().strftime(_TS_FMT)
+            conn.executemany(
+                """
+                INSERT INTO memory_access_log
+                    (memory_id, action, trajectory_id, accessed_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                [(memory_id, action, trajectory_id, now) for memory_id in memory_ids],
+            )
+            conn.commit()
 
     # ------------------------------------------------------------------
     # Write operations (all guarded by write_lock)
@@ -203,7 +232,10 @@ class SQLiteStore:
             "SELECT * FROM memories WHERE memory_id = ? AND is_tombstoned = 0",
             (memory_id,),
         ).fetchone()
-        return self._row_to_entry(row) if row else None
+        if not row:
+            return None
+        self._record_read([memory_id], "get_by_id")
+        return self._row_to_entry(row)
 
     def query_by_tier(self, tier: MemoryTier, limit: int = 100) -> list[MemoryEntry]:
         conn = self._get_conn()
@@ -211,6 +243,7 @@ class SQLiteStore:
             "SELECT * FROM memories WHERE tier = ? AND is_tombstoned = 0 LIMIT ?",
             (tier.value, limit),
         ).fetchall()
+        self._record_read([r["memory_id"] for r in rows], "query_by_tier")
         return [self._row_to_entry(r) for r in rows]
 
     def query_by_domain(self, domain: str, limit: int = 100) -> list[MemoryEntry]:
@@ -219,6 +252,7 @@ class SQLiteStore:
             "SELECT * FROM memories WHERE domain = ? AND is_tombstoned = 0 LIMIT ?",
             (domain, limit),
         ).fetchall()
+        self._record_read([r["memory_id"] for r in rows], "query_by_domain")
         return [self._row_to_entry(r) for r in rows]
 
     def query_by_lifecycle(self, lifecycle: Lifecycle, limit: int = 100) -> list[MemoryEntry]:
@@ -227,6 +261,7 @@ class SQLiteStore:
             "SELECT * FROM memories WHERE lifecycle = ? AND is_tombstoned = 0 LIMIT ?",
             (lifecycle.value, limit),
         ).fetchall()
+        self._record_read([r["memory_id"] for r in rows], "query_by_lifecycle")
         return [self._row_to_entry(r) for r in rows]
 
     def query_by_decay_desc(self, limit: int = 50) -> list[MemoryEntry]:
@@ -235,6 +270,7 @@ class SQLiteStore:
             "SELECT * FROM memories WHERE is_tombstoned = 0 ORDER BY decay_score DESC LIMIT ?",
             (limit,),
         ).fetchall()
+        self._record_read([r["memory_id"] for r in rows], "query_by_decay_desc")
         return [self._row_to_entry(r) for r in rows]
 
     def query_active(self, min_decay: float = 0.0) -> list[MemoryEntry]:
@@ -243,6 +279,7 @@ class SQLiteStore:
             "SELECT * FROM memories WHERE is_tombstoned = 0 AND decay_score >= ?",
             (min_decay,),
         ).fetchall()
+        self._record_read([r["memory_id"] for r in rows], "query_active")
         return [self._row_to_entry(r) for r in rows]
 
     def query_tombstoned_recent(self, domain: str, days: int = 30) -> list[MemoryEntry]:
@@ -256,6 +293,7 @@ class SQLiteStore:
             """,
             (domain, days),
         ).fetchall()
+        self._record_read([r["memory_id"] for r in rows], "query_tombstoned_recent")
         return [self._row_to_entry(r) for r in rows]
 
     def count(self, include_tombstoned: bool = False) -> int:

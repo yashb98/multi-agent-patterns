@@ -25,7 +25,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from shared.logging_config import get_logger
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+
+from shared.logging_config import get_logger, get_trajectory_id
 
 logger = get_logger(__name__)
 
@@ -46,6 +48,45 @@ class RiskLevel(Enum):
     CRITICAL = "critical"
 
 
+class ToolError(Exception):
+    """Typed tool failure with retryability metadata."""
+
+    def __init__(self, tool_name: str, cause: str, retryable: bool):
+        self.tool_name = tool_name
+        self.cause = cause
+        self.retryable = retryable
+        super().__init__(f"{tool_name}: {cause}")
+
+    def to_result(self) -> dict:
+        return {
+            "status": "error",
+            "message": self.cause,
+            "tool_name": self.tool_name,
+            "retryable": self.retryable,
+        }
+
+
+class ToolExecutionRequest(BaseModel):
+    """Pydantic contract for the main 4-arg ToolExecutor API."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_name: str
+    tool_name: str
+    action: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class DirectToolExecutionRequest(BaseModel):
+    """Pydantic contract for the 3-arg direct execution API."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_name: str
+    action: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 # ─── AUDIT LOG ──────────────────────────────────────────────────
 
 @dataclass
@@ -60,6 +101,7 @@ class AuditEntry:
     approved_by: str
     success: bool
     error: Optional[str] = None
+    trajectory_id: Optional[str] = None
 
 
 class AuditLog:
@@ -78,8 +120,15 @@ class AuditLog:
             timestamp TEXT, agent_name TEXT, tool_name TEXT,
             action TEXT, input_summary TEXT, output_summary TEXT,
             risk_level TEXT, approved_by TEXT, success INTEGER,
-            error TEXT, created_at TEXT DEFAULT (datetime('now'))
+            error TEXT, trajectory_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
         )""")
+        cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(audit_log)").fetchall()
+        }
+        if "trajectory_id" not in cols:
+            conn.execute("ALTER TABLE audit_log ADD COLUMN trajectory_id TEXT")
         conn.commit()
         conn.close()
 
@@ -88,11 +137,11 @@ class AuditLog:
         conn = sqlite3.connect(self._db_path)
         conn.execute(
             "INSERT INTO audit_log (timestamp, agent_name, tool_name, action, "
-            "input_summary, output_summary, risk_level, approved_by, success, error) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "input_summary, output_summary, risk_level, approved_by, success, error, trajectory_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (entry.timestamp, entry.agent_name, entry.tool_name, entry.action,
              entry.input_summary, entry.output_summary, entry.risk_level,
-             entry.approved_by, entry.success, entry.error),
+             entry.approved_by, entry.success, entry.error, entry.trajectory_id or get_trajectory_id()),
         )
         conn.commit()
         conn.close()
@@ -208,13 +257,44 @@ TYPE_MAP = {"str": str, "int": int, "float": float, "bool": bool, "list": list, 
 
 def _validate_params(params: dict, schema: dict) -> str | None:
     """Return error message if params don't match schema, else None."""
+    if not schema:
+        return None
+    fields = {}
     for key, expected_type_str in schema.items():
-        if key not in params:
-            continue  # Missing params handled by the tool itself
-        expected_type = TYPE_MAP.get(expected_type_str)
-        if expected_type and not isinstance(params[key], expected_type):
-            return f"Param '{key}' expected {expected_type_str}, got {type(params[key]).__name__}"
+        expected_type = TYPE_MAP.get(expected_type_str, Any)
+        fields[key] = (
+            expected_type if expected_type is Any else (expected_type | None),
+            None,
+        )
+    try:
+        ParamModel = create_model(  # noqa: N806
+            "ToolParamContract",
+            __config__=ConfigDict(extra="allow"),
+            **fields,
+        )
+        ParamModel.model_validate(params)
+    except ValidationError as exc:
+        err = exc.errors()[0]
+        field_name = ".".join(str(p) for p in err.get("loc", [])) or "params"
+        return f"Param '{field_name}' {err.get('msg', 'failed validation')}"
     return None
+
+
+def _is_retryable_tool_exception(exc: Exception) -> bool:
+    error_str = str(exc).lower()
+    retryable_patterns = (
+        "timeout",
+        "timed out",
+        "connection",
+        "temporarily unavailable",
+        "rate limit",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+    )
+    return any(pattern in error_str for pattern in retryable_patterns)
 
 
 # ─── TOOL EXECUTOR ──────────────────────────────────────────────
@@ -260,19 +340,41 @@ class ToolExecutor:
             return self._execute_direct(tool_name, action, params)
 
         params = params or {}
+        try:
+            request = ToolExecutionRequest(
+                agent_name=agent_name,
+                tool_name=tool_name,
+                action=str(action),
+                params=params,
+            )
+        except ValidationError as exc:
+            return ToolError(
+                tool_name=tool_name,
+                cause=f"Invalid tool request: {exc.errors()[0]['msg']}",
+                retryable=False,
+            ).to_result()
+
+        agent_name = request.agent_name
+        tool_name = request.tool_name
+        action = request.action
+        params = request.params
         timestamp = datetime.now().strftime("%H:%M:%S")
 
         # Check tool exists
         tool = self.tools.get(tool_name)
         if not tool:
             self._audit_denied(timestamp, agent_name, tool_name, action, "tool not found")
-            return {"status": "error", "message": f"Tool '{tool_name}' not found"}
+            return ToolError(tool_name, f"Tool '{tool_name}' not found", retryable=False).to_result()
 
         # Check action exists
         action_def = tool.actions.get(action)
         if not action_def:
             self._audit_denied(timestamp, agent_name, tool_name, action, "action not found")
-            return {"status": "error", "message": f"Action '{action}' not found on tool '{tool_name}'"}
+            return ToolError(
+                tool_name,
+                f"Action '{action}' not found on tool '{tool_name}'",
+                retryable=False,
+            ).to_result()
 
         risk = action_def["risk"]
 
@@ -282,11 +384,21 @@ class ToolExecutor:
 
         if permission == PermissionLevel.DENY:
             self._audit_denied(timestamp, agent_name, tool_name, action, "permission denied")
-            return {"status": "denied", "message": f"Agent '{agent_name}' is not permitted to use '{tool_name}'"}
+            return {
+                "status": "denied",
+                "message": f"Agent '{agent_name}' is not permitted to use '{tool_name}'",
+                "tool_name": tool_name,
+                "retryable": False,
+            }
 
         if permission == PermissionLevel.READ_ONLY and risk in (RiskLevel.HIGH, RiskLevel.CRITICAL):
             self._audit_denied(timestamp, agent_name, tool_name, action, "read-only, action is write")
-            return {"status": "denied", "message": f"Agent '{agent_name}' has read-only access to '{tool_name}'"}
+            return {
+                "status": "denied",
+                "message": f"Agent '{agent_name}' has read-only access to '{tool_name}'",
+                "tool_name": tool_name,
+                "retryable": False,
+            }
 
         # Human approval for high-risk or REQUIRES_APPROVAL
         approved_by = "system"
@@ -294,7 +406,12 @@ class ToolExecutor:
             approved = self.approval_fn(agent_name, tool_name, action, params)
             if not approved:
                 self._audit_denied(timestamp, agent_name, tool_name, action, "human rejected")
-                return {"status": "denied", "message": "Action rejected by human reviewer"}
+                return {
+                    "status": "denied",
+                    "message": "Action rejected by human reviewer",
+                    "tool_name": tool_name,
+                    "retryable": False,
+                }
             approved_by = "human"
 
         # Rate limiting (sliding window — 60 second window)
@@ -304,7 +421,12 @@ class ToolExecutor:
         timestamps = [t for t in timestamps if now - t < 60]
         if len(timestamps) >= tool.rate_limit_per_minute:
             self._audit_denied(timestamp, agent_name, tool_name, action, "rate limited")
-            return {"status": "rate_limited", "message": "Rate limit exceeded"}
+            return {
+                "status": "rate_limited",
+                "message": "Rate limit exceeded",
+                "tool_name": tool_name,
+                "retryable": True,
+            }
         timestamps.append(now)
         self._call_timestamps[rate_key] = timestamps
 
@@ -313,7 +435,11 @@ class ToolExecutor:
         if param_schema:
             validation_error = _validate_params(params, param_schema)
             if validation_error:
-                return {"status": "error", "message": f"Type validation failed: {validation_error}"}
+                return ToolError(
+                    tool_name,
+                    f"Type validation failed: {validation_error}",
+                    retryable=False,
+                ).to_result()
 
         # Execute
         try:
@@ -325,17 +451,34 @@ class ToolExecutor:
                 action=action, input_summary=json.dumps(params)[:200],
                 output_summary=json.dumps(result)[:200], risk_level=risk.value,
                 approved_by=approved_by, success=success,
+                trajectory_id=get_trajectory_id(),
             ))
             return result
 
         except Exception as e:
+            tool_error = ToolError(
+                tool_name=tool_name,
+                cause=str(e),
+                retryable=_is_retryable_tool_exception(e),
+            )
             self.audit.record(AuditEntry(
                 timestamp=timestamp, agent_name=agent_name, tool_name=tool_name,
                 action=action, input_summary=json.dumps(params)[:200],
                 output_summary="", risk_level=risk.value,
-                approved_by=approved_by, success=False, error=str(e),
+                approved_by=approved_by, success=False, error=tool_error.cause,
+                trajectory_id=get_trajectory_id(),
             ))
-            return {"status": "error", "message": str(e)}
+            logger.warning(
+                "Tool execution failed",
+                extra={
+                    "agent_name": agent_name,
+                    "tool_name": tool_name,
+                    "action": action,
+                    "retryable": tool_error.retryable,
+                    "error": tool_error.cause,
+                },
+            )
+            return tool_error.to_result()
 
     def _execute_direct(self, tool_name: str, action: str, params: dict) -> dict:
         """Execute a registered tool directly, bypassing permission checks.
@@ -343,24 +486,49 @@ class ToolExecutor:
         Used by the 3-arg call form: execute(tool_name, action, params).
         Validates param types against the action's schema before execution.
         """
+        try:
+            request = DirectToolExecutionRequest(tool_name=tool_name, action=action, params=params)
+        except ValidationError as exc:
+            return ToolError(
+                tool_name=tool_name,
+                cause=f"Invalid direct tool request: {exc.errors()[0]['msg']}",
+                retryable=False,
+            ).to_result()
+
+        tool_name = request.tool_name
+        action = request.action
+        params = request.params
+
         tool = self.tools.get(tool_name)
         if not tool:
-            return {"status": "error", "message": f"Tool '{tool_name}' not found"}
+            return ToolError(tool_name, f"Tool '{tool_name}' not found", retryable=False).to_result()
 
         action_def = tool.actions.get(action)
         if not action_def:
-            return {"status": "error", "message": f"Action '{action}' not found on tool '{tool_name}'"}
+            return ToolError(
+                tool_name,
+                f"Action '{action}' not found on tool '{tool_name}'",
+                retryable=False,
+            ).to_result()
 
         param_schema = action_def.get("params", {})
         if param_schema:
             validation_error = _validate_params(params, param_schema)
             if validation_error:
-                return {"status": "error", "message": f"Type validation failed: {validation_error}"}
+                return ToolError(
+                    tool_name,
+                    f"Type validation failed: {validation_error}",
+                    retryable=False,
+                ).to_result()
 
         try:
             return tool.execute_fn(action, params)
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            return ToolError(
+                tool_name=tool_name,
+                cause=str(e),
+                retryable=_is_retryable_tool_exception(e),
+            ).to_result()
 
     def _audit_denied(self, timestamp: str, agent: str, tool: str, action: str, reason: str):
         self.audit.record(AuditEntry(
@@ -368,6 +536,7 @@ class ToolExecutor:
             action=action, input_summary="", output_summary="",
             risk_level="unknown", approved_by="denied",
             success=False, error=reason,
+            trajectory_id=get_trajectory_id(),
         ))
 
     @staticmethod
@@ -378,6 +547,7 @@ class ToolExecutor:
         logger.warning(
             "Approval denied for %s/%s/%s — set TOOL_AUTO_APPROVE=1 to auto-approve",
             agent, tool, action,
+            extra={"agent_name": agent, "tool_name": tool, "action": action},
         )
         return False
 
@@ -435,6 +605,7 @@ class ToolExecutor:
             approved_by="system",
             success=success,
             error=error,
+            trajectory_id=get_trajectory_id(),
         ))
 
 

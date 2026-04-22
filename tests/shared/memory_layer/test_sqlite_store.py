@@ -2,6 +2,7 @@ import json
 import threading
 import pytest
 
+from shared.logging_config import clear_trajectory_id, set_trajectory_id
 from shared.memory_layer._entries import MemoryEntry, MemoryTier, Lifecycle
 from shared.memory_layer._sqlite_store import SQLiteStore
 
@@ -87,6 +88,24 @@ class TestSQLiteStore:
         result = store.get_by_id(entry.memory_id)
         assert result.access_count == 1
         assert result.last_accessed > old_accessed
+
+    def test_reads_persist_trajectory_context(self, store, make_memory):
+        entry = make_memory(content="trajectory read")
+        store.insert(entry)
+        set_trajectory_id("traj_mem_read")
+        try:
+            result = store.get_by_id(entry.memory_id)
+            assert result is not None
+        finally:
+            clear_trajectory_id()
+
+        conn = store._get_conn()
+        row = conn.execute(
+            "SELECT trajectory_id, action FROM memory_access_log WHERE memory_id = ?",
+            (entry.memory_id,),
+        ).fetchone()
+        assert row["trajectory_id"] == "traj_mem_read"
+        assert row["action"] == "get_by_id"
 
     def test_concurrent_writes(self, store, make_memory):
         errors = []

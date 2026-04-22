@@ -6,11 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from shared.logging_config import clear_trajectory_id, set_trajectory_id
 from shared.tool_integration import (
     AuditEntry,
     AuditLog,
     PermissionLevel,
     RiskLevel,
+    ToolError,
     ToolDefinition,
     ToolExecutor,
 )
@@ -351,7 +353,16 @@ class TestEdgeCases:
         result = executor.execute("agent", "test_tool", "read")
         assert result["status"] == "error"
         assert "kaboom" in result["message"]
+        assert result["retryable"] is False
+        assert result["tool_name"] == "test_tool"
         assert len(executor.audit.get_failures()) == 1
+
+    def test_retryable_tool_error_contract(self):
+        err = ToolError("browser", "timeout contacting site", retryable=True)
+        payload = err.to_result()
+        assert payload["tool_name"] == "browser"
+        assert payload["retryable"] is True
+        assert payload["message"] == "timeout contacting site"
 
 
 # ─── record_dispatch test ─────────────────────────────────────────────
@@ -384,3 +395,23 @@ class TestRecordDispatch:
         failures = executor.audit.get_failures()
         assert len(failures) == 1
         assert failures[0].error == "timeout"
+
+    def test_tool_audit_persists_trajectory_id(self, tmp_path):
+        set_trajectory_id("traj_tool_1")
+        try:
+            executor = ToolExecutor(
+                tools={"test_tool": _make_tool()},
+                permissions={"agent": {"test_tool": PermissionLevel.READ_WRITE}},
+            )
+            executor.audit = AuditLog(db_path=str(tmp_path / "audit.db"))
+            result = executor.execute("agent", "test_tool", "read")
+            assert result["status"] == "ok"
+        finally:
+            clear_trajectory_id()
+
+        conn = sqlite3.connect(str(tmp_path / "audit.db"))
+        row = conn.execute(
+            "SELECT trajectory_id FROM audit_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        assert row[0] == "traj_tool_1"

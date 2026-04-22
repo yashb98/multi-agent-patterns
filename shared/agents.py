@@ -52,6 +52,7 @@ from shared.governance._output_sanitizer import sanitize_agent_output
 from shared.cost_tracker import (  # noqa: F401
     MODEL_COSTS,
     estimate_cost,
+    record_llm_usage,
     track_llm_usage,
     compute_cost_summary,
 )
@@ -248,6 +249,11 @@ class _MultiProviderLLM:
                     logger.warning(
                         "LLM provider %s failed (%s). Falling back to %s...",
                         name, str(e)[:80], self._provider_names[i + 1],
+                        extra={
+                            "failed_provider": name,
+                            "fallback_provider": self._provider_names[i + 1],
+                            "error_type": type(e).__name__,
+                        },
                     )
         # All failed
         error_msg = "; ".join(f"{name}: {err}" for name, err in errors)
@@ -268,6 +274,39 @@ class _MultiProviderLLM:
             else:
                 bound_providers.append(p)
         return _MultiProviderLLM(bound_providers)
+
+
+class _InstrumentedLLM:
+    """Thin proxy that records LLM usage with run/trajectory context."""
+
+    def __init__(self, llm, model_hint: str | None = None):
+        self._llm = llm
+        self._model_hint = model_hint
+
+    def invoke(self, messages, **kwargs):
+        response = self._llm.invoke(messages, **kwargs)
+        try:
+            record_llm_usage(
+                response,
+                agent_name="unknown",
+                messages=messages,
+                model_hint=self._model_hint,
+                operation="invoke",
+            )
+        except Exception as exc:
+            logger.debug("LLM usage telemetry skipped: %s", exc)
+        return response
+
+    def stream(self, messages, **kwargs):
+        return self._llm.stream(messages, **kwargs)
+
+    def bind(self, **kwargs):
+        if hasattr(self._llm, "bind"):
+            return _InstrumentedLLM(self._llm.bind(**kwargs), model_hint=self._model_hint)
+        return self
+
+    def __getattr__(self, name):
+        return getattr(self._llm, name)
 
 
 def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
@@ -291,7 +330,10 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     """
     _ensure_provider()
     if _is_local:
-        return _make_local_llm(temperature, model, timeout, max_tokens)
+        return _InstrumentedLLM(
+            _make_local_llm(temperature, model, timeout, max_tokens),
+            model_hint=model,
+        )
 
     # Build provider chain
     chain: list = []
@@ -308,8 +350,8 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
             chain.append(llm)
 
     if len(chain) == 1:
-        return chain[0]
-    return _MultiProviderLLM(chain)
+        return _InstrumentedLLM(chain[0], model_hint=model)
+    return _InstrumentedLLM(_MultiProviderLLM(chain), model_hint=model)
 
 
 def get_openai_client(timeout: float = 30.0) -> OpenAI:
@@ -517,14 +559,23 @@ specified in your instructions."""
         feedback_text = json.dumps(review, indent=2)
 
         if validated.anomalies:
-            logger.warning("Review anomalies: %s", validated.anomalies)
+            logger.warning(
+                "Review anomalies: %s",
+                validated.anomalies,
+                extra={"anomaly_count": len(validated.anomalies), "agent_name": "reviewer"},
+            )
         logger.info("Score: %s/10 (accuracy: %s) | Passed: %s", score, accuracy, passed)
         if not passed:
             improvements = review.get("improvements_needed", [])
             for imp in improvements[:3]:
                 logger.info("   -> %s", imp)
     except (json.JSONDecodeError, ValueError) as e:
-        logger.warning("Could not parse review JSON: %s — raw: %s", e, raw[:200])
+        logger.warning(
+            "Could not parse review JSON: %s — raw: %s",
+            e,
+            raw[:200],
+            extra={"agent_name": "reviewer", "error_type": type(e).__name__},
+        )
         score = 5.0
         passed = False
         feedback_text = json.dumps({
@@ -582,7 +633,11 @@ def risk_aware_reviewer_node(state: AgentState) -> dict:
         risk_report = graph.risk_report(top_n=10)
         graph.close()
     except Exception as e:
-        logger.warning("Risk analysis failed, falling back to standard review: %s", e)
+        logger.warning(
+            "Risk analysis failed, falling back to standard review: %s",
+            e,
+            extra={"agent_name": "risk_aware_reviewer", "error_type": type(e).__name__},
+        )
         return reviewer_node(state)
 
     if not risk_report:

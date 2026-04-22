@@ -24,6 +24,7 @@ import sys
 import threading
 from typing import Protocol, runtime_checkable
 
+from shared.cost_tracker import record_llm_usage
 from shared.logging_config import get_logger
 from shared.llm_retry import is_retryable_error, MAX_RETRIES, BASE_DELAY, BACKOFF_FACTOR, MAX_DELAY
 
@@ -101,7 +102,11 @@ class TerminalStreamCallback:
             sys.stdout.flush()
 
     def on_error(self, error: Exception) -> None:
-        logger.warning("Stream error: %s", str(error)[:100])
+        logger.warning(
+            "Stream error: %s",
+            str(error)[:100],
+            extra={"error_type": type(error).__name__},
+        )
 
 
 class AccumulatorCallback:
@@ -179,6 +184,7 @@ def stream_llm(
                 logger.warning(
                     "Streaming failed after %d attempts, falling back to invoke()",
                     attempt + 1,
+                    extra={"attempts": attempt + 1},
                 )
                 return _fallback_invoke(llm, messages, cb, **kwargs)
 
@@ -186,6 +192,12 @@ def stream_llm(
             logger.warning(
                 "Stream failed (attempt %d/%d): %s. Retrying in %.1fs...",
                 attempt + 1, max_retries + 1, str(e)[:100], delay,
+                extra={
+                    "attempt": attempt + 1,
+                    "max_retries": max_retries + 1,
+                    "delay_seconds": round(delay, 3),
+                    "error_type": type(e).__name__,
+                },
             )
             time.sleep(delay)
 
@@ -250,7 +262,18 @@ def smart_llm_call(llm, messages, **kwargs):
             "output_tokens": estimated_tokens,
             "total_tokens": sum(len(m.content) // 4 for m in messages if hasattr(m, "content")) + estimated_tokens,
         }
-        return _StreamResponse(text, usage_metadata=usage)
+        response = _StreamResponse(text, usage_metadata=usage)
+        try:
+            record_llm_usage(
+                response,
+                agent_name="unknown",
+                messages=messages,
+                model_hint=getattr(llm, "model_name", None),
+                operation="stream",
+            )
+        except Exception as exc:
+            logger.debug("Streaming telemetry skipped: %s", exc)
+        return response
     else:
         from shared.llm_retry import resilient_llm_call
         return resilient_llm_call(llm, messages, **kwargs)

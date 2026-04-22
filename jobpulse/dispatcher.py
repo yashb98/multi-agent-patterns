@@ -108,7 +108,12 @@ def dispatch(cmd: ParsedCommand) -> str:
             },
         )
         logger.error("Dispatch error [%s] %s: %s (retryable=%s)",
-                     error_cat, cmd.intent.value, e, retryable)
+                     error_cat, cmd.intent.value, e, retryable,
+                     extra={
+                         "intent": cmd.intent.value,
+                         "error_category": error_cat,
+                         "retryable": retryable,
+                     })
         return dispatch_error.to_user_message()
 
 

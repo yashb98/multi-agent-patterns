@@ -134,6 +134,12 @@ def retry_with_backoff(
             logger.warning(
                 "LLM call failed (attempt %d/%d): %s. Retrying in %.1fs...",
                 attempt + 1, max_retries + 1, str(e)[:100], delay,
+                extra={
+                    "attempt": attempt + 1,
+                    "max_retries": max_retries + 1,
+                    "delay_seconds": round(delay, 3),
+                    "error_type": type(e).__name__,
+                },
             )
             time.sleep(delay)
 

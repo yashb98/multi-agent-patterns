@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from shared.logging_config import get_logger
+from shared.logging_config import clear_trajectory_id, get_trajectory_id, set_trajectory_id
 from shared.optimization._signals import LearningSignal, SignalBus
 from shared.optimization._trajectory import TrajectoryStore, Trajectory, TrajectoryStep
 from shared.optimization._tracker import PerformanceTracker, DomainStats
@@ -112,7 +113,9 @@ class OptimizationEngine:
                          agent_name: str, session_id: str) -> str:
         if not self._enabled:
             return ""
-        return self._trajectory.start(pipeline, domain, agent_name, session_id)
+        tid = self._trajectory.start(pipeline, domain, agent_name, session_id)
+        set_trajectory_id(tid)
+        return tid
 
     def log_step(self, trajectory_id: str, step: TrajectoryStep):
         if not self._enabled or not trajectory_id:
@@ -124,10 +127,13 @@ class OptimizationEngine:
                             total_cost: float = 0.0) -> Optional[Trajectory]:
         if not self._enabled or not trajectory_id:
             return None
-        return self._trajectory.complete(
+        result = self._trajectory.complete(
             trajectory_id, final_outcome, final_score,
             total_duration_ms, total_cost,
         )
+        if get_trajectory_id() == trajectory_id:
+            clear_trajectory_id()
+        return result
 
     # ------------------------------------------------------------------
     # Cognitive outcome tracking
@@ -165,7 +171,11 @@ class OptimizationEngine:
         try:
             self._memory.revive(memory_id)
         except Exception as e:
-            logger.warning("Memory revive failed: %s", e)
+            logger.warning(
+                "Memory revive failed: %s",
+                e,
+                extra={"error_type": type(e).__name__},
+            )
 
     def resolve_contradiction(self, new_id: str, old_id: str,
                               new_stronger: bool = True):

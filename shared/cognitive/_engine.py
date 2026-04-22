@@ -91,7 +91,11 @@ class CognitiveEngine:
             level = force_level if force_level is not None else \
                 self._classifier.classify(task, domain, stakes)
         except Exception as e:
-            logger.warning("Classification failed, falling back to L1: %s", e)
+            logger.warning(
+                "Classification failed, falling back to L1: %s",
+                e,
+                extra={"domain": domain, "stakes": stakes, "error_type": type(e).__name__},
+            )
             level = ThinkLevel.L1_SINGLE
         level_before_budget = level
         level = self._budget_tracker.clamp(level)
@@ -99,6 +103,11 @@ class CognitiveEngine:
             logger.warning(
                 "Forced cognitive level %s clamped to %s by budget policy",
                 level_before_budget.name, level.name,
+                extra={
+                    "forced_level": level_before_budget.name,
+                    "clamped_level": level.name,
+                    "agent_name": self._agent_name,
+                },
             )
         original_level = level
 
@@ -109,7 +118,11 @@ class CognitiveEngine:
                 prompt_resolver=self._prompt_resolver,
             )
         except Exception as e:
-            logger.warning("Composition failed, using base prompt: %s", e)
+            logger.warning(
+                "Composition failed, using base prompt: %s",
+                e,
+                extra={"agent_name": self._agent_name, "domain": domain, "error_type": type(e).__name__},
+            )
             composed = ComposedPrompt(text=task)
 
         # 3. Execute at classified level
@@ -289,7 +302,11 @@ class CognitiveEngine:
             try:
                 self._memory.learn_procedure(**write)
             except Exception as e:
-                logger.warning("Failed to flush strategy template: %s", e)
+                logger.warning(
+                    "Failed to flush strategy template: %s",
+                    e,
+                    extra={"agent_name": self._agent_name, "domain": write.get("domain", "")},
+                )
         self._pending_writes.clear()
 
     def flush_sync(self):

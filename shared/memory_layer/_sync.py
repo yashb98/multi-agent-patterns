@@ -51,7 +51,15 @@ class SyncService:
             try:
                 self._sync_entry(entry)
             except Exception as exc:
-                logger.warning("Secondary sync worker failed for %s: %s", entry.memory_id, exc)
+                logger.warning(
+                    "Secondary sync worker failed for %s: %s",
+                    entry.memory_id,
+                    exc,
+                    extra={
+                        "memory_id": entry.memory_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
             finally:
                 self._queue.task_done()
 
@@ -127,7 +135,10 @@ class SyncService:
                 self._queue.put_nowait(entry)
                 return
             except queue.Full:
-                logger.warning("Secondary sync queue full — falling back to inline sync")
+                logger.warning(
+                    "Secondary sync queue full — falling back to inline sync",
+                    extra={"queue_size": self._queue.qsize(), "memory_id": entry.memory_id},
+                )
 
         self._sync_entry(entry)
 

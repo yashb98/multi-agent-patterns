@@ -307,7 +307,11 @@ def rlm_synthesize(sections: dict, query: str) -> str | None:
     except ImportError:
         return None
     except Exception as e:
-        logger.error("RLM synthesis error: %s", e)
+        logger.error(
+            "RLM synthesis error: %s",
+            e,
+            extra={"component": "rlm_synthesize", "error_type": type(e).__name__},
+        )
         return None
 
 
@@ -372,7 +376,12 @@ def dispatch(cmd: ParsedCommand) -> str:
                 s["output"] = f"Error [{error_cat}]: {e}"
                 s["metadata"] = dispatch_error.to_dict()
                 logger.warning("Swarm agent %s failed [%s]: %s (retryable=%s)",
-                               agent_name, error_cat, e, retryable)
+                               agent_name, error_cat, e, retryable,
+                               extra={
+                                   "agent_name": agent_name,
+                                   "error_category": error_cat,
+                                   "retryable": retryable,
+                               })
 
     # Step 3: If multiple results, synthesize
     final_result = None
@@ -558,7 +567,11 @@ def _fact_checker_grounding(result: str, intent: str) -> dict | None:
             "issue_count": issue_count,
         }
     except Exception as exc:
-        logger.debug("FactChecker grounding skipped: %s", exc)
+        logger.debug(
+            "FactChecker grounding skipped: %s",
+            exc,
+            extra={"intent": intent, "error_type": type(exc).__name__},
+        )
         return None
 
 
@@ -599,7 +612,11 @@ def _llm_judge_score(result: str, intent: str, grounding: dict | None) -> float 
         score = float(payload.get("score"))
         return max(0.0, min(10.0, score))
     except Exception as exc:
-        logger.debug("LLM judge scoring failed: %s", exc)
+        logger.debug(
+            "LLM judge scoring failed: %s",
+            exc,
+            extra={"intent": intent, "error_type": type(exc).__name__},
+        )
         return None
 
 

@@ -507,7 +507,11 @@ def _build_three_engine_kit(
         kit["sqlite_store"] = SQLiteStore(db_path=sqlite_path)
         logger.info("Memory SQLite store initialised at %s", sqlite_path)
     except Exception as exc:
-        logger.warning("SQLiteStore init failed (%s) — falling back to JSON-only mode", exc)
+        logger.warning(
+            "SQLiteStore init failed (%s) — falling back to JSON-only mode",
+            exc,
+            extra={"component": "SQLiteStore", "error_type": type(exc).__name__},
+        )
         return {"sqlite_store": None, "qdrant": None, "neo4j": None, "embedder": None}
 
     # ─── Embedder (lazy — no network call at init time) ──
@@ -518,7 +522,11 @@ def _build_three_engine_kit(
             fallback=os.environ.get("MEMORY_EMBED_FALLBACK", "minilm"),
         )
     except Exception as exc:
-        logger.warning("MemoryEmbedder init failed: %s — semantic search disabled", exc)
+        logger.warning(
+            "MemoryEmbedder init failed: %s — semantic search disabled",
+            exc,
+            extra={"component": "MemoryEmbedder", "error_type": type(exc).__name__},
+        )
 
     # ─── Qdrant (vector search) ──
     qdrant_url = os.environ.get("MEMORY_QDRANT_URL", "").strip()
@@ -531,7 +539,11 @@ def _build_three_engine_kit(
             kit["qdrant"] = store
             logger.info("Qdrant connected at %s (dims=%d)", qdrant_url, dims)
         except Exception as exc:
-            logger.warning("Qdrant init failed (%s) — vector search disabled", exc)
+            logger.warning(
+                "Qdrant init failed (%s) — vector search disabled",
+                exc,
+                extra={"component": "QdrantStore", "error_type": type(exc).__name__},
+            )
     else:
         logger.debug("MEMORY_QDRANT_URL unset — Qdrant disabled")
 
@@ -545,7 +557,11 @@ def _build_three_engine_kit(
             else:
                 logger.info("Neo4j unreachable — graph expansion disabled")
         except Exception as exc:
-            logger.warning("Neo4jStore init failed (%s) — graph expansion disabled", exc)
+            logger.warning(
+                "Neo4jStore init failed (%s) — graph expansion disabled",
+                exc,
+                extra={"component": "Neo4jStore", "error_type": type(exc).__name__},
+            )
     else:
         logger.debug("MEMORY_NEO4J_URI unset — Neo4j disabled")
 

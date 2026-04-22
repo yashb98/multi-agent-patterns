@@ -168,6 +168,12 @@ class BudgetTracker:
             logger.warning(
                 "Cognitive budget cap reached — cooldown %d min",
                 self._budget.cooldown_minutes,
+                extra={
+                    "scope": self._scope,
+                    "l2_count": l2_count,
+                    "l3_count": l3_count,
+                    "cost_total": round(cost_total, 4),
+                },
             )
 
     def allows(self, level: ThinkLevel) -> bool:

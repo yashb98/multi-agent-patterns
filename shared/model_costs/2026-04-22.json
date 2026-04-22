@@ -1,0 +1,66 @@
+{
+  "gpt-5-mini": {
+    "input_per_1m": 0.4,
+    "output_per_1m": 1.6
+  },
+  "gpt-4o-mini": {
+    "input_per_1m": 0.15,
+    "output_per_1m": 0.6
+  },
+  "gpt-4o": {
+    "input_per_1m": 2.5,
+    "output_per_1m": 10.0
+  },
+  "gpt-4.1-mini": {
+    "input_per_1m": 0.4,
+    "output_per_1m": 1.6
+  },
+  "gpt-4.1-nano": {
+    "input_per_1m": 0.1,
+    "output_per_1m": 0.4
+  },
+  "gpt-4.1": {
+    "input_per_1m": 2.0,
+    "output_per_1m": 8.0
+  },
+  "o3-mini": {
+    "input_per_1m": 1.1,
+    "output_per_1m": 4.4
+  },
+  "claude-opus-4": {
+    "input_per_1m": 15.0,
+    "output_per_1m": 75.0
+  },
+  "claude-sonnet-4": {
+    "input_per_1m": 3.0,
+    "output_per_1m": 15.0
+  },
+  "claude-haiku-4": {
+    "input_per_1m": 0.8,
+    "output_per_1m": 4.0
+  },
+  "voyage-3": {
+    "input_per_1m": 0.06,
+    "output_per_1m": 0.0
+  },
+  "voyage-3-lite": {
+    "input_per_1m": 0.02,
+    "output_per_1m": 0.0
+  },
+  "voyage-code-3": {
+    "input_per_1m": 0.06,
+    "output_per_1m": 0.0
+  },
+  "gemma": {
+    "input_per_1m": 0.0,
+    "output_per_1m": 0.0
+  },
+  "llama": {
+    "input_per_1m": 0.0,
+    "output_per_1m": 0.0
+  },
+  "mistral": {
+    "input_per_1m": 0.0,
+    "output_per_1m": 0.0
+  }
+}
