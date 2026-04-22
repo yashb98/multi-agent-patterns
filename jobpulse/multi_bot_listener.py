@@ -14,19 +14,14 @@ from shared.logging_config import get_logger
 from jobpulse.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATA_DIR, LOGS_DIR,
     TELEGRAM_BUDGET_BOT_TOKEN, TELEGRAM_RESEARCH_BOT_TOKEN,
-    TELEGRAM_JOBS_BOT_TOKEN, JOBPULSE_SWARM,
+    TELEGRAM_JOBS_BOT_TOKEN,
 )
+from jobpulse.dispatch import dispatch
 from jobpulse.telegram_bots import _get_updates, send_for_intent, BUDGET_INTENTS, RESEARCH_INTENTS, JOBS_INTENTS
 from jobpulse.command_router import classify, Intent
 from jobpulse.healthcheck import write_heartbeat
 
 logger = get_logger(__name__)
-
-USE_SWARM = JOBPULSE_SWARM
-if USE_SWARM:
-    from jobpulse.swarm_dispatcher import dispatch
-else:
-    from jobpulse.dispatcher import dispatch
 
 
 def _log(msg: str):

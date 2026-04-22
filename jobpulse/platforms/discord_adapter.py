@@ -82,12 +82,7 @@ class DiscordAdapter(PlatformAdapter):
         if not self.token or not self.channel:
             return
 
-        # Lazy import to avoid circular deps at module level
-        _USE_SWARM = os.getenv("JOBPULSE_SWARM", "true").lower() in ("true", "1", "yes")
-        if _USE_SWARM:
-            from jobpulse.swarm_dispatcher import dispatch
-        else:
-            from jobpulse.dispatcher import dispatch
+        from jobpulse.dispatch import dispatch
 
         last_id = _get_last_id()
         params = {"limit": 20}

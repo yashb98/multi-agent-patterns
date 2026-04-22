@@ -57,6 +57,7 @@ def _build_handler_map() -> dict[Intent, Callable[["ParsedCommand"], str]]:
         _handle_learning_pause, _handle_learning_resume,
         _handle_job_patterns, _handle_follow_ups, _handle_interview_prep,
         _handle_research,
+        _handle_submit_draft, _handle_skip_draft, _handle_show_drafts,
         _handle_cancel,
     )
 
@@ -114,6 +115,9 @@ def _build_handler_map() -> dict[Intent, Callable[["ParsedCommand"], str]]:
         Intent.FOLLOW_UPS: _handle_follow_ups,
         Intent.INTERVIEW_PREP: _handle_interview_prep,
         Intent.RESEARCH: _handle_research,
+        Intent.SUBMIT_DRAFT: _handle_submit_draft,
+        Intent.SKIP_DRAFT: _handle_skip_draft,
+        Intent.SHOW_DRAFTS: _handle_show_drafts,
         Intent.CANCEL: _handle_cancel,
     }
 

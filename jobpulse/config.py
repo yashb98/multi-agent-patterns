@@ -135,8 +135,8 @@ WORK_AUTH: dict[str, object] = {
 # Salary / hours tracking
 HOURLY_RATE = float(os.getenv("HOURLY_RATE", "13.99"))
 
-# Dispatcher mode
-JOBPULSE_SWARM = os.getenv("JOBPULSE_SWARM", "true").lower() in ("true", "1", "yes")
+# Dispatcher mode — read directly by jobpulse.dispatch.default_strategy()
+# (was exported here, but every caller now goes through jobpulse.dispatch).
 
 # Playwright CDP
 PLAYWRIGHT_CDP_URL = os.environ.get("PLAYWRIGHT_CDP_URL", "http://localhost:9222")
