@@ -12,8 +12,9 @@ The swarm wraps the existing agent functions (gmail, calendar, etc.)
 without changing them. It adds intelligence AROUND them.
 """
 
+import inspect
 import json
-import time
+import os
 from datetime import datetime
 from jobpulse.command_router import Intent, ParsedCommand
 from jobpulse import event_logger
@@ -190,35 +191,84 @@ def analyze_task(cmd: ParsedCommand, trail: ProcessTrail) -> list[dict]:
     return [{"agent": intent.value, "priority": 1, "description": f"Handle: {intent.value}"}]
 
 
-# ── GRPO Group Sampling ──
+# ── N-Sample Diversity Sampling (GRPO-compatible) ──
 
-def grpo_sample(fn, args, n_candidates: int = 3, scorer_fn=None) -> str:
-    """Generate multiple candidates and pick the best one.
+_DEFAULT_TEMP_SPREAD = [0.2, 0.4, 0.7, 0.9]
 
-    fn: function that returns a string result
-    args: arguments to pass to fn
-    n_candidates: how many candidates to generate
-    scorer_fn: optional function(result) -> float score
+
+def _diversity_bonus(candidate: str, previous_candidates: list[str]) -> float:
+    """Reward lexical novelty to avoid near-duplicate candidate groups."""
+    if not previous_candidates:
+        return 0.0
+    tokens = set(candidate.lower().split())
+    if not tokens:
+        return 0.0
+    max_overlap = 0.0
+    for prev in previous_candidates:
+        prev_tokens = set(prev.lower().split())
+        if not prev_tokens:
+            continue
+        overlap = len(tokens & prev_tokens) / max(len(tokens | prev_tokens), 1)
+        max_overlap = max(max_overlap, overlap)
+    # 0.0 overlap => +0.4, 100% overlap => +0.0
+    return max(0.0, 0.4 * (1.0 - max_overlap))
+
+
+def n_sample_diversity(
+    fn,
+    args,
+    n_candidates: int = 3,
+    scorer_fn=None,
+    temperature_spread: list[float] | None = None,
+) -> str:
+    """Generate diverse candidates and return the best-scoring result.
+
+    Diversity knobs:
+    - Temperature spread when the target callable accepts `temperature` or `temp`.
+    - Lexical novelty bonus to avoid picking repeated candidates.
     """
     if n_candidates <= 1:
         return fn(*args)
 
-    candidates = []
+    spread = temperature_spread or _DEFAULT_TEMP_SPREAD
+    try:
+        fn_params = inspect.signature(fn).parameters
+    except Exception:
+        fn_params = {}
+    supports_temperature = "temperature" in fn_params
+    supports_temp = "temp" in fn_params
+
+    candidates: list[tuple[float, str]] = []
+    seen_outputs: list[str] = []
     for i in range(n_candidates):
+        kwargs = {}
+        temp = spread[i % len(spread)]
+        if supports_temperature:
+            kwargs["temperature"] = temp
+        elif supports_temp:
+            kwargs["temp"] = temp
+
         try:
-            result = fn(*args)
-            # Simple scoring: length + structure heuristic
-            score = len(result) * 0.001  # prefer longer
-            if "error" in result.lower() or "failed" in result.lower():
-                score *= 0.3  # penalize errors
-            if scorer_fn:
-                score = scorer_fn(result)
-            candidates.append((score, result))
+            result = fn(*args, **kwargs)
+            base_score = scorer_fn(result) if scorer_fn else _score_result(result)
+            diversity = _diversity_bonus(result, seen_outputs)
+            seen_outputs.append(result)
+            candidates.append((base_score + diversity, result))
         except Exception as e:
             candidates.append((-1, f"Error: {e}"))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     return candidates[0][1]
+
+
+def grpo_sample(fn, args, n_candidates: int = 3, scorer_fn=None) -> str:
+    """Backward-compatible wrapper around `n_sample_diversity`."""
+    return n_sample_diversity(
+        fn=fn,
+        args=args,
+        n_candidates=n_candidates,
+        scorer_fn=scorer_fn,
+    )
 
 
 # ── RLM Synthesis ──
@@ -456,59 +506,123 @@ def _execute_agent(agent_name: str, cmd: ParsedCommand, exp_context: str) -> str
     return _handle_unknown(cmd)
 
 
-def _score_result(result: str, intent: str = "") -> float:
-    """Score a result using fast heuristics with LLM escalation for ambiguous cases.
+_FACT_GROUNDED_INTENTS = {
+    Intent.BRIEFING.value,
+    Intent.ARXIV.value,
+    Intent.RESEARCH.value,
+    Intent.GITHUB.value,
+    Intent.TRENDING.value,
+    Intent.WEEKLY_REPORT.value,
+}
 
-    Fast path (free, <1ms): obvious failures get 0, obvious successes get
-    a baseline from length + structure signals.
 
-    LLM path (~$0.0005/call): only triggered when the heuristic lands in
-    the ambiguous 2-6 range, where getting the score right matters for
-    GRPO learning quality.
+def _heuristic_score_result(result: str) -> float:
+    """Cheap fallback score when judge/grounding are unavailable."""
+    lower = result.lower()
+    if "error" in lower or "failed" in lower or "exception" in lower:
+        return max(0.0, min(len(result) / 1000, 1.5) - 2.0)
+
+    heuristic = 0.0
+    heuristic += min(len(result) / 500, 3.0)
+    if any(e in result for e in ["✅", "📧", "📅", "💰", "💻", "📋", "🔍"]):
+        heuristic += 1.0
+    if "\n" in result and len(result.split("\n")) >= 3:
+        heuristic += 0.5
+    return max(0.0, min(10.0, heuristic))
+
+
+def _fact_checker_grounding(result: str, intent: str) -> dict | None:
+    """Ground factual outputs with the shared FactChecker pipeline."""
+    if intent not in _FACT_GROUNDED_INTENTS or len(result) < 400:
+        return None
+    try:
+        from shared.fact_checker import extract_claims, verify_claims, compute_accuracy_score
+
+        claims = extract_claims(result, topic=intent)
+        if not claims:
+            return None
+
+        verifications = verify_claims(claims[:8], sources=[], web_search=True)
+        if not verifications:
+            return None
+
+        accuracy = compute_accuracy_score(verifications)
+        issue_count = sum(
+            1
+            for v in verifications
+            if v.get("verdict", "UNVERIFIED").upper() != "VERIFIED"
+        )
+        return {
+            "fact_checker_score": round(accuracy, 3),
+            "claims_checked": len(verifications),
+            "issue_count": issue_count,
+        }
+    except Exception as exc:
+        logger.debug("FactChecker grounding skipped: %s", exc)
+        return None
+
+
+def _llm_judge_score(result: str, intent: str, grounding: dict | None) -> float | None:
+    """Ask an LLM judge to score quality using a fixed rubric."""
+    try:
+        from langchain_core.messages import HumanMessage
+        from shared.agents import get_llm
+        from shared.streaming import smart_llm_call
+
+        llm = get_llm(model="gpt-5-mini", temperature=0, timeout=20.0)
+        grounding_json = json.dumps(grounding, ensure_ascii=True) if grounding else "null"
+        prompt = (
+            f"You are a strict response-quality judge for intent '{intent}'.\n"
+            f"Score the candidate on a 0-10 rubric:\n"
+            f"- completeness (0-3)\n"
+            f"- factual_accuracy (0-3)\n"
+            f"- structure_clarity (0-2)\n"
+            f"- actionability (0-2)\n"
+            "If FactChecker grounding is present, penalize factual_accuracy when it is low.\n\n"
+            f"FactChecker grounding (nullable): {grounding_json}\n\n"
+            f"Candidate response:\n{result[:1800]}\n\n"
+            "Return strict JSON only: "
+            "{\"score\": <float 0-10>, \"reason\": \"<short sentence>\", \"confidence\": <0-1>}"
+        )
+        raw_response = smart_llm_call(llm, [HumanMessage(content=prompt)])
+        raw = raw_response.content if hasattr(raw_response, "content") else str(raw_response)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            import re
+
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not match:
+                return None
+            payload = json.loads(match.group(0))
+
+        score = float(payload.get("score"))
+        return max(0.0, min(10.0, score))
+    except Exception as exc:
+        logger.debug("LLM judge scoring failed: %s", exc)
+        return None
+
+
+def _score_result(result: str | None, intent: str = "") -> float:
+    """Score a result with LLM judge + optional FactChecker grounding.
+
+    Falls back to a lightweight heuristic when model scoring is unavailable.
     """
     if not result:
         return 0.0
 
-    # ── Fast-path heuristics ──
-    lower = result.lower()
-    if "error" in lower or "failed" in lower or "exception" in lower:
-        return max(0.0, min(len(result) / 1000, 1.5) - 2.0)  # penalise errors hard
+    heuristic = _heuristic_score_result(result)
+    if os.getenv("JOBPULSE_DISABLE_LLM_JUDGE", "0") == "1":
+        return heuristic
+    if not intent:
+        return heuristic
 
-    heuristic = 0.0
-    heuristic += min(len(result) / 500, 3.0)              # length (up to 3 pts)
-    if any(e in result for e in ["✅", "📧", "📅", "💰", "💻", "📋", "🔍"]):
-        heuristic += 1.0   # structured/formatted response
-    if "\n" in result and len(result.split("\n")) >= 3:
-        heuristic += 0.5   # multi-line = more complete answer
-    heuristic = max(0.0, heuristic)
+    grounding = _fact_checker_grounding(result, intent)
+    judge_score = _llm_judge_score(result, intent, grounding)
+    if judge_score is None:
+        return heuristic
 
-    # ── LLM escalation for ambiguous mid-range scores ──
-    if 2.0 <= heuristic <= 6.0 and intent:
-        try:
-            from shared.agents import get_llm
-            from shared.streaming import smart_llm_call
-            llm = get_llm(model="gpt-5-mini", temperature=0)
-            prompt = (
-                f"Rate this agent response for intent '{intent}' on a 0-10 scale.\n\n"
-                f"Criteria:\n"
-                f"- Completeness: did it fully address the request? (0-3 pts)\n"
-                f"- Accuracy: plausibly correct? (0-3 pts)\n"
-                f"- Structure: clear formatting, easy to read? (0-2 pts)\n"
-                f"- Actionability: can the user act on this? (0-2 pts)\n\n"
-                f"Response to rate:\n{result[:1500]}\n\n"
-                f"Reply with JSON only: {{\"score\": <float 0-10>, \"reason\": \"<one sentence>\"}}"
-            )
-            raw = smart_llm_call(llm, prompt)
-            import re
-            m = re.search(r'\{.*?"score"\s*:\s*([\d.]+)', raw, re.DOTALL)
-            if m:
-                llm_score = float(m.group(1))
-                logger.debug(
-                    "GRPO LLM scorer: heuristic=%.1f → llm=%.1f (intent=%s)",
-                    heuristic, llm_score, intent,
-                )
-                return max(0.0, min(10.0, llm_score))
-        except Exception as _e:
-            logger.debug("GRPO LLM scorer skipped: %s", _e)
-
-    return min(heuristic, 10.0)
+    if grounding and grounding.get("fact_checker_score") is not None:
+        blended = 0.7 * judge_score + 0.3 * float(grounding["fact_checker_score"])
+        return max(0.0, min(10.0, blended))
+    return judge_score

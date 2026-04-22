@@ -1,4 +1,5 @@
 import time
+import uuid
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from dataclasses import dataclass, field
@@ -90,6 +91,13 @@ class MockMemoryManager:
 @pytest.fixture
 def mock_memory():
     return MockMemoryManager()
+
+
+@pytest.fixture(autouse=True)
+def isolate_cognitive_budget_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("COGNITIVE_BUDGET_DB", str(tmp_path / "cognitive_budget.db"))
+    monkeypatch.setenv("COGNITIVE_BUDGET_SCOPE", f"test_scope_{uuid.uuid4().hex}")
+    yield
 
 
 @pytest.fixture

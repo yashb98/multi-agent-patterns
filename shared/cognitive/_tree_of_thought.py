@@ -1,6 +1,5 @@
 """Tree of Thought — Level 3 cognitive reasoning: branch/score/prune/extend."""
 
-import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -28,7 +27,7 @@ class Branch:
     branch_id: str
     reasoning: str
     output: str
-    score: float
+    score: float | None
     depth: int = 0
 
 
@@ -51,6 +50,19 @@ class TreeOfThought:
     def __init__(self, memory_manager, agent_name: str):
         self._memory = memory_manager
         self._agent_name = agent_name
+
+    @staticmethod
+    def _score_value(score: float | None) -> float:
+        return score if score is not None else -1.0
+
+    async def _llm_score(self, task: str, output: str) -> float | None:
+        from shared.cognitive._prompts import SCORING_PROMPT
+        prompt = SCORING_PROMPT.format(task=task, output=output)
+        result = await _llm_generate(prompt, model="gpt-4.1-nano")
+        try:
+            return float(result.strip())
+        except ValueError:
+            return None
 
     def _generate_branches_via_grpo(
         self, system_prompt: str, task: str, strategies: list[str],
@@ -106,7 +118,7 @@ class TreeOfThought:
                 output = await _llm_generate(prompt)
             total_cost += _GENERATE_COST
 
-            score = scorer(output) if scorer else 5.0
+            score = scorer(output) if scorer else await self._llm_score(task, output)
             total_cost += _SCORE_COST
 
             branch = Branch(
@@ -116,15 +128,22 @@ class TreeOfThought:
             all_branches.append(branch)
 
         # Step 2: Prune below threshold
-        surviving = [b for b in all_branches if b.score >= prune_threshold]
+        surviving = [
+            b for b in all_branches
+            if self._score_value(b.score) >= prune_threshold
+        ]
         pruned_count = len(all_branches) - len(surviving)
 
         if not surviving:
-            surviving = sorted(all_branches, key=lambda b: b.score, reverse=True)[:1]
+            surviving = sorted(
+                all_branches,
+                key=lambda b: self._score_value(b.score),
+                reverse=True,
+            )[:1]
             pruned_count = len(all_branches) - 1
 
         # Step 3: Extend top N surviving branches
-        surviving.sort(key=lambda b: b.score, reverse=True)
+        surviving.sort(key=lambda b: self._score_value(b.score), reverse=True)
         to_extend = surviving[:extend_top_n]
 
         for parent in to_extend:
@@ -133,7 +152,7 @@ class TreeOfThought:
             ext_output = await _llm_generate(ext_prompt)
             total_cost += _GENERATE_COST
 
-            ext_score = scorer(ext_output) if scorer else 5.0
+            ext_score = scorer(ext_output) if scorer else await self._llm_score(task, ext_output)
             total_cost += _SCORE_COST
 
             ext_branch = Branch(
@@ -143,13 +162,13 @@ class TreeOfThought:
             all_branches.append(ext_branch)
 
         # Step 4: Pick winner
-        winner = max(all_branches, key=lambda b: b.score)
+        winner = max(all_branches, key=lambda b: self._score_value(b.score))
 
         # Extract strategy template from winner
         strategy_template = f"Winning approach for '{task[:50]}': {winner.output[:150]}"
 
         # Only store when winner exceeds quality threshold
-        if winner.score >= 7.0:
+        if winner.score is not None and winner.score >= 7.0:
             payload_context = (
                 f"agent_name={self._agent_name}|trigger={task[:50]}|"
                 f"times_used=1|times_succeeded=1|success_rate=1.0|"

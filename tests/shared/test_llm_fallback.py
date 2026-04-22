@@ -2,7 +2,18 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
+from shared.circuit_breaker import get_breaker
 from shared.llm_fallback import FallbackLLM, ProviderError
+
+
+@pytest.fixture(autouse=True)
+def _reset_provider_breakers():
+    """Avoid suite-order leakage from shared circuit breaker state."""
+    for provider in ("openai", "anthropic", "ollama"):
+        get_breaker(provider).reset()
+    yield
+    for provider in ("openai", "anthropic", "ollama"):
+        get_breaker(provider).reset()
 
 
 def test_primary_provider_works():

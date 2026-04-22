@@ -48,6 +48,23 @@ class TestCognitiveEngine:
         assert result.level == ThinkLevel.L1_SINGLE
 
     @pytest.mark.asyncio
+    async def test_l1_without_scorer_returns_none_score(self, mock_memory):
+        """Default L1 score is None when no scorer is configured."""
+        mock_memory._procedural.append(MockProceduralEntry(
+            domain="email", strategy="Weak strategy",
+            success_rate=0.5, times_used=1, avg_score_when_used=6.0,
+        ))
+        engine = CognitiveEngine(mock_memory, agent_name="test_agent")
+        with patch(
+            "shared.cognitive._engine._llm_generate",
+            new_callable=AsyncMock,
+            return_value="classified result",
+        ):
+            result = await engine.think(task="classify email", domain="email")
+        assert result.level == ThinkLevel.L1_SINGLE
+        assert result.score is None
+
+    @pytest.mark.asyncio
     async def test_think_l2_calls_reflexion(self, mock_memory):
         """L2 delegates to ReflexionLoop."""
         engine = CognitiveEngine(mock_memory, agent_name="test_agent")
@@ -141,6 +158,31 @@ class TestCognitiveEngine:
                 scorer=lambda x: 9.0,
             )
         assert result.level == ThinkLevel.L3_TREE_OF_THOUGHT
+
+    @pytest.mark.asyncio
+    async def test_force_level_still_respects_budget(self, mock_memory):
+        """force_level is clamped when over budget caps."""
+        budget = CognitiveBudget(max_l3_per_hour=0, max_l2_per_hour=5, max_cost_per_hour=1.0)
+        engine = CognitiveEngine(mock_memory, agent_name="test_agent", budget=budget)
+        mock_reflexion_result = ReflexionResult(
+            answer="budget-clamped",
+            score=8.0,
+            attempts=1,
+            cost=0.003,
+        )
+        with patch.object(
+            engine._reflexion,
+            "run",
+            new_callable=AsyncMock,
+            return_value=mock_reflexion_result,
+        ):
+            result = await engine.think(
+                task="submit application",
+                domain="job_application",
+                force_level=ThinkLevel.L3_TREE_OF_THOUGHT,
+                scorer=lambda _: 8.0,
+            )
+        assert result.level == ThinkLevel.L2_REFLEXION
 
     @pytest.mark.asyncio
     async def test_flush_writes_to_memory(self, mock_memory):

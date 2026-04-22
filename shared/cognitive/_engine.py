@@ -31,7 +31,7 @@ async def _llm_generate(prompt: str, model: str = None) -> str:
 @dataclass
 class ThinkResult:
     answer: str
-    score: float
+    score: float | None
     level: ThinkLevel
     cost: float
     latency_ms: float
@@ -61,7 +61,10 @@ class CognitiveEngine:
         self._agent_name = agent_name
         self._prompt_resolver = prompt_resolver
         bgt = budget or CognitiveBudget.from_env()
-        self._budget_tracker = BudgetTracker(bgt)
+        self._budget_tracker = BudgetTracker(
+            bgt,
+            scope=os.getenv("COGNITIVE_BUDGET_SCOPE", "cognitive_global"),
+        )
         self._classifier = EscalationClassifier(memory_manager, self._budget_tracker)
         self._classifier.load_persisted_stats()
         self._composer = StrategyComposer()
@@ -90,6 +93,13 @@ class CognitiveEngine:
         except Exception as e:
             logger.warning("Classification failed, falling back to L1: %s", e)
             level = ThinkLevel.L1_SINGLE
+        level_before_budget = level
+        level = self._budget_tracker.clamp(level)
+        if force_level is not None and level != level_before_budget:
+            logger.warning(
+                "Forced cognitive level %s clamped to %s by budget policy",
+                level_before_budget.name, level.name,
+            )
         original_level = level
 
         # 2. Compose prompt from strategy templates
@@ -106,11 +116,16 @@ class CognitiveEngine:
         result = await self._execute(level, task, domain, composed, scorer)
 
         # 4. Post-execution: auto-escalate if score too low
-        if result.score < 6.0 and level < ThinkLevel.L3_TREE_OF_THOUGHT:
+        if (
+            result.score is not None
+            and result.score < 6.0
+            and level < ThinkLevel.L3_TREE_OF_THOUGHT
+        ):
             should, next_level = self._classifier.should_escalate(
                 level, result.score, task, domain,
             )
-            if should and self._budget_tracker.allows(next_level):
+            next_level = self._budget_tracker.clamp(next_level)
+            if should and next_level > level:
                 escalated_result = await self._execute(
                     next_level, task, domain, composed, scorer,
                 )
@@ -118,6 +133,7 @@ class CognitiveEngine:
                 escalated_result.level = next_level
                 elapsed = (time.monotonic() - start) * 1000
                 escalated_result.latency_ms = elapsed
+                escalated_result.composed_prompt = composed
                 self._classifier.update_domain_stats(domain, original_level, escalated=True)
                 self._record_level(next_level, escalated_result.cost)
                 return escalated_result
@@ -129,7 +145,12 @@ class CognitiveEngine:
         self._record_level(level, result.cost)
 
         # L1 successes get queued for batch-write via flush()
-        if result.level == ThinkLevel.L1_SINGLE and result.score >= _DEFAULT_SCORE_THRESHOLD:
+        if (
+            result.level == ThinkLevel.L1_SINGLE
+            and scorer is not None
+            and result.score is not None
+            and result.score >= _DEFAULT_SCORE_THRESHOLD
+        ):
             self._pending_writes.append({
                 "domain": domain,
                 "strategy": f"For '{task[:50]}' tasks: {result.answer[:150]}",
@@ -172,7 +193,7 @@ class CognitiveEngine:
                         answer=answer, score=score,
                         level=ThinkLevel.L0_MEMORY, cost=0.0, latency_ms=0,
                     )
-        # No template match — return low score to trigger auto-escalation to L1
+        # No template match — explicit low score triggers auto-escalation to L1.
         return ThinkResult(
             answer="", score=0.0,
             level=ThinkLevel.L0_MEMORY, cost=0.0, latency_ms=0,
@@ -182,7 +203,7 @@ class CognitiveEngine:
         self, task: str, composed: ComposedPrompt, scorer: Optional[Callable],
     ) -> ThinkResult:
         answer = await _llm_generate(composed.text)
-        score = scorer(answer) if scorer else 5.0
+        score = scorer(answer) if scorer else None
         return ThinkResult(
             answer=answer, score=score,
             level=ThinkLevel.L1_SINGLE, cost=_GENERATE_COST, latency_ms=0,
@@ -200,7 +221,11 @@ class CognitiveEngine:
             answer=ref_result.answer, score=ref_result.score,
             level=ThinkLevel.L2_REFLEXION, cost=ref_result.cost,
             latency_ms=0, attempts=ref_result.attempts,
-            strategy_stored=ref_result.score >= _DEFAULT_SCORE_THRESHOLD,
+            strategy_stored=(
+                scorer is not None
+                and ref_result.score is not None
+                and ref_result.score >= _DEFAULT_SCORE_THRESHOLD
+            ),
         )
 
     async def _execute_l3(
@@ -213,7 +238,12 @@ class CognitiveEngine:
         return ThinkResult(
             answer=tot_result.winner.output, score=tot_result.winner.score,
             level=ThinkLevel.L3_TREE_OF_THOUGHT, cost=tot_result.cost,
-            latency_ms=0, strategy_stored=True,
+            latency_ms=0,
+            strategy_stored=(
+                scorer is not None
+                and tot_result.winner.score is not None
+                and tot_result.winner.score >= _DEFAULT_SCORE_THRESHOLD
+            ),
         )
 
     def _record_level(self, level: ThinkLevel, cost: float):

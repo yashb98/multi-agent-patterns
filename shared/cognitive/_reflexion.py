@@ -1,6 +1,5 @@
 """Reflexion Loop — Level 2 cognitive reasoning: try/critique/retry."""
 
-import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -26,7 +25,7 @@ async def _llm_generate(prompt: str, model: str = None) -> str:
 @dataclass
 class ReflexionResult:
     answer: str
-    score: float
+    score: float | None
     attempts: int
     critiques: list[str] = field(default_factory=list)
     strategy_template: str = ""
@@ -50,7 +49,7 @@ class ReflexionLoop:
         scorer: Optional[Callable] = None,
     ) -> ReflexionResult:
         best_answer = ""
-        best_score = -1.0
+        best_score: float | None = None
         critiques: list[str] = []
         total_cost = 0.0
         attempt = 0
@@ -61,29 +60,32 @@ class ReflexionLoop:
         prompt = initial_prompt
         for attempt in range(1, max_attempts + 1):
             # Generate
-            start = time.monotonic()
             answer = await _llm_generate(prompt)
             total_cost += _GENERATE_COST
 
             # Score
             score = scorer(answer) if scorer else await self._llm_score(task, answer)
 
-            if score > best_score:
+            if best_score is None or (score is not None and score > best_score):
                 best_answer = answer
                 best_score = score
 
-            logger.info("Reflexion attempt %d/%d: score=%.1f (threshold=%.1f)",
-                        attempt, max_attempts, score, score_threshold)
+            score_display = f"{score:.1f}" if score is not None else "None"
+            logger.info(
+                "Reflexion attempt %d/%d: score=%s (threshold=%.1f)",
+                attempt, max_attempts, score_display, score_threshold,
+            )
 
-            if score >= score_threshold:
+            if score is not None and score >= score_threshold:
                 break
 
             if attempt >= max_attempts:
                 break
 
             # Critique (using nano — cheap)
+            score_for_prompt = f"{score:.1f}" if score is not None else "N/A"
             critique_prompt = CRITIQUE_PROMPT.format(
-                task=task, output=answer, score=score, threshold=score_threshold,
+                task=task, output=answer, score=score_for_prompt, threshold=score_threshold,
             )
             critique = await _llm_generate(critique_prompt, model="gpt-4.1-nano")
             total_cost += _CRITIQUE_COST
@@ -96,7 +98,7 @@ class ReflexionLoop:
                 prompt += f"\n\n## Known failure patterns for this domain\n{failure_context}"
 
         # Store learnings
-        if best_score >= score_threshold:
+        if best_score is not None and best_score >= score_threshold:
             self._store_success(task, domain, best_answer, best_score)
         else:
             self._store_failure(task, domain, best_answer, best_score, critiques)
@@ -106,7 +108,11 @@ class ReflexionLoop:
             score=best_score,
             attempts=attempt,
             critiques=critiques,
-            strategy_template=best_answer[:200] if best_score >= score_threshold else "",
+            strategy_template=(
+                best_answer[:200]
+                if best_score is not None and best_score >= score_threshold
+                else ""
+            ),
             cost=total_cost,
         )
 
@@ -139,12 +145,18 @@ class ReflexionLoop:
             source=self._agent_name,
         )
 
-    def _store_failure(self, task: str, domain: str, answer: str,
-                       score: float, critiques: list[str]):
+    def _store_failure(
+        self,
+        task: str,
+        domain: str,
+        answer: str,
+        score: float | None,
+        critiques: list[str],
+    ):
         critique_text = critiques[-1] if critiques else "No critique available"
         self._memory.record_episode(
             topic=task[:100],
-            final_score=score,
+            final_score=score if score is not None else 0.0,
             iterations=len(critiques) + 1,
             pattern_used="reflexion",
             agents_used=[self._agent_name],
@@ -154,11 +166,11 @@ class ReflexionLoop:
             domain=domain,
         )
 
-    async def _llm_score(self, task: str, output: str) -> float:
+    async def _llm_score(self, task: str, output: str) -> float | None:
         from shared.cognitive._prompts import SCORING_PROMPT
         prompt = SCORING_PROMPT.format(task=task, output=output)
         result = await _llm_generate(prompt, model="gpt-4.1-nano")
         try:
             return float(result.strip())
         except ValueError:
-            return 5.0
+            return None
