@@ -20,20 +20,6 @@ from jobpulse.ats_adapters.base import BaseATSAdapter
 
 logger = get_logger(__name__)
 
-AGGREGATOR_DOMAINS: set[str] = {
-    "bebee.com", "learn4good.com", "adzuna.co.uk", "engineeringjobs.co.uk",
-    "uk.talent.com", "talent.com", "jooble.org", "neuvoo.co.uk",
-    "jobrapido.com", "careerjet.co.uk", "simplyhired.co.uk",
-}
-
-
-def is_aggregator_url(url: str) -> bool:
-    """Check if a URL belongs to a known job aggregator."""
-    from urllib.parse import urlparse
-    domain = urlparse(url).netloc.lower().removeprefix("www.")
-    return any(domain == agg or domain.endswith("." + agg) for agg in AGGREGATOR_DOMAINS)
-
-
 # Global mutex — only one apply_job() call can run at a time
 _apply_lock = threading.Lock()
 
@@ -128,12 +114,6 @@ def apply_job(
         RateLimiter,
     )
     from jobpulse.screening_answers import get_answer
-
-    if is_aggregator_url(url):
-        logger.warning(
-            "Aggregator URL detected: %s — these require registration and may not lead to a direct application form",
-            url,
-        )
 
     platform_key = (ats_platform or "generic").lower()
     total = 0  # fallback when dry_run skips the rate limiter section

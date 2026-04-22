@@ -86,8 +86,6 @@ Navigation learning replays per domain (SQLite). Max 10 nav steps, 20 form pages
 ## Dry Run & Platform Learning
 - Always dry-run new platforms first: `apply_job(url, dry_run=True)`
 - NativeFormFiller handles modal-based CV uploads (Reed pattern: detect CV mismatch → Update → file chooser)
-- Aggregator URLs (bebee, learn4good, adzuna) auto-routed to review queue in cron — won't auto-apply
-- `AGGREGATOR_DOMAINS` in applicator.py, checked by both manual and cron paths
 - Internal dict keys (_stream, _gotchas, _job_context) filtered before JSON serialization
 - Platform quirks documented in `.claude/rules/jobs.md` under "Platform-Specific Quirks"
 

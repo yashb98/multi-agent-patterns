@@ -698,7 +698,7 @@ def _handle_help(cmd: ParsedCommand) -> str:
 def _handle_scan_jobs(cmd: ParsedCommand) -> str:
     """Trigger a job scan — runs the full autopilot pipeline."""
     from jobpulse.job_autopilot import run_scan_window
-    return run_scan_window(platforms=["reed", "google_jobs"])
+    return run_scan_window(platforms=["reed"])
 
 
 def _handle_show_jobs(cmd: ParsedCommand) -> str:

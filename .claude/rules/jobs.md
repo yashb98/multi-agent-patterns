@@ -134,14 +134,6 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - Screening questions: pattern-based (work auth, salary, availability, experience years) → LLM fallback → SQLite cache
 - All 6 ATS adapters wire screening via `answer_screening_questions()` in the form-fill loop
 
-## Aggregator URL Handling
-- Google Jobs returns aggregator URLs (bebee.com, learn4good.com, adzuna.co.uk, engineeringjobs.co.uk, uk.talent.com) — NOT direct company ATS pages
-- Aggregators require their own registration/login before showing an application form
-- `AGGREGATOR_DOMAINS` set in applicator.py — checked before auto-apply
-- Cron path: scan_pipeline.py routes aggregator URLs to review queue instead of auto-apply
-- Manual path: apply_job() logs a warning but still attempts (user may have logged in)
-- Preferred flow: apply on the SOURCE platform (Reed, LinkedIn, company ATS), not through aggregators
-
 ## Platform-Specific Quirks (Dry Run Learnings)
 - Reed Easy Apply: modal overlay with pre-filled CV from profile + "Submit application" button
   - System auto-detects CV mismatch and uploads tailored CV via "Update" → file chooser

@@ -50,7 +50,7 @@ class JobListing(BaseModel):
     )
     title: str = Field(description="Job title as shown on the listing.")
     company: str = Field(description="Company name as shown on the listing.")
-    platform: Literal["linkedin", "indeed", "reed", "totaljobs", "glassdoor", "google_jobs", "generic"] = Field(
+    platform: Literal["linkedin", "indeed", "reed", "totaljobs", "glassdoor", "generic"] = Field(
         description="Job board the listing was scraped from."
     )
     url: str = Field(description="Canonical URL of the job listing.")

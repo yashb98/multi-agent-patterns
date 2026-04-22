@@ -750,15 +750,6 @@ def route_and_apply(
             _queue_for_review(listing, ats_score, review_batch)
             return RouteResult("queued_for_review", listing.job_id, listing.title, listing.company)
 
-        from jobpulse.applicator import is_aggregator_url
-        if is_aggregator_url(listing.url):
-            logger.warning(
-                "scan_pipeline: aggregator URL for %s (%s) — routing to review instead of auto-apply",
-                listing.company, listing.url[:60],
-            )
-            _queue_for_review(listing, ats_score, review_batch)
-            return RouteResult("queued_for_review", listing.job_id, listing.title, listing.company)
-
         try:
             result = apply_job(
                 url=listing.url,
