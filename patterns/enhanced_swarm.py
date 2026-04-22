@@ -79,7 +79,6 @@ logger = get_logger(__name__)
 # SQLite-backed — experiences survive process restarts.
 
 _experience_memory = get_shared_experience_memory()
-_optimized_prompts = {}  # Cache of optimized prompts per role+domain
 _memory_manager = get_shared_memory_manager()
 _grpo = TrainingFreeGRPO(llm=None)  # llm set lazily at first use
 _convergence = ConvergenceController()  # Shared convergence controller
