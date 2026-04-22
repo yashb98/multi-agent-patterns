@@ -25,12 +25,12 @@ External entry points (called by dispatcher.py):
 from __future__ import annotations
 
 import json
-import threading
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from shared.logging_config import get_logger
+from shared.locks import system_lock
 
 from jobpulse.applicator import apply_job
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_AUTO_SUBMIT, JOB_AUTOPILOT_MAX_DAILY
@@ -140,7 +140,7 @@ def _get_event_store():
         return None
 
 
-_scan_lock = threading.Lock()
+_scan_lock = system_lock("jobpulse_scan_window")
 
 
 def run_scan_window(platforms: list[str] | None = None) -> str:

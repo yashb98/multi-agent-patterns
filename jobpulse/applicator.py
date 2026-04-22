@@ -7,21 +7,22 @@ Records application BEFORE submission to prevent silent limit bypass.
 import asyncio
 import inspect
 import random
-import threading
 import time
 from pathlib import Path
 from typing import Any
 
 from shared.logging_config import get_logger
 from shared.alerting import send_pipeline_alert
+from shared.locks import system_lock
 
 from jobpulse.ats_adapters import get_adapter
 from jobpulse.ats_adapters.base import BaseATSAdapter
 
 logger = get_logger(__name__)
 
-# Global mutex — only one apply_job() call can run at a time
-_apply_lock = threading.Lock()
+# System lock — only one apply_job()/confirm_application at a time, even
+# across multiple daemon processes.
+_apply_lock = system_lock("jobpulse_apply")
 
 # Applicant profile and work auth loaded from env vars via config
 from jobpulse.config import APPLICANT_PROFILE as PROFILE, WORK_AUTH

@@ -22,6 +22,15 @@ def main():
 
     command = sys.argv[1]
 
+    if command in {"listen", "daemon", "multi-bot", "multi", "webhook"}:
+        try:
+            from jobpulse.draft_applicator import start_draft_daemon
+            resumed = start_draft_daemon(resume_on_startup=True)
+            if resumed:
+                logger.info("Resumed %d pending draft(s) from SQLite queue", resumed)
+        except Exception as exc:
+            logger.warning("Draft daemon startup resume failed: %s", exc)
+
     if command == "stop":
         import subprocess
 

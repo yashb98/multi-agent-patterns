@@ -62,6 +62,7 @@ class TestMemoryManager:
             tier=MemoryTier.EPISODIC, domain="test",
             content="Greenhouse uses React inputs", score=7.0,
         )
+        manager.flush_secondary_sync(timeout=1.0)
         assert mid is not None
         assert sqlite_store.get_by_id(mid) is not None
         assert qdrant_mock.upsert.called
@@ -83,6 +84,7 @@ class TestMemoryManager:
     def test_startup_runs_reconciliation(self, manager, sqlite_store, qdrant_mock, make_memory):
         sqlite_store.insert(make_memory(content="unsynced"))
         manager.startup()
+        manager.flush_secondary_sync(timeout=1.0)
         assert qdrant_mock.upsert.called or qdrant_mock.has_point.called
 
     def test_pin_memory(self, manager, sqlite_store):

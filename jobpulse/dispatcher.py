@@ -9,17 +9,17 @@ All errors return structured DispatchError objects with:
 - attemptedAction: what was being attempted
 """
 
-import threading
 from datetime import datetime
 from jobpulse.command_router import Intent, ParsedCommand
 from jobpulse import event_logger
 from shared.agent_result import DispatchError, classify_error as _classify_error
+from shared.locks import process_event
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 # Module-level cancel event — set by /cancel, checked by long-running operations.
-_cancel_event = threading.Event()
+_cancel_event = process_event("jobpulse_dispatch_cancel")
 
 
 def dispatch(cmd: ParsedCommand) -> str:

@@ -481,6 +481,30 @@
     "research federated learning privacy guarantees",
     "compare RLHF vs DPO vs GRPO for alignment"
   ],
+  "submit_draft": [
+    "submit abc123",
+    "submit draft abc123",
+    "approve draft abc123",
+    "send this draft now",
+    "go ahead submit xyz789",
+    "confirm draft submission"
+  ],
+  "skip_draft": [
+    "skip abc123",
+    "skip draft abc123",
+    "reject draft abc123",
+    "don't submit this draft",
+    "cancel draft xyz789",
+    "pass on this application draft"
+  ],
+  "show_drafts": [
+    "show drafts",
+    "list drafts",
+    "pending drafts",
+    "what drafts are waiting",
+    "show pending draft applications",
+    "which drafts need review"
+  ],
   "cancel": [
     "cancel",
     "cancel that",

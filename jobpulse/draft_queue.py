@@ -175,6 +175,29 @@ class DraftQueue:
             drafts.append(d)
         return drafts
 
+    def get_resumable_drafts(self) -> list[dict[str, Any]]:
+        """Return non-terminal drafts that should resume after daemon restart."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM drafts
+                WHERE status IN ('filling', 'filled', 'pending_review')
+                  AND expires_at > ?
+                ORDER BY created_at ASC
+                """,
+                (_now(),),
+            ).fetchall()
+        drafts: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            if d.get("filled_fields"):
+                try:
+                    d["filled_fields"] = json.loads(d["filled_fields"])
+                except json.JSONDecodeError:
+                    d["filled_fields"] = {}
+            drafts.append(d)
+        return drafts
+
     def mark_submitted(self, draft_id: str) -> bool:
         """Mark draft as submitted. Returns True if draft existed."""
         now = _now()

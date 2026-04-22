@@ -443,7 +443,19 @@ class MemoryManager:
         }
         if self._sqlite:
             report["sqlite_count"] = self._sqlite.count()
+        if self._sync:
+            report["secondary_sync_queue"] = self._sync.pending_count()
         return report
+
+    def flush_secondary_sync(self, timeout: float | None = None) -> None:
+        """Wait until queued secondary sync work is complete."""
+        if self._sync:
+            self._sync.flush(timeout=timeout)
+
+    def shutdown(self) -> None:
+        """Release background resources (best-effort)."""
+        if self._sync:
+            self._sync.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -572,4 +584,9 @@ def get_shared_memory_manager(storage_dir: str | None = None) -> "MemoryManager"
 def reset_shared_memory_manager() -> None:
     """Reset the shared singleton. Used for test isolation."""
     global _shared_manager
+    if _shared_manager is not None:
+        try:
+            _shared_manager.shutdown()
+        except Exception as exc:
+            logger.debug("Shared MemoryManager shutdown failed: %s", exc)
     _shared_manager = None

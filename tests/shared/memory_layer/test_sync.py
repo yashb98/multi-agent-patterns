@@ -46,6 +46,7 @@ def sync(sqlite_store, qdrant_mock, neo4j_mock, embedder_mock):
         qdrant=qdrant_mock,
         neo4j=neo4j_mock,
         embedder=embedder_mock,
+        start_background=False,
     )
 
 
@@ -83,3 +84,20 @@ class TestSyncService:
         sync.sync_to_secondary(entry)
         assert qdrant_mock.upsert.call_count == 1
         assert neo4j_mock.create_node.call_count == 1
+
+    def test_background_queue_flushes_pending_work(
+        self, sqlite_store, qdrant_mock, neo4j_mock, embedder_mock, make_memory,
+    ):
+        bg_sync = SyncService(
+            sqlite=sqlite_store,
+            qdrant=qdrant_mock,
+            neo4j=neo4j_mock,
+            embedder=embedder_mock,
+            start_background=True,
+        )
+        entry = make_memory(content="queued secondary sync")
+        bg_sync.sync_to_secondary(entry, background=True)
+        bg_sync.flush(timeout=1.0)
+        assert qdrant_mock.upsert.call_count >= 1
+        assert neo4j_mock.create_node.call_count >= 1
+        bg_sync.shutdown()

@@ -29,6 +29,7 @@ Architecture (replaces the earlier thread-per-job + disconnected-submit design):
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -36,7 +37,13 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
+from shared.daemon_threads import (
+    heartbeat_daemon_thread,
+    register_daemon_thread,
+    stop_daemon_thread,
+)
 from shared.logging_config import get_logger
+from shared.locks import process_lock
 
 from jobpulse.applicator import confirm_application, prepare_application_inputs
 from jobpulse.config import (
@@ -52,6 +59,11 @@ logger = get_logger(__name__)
 SCREENSHOT_DIR = DATA_DIR / "draft_screenshots"
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
+_LOOP_THREAD_REGISTRY_KEY = "draft_applicator.loop"
+_WORKER_THREAD_REGISTRY_KEY = "draft_applicator.worker"
+_startup_resume_done = False
+_startup_resume_lock = threading.Lock()
+
 # ── Persistent background loop (survives across fill → review → submit) ──
 
 _loop: asyncio.AbstractEventLoop | None = None
@@ -64,13 +76,23 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
     global _loop, _loop_thread
     with _loop_lock:
         if _loop is not None and _loop.is_running():
+            heartbeat_daemon_thread(_LOOP_THREAD_REGISTRY_KEY)
             return _loop
         _loop = asyncio.new_event_loop()
 
         def _run() -> None:
             assert _loop is not None
-            asyncio.set_event_loop(_loop)
-            _loop.run_forever()
+            register_daemon_thread(
+                _LOOP_THREAD_REGISTRY_KEY,
+                kind="draft_event_loop",
+                thread_name="draft-applicator-loop",
+                metadata={"component": "draft_applicator"},
+            )
+            try:
+                asyncio.set_event_loop(_loop)
+                _loop.run_forever()
+            finally:
+                stop_daemon_thread(_LOOP_THREAD_REGISTRY_KEY)
 
         _loop_thread = threading.Thread(
             target=_run, daemon=True, name="draft-applicator-loop",
@@ -82,6 +104,7 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
 def _run_async(coro: Any, timeout: float | None = None) -> Any:
     """Schedule *coro* on the background loop and block until it completes."""
     loop = _ensure_loop()
+    heartbeat_daemon_thread(_LOOP_THREAD_REGISTRY_KEY)
     fut = asyncio.run_coroutine_threadsafe(coro, loop)
     return fut.result(timeout=timeout)
 
@@ -94,13 +117,14 @@ _worker_lock = threading.Lock()
 
 # The draft currently awaiting user approval (at most one).
 _active_session: "DraftSession | None" = None
-_active_lock = threading.Lock()
+_active_lock = process_lock("jobpulse_draft_active_session")
 
 
 def _ensure_worker() -> None:
     global _worker_thread
     with _worker_lock:
         if _worker_thread and _worker_thread.is_alive():
+            heartbeat_daemon_thread(_WORKER_THREAD_REGISTRY_KEY)
             return
         _worker_thread = threading.Thread(
             target=_worker_loop, daemon=True, name="draft-applicator-worker",
@@ -111,38 +135,51 @@ def _ensure_worker() -> None:
 def _worker_loop() -> None:
     """Pull jobs off the queue, fill + wait-for-approval, one at a time."""
     global _active_session
-    while True:
-        try:
-            job = _PENDING_QUEUE.get(timeout=60.0)
-        except Empty:
-            continue
+    register_daemon_thread(
+        _WORKER_THREAD_REGISTRY_KEY,
+        kind="draft_worker",
+        thread_name="draft-applicator-worker",
+        metadata={"component": "draft_applicator"},
+    )
+    try:
+        while True:
+            heartbeat_daemon_thread(_WORKER_THREAD_REGISTRY_KEY)
+            try:
+                job = _PENDING_QUEUE.get(timeout=60.0)
+            except Empty:
+                continue
 
-        session: DraftSession | None = None
-        try:
-            session = DraftSession(job)
-            with _active_lock:
-                _active_session = session
+            session: DraftSession | None = None
+            try:
+                session = DraftSession(
+                    job,
+                    resume_draft_id=job.get("_resume_draft_id"),
+                )
+                with _active_lock:
+                    _active_session = session
 
-            session.fill_and_notify()
+                session.fill_and_notify()
 
-            action = session.wait_for_action()
-            if action == "submit":
-                session.run_submit_and_confirm()
-            else:
-                session.run_reject()
-        except Exception as exc:
-            logger.exception("draft_applicator: worker error: %s", exc)
-            if session is not None:
-                try:
-                    session.mark_failed(str(exc))
-                except Exception:
-                    pass
-        finally:
-            if session is not None:
-                session.release()
-            with _active_lock:
-                if _active_session is session:
-                    _active_session = None
+                action = session.wait_for_action()
+                if action == "submit":
+                    session.run_submit_and_confirm()
+                else:
+                    session.run_reject()
+            except Exception as exc:
+                logger.exception("draft_applicator: worker error: %s", exc)
+                if session is not None:
+                    try:
+                        session.mark_failed(str(exc))
+                    except Exception:
+                        pass
+            finally:
+                if session is not None:
+                    session.release()
+                with _active_lock:
+                    if _active_session is session:
+                        _active_session = None
+    finally:
+        stop_daemon_thread(_WORKER_THREAD_REGISTRY_KEY)
 
 
 # ── macOS helper ──
@@ -189,17 +226,30 @@ class DraftSession:
     run_submit_and_confirm() OR run_reject() → release().
     """
 
-    def __init__(self, job: dict[str, Any]) -> None:
+    def __init__(self, job: dict[str, Any], resume_draft_id: str | None = None) -> None:
         self.job = job
         self.url: str = job["url"]
         self.queue = DraftQueue()
-        self.draft_id: str = self.queue.create_draft(
-            job_id=job.get("job_id", ""),
-            url=self.url,
-            platform=job.get("platform", "generic"),
-            company=job.get("company", ""),
-            title=job.get("title", ""),
-        )
+        self._resumed = bool(resume_draft_id)
+        if resume_draft_id:
+            self.draft_id = resume_draft_id
+            if not self.queue.update_draft(self.draft_id, status="filling"):
+                self.draft_id = self.queue.create_draft(
+                    job_id=job.get("job_id", ""),
+                    url=self.url,
+                    platform=job.get("platform", "generic"),
+                    company=job.get("company", ""),
+                    title=job.get("title", ""),
+                )
+                self._resumed = False
+        else:
+            self.draft_id = self.queue.create_draft(
+                job_id=job.get("job_id", ""),
+                url=self.url,
+                platform=job.get("platform", "generic"),
+                company=job.get("company", ""),
+                title=job.get("title", ""),
+            )
 
         prep = prepare_application_inputs(
             url=self.url,
@@ -355,6 +405,8 @@ class DraftSession:
             f"Company: {self.job.get('company', 'unknown')}",
             f"Platform: {self.job.get('platform', 'generic')}",
         ]
+        if self._resumed:
+            lines.append("🔁 Resumed after daemon restart")
         if self.job.get("ats_score"):
             lines.append(f"ATS Score: {self.job['ats_score']:.1f}%")
         lines.extend([
@@ -635,6 +687,99 @@ class DraftSession:
 
 # ── Public API (used by dispatcher + job_autopilot) ──
 
+
+def _hydrate_resume_job(draft_row: dict[str, Any]) -> dict[str, Any] | None:
+    """Rebuild a queue payload from persisted draft + JobDB metadata."""
+    from jobpulse.job_db import JobDB
+
+    job_id = draft_row.get("job_id") or ""
+    db = JobDB()
+    app = db.get_application(job_id) if job_id else None
+    listing = db.get_listing(job_id) if job_id else None
+
+    cv_path = (app or {}).get("cv_path")
+    if not cv_path:
+        logger.warning(
+            "draft_applicator: cannot resume %s — missing cv_path",
+            draft_row.get("draft_id"),
+        )
+        return None
+
+    raw_answers = (app or {}).get("custom_answers")
+    custom_answers: dict[str, Any] = {}
+    if isinstance(raw_answers, str) and raw_answers:
+        try:
+            custom_answers = json.loads(raw_answers)
+        except json.JSONDecodeError:
+            custom_answers = {}
+    elif isinstance(raw_answers, dict):
+        custom_answers = dict(raw_answers)
+
+    if "_job_context" not in custom_answers:
+        custom_answers["_job_context"] = {
+            "job_title": draft_row.get("title", ""),
+            "company": draft_row.get("company", ""),
+            "location": (listing or {}).get("location", ""),
+        }
+
+    url = draft_row.get("url") or (listing or {}).get("url", "")
+    if not url:
+        logger.warning(
+            "draft_applicator: cannot resume %s — missing URL",
+            draft_row.get("draft_id"),
+        )
+        return None
+
+    return {
+        "job_id": job_id,
+        "title": draft_row.get("title", ""),
+        "company": draft_row.get("company", ""),
+        "url": url,
+        "platform": draft_row.get("platform", "generic"),
+        "ats_platform": (listing or {}).get("ats_platform"),
+        "ats_score": (app or {}).get("ats_score", 0.0),
+        "cv_path": cv_path,
+        "cover_letter_path": (app or {}).get("cover_letter_path"),
+        "custom_answers": custom_answers,
+        "notion_page_id": (app or {}).get("notion_page_id"),
+        "_resume_draft_id": draft_row.get("draft_id"),
+    }
+
+
+def _resume_pending_drafts_once() -> int:
+    """Re-queue unfinished drafts from SQLite after daemon restart."""
+    global _startup_resume_done
+    with _startup_resume_lock:
+        if _startup_resume_done:
+            return 0
+        _startup_resume_done = True
+
+    queue = DraftQueue()
+    resumable = queue.get_resumable_drafts()
+    resumed = 0
+    for draft in resumable:
+        payload = _hydrate_resume_job(draft)
+        if payload is None:
+            queue.update_draft(
+                draft["draft_id"],
+                status="error",
+                error_message="Could not resume draft after restart (missing CV/job context)",
+            )
+            continue
+        queue.update_draft(draft["draft_id"], status="filling")
+        _PENDING_QUEUE.put(payload)
+        resumed += 1
+
+    if resumed:
+        logger.info("draft_applicator: resumed %d draft(s) from SQLite queue", resumed)
+    return resumed
+
+
+def start_draft_daemon(resume_on_startup: bool = True) -> int:
+    """Start worker threads and optionally resume persisted drafts."""
+    _ensure_worker()
+    return _resume_pending_drafts_once() if resume_on_startup else 0
+
 def queue_drafts(jobs: list[dict[str, Any]]) -> int:
     """Enqueue *jobs* for sequential human-in-the-loop drafting.
 
@@ -642,7 +787,7 @@ def queue_drafts(jobs: list[dict[str, Any]]) -> int:
     filling the form (dry_run) and blocking for the user's `submit`/`skip`
     reply before moving on.
     """
-    _ensure_worker()
+    start_draft_daemon(resume_on_startup=True)
     count = 0
     for job in jobs:
         if not job.get("url"):
