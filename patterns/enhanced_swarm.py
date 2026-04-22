@@ -426,13 +426,11 @@ def enhanced_convergence(state: AgentState) -> dict:
     )
 
     # Prune state between iterations
-    from shared.state import prune_state
-    result = {
+    from shared.state import prune_and_return
+    return prune_and_return(state, {
         "current_agent": decision,
-        "agent_history": [f"Convergence: {decision} ({decision_obj.outcome.value})"]
-    }
-    result.update(prune_state(state))
-    return result
+        "agent_history": [f"Convergence: {decision} ({decision_obj.outcome.value})"],
+    })
 
 
 def enhanced_finish(state: AgentState) -> dict:

@@ -18,7 +18,6 @@ import operator
 from langgraph.graph import StateGraph, START, END
 
 from shared.agents import get_llm, smart_llm_call, reviewer_node, fact_check_node, compute_cost_summary
-from shared.state import prune_state
 from shared.cost_tracker import check_budget_from_state, BudgetExceededError
 from shared.experiential_learning import Experience, get_shared_experience_memory
 from shared.logging_config import get_logger, generate_run_id, set_run_id
@@ -185,7 +184,6 @@ def reconciler_node(state: MapReduceState) -> dict:
         pass
 
     cost = compute_cost_summary(state.get("token_usage", []))
-    prune_state(state)
 
     logger.info("Reconciler completed: quality=%.1f, accuracy=%.1f, cost=$%.4f", quality, accuracy, cost["total_cost_usd"])
     return {

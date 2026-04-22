@@ -324,13 +324,11 @@ def convergence_check(state: AgentState) -> dict:
     )
 
     # Prune state between debate rounds
-    from shared.state import prune_state
-    result = {
+    from shared.state import prune_and_return
+    return prune_and_return(state, {
         "current_agent": decision,
-        "agent_history": [f"Convergence: {decision} ({reason})"]
-    }
-    result.update(prune_state(state))
-    return result
+        "agent_history": [f"Convergence: {decision} ({reason})"],
+    })
 
 
 # ─── SYNTHESIS NODE ──────────────────────────────────────────────
