@@ -8,10 +8,21 @@ When adding a new intent:
 1. Add the handler function to the appropriate handler module
 2. Import it here and add to HANDLER_MAP
 3. Both dispatchers automatically pick it up
+
+Cache behavior:
+- The handler map is built once per process on first access and reused on
+  every subsequent dispatch. Building it requires importing all ~50 handler
+  symbols from ``jobpulse.dispatcher``, which paid 30-120 ms every dispatch
+  under the old ``return _build_handler_map()`` implementation.
+- Under pytest (``PYTEST_CURRENT_TEST`` env var set) the cache is bypassed so
+  tests can still ``@patch("jobpulse.dispatcher._handle_...")`` between calls.
+- Tests that need to simulate a fresh build in production-like mode can call
+  :func:`reset_handler_map` between cases.
 """
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Callable
 
 from jobpulse.command_router import Intent
@@ -107,11 +118,42 @@ def _build_handler_map() -> dict[Intent, Callable[["ParsedCommand"], str]]:
     }
 
 
+_HANDLER_MAP_CACHE: dict[Intent, Callable[["ParsedCommand"], str]] | None = None
+_HANDLER_MAP_BY_VALUE_CACHE: dict[str, Callable[["ParsedCommand"], str]] | None = None
+
+
 def get_handler_map() -> dict[Intent, Callable[["ParsedCommand"], str]]:
-    """Return the intent→handler map. Built fresh each call to support test patching."""
-    return _build_handler_map()
+    """Return the intent→handler map (cached after first call).
+
+    Under pytest the cache is bypassed so module-level ``@patch`` decorators
+    on ``jobpulse.dispatcher._handle_*`` still take effect between calls.
+    """
+    global _HANDLER_MAP_CACHE
+
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return _build_handler_map()
+
+    if _HANDLER_MAP_CACHE is None:
+        _HANDLER_MAP_CACHE = _build_handler_map()
+    return _HANDLER_MAP_CACHE
 
 
 def get_handler_map_by_value() -> dict[str, Callable[["ParsedCommand"], str]]:
-    """Return intent.value→handler map (used by swarm_dispatcher)."""
-    return {intent.value: handler for intent, handler in get_handler_map().items()}
+    """Return intent.value→handler map (used by swarm_dispatcher), cached."""
+    global _HANDLER_MAP_BY_VALUE_CACHE
+
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return {intent.value: handler for intent, handler in get_handler_map().items()}
+
+    if _HANDLER_MAP_BY_VALUE_CACHE is None:
+        _HANDLER_MAP_BY_VALUE_CACHE = {
+            intent.value: handler for intent, handler in get_handler_map().items()
+        }
+    return _HANDLER_MAP_BY_VALUE_CACHE
+
+
+def reset_handler_map() -> None:
+    """Clear the cached handler maps. Useful in tests and after monkey-patching."""
+    global _HANDLER_MAP_CACHE, _HANDLER_MAP_BY_VALUE_CACHE
+    _HANDLER_MAP_CACHE = None
+    _HANDLER_MAP_BY_VALUE_CACHE = None

@@ -26,36 +26,42 @@ logger = get_logger(__name__)
 
 import sqlite3
 from jobpulse.config import DATA_DIR
-from shared.db import get_db_conn
+from shared.db import get_db_conn, get_pooled_db_conn
 
 EXPERIENCE_DB = DATA_DIR / "swarm_experience.db"
 
 
 def _get_exp_conn():
-    return get_db_conn(EXPERIENCE_DB)
+    """Pooled, thread-local connection. Callers must NOT close it."""
+    return get_pooled_db_conn(EXPERIENCE_DB)
 
 
 def _init_experience_db():
-    conn = _get_exp_conn()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS experiences (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            intent TEXT NOT NULL,
-            pattern TEXT NOT NULL,
-            score REAL DEFAULT 0,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS persona_prompts (
-            agent_name TEXT PRIMARY KEY,
-            evolved_prompt TEXT NOT NULL,
-            generation INTEGER DEFAULT 1,
-            avg_score REAL DEFAULT 0,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_exp_intent ON experiences(intent);
-    """)
-    conn.commit()
-    conn.close()
+    # Use an owned (non-pooled) connection for the one-shot schema init so
+    # we're not leaking the init connection into the pool for workloads that
+    # never query this DB again (e.g. tests that import the module).
+    conn = get_db_conn(EXPERIENCE_DB)
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS experiences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                score REAL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS persona_prompts (
+                agent_name TEXT PRIMARY KEY,
+                evolved_prompt TEXT NOT NULL,
+                generation INTEGER DEFAULT 1,
+                avg_score REAL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_exp_intent ON experiences(intent);
+        """)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 _init_experience_db()
@@ -68,7 +74,6 @@ def store_experience(intent: str, pattern: str, score: float):
         (intent, pattern, score, datetime.now().isoformat())
     )
     conn.commit()
-    conn.close()
 
 
 def get_experiences(intent: str, limit: int = 5) -> list[dict]:
@@ -77,7 +82,6 @@ def get_experiences(intent: str, limit: int = 5) -> list[dict]:
         "SELECT pattern, score FROM experiences WHERE intent=? ORDER BY score DESC, created_at DESC LIMIT ?",
         (intent, limit)
     ).fetchall()
-    conn.close()
     return [dict(r) for r in rows]
 
 
@@ -86,7 +90,6 @@ def get_avg_score(intent: str) -> float:
     row = conn.execute(
         "SELECT AVG(score) as avg FROM experiences WHERE intent=?", (intent,)
     ).fetchone()
-    conn.close()
     return row["avg"] or 0.0
 
 
@@ -97,7 +100,6 @@ def store_persona(agent_name: str, prompt: str, generation: int, avg_score: floa
         (agent_name, prompt, generation, avg_score, datetime.now().isoformat())
     )
     conn.commit()
-    conn.close()
 
 
 def get_persona(agent_name: str) -> dict | None:
@@ -105,7 +107,6 @@ def get_persona(agent_name: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM persona_prompts WHERE agent_name=?", (agent_name,)
     ).fetchone()
-    conn.close()
     return dict(row) if row else None
 
 
