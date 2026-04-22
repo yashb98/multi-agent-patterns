@@ -453,6 +453,93 @@ class MemoryManager:
 _shared_manager: "MemoryManager | None" = None
 
 
+def _truthy(env_value: str | None) -> bool:
+    """Interpret an env var as a boolean flag."""
+    if not env_value:
+        return False
+    return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _build_three_engine_kit(
+    storage_dir: str,
+) -> dict:
+    """Probe each optional engine and return stores that are actually usable.
+
+    Graceful-degradation contract: any engine that fails to initialise is
+    omitted (value = None) with a warning. SQLite is the only hard dependency;
+    if it fails, return an empty kit and the MemoryManager falls back to the
+    JSON-only path.
+
+    Env toggles (all optional):
+        MEMORY_3_ENGINE=0           — disable auto-wire entirely
+        MEMORY_SQLITE_PATH=...      — override SQLite DB location
+        MEMORY_QDRANT_URL=...       — e.g. http://localhost:6333 (empty=skip)
+        MEMORY_NEO4J_URI=...        — e.g. bolt://localhost:7687 (empty=skip)
+        MEMORY_EMBED_PRIMARY=voyage | minilm  (default: voyage)
+        MEMORY_EMBED_FALLBACK=minilm | voyage (default: minilm)
+    """
+    kit: dict = {"sqlite_store": None, "qdrant": None, "neo4j": None, "embedder": None}
+
+    if os.environ.get("MEMORY_3_ENGINE", "1").strip() == "0":
+        logger.info("3-engine memory disabled via MEMORY_3_ENGINE=0 — JSON-only mode")
+        return kit
+
+    # ─── SQLite (required for 3-engine mode) ──
+    sqlite_path = os.environ.get(
+        "MEMORY_SQLITE_PATH",
+        os.path.join(storage_dir, "memories.db"),
+    )
+    try:
+        from shared.memory_layer._sqlite_store import SQLiteStore
+        os.makedirs(os.path.dirname(sqlite_path) or ".", exist_ok=True)
+        kit["sqlite_store"] = SQLiteStore(db_path=sqlite_path)
+        logger.info("Memory SQLite store initialised at %s", sqlite_path)
+    except Exception as exc:
+        logger.warning("SQLiteStore init failed (%s) — falling back to JSON-only mode", exc)
+        return {"sqlite_store": None, "qdrant": None, "neo4j": None, "embedder": None}
+
+    # ─── Embedder (lazy — no network call at init time) ──
+    try:
+        from shared.memory_layer._embedder import MemoryEmbedder
+        kit["embedder"] = MemoryEmbedder(
+            primary=os.environ.get("MEMORY_EMBED_PRIMARY", "voyage"),
+            fallback=os.environ.get("MEMORY_EMBED_FALLBACK", "minilm"),
+        )
+    except Exception as exc:
+        logger.warning("MemoryEmbedder init failed: %s — semantic search disabled", exc)
+
+    # ─── Qdrant (vector search) ──
+    qdrant_url = os.environ.get("MEMORY_QDRANT_URL", "").strip()
+    if qdrant_url:
+        try:
+            from shared.memory_layer._qdrant_store import QdrantStore
+            dims = kit["embedder"].dims if kit["embedder"] else 1024
+            store = QdrantStore(location=qdrant_url, dims=dims)
+            store.ensure_collections()
+            kit["qdrant"] = store
+            logger.info("Qdrant connected at %s (dims=%d)", qdrant_url, dims)
+        except Exception as exc:
+            logger.warning("Qdrant init failed (%s) — vector search disabled", exc)
+    else:
+        logger.debug("MEMORY_QDRANT_URL unset — Qdrant disabled")
+
+    # ─── Neo4j (graph traversal) ──
+    if _truthy(os.environ.get("MEMORY_NEO4J_URI")) or os.environ.get("MEMORY_NEO4J_URI", "").startswith(("bolt://", "neo4j://", "neo4j+s://")):
+        try:
+            from shared.memory_layer._neo4j_store import Neo4jStore
+            store = Neo4jStore()  # reads MEMORY_NEO4J_* / NEO4J_* from env
+            if store.verify():
+                kit["neo4j"] = store
+            else:
+                logger.info("Neo4j unreachable — graph expansion disabled")
+        except Exception as exc:
+            logger.warning("Neo4jStore init failed (%s) — graph expansion disabled", exc)
+    else:
+        logger.debug("MEMORY_NEO4J_URI unset — Neo4j disabled")
+
+    return kit
+
+
 def get_shared_memory_manager(storage_dir: str | None = None) -> "MemoryManager":
     """Return (or create) the shared MemoryManager singleton.
 
@@ -460,14 +547,25 @@ def get_shared_memory_manager(storage_dir: str | None = None) -> "MemoryManager"
     MemoryManager() — ensures all agents share the same episodic, semantic,
     and procedural memory across a process lifetime.
 
+    On first call the factory probes the 3-engine backends (SQLite + Qdrant +
+    Neo4j + embedder) via env vars and wires whichever are available. Every
+    engine is optional except SQLite; if the probe fails the manager falls
+    back to the legacy JSON-only mode transparently — existing callers keep
+    working with zero config.
+
     Args:
         storage_dir: Override storage path (use tmp_path in tests).
     """
     global _shared_manager
     if _shared_manager is None:
         path = storage_dir or _DEFAULT_STORAGE_DIR
-        _shared_manager = MemoryManager(storage_dir=path)
-        logger.info("Shared MemoryManager initialised at %s", path)
+        kit = _build_three_engine_kit(path)
+        _shared_manager = MemoryManager(storage_dir=path, **kit)
+        active = [name for name in ("sqlite_store", "qdrant", "neo4j") if kit.get(name)]
+        logger.info(
+            "Shared MemoryManager initialised at %s (3-engine: %s)",
+            path, ", ".join(active) or "disabled",
+        )
     return _shared_manager
 
 
