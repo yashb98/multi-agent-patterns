@@ -727,6 +727,33 @@ def _handle_reject_job(cmd: ParsedCommand) -> str:
     return reject_job(cmd.args)
 
 
+def _handle_submit_draft(cmd: ParsedCommand) -> str:
+    """Submit a draft application that was filled in Chrome."""
+    draft_id = cmd.args.strip()
+    if not draft_id:
+        return "Usage: submit <draft_id>"
+    from jobpulse.draft_applicator import submit_draft
+    result = submit_draft(draft_id)
+    if result.get("success"):
+        return f"✅ Draft {draft_id} submitted successfully!\nFinal URL: {result.get('final_url', 'N/A')}"
+    return f"❌ Draft {draft_id} submission failed:\n{result.get('error', 'Unknown error')}"
+
+
+def _handle_skip_draft(cmd: ParsedCommand) -> str:
+    """Skip/reject a draft application."""
+    draft_id = cmd.args.strip()
+    if not draft_id:
+        return "Usage: skip <draft_id>"
+    from jobpulse.draft_applicator import reject_draft
+    return reject_draft(draft_id)
+
+
+def _handle_show_drafts(cmd: ParsedCommand) -> str:
+    """Show pending draft applications."""
+    from jobpulse.draft_applicator import show_drafts
+    return show_drafts()
+
+
 def _handle_job_stats(cmd: ParsedCommand) -> str:
     from jobpulse.job_analytics import get_enhanced_job_stats
     return get_enhanced_job_stats()

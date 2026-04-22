@@ -141,6 +141,7 @@ class NativeFormFiller:
         self._page = page
         self._driver = driver
         self._correction_warning: str = ""
+        self._llm_fallback_count: int = 0
 
     # ── Label Extraction ──
 
@@ -468,6 +469,7 @@ class NativeFormFiller:
             return cached
 
         # Tier 2: LLM mapping (fallback)
+        self._llm_fallback_count += 1
         field_descriptions = []
         for f in fields:
             if f["type"] == "file":
@@ -574,6 +576,7 @@ class NativeFormFiller:
             logger.error("LLM screening answer call failed: %s", e)
             return {}
 
+        self._llm_fallback_count += 1
         # Cache LLM answers so the same questions never hit the LLM again
         try:
             from jobpulse.job_db import JobDB
@@ -600,6 +603,7 @@ class NativeFormFiller:
             '{"pass": false, "issues": [...]}'
         )
 
+        self._llm_fallback_count += 1
         client = get_openai_client()
         response = client.chat.completions.create(
             model=get_model_name(),
@@ -907,6 +911,7 @@ class NativeFormFiller:
                 "fields_filled": total_fields_filled,
                 "fields_failed": len(total_fill_failures),
                 "failed_labels": total_fill_failures,
+                "llm_fallback_count": self._llm_fallback_count,
             }
             return base
 

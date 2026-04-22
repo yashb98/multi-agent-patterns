@@ -72,6 +72,9 @@ class Intent(str, Enum):
     FOLLOW_UPS = "follow_ups"
     INTERVIEW_PREP = "interview_prep"
     RESEARCH = "research"
+    SUBMIT_DRAFT = "submit_draft"
+    SKIP_DRAFT = "skip_draft"
+    SHOW_DRAFTS = "show_drafts"
     CANCEL = "cancel"
     UNKNOWN = "unknown"
 
@@ -364,6 +367,19 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"^read\s+\d+",
         r"(papers?|reading)\s+stats?",
     ]),
+    # Draft application review
+    (Intent.SUBMIT_DRAFT, [
+        r"^submit\s+(\w+)",
+        r"^approve\s+draft\s+(\w+)",
+    ]),
+    (Intent.SKIP_DRAFT, [
+        r"^skip\s+(\w+)",
+        r"^reject\s+draft\s+(\w+)",
+    ]),
+    (Intent.SHOW_DRAFTS, [
+        r"^(show\s+)?drafts?\s*$",
+        r"^pending\s+drafts?\s*$",
+    ]),
 ]
 
 
@@ -403,6 +419,9 @@ GITHUB — user wants to see commits or code activity
 TRENDING — user wants trending GitHub repos
 BRIEFING — user wants the full morning briefing
 ARXIV — user wants AI research papers
+SUBMIT_DRAFT — user wants to submit a draft job application (e.g. "submit abc123")
+SKIP_DRAFT — user wants to skip/reject a draft job application (e.g. "skip abc123")
+SHOW_DRAFTS — user wants to see pending draft applications
 LOG_SPEND — user is logging money they spent (mentions amount + item)
 LOG_INCOME — user is logging money they earned/received
 LOG_SAVINGS — user is logging money saved or invested or debt repaid

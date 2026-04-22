@@ -58,6 +58,8 @@ def _record_agent_performance(
         stats = result.get("agent_fill_stats", {})
         if not stats.get("fields_attempted"):
             return
+        llm_fallback = stats.get("llm_fallback_count", 0)
+        notes = f"LLM fallback calls: {llm_fallback}" if llm_fallback else None
         db = AgentPerformanceDB()
         db.record_session(
             company=ctx.get("company", "Unknown"),
@@ -69,6 +71,7 @@ def _record_agent_performance(
             fill_time_seconds=result.get("time_seconds"),
             dry_run=dry_run,
             success=result.get("success", False),
+            notes=notes,
         )
     except Exception as exc:
         logger.debug("agent_performance recording failed: %s", exc)
@@ -89,6 +92,122 @@ def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
         else:
             result = asyncio.run(result)
     return result
+
+
+def _infer_platform_from_url(url: str) -> str | None:
+    """Return an ATS platform key inferred from *url* (or None)."""
+    if "linkedin.com" in url:
+        return "linkedin"
+    if "indeed.com" in url:
+        return "indeed"
+    if "greenhouse.io" in url or "boards.greenhouse" in url:
+        return "greenhouse"
+    if "lever.co" in url or "jobs.lever" in url:
+        return "lever"
+    if "myworkdayjobs.com" in url:
+        return "workday"
+    if "smartrecruiters.com" in url:
+        return "smartrecruiters"
+    return None
+
+
+def prepare_application_inputs(
+    url: str,
+    ats_platform: str | None,
+    custom_answers: dict | None,
+    job_context: dict | None,
+    cover_letter_path: Path | None = None,
+    cl_generator: Any | None = None,
+) -> dict:
+    """Build the merged_answers + resolved ats_platform used by any form-fill flow.
+
+    Centralizes the prep that both `apply_job()` (auto-submit) and the draft
+    applicator (human-in-the-loop) need:
+      - merge WORK_AUTH + custom_answers
+      - resolve templated "?" values via screening_answers
+      - infer ats_platform from URL if not provided
+      - attach gotchas, form_prefetch hints, Telegram stream
+      - lazy cover-letter generation for Greenhouse/Lever
+
+    Returns a dict: {
+        "ats_platform": str | None,
+        "platform_key": str,
+        "merged_answers": dict,
+        "cover_letter_path": Path | None,
+    }
+    """
+    from jobpulse.screening_answers import get_answer
+
+    if not ats_platform:
+        ats_platform = _infer_platform_from_url(url)
+    platform_key = (ats_platform or "generic").lower()
+
+    merged_answers: dict = dict(WORK_AUTH)
+    if custom_answers:
+        merged_answers.update(custom_answers)
+
+    _screening_job_context = (custom_answers or {}).get("_job_context") or job_context
+
+    for key, value in list(merged_answers.items()):
+        if isinstance(value, str) and value.endswith("?"):
+            answer = get_answer(
+                value, _screening_job_context,
+                input_type=None, platform=platform_key,
+            )
+            if answer:
+                merged_answers[key] = answer
+
+    if cover_letter_path is None and cl_generator is not None:
+        if ats_platform and ats_platform.lower() in ("greenhouse", "lever"):
+            try:
+                cover_letter_path = cl_generator()
+                if cover_letter_path:
+                    logger.info("applicator: generated cover letter on demand for %s", ats_platform)
+            except Exception as exc:
+                logger.warning("applicator: on-demand CL generation failed: %s", exc)
+
+    try:
+        from urllib.parse import urlparse
+        from jobpulse.form_engine.gotchas import GotchasDB
+        _parsed_domain = urlparse(url).netloc.lower().removeprefix("www.")
+        if _parsed_domain:
+            _gotchas = GotchasDB().lookup_domain(_parsed_domain)
+            if _gotchas:
+                logger.info("gotchas: loaded %d known gotchas for %s", len(_gotchas), _parsed_domain)
+                merged_answers["_gotchas"] = _gotchas
+    except Exception as _gotcha_exc:
+        logger.debug("GotchasDB lookup failed: %s", _gotcha_exc)
+
+    try:
+        from jobpulse.form_prefetch import prefetch_form_hints
+        _form_hints = prefetch_form_hints(url)
+        if _form_hints.known_domain:
+            merged_answers["_form_hints"] = _form_hints.to_dict()
+            if _form_hints.screening_questions:
+                for sq in _form_hints.screening_questions:
+                    if sq not in merged_answers:
+                        answer = get_answer(sq, _screening_job_context, platform=platform_key)
+                        if answer:
+                            merged_answers[sq] = answer
+                logger.info(
+                    "form_prefetch: pre-resolved %d screening questions",
+                    len(_form_hints.screening_questions),
+                )
+    except Exception as _prefetch_exc:
+        logger.debug("form_prefetch failed: %s", _prefetch_exc)
+
+    try:
+        from jobpulse.telegram_stream import TelegramApplicationStream
+        merged_answers["_stream"] = TelegramApplicationStream()
+    except Exception as _stream_exc:
+        logger.debug("TelegramApplicationStream unavailable: %s", _stream_exc)
+
+    return {
+        "ats_platform": ats_platform,
+        "platform_key": platform_key,
+        "merged_answers": merged_answers,
+        "cover_letter_path": cover_letter_path,
+    }
 
 
 def apply_job(
@@ -113,7 +232,6 @@ def apply_job(
         SESSION_BREAK_MINUTES,
         RateLimiter,
     )
-    from jobpulse.screening_answers import get_answer
 
     platform_key = (ats_platform or "generic").lower()
     total = 0  # fallback when dry_run skips the rate limiter section
@@ -171,101 +289,18 @@ def apply_job(
             )
             time.sleep(SESSION_BREAK_MINUTES * 60)
 
-    # Build answers
-    merged_answers: dict = dict(WORK_AUTH)
-    if custom_answers:
-        merged_answers.update(custom_answers)
-
-    # Extract job context from custom_answers for dynamic screening resolution
-    # (falls back to the job_context parameter if not embedded in custom_answers)
-    _screening_job_context = (custom_answers or {}).get("_job_context") or job_context
-
-    for key, value in list(merged_answers.items()):
-        if isinstance(value, str) and value.endswith("?"):
-            answer = get_answer(
-                value,
-                _screening_job_context,
-                input_type=None,
-                platform=platform_key,
-            )
-            if answer:
-                merged_answers[key] = answer
-
-    # Lazy CL generation: if no cover_letter_path but we have a generator,
-    # check if the adapter supports CL and generate on demand
-    if cover_letter_path is None and cl_generator is not None:
-        # Check if this platform typically has CL fields
-        if ats_platform and ats_platform.lower() in ("greenhouse", "lever"):
-            try:
-                cover_letter_path = cl_generator()
-                if cover_letter_path:
-                    logger.info("applicator: generated cover letter on demand for %s", ats_platform)
-            except Exception as exc:
-                logger.warning("applicator: on-demand CL generation failed: %s", exc)
-
-    # Infer platform from URL when ats_platform is not set
-    if not ats_platform:
-        if "linkedin.com" in url:
-            ats_platform = "linkedin"
-            platform_key = "linkedin"
-        elif "indeed.com" in url:
-            ats_platform = "indeed"
-            platform_key = "indeed"
-        elif "greenhouse.io" in url or "boards.greenhouse" in url:
-            ats_platform = "greenhouse"
-            platform_key = "greenhouse"
-        elif "lever.co" in url or "jobs.lever" in url:
-            ats_platform = "lever"
-            platform_key = "lever"
-        elif "myworkdayjobs.com" in url:
-            ats_platform = "workday"
-            platform_key = "workday"
-        elif "smartrecruiters.com" in url:
-            ats_platform = "smartrecruiters"
-            platform_key = "smartrecruiters"
-
-    # Load known form-filling gotchas for this ATS domain before starting
-    # so the adapter can avoid known failure patterns
-    try:
-        from urllib.parse import urlparse
-        from jobpulse.form_engine.gotchas import GotchasDB
-        _parsed_domain = urlparse(url).netloc.lower().removeprefix("www.")
-        if _parsed_domain:
-            _gotchas_db = GotchasDB()
-            _gotchas = _gotchas_db.lookup_domain(_parsed_domain)
-            if _gotchas:
-                logger.info("gotchas: loaded %d known gotchas for %s", len(_gotchas), _parsed_domain)
-                merged_answers["_gotchas"] = _gotchas
-    except Exception as _gotcha_exc:
-        logger.debug("GotchasDB lookup failed: %s", _gotcha_exc)
-
-    # Load form hints from prior applications on this domain
-    try:
-        from jobpulse.form_prefetch import prefetch_form_hints
-        _form_hints = prefetch_form_hints(url)
-        if _form_hints.known_domain:
-            merged_answers["_form_hints"] = _form_hints.to_dict()
-            if _form_hints.screening_questions:
-                for sq in _form_hints.screening_questions:
-                    if sq not in merged_answers:
-                        answer = get_answer(sq, _screening_job_context, platform=platform_key)
-                        if answer:
-                            merged_answers[sq] = answer
-                logger.info(
-                    "form_prefetch: pre-resolved %d screening questions",
-                    len(_form_hints.screening_questions),
-                )
-    except Exception as _prefetch_exc:
-        logger.debug("form_prefetch failed: %s", _prefetch_exc)
-
-    # Attach Telegram progress stream so the orchestrator can call stream_field()
-    # per field during form filling. The stream is async but fire-and-forget from sync code.
-    try:
-        from jobpulse.telegram_stream import TelegramApplicationStream
-        tg_stream = TelegramApplicationStream()
-        merged_answers["_stream"] = tg_stream
-    except Exception as _stream_exc:
-        logger.debug("TelegramApplicationStream unavailable: %s", _stream_exc)
+    prep = prepare_application_inputs(
+        url=url,
+        ats_platform=ats_platform,
+        custom_answers=custom_answers,
+        job_context=job_context,
+        cover_letter_path=cover_letter_path,
+        cl_generator=cl_generator,
+    )
+    ats_platform = prep["ats_platform"]
+    platform_key = prep["platform_key"]
+    merged_answers = prep["merged_answers"]
+    cover_letter_path = prep["cover_letter_path"]
 
     # Submit
     adapter = select_adapter(ats_platform)

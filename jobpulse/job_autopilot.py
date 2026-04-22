@@ -270,16 +270,8 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
             with_archetype_detection(listing)
             bundle = generate_materials(listing, screen, db, repos, notion_failures)
 
-            if JOB_AUTOPILOT_AUTO_SUBMIT:
-                from jobpulse.scan_pipeline import route_and_apply
-                result = route_and_apply(
-                    listing, bundle, db, review_batch, remaining_cap, auto_applied_count
-                )
-                if result.action == "auto_applied":
-                    auto_applied_count += 1
-            else:
-                # Queue for manual review — no auto-apply or form filling
-                _queue_for_review(listing, bundle.ats_score, review_batch)
+            # Draft-only mode: always queue for human review, never auto-submit
+            _queue_for_review(listing, bundle.ats_score, review_batch)
         except Exception as exc:
             logger.error(
                 "job_autopilot: unhandled error processing job %s @ %s: %s",
@@ -304,7 +296,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         f"New: {len(new_listings)} | Pre-screen: {gate_rejected} rejected, {gate_skipped} skipped",
         f"Gate 4: {gate4_blocked} blocked, {len(gate4_filtered)} passed",
         f"Processed: {len(gate4_filtered)}",
-        f"Auto-applied: {auto_applied_count} | Ready for review: {len(review_batch)}",
+        f"Ready for review: {len(review_batch)} (draft-only mode)",
     ]
     if errors:
         summary_lines.append(f"Errors: {errors}")
@@ -444,114 +436,71 @@ def approve_jobs(args: str) -> str:
     applied_titles: list[str] = []
     failed_titles: list[str] = []
 
+    # Build job payloads for the draft applicator
+    draft_jobs: list[dict[str, Any]] = []
     for idx in indices:
         job = pending[idx]
         job_id = job["job_id"]
 
-        # Retrieve stored application data
         app = db.get_application(job_id)
         if not app:
             logger.warning("job_autopilot: approve_jobs — no application record for %s", job_id)
-            failed_titles.append(f"{job['title']} @ {job['company']}")
             continue
 
-        cv_path_str: str | None = app.get("cv_path")
-        cover_letter_path_str: str | None = app.get("cover_letter_path")
         listing_row = db.get_listing(job_id)
+        cv_path_str = app.get("cv_path")
+        cover_letter_path_str = app.get("cover_letter_path")
 
-        cv_path = Path(cv_path_str) if cv_path_str else None
-        cover_letter_path = Path(cover_letter_path_str) if cover_letter_path_str else None
-
-        if cv_path is None or not cv_path.exists():
-            logger.warning(
-                "job_autopilot: approve_jobs — no CV for %s, using placeholder", job_id[:8]
-            )
-
-        try:
-            ats_platform = listing_row.get("ats_platform") if listing_row else None
-            listing_url = listing_row.get("url", "") if listing_row else job_id
-
-            result = apply_job(
-                url=listing_url,
-                ats_platform=ats_platform,
-                cv_path=cv_path or Path("/dev/null"),
-                cover_letter_path=cover_letter_path,
-                custom_answers={
-                    "_job_context": {
-                        "job_title": job.get("title", ""),
-                        "company": job.get("company", ""),
-                        "location": (listing_row or {}).get("location", ""),
-                    },
+        draft_jobs.append({
+            "job_id": job_id,
+            "title": job["title"],
+            "company": job["company"],
+            "url": listing_row.get("url", "") if listing_row else job_id,
+            "platform": job.get("platform", "generic"),
+            "ats_platform": listing_row.get("ats_platform") if listing_row else None,
+            "ats_score": job.get("ats_score", 0),
+            "cv_path": cv_path_str,
+            "cover_letter_path": cover_letter_path_str,
+            "custom_answers": {
+                "_job_context": {
+                    "job_title": job.get("title", ""),
+                    "company": job.get("company", ""),
+                    "location": (listing_row or {}).get("location", ""),
                 },
-            )
+            },
+            "notion_page_id": app.get("notion_page_id"),
+        })
 
-            applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
-            follow_up = (date.today() + timedelta(days=7)).isoformat()
+    if not draft_jobs:
+        return "No valid jobs found to draft."
 
-            db.save_application(
-                job_id=job_id,
-                status="Applied",
-                ats_score=app.get("ats_score", 0),
-                match_tier=app.get("match_tier", "review"),
-                matched_projects=json.loads(app.get("matched_projects") or "[]"),
-                cv_path=cv_path_str,
-                cover_letter_path=cover_letter_path_str,
-                applied_at=applied_at,
-                notion_page_id=app.get("notion_page_id"),
-                follow_up_date=follow_up,
-            )
+    # Enqueue drafts into the sequential worker. Chrome is ONE browser, so we
+    # fill one job at a time — never in parallel threads. The worker also keeps
+    # each Playwright session alive between fill and submit so the Submit click
+    # happens on the exact same page the user reviewed.
+    from jobpulse.draft_applicator import queue_drafts
+    queue_drafts(draft_jobs)
 
-            notion_page_id = app.get("notion_page_id")
-            if notion_page_id:
-                try:
-                    update_application_page(
-                        notion_page_id,
-                        status="Applied",
-                        applied_date=date.today(),
-                        follow_up_date=date.today() + timedelta(days=7),
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "job_autopilot: approve_jobs Notion update failed: %s", exc
-                    )
-
-            applied_titles.append(f"{job['title']} @ {job['company']}")
-            logger.info(
-                "job_autopilot: APPROVED + APPLIED %s @ %s (success=%s)",
-                job["title"],
-                job["company"],
-                result.get("success"),
-            )
-        except Exception as exc:
-            logger.error(
-                "job_autopilot: approve_jobs failed for %s: %s", job_id[:8], exc
-            )
-            failed_titles.append(f"{job['title']} @ {job['company']}")
-
-    # Remove approved jobs from pending list
+    # Remove drafted jobs from pending list immediately
     approved_set = set(indices)
     remaining = [j for i, j in enumerate(pending) if i not in approved_set]
     _save_pending(remaining)
 
-    lines: list[str] = []
-    if applied_titles:
-        lines.append(f"✅ Applied to {len(applied_titles)} job(s):")
-        for t in applied_titles:
-            lines.append(f"  • {t}")
-    if failed_titles:
-        lines.append(f"❌ Failed to apply to {len(failed_titles)} job(s):")
-        for t in failed_titles:
-            lines.append(f"  • {t}")
-        send_pipeline_alert(
-            f"Failed to apply to {len(failed_titles)} job(s):\n" +
-            "\n".join(f"  • {t}" for t in failed_titles[:3]),
-            severity="error",
-            category="apply",
-        )
+    titles = [f"{j['title']} @ {j['company']}" for j in draft_jobs]
+    lines = [
+        f"📝 Queued {len(titles)} application(s) — filling one at a time...",
+        "",
+        "Each form is filled in dry-run (never submitted) — you'll get a",
+        "Telegram message per job, then reply `submit <id>` or `skip <id>`.",
+        "",
+        "Jobs:",
+    ]
+    for t in titles:
+        lines.append(f"  • {t}")
     if remaining:
-        lines.append(f"\n{len(remaining)} job(s) still pending review.")
+        lines.append(f"\n{len(remaining)} job(s) still pending.")
 
-    return "\n".join(lines) if lines else "No matching jobs found."
+    return "\n".join(lines)
 
 
 def reject_job(args: str) -> str:

@@ -180,21 +180,69 @@ class PlaywrightDriver:
         return await self._page.screenshot(type="png")
 
     async def get_snapshot(self, **kwargs) -> dict:
-        """Scan DOM for form fields — returns same shape as extension snapshots."""
+        """Scan DOM for form fields, buttons, and page text — returns same shape as extension snapshots."""
         return await self._page.evaluate("""() => {
+            // 1. Fields
             const fields = [];
             document.querySelectorAll('input, select, textarea, [contenteditable="true"]').forEach(el => {
                 const rect = el.getBoundingClientRect();
                 if (rect.width === 0 && rect.height === 0) return;
+                // Try to find label
+                let label = '';
+                if (el.id) {
+                    const lbl = document.querySelector('label[for="' + el.id + '"]');
+                    if (lbl) label = lbl.textContent.trim();
+                }
+                if (!label && el.labels && el.labels.length) {
+                    label = el.labels[0].textContent.trim();
+                }
+                if (!label) {
+                    const aria = el.getAttribute('aria-label');
+                    if (aria) label = aria.trim();
+                }
+                if (!label) {
+                    const placeholder = el.getAttribute('placeholder');
+                    if (placeholder) label = placeholder.trim();
+                }
                 fields.push({
                     selector: el.id ? '#' + el.id : (el.name ? '[name="' + el.name + '"]' : el.tagName.toLowerCase()),
                     type: el.type || el.tagName.toLowerCase(),
+                    input_type: el.type || el.tagName.toLowerCase(),
                     value: el.value || '',
-                    label: '',
+                    label: label,
                     required: el.required || el.getAttribute('aria-required') === 'true',
                 });
             });
-            return { url: location.href, title: document.title, fields };
+
+            // 2. Buttons and links
+            const buttons = [];
+            document.querySelectorAll('button, a[role="button"], input[type="submit"], [role="button"]').forEach(el => {
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 && rect.height === 0) return;
+                const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
+                if (!text && !el.getAttribute('aria-label')) return;
+                buttons.push({
+                    text: text,
+                    selector: el.id ? '#' + el.id : (el.name ? '[name="' + el.name + '"]' : el.tagName.toLowerCase() + (el.className ? '.' + el.className.split(' ')[0] : '')),
+                    enabled: !el.disabled,
+                    href: el.href || null,
+                });
+            });
+
+            // 3. Page text preview
+            const page_text_preview = document.body ? document.body.innerText.substring(0, 3000) : '';
+
+            // 4. File inputs
+            const has_file_inputs = document.querySelectorAll('input[type="file"]').length > 0;
+
+            return {
+                url: location.href,
+                title: document.title,
+                fields,
+                buttons,
+                page_text_preview,
+                has_file_inputs,
+            };
         }""")
 
     async def scan_validation_errors(self) -> dict:
