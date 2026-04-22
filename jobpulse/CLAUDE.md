@@ -77,15 +77,9 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 **Required:** `OPENAI_API_KEY` `TELEGRAM_BOT_TOKEN` `TELEGRAM_CHAT_ID`
 **Notion:** `NOTION_API_KEY` `NOTION_TASKS_DB_ID` `NOTION_RESEARCH_DB_ID` `NOTION_PARENT_PAGE_ID` `NOTION_APPLICATIONS_DB_ID`
 **Jobs:** `REED_API_KEY` `GITHUB_TOKEN` `JOB_AUTOPILOT_AUTO_SUBMIT=false` `JOB_AUTOPILOT_MAX_DAILY=10`
-**Extension:** `APPLICATION_ENGINE=extension` `EXT_BRIDGE_PORT=8765` `ATS_ACCOUNT_PASSWORD`
+**Playwright:** `ATS_ACCOUNT_PASSWORD` (for Greenhouse/Lever/Workday logins)
 
-## Chrome Extension Engine
-Replaces Playwright with Chrome MV3 extension via WebSocket (`ws://localhost:8765`).
-Start: `ext-bridge` → load `extension/` in Chrome → `APPLICATION_ENGINE=extension`
-Key: `ext_bridge.py` (WS server), `ext_adapter.py` (adapter), `form_intelligence.py` (5-tier resolver),
-`state_machines/` (per-platform), `application_orchestrator.py` (full lifecycle)
-
-## Application Orchestrator
+## Application Orchestrator (Playwright)
 Cookie dismiss → hybrid page detect → SSO → account create → Gmail verify → multi-page fill → submit
 Navigation learning replays per domain (SQLite). Max 10 nav steps, 20 form pages.
 
@@ -110,6 +104,6 @@ Agents opt into `shared/cognitive/CognitiveEngine` for self-improving reasoning:
 python -m jobpulse.runner daemon         # Start Telegram daemon
 python -m jobpulse.runner multi-bot      # Start all 5 bots
 python -m jobpulse.runner briefing       # Morning digest
-python -m jobpulse.runner ext-bridge     # Extension WebSocket bridge
+python -m jobpulse.runner chrome-pw      # Launch Chrome with CDP for Playwright
 python -m pytest tests/ -v -k "jobpulse" # Run JobPulse tests only
 ```

@@ -19,7 +19,7 @@ from cryptography.fernet import Fernet
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
-from jobpulse.ext_models import AccountInfo
+from jobpulse.form_models import AccountInfo
 
 logger = get_logger(__name__)
 

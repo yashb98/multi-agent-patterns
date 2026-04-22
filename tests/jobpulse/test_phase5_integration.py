@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 from jobpulse.application_orchestrator import ApplicationOrchestrator
-from jobpulse.ext_models import PageType
+from jobpulse.form_models import PageType
 
 
 @pytest.fixture
@@ -43,12 +43,17 @@ def orchestrator(bridge, tmp_path, monkeypatch):
     from jobpulse.form_engine.gotchas import GotchasDB
 
     orch = ApplicationOrchestrator(
-        bridge=bridge,
+        driver=bridge,
+        engine="playwright",
         account_manager=AccountManager(db_path=str(tmp_path / "acc.db")),
         gmail_verifier=MagicMock(),
         navigation_learner=NavigationLearner(db_path=str(tmp_path / "nav.db")),
     )
     orch.gotchas = GotchasDB(db_path=str(tmp_path / "gotchas.db"))
+    # Mock form filling — integration tests verify navigation/auth flows, not NativeFormFiller
+    orch._filler.fill_application = AsyncMock(
+        return_value={"success": True, "pages_filled": 1}
+    )
     return orch
 
 

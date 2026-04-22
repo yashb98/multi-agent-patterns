@@ -7,17 +7,13 @@
 - Reed: 15/day, official API with 429 retry
 - Total: 50/day across all platforms
 
-## Application Engine Modes
-- `APPLICATION_ENGINE=playwright` (default) — Playwright browser automation, headed mode
-- `APPLICATION_ENGINE=extension` — Chrome MV3 extension via WebSocket bridge (ws://localhost:8765)
-- Extension mode: start bridge first (`python -m jobpulse.runner ext-bridge`), load `extension/` in Chrome
-- Extension adapter is a singleton — all platforms route through one ExtensionAdapter instance
-- `_call_fill_and_submit()` in applicator.py handles sync/async bridging (extension adapter is async)
-- Ralph Loop also uses `_call_fill_and_submit()` for retry iterations
+## Application Engine
+- Playwright CDP — connects to real Chrome instance via Chrome DevTools Protocol
+- `PlaywrightAdapter` is the default for all platforms except SmartRecruiters (which has its own CDP adapter)
+- `_call_fill_and_submit()` in applicator.py handles sync/async bridging (adapter is async)
 
 ## Anti-Detection
-- Playwright adapters: headed mode + --disable-blink-features=AutomationControlled
-- Extension mode: uses real Chrome profile — no automation flags, no stealth patches needed
+- Playwright: headed mode + --disable-blink-features=AutomationControlled
 - LinkedIn: human-like typing (50-150ms/char), persistent browser profile
 - Thread mutex on apply_job() — no concurrent applications
 - Pipeline lock on run_scan_window() — no cron vs Telegram races

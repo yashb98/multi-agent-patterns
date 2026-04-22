@@ -1,6 +1,6 @@
 """Tests for Phase 5 models: PageType, AccountInfo, NavigationStep."""
 
-from jobpulse.ext_models import AccountInfo, NavigationStep, PageType
+from jobpulse.form_models import AccountInfo, NavigationStep, PageType
 
 
 def test_page_type_values():

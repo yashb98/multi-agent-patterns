@@ -4,7 +4,6 @@ Covers:
 - Basic store/find round-trip (no company)
 - Same-company 5% boost makes borderline matches succeed
 - Different company receives no boost
-- Company extracted from job_context and forwarded through FormIntelligence
 """
 
 from __future__ import annotations
@@ -162,65 +161,3 @@ class TestCompanyScopedBoost:
 
         # When asking with the right company, should prefer the company-specific answer
         assert result_boosted == "boosted-answer"
-
-
-# ---------------------------------------------------------------------------
-# Tests: FormIntelligence company extraction
-# ---------------------------------------------------------------------------
-
-
-class TestFormIntelligenceCompanyExtraction:
-    def test_form_intelligence_extracts_company_from_context(self, tmp_path):
-        """resolve() extracts company from job_context and passes it to cache.store."""
-        from jobpulse.semantic_cache import SemanticAnswerCache
-        from jobpulse.form_intelligence import FormIntelligence
-
-        cache = SemanticAnswerCache(db_path=tmp_path / "cache.db", threshold=0.85)
-
-        # Patch _embed to avoid needing sentence-transformers
-        dummy_vec = _unit_vec(32, 5)
-        cache._embed = MagicMock(return_value=dummy_vec)
-
-        fi = FormIntelligence(semantic_cache=cache)
-
-        # Patch _generate_answer_llm so no OpenAI call is made
-        with patch("jobpulse.form_intelligence._generate_answer_llm", return_value="Yes"):
-            # Also patch _try_pattern to return None so we fall through to LLM
-            with patch.object(fi, "_try_pattern", return_value=None):
-                with patch.object(fi, "_try_semantic_cache", return_value=None):
-                    fi.resolve(
-                        "Do you have the right to work?",
-                        job_context={"company": "Acme Corp", "job_title": "Engineer"},
-                    )
-
-        # cache.store should have been called with company="Acme Corp"
-        store_calls = cache._embed.call_args_list
-        # Verify the company was passed by checking store directly
-        import sqlite3
-        with sqlite3.connect(cache.db_path) as conn:
-            rows = conn.execute("SELECT company FROM answer_cache").fetchall()
-        assert any(r[0] == "Acme Corp" for r in rows), f"Expected company='Acme Corp' in rows: {rows}"
-
-    def test_form_intelligence_no_company_defaults_empty(self, tmp_path):
-        """resolve() with no company in job_context stores with company=''."""
-        from jobpulse.semantic_cache import SemanticAnswerCache
-        from jobpulse.form_intelligence import FormIntelligence
-
-        cache = SemanticAnswerCache(db_path=tmp_path / "cache.db", threshold=0.85)
-        dummy_vec = _unit_vec(32, 7)
-        cache._embed = MagicMock(return_value=dummy_vec)
-
-        fi = FormIntelligence(semantic_cache=cache)
-
-        with patch("jobpulse.form_intelligence._generate_answer_llm", return_value="No"):
-            with patch.object(fi, "_try_pattern", return_value=None):
-                with patch.object(fi, "_try_semantic_cache", return_value=None):
-                    fi.resolve(
-                        "Are you willing to relocate?",
-                        job_context=None,
-                    )
-
-        import sqlite3
-        with sqlite3.connect(cache.db_path) as conn:
-            rows = conn.execute("SELECT company FROM answer_cache").fetchall()
-        assert all(r[0] == "" for r in rows), f"Expected company='' for all rows: {rows}"

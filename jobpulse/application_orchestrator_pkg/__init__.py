@@ -26,7 +26,7 @@ from shared.logging_config import get_logger
 
 from jobpulse.account_manager import AccountManager
 from jobpulse.cookie_dismisser import CookieBannerDismisser
-from jobpulse.ext_models import ButtonInfo, FieldInfo, PageSnapshot, PageType
+from jobpulse.form_models import ButtonInfo, FieldInfo, PageSnapshot, PageType
 from jobpulse.gmail_verify import GmailVerifier
 from jobpulse.navigation_learner import NavigationLearner
 from jobpulse.page_analyzer import PageAnalyzer
@@ -323,19 +323,9 @@ class ApplicationOrchestrator:
         self._handle_signup = self._auth.handle_signup
         self._handle_email_verification = self._auth.handle_email_verification
         self._fill_application = self._filler.fill_application
-        self._two_phase_fill = self._filler._two_phase_fill
         self._execute_action = self._executor.execute_action
         self._execute_action_with_retry = self._executor.execute_action_with_retry
         self._verify_submission = self._navigator.verify_submission
-
-    @staticmethod
-    def _apply_gotcha_to_action(action: Any, solution: str) -> Any:
-        from jobpulse.application_orchestrator_pkg._form_filler import _apply_gotcha_to_action
-        return _apply_gotcha_to_action(action, solution)
-
-    async def _execute_gotcha_pre_steps(self, solution: str, selector: str) -> None:
-        from jobpulse.application_orchestrator_pkg._form_filler import _execute_gotcha_pre_steps
-        await _execute_gotcha_pre_steps(self.driver, solution, selector)
 
     @staticmethod
     def _extract_domain(url: str) -> str:

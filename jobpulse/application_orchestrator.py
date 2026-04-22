@@ -10,5 +10,4 @@ from jobpulse.application_orchestrator_pkg._navigator import (  # noqa: F401
 )
 from jobpulse.application_orchestrator_pkg._form_filler import (  # noqa: F401
     MAX_FORM_PAGES,
-    _is_critical_field,
 )

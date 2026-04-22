@@ -79,7 +79,7 @@ def test_swarm_dispatcher_blog_routes_through_handle_arxiv():
 async def test_pre_submit_gate_blocks_low_score(sample_company_research, mock_ext_bridge):
     """Gate score < 7 returns needs_human_review=True instead of submitting."""
     from jobpulse.application_orchestrator import ApplicationOrchestrator
-    from jobpulse.ext_models import PageType
+    from jobpulse.form_models import PageType
     from jobpulse.pre_submit_gate import GateResult
 
     orch = ApplicationOrchestrator(bridge=mock_ext_bridge)
@@ -117,7 +117,7 @@ async def test_pre_submit_gate_blocks_low_score(sample_company_research, mock_ex
 async def test_pre_submit_gate_passes_high_score(sample_company_research, mock_ext_bridge):
     """Gate score >= 7 does not block; gate_score attached to result."""
     from jobpulse.application_orchestrator import ApplicationOrchestrator
-    from jobpulse.ext_models import PageType
+    from jobpulse.form_models import PageType
     from jobpulse.pre_submit_gate import GateResult
 
     orch = ApplicationOrchestrator(bridge=mock_ext_bridge)
@@ -150,7 +150,7 @@ async def test_pre_submit_gate_passes_high_score(sample_company_research, mock_e
 async def test_pre_submit_gate_skipped_without_company_research(mock_ext_bridge):
     """Gate is not run when company_research is None."""
     from jobpulse.application_orchestrator import ApplicationOrchestrator
-    from jobpulse.ext_models import PageType
+    from jobpulse.form_models import PageType
 
     orch = ApplicationOrchestrator(bridge=mock_ext_bridge)
 
@@ -179,7 +179,7 @@ async def test_pre_submit_gate_skipped_without_company_research(mock_ext_bridge)
 async def test_pre_submit_gate_skipped_in_dry_run(sample_company_research, mock_ext_bridge):
     """Gate is not run when dry_run=True."""
     from jobpulse.application_orchestrator import ApplicationOrchestrator
-    from jobpulse.ext_models import PageType
+    from jobpulse.form_models import PageType
 
     orch = ApplicationOrchestrator(bridge=mock_ext_bridge)
 

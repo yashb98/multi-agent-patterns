@@ -927,33 +927,3 @@ async def test_fill_application_routes_to_native_filler():
     assert result["success"] is True
 
 
-@pytest.mark.asyncio
-async def test_fill_application_extension_still_uses_state_machine():
-    """_fill_application uses state machine when engine='extension'."""
-    driver = AsyncMock()
-    driver.page = None
-    driver.get_form_progress = AsyncMock(return_value=None)
-    orch = ApplicationOrchestrator(driver=driver, engine="extension")
-
-    # Snapshot that triggers CONFIRMATION in state machine
-    snapshot = {
-        "url": "https://example.com",
-        "title": "Apply",
-        "fields": [],
-        "buttons": [{"text": "Submit", "selector": "#submit", "type": "submit", "enabled": True}],
-        "page_text_preview": "Thank you for applying! Your application has been received.",
-    }
-
-    result = await orch._fill_application(
-        platform="greenhouse",
-        snapshot=snapshot,
-        cv_path="/tmp/cv.pdf",
-        cover_letter_path=None,
-        profile={},
-        custom_answers={},
-        overrides=None,
-        dry_run=False,
-        form_intelligence=None,
-    )
-
-    assert result.get("success") is True

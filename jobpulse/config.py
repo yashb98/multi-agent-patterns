@@ -92,12 +92,8 @@ JOB_AUTOPILOT_MAX_DAILY = int(os.getenv("JOB_AUTOPILOT_MAX_DAILY", "10"))
 # Perplexity
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
 
-# Extension bridge
-EXT_BRIDGE_HOST = os.getenv("EXT_BRIDGE_HOST", "localhost")
-EXT_BRIDGE_PORT = int(os.getenv("EXT_BRIDGE_PORT", "8765"))
-
-# Application engine mode
-APPLICATION_ENGINE = os.getenv("APPLICATION_ENGINE", "extension")
+# Application engine
+APPLICATION_ENGINE = "playwright"
 
 # External application engine
 ATS_ACCOUNT_PASSWORD = os.getenv("JOB_APPLY_PASSWORD", "")

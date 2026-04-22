@@ -320,36 +320,6 @@ def main():
         success = send_message("🧪 JobPulse test message — all systems operational!")
         logger.info("Telegram: %s", "OK" if success else "FAILED")
 
-    elif command == "ext-bridge":
-        import asyncio
-        import threading
-
-        from jobpulse.config import EXT_BRIDGE_HOST, EXT_BRIDGE_PORT
-        from jobpulse.ext_bridge import ExtensionBridge
-
-        bridge = ExtensionBridge(host=EXT_BRIDGE_HOST, port=EXT_BRIDGE_PORT)
-        logger.info("Starting extension bridge on ws://%s:%d", EXT_BRIDGE_HOST, EXT_BRIDGE_PORT)
-
-        # Start FastAPI on port 8000 in a background thread so the extension
-        # can reach /api/job/* endpoints while the WebSocket bridge runs.
-        def _run_http():
-            import uvicorn
-            from mindgraph_app.main import app
-            logger.info("Starting HTTP API on http://0.0.0.0:8000 (alongside ext-bridge)")
-            uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
-
-        http_thread = threading.Thread(target=_run_http, daemon=True)
-        http_thread.start()
-
-        async def _run_bridge():
-            await bridge.start()
-            await asyncio.Future()  # block forever until cancelled
-
-        try:
-            asyncio.run(_run_bridge())
-        except KeyboardInterrupt:
-            logger.info("Extension bridge stopped")
-
     elif command == "chrome-pw":
         import subprocess
 

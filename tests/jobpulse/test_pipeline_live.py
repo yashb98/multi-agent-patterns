@@ -112,7 +112,7 @@ class TestPlatformDetection:
     """Validate that _detect_ats_platform correctly identifies real URLs."""
 
     def test_linkedin_urls_detected(self):
-        from jobpulse.ext_adapter import _detect_ats_platform
+        from jobpulse.playwright_adapter import _detect_ats_platform
 
         by_platform = _fixtures_by_platform()
         for fix in by_platform.get("linkedin", []):
@@ -122,7 +122,7 @@ class TestPlatformDetection:
             )
 
     def test_indeed_urls_detected(self):
-        from jobpulse.ext_adapter import _detect_ats_platform
+        from jobpulse.playwright_adapter import _detect_ats_platform
 
         by_platform = _fixtures_by_platform()
         for fix in by_platform.get("indeed", []):
@@ -132,7 +132,7 @@ class TestPlatformDetection:
             )
 
     def test_reed_urls_detected(self):
-        from jobpulse.ext_adapter import _detect_ats_platform
+        from jobpulse.playwright_adapter import _detect_ats_platform
 
         by_platform = _fixtures_by_platform()
         for fix in by_platform.get("reed", []):
@@ -143,7 +143,7 @@ class TestPlatformDetection:
 
     def test_all_urls_return_valid_platform(self):
         """Every fixture URL should resolve to a non-empty platform string."""
-        from jobpulse.ext_adapter import _detect_ats_platform
+        from jobpulse.playwright_adapter import _detect_ats_platform
 
         for fix in _load_all_fixtures():
             result = _detect_ats_platform(fix["url"])
@@ -343,28 +343,5 @@ class TestCrossPlatformDedup:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.live
-class TestStateMachineSelection:
-    """Validate that real URLs select the correct state machine."""
-
-    def test_get_state_machine_for_all_fixtures(self):
-        from jobpulse.state_machines import get_state_machine
-
-        for fix in _load_all_fixtures():
-            platform = fix["platform"]
-            sm = get_state_machine(platform)
-            assert sm is not None, (
-                f"No state machine for platform '{platform}' (URL: {fix['url']})"
-            )
-
-    def test_linkedin_gets_linkedin_sm(self):
-        from jobpulse.state_machines import LinkedInStateMachine, get_state_machine
-
-        by_platform = _fixtures_by_platform()
-        for fix in by_platform.get("linkedin", []):
-            sm = get_state_machine("linkedin")
-            assert isinstance(sm, LinkedInStateMachine), (
-                f"LinkedIn URL got wrong SM: {type(sm).__name__}"
-            )
 
 

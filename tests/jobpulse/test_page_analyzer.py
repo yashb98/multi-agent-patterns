@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import AsyncMock, patch
-from jobpulse.ext_models import PageType
+from jobpulse.form_models import PageType
 from jobpulse.page_analyzer import PageAnalyzer, _dom_detect
 
 

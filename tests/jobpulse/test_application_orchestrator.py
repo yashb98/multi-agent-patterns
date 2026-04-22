@@ -26,7 +26,7 @@ from jobpulse.application_orchestrator import (
     MAX_NAVIGATION_STEPS,
     ApplicationOrchestrator,
 )
-from jobpulse.ext_models import (
+from jobpulse.form_models import (
     ButtonInfo,
     FieldInfo,
     PageSnapshot,
@@ -102,13 +102,13 @@ def orchestrator(bridge, tmp_path, monkeypatch):
     from jobpulse.navigation_learner import NavigationLearner
 
     orch = ApplicationOrchestrator(
-        bridge=bridge,
+        driver=bridge,
+        engine="playwright",
         account_manager=AccountManager(db_path=str(tmp_path / "acc.db")),
         gmail_verifier=MagicMock(),
         navigation_learner=NavigationLearner(db_path=str(tmp_path / "nav.db")),
     )
     # Mock the page analyzer to avoid real OpenAI API calls.
-    # Tests must set orchestrator.analyzer.detect.side_effect to control page type detection.
     orch.analyzer = MagicMock()
     orch.analyzer.detect = AsyncMock()
     # Also mock cookie dismisser to avoid bridge calls
@@ -120,11 +120,10 @@ def orchestrator(bridge, tmp_path, monkeypatch):
     # Use temp GotchasDB to avoid touching production data
     from jobpulse.form_engine.gotchas import GotchasDB
     orch.gotchas = GotchasDB(db_path=str(tmp_path / "gotchas.db"))
-    # Mock form analyzer LLM to avoid real OpenAI API calls in tests
-    import jobpulse.form_analyzer as _fa
-    def _mock_analyze_remaining(*args, **kwargs):
-        return []
-    monkeypatch.setattr(_fa, "analyze_remaining_fields", _mock_analyze_remaining)
+    # Mock form filling — orchestrator tests verify navigation/auth, not NativeFormFiller
+    orch._filler.fill_application = AsyncMock(
+        return_value={"success": True, "pages_filled": 1}
+    )
     return orch
 
 
@@ -238,34 +237,6 @@ class TestVerificationWall:
         assert result["success"] is False
         assert "CAPTCHA" in result["error"]
 
-    @pytest.mark.asyncio
-    async def test_captcha_during_form_fill(self, orchestrator, bridge, cv_path):
-        """CAPTCHA appears mid-form after first page."""
-        form_snap = _snap_dict(
-            fields=[{"selector": "#q", "input_type": "text", "label": "First Name"}],
-            has_files=True,
-        )
-        wall_snap = _snap_dict(
-            wall={
-                "wall_type": "recaptcha",
-                "confidence": 0.9,
-                "details": "",
-            },
-        )
-        bridge.get_snapshot.side_effect = [
-            form_snap, form_snap,   # navigate + cookie
-            wall_snap, wall_snap, wall_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        result = await orchestrator.apply(
-            url="https://uk.indeed.com/viewjob?jk=a1b2c3d4e5f6g7h8",
-            platform="indeed",
-            cv_path=cv_path,
-        )
-        assert result["success"] is False
-        assert "CAPTCHA" in result["error"]
 
 
 # =========================================================================
@@ -383,81 +354,21 @@ class TestLoginFlow:
 
 
 # =========================================================================
-# Form filling: stuck detection
-# =========================================================================
-
-
-class TestStuckDetection:
-    @pytest.mark.asyncio
-    async def test_stuck_page_aborts_after_2_identical(self, orchestrator, bridge, cv_path):
-        """Same page content 3 times → stuck_count=2 → abort."""
-        stuck_text = "x" * 800
-        stuck_snap = _snap_dict(
-            fields=[{"selector": "#q1", "input_type": "text", "label": "Question"}],
-            text=stuck_text,
-        )
-        bridge.get_snapshot.side_effect = [
-            stuck_snap, stuck_snap,   # navigate + cookie
-            stuck_snap, stuck_snap, stuck_snap, stuck_snap,
-            stuck_snap, stuck_snap, stuck_snap, stuck_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        with patch("jobpulse.application_orchestrator_pkg._form_filler.asyncio.sleep"), \
-             patch("jobpulse.application_orchestrator_pkg._navigator.asyncio.sleep"):
-            result = await orchestrator.apply(
-                url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/Data-Analyst_R-12345",
-                platform="workday",
-                cv_path=cv_path,
-            )
-        assert result["success"] is False
-        assert "Stuck" in result.get("error", "")
-
-    @pytest.mark.asyncio
-    async def test_short_page_text_not_stuck(self, orchestrator, bridge, cv_path):
-        """Short text (<10 chars in slice) should NOT trigger stuck detection."""
-        short_snap = _snap_dict(
-            fields=[{"selector": "#q1", "input_type": "text", "label": "Name"}],
-            text="Hello",
-        )
-        confirm_snap = _snap_dict(text="Thank you for applying")
-
-        bridge.get_snapshot.side_effect = [
-            short_snap, short_snap,     # navigate + cookie
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        result = await orchestrator.apply(
-            url="https://www.totaljobs.com/job/data-analyst/acme-corp-job98765432",
-            platform="totaljobs",
-            cv_path=cv_path,
-        )
-        assert result["success"] is True
-
-
-# =========================================================================
 # Form filling: dry-run
 # =========================================================================
 
 
 class TestDryRun:
     @pytest.mark.asyncio
-    async def test_dry_run_stops_at_submit(self, orchestrator, bridge, cv_path):
-        """Dry run stops before clicking submit."""
-        submit_snap = _snap_dict(
-            fields=[],
-            buttons=[
-                {"selector": "#submit", "text": "Submit Application", "enabled": True, "type": "button"},
-            ],
-            text="Review your application",
+    async def test_dry_run_passed_to_filler(self, orchestrator, bridge, cv_path):
+        """Dry run flag is forwarded to the form filler."""
+        orchestrator._filler.fill_application = AsyncMock(
+            return_value={"success": True, "dry_run": True, "pages_filled": 1}
         )
-        bridge.get_snapshot.side_effect = [
-            submit_snap, submit_snap,   # navigate + cookie
-            submit_snap, submit_snap, submit_snap,
-        ]
+        form_snap = _snap_dict(
+            fields=[{"selector": "#name", "input_type": "text", "label": "Name"}],
+        )
+        bridge.get_snapshot.side_effect = [form_snap, form_snap]
         orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
 
         result = await orchestrator.apply(
@@ -467,51 +378,7 @@ class TestDryRun:
             dry_run=True,
         )
         assert result.get("dry_run") is True
-
-
-# =========================================================================
-# Form filling: max pages exhaustion
-# =========================================================================
-
-
-class TestMaxPages:
-    @pytest.mark.asyncio
-    async def test_page_exhaustion(self, orchestrator, bridge, cv_path):
-        """Exceeding MAX_FORM_PAGES returns error."""
-        # Each page must be unique in chars[200:700] to avoid stuck detection
-        def make_page(i):
-            # Pad start with 200 chars of wrapper, then unique content in [200:700]
-            unique_middle = f"UNIQUE_PAGE_{i}_" * 35  # ~500 chars
-            text = ("W" * 200) + unique_middle + ("T" * 100)
-            return {
-                "url": f"https://acme.wd5.myworkdayjobs.com/en-US/External/page/{i}",
-                "title": "Test",
-                "fields": [{"selector": f"#q{i}", "input_type": "text", "label": f"Question {i}"}],
-                "buttons": [{"selector": "#next", "text": "Next", "enabled": True, "type": "button"}],
-                "verification_wall": None,
-                "page_text_preview": text,
-                "has_file_inputs": False,
-                "iframe_count": 0,
-                "timestamp": 1000 + i,
-            }
-
-        pages = [make_page(i) for i in range(MAX_FORM_PAGES + 5)]
-
-        # Each get_snapshot call in the form loop gets the NEXT page
-        bridge.get_snapshot.side_effect = [
-            pages[0], pages[0],  # navigate + cookie
-        ] + [pages[i % len(pages)] for i in range(MAX_FORM_PAGES * 2)]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        with patch("jobpulse.application_orchestrator_pkg._form_filler.asyncio.sleep"), \
-             patch("jobpulse.application_orchestrator_pkg._navigator.asyncio.sleep"):
-            result = await orchestrator.apply(
-                url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/ML-Engineer_R-67890",
-                platform="workday",
-                cv_path=cv_path,
-            )
-        assert result["success"] is False
+        assert orchestrator._filler.fill_application.call_args.kwargs["dry_run"] is True
 
 
 # =========================================================================
@@ -978,141 +845,6 @@ class TestPreSubmitGate:
                 company_research=company_research,
             )
         assert gate_result.passed is False
-
-
-# =========================================================================
-# MV3 persistence
-# =========================================================================
-
-
-class TestMV3Persistence:
-    @pytest.mark.asyncio
-    async def test_get_form_progress_recovery(self, orchestrator, bridge, cv_path):
-        """Pre-filled fields from saved progress are skipped during form fill."""
-        # Saved progress says #q1 is already filled
-        bridge.get_form_progress.return_value = {
-            "filled_fields": [{"selector": "#q1"}],
-            "current_page": 1,
-        }
-        form_snap = _snap_dict(
-            url="https://example.com/apply",
-            fields=[
-                {"selector": "#q1", "input_type": "text", "label": "Question 1"},
-                {"selector": "#q2", "input_type": "text", "label": "Question 2"},
-            ],
-        )
-        confirm_snap = _snap_dict(text="Thank you for applying")
-        bridge.get_snapshot.side_effect = [
-            form_snap, form_snap,
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        await orchestrator.apply(
-            url="https://example.com/apply",
-            platform="generic",
-            cv_path=cv_path,
-            profile={"q1": "val1", "q2": "val2"},
-        )
-
-        # bridge.fill should NOT have been called for #q1 (it was pre-filled)
-        fill_selectors = [c.args[0] for c in bridge.fill.call_args_list]
-        assert "#q1" not in fill_selectors
-
-    @pytest.mark.asyncio
-    async def test_save_form_progress_after_fill(self, orchestrator, bridge, cv_path):
-        """bridge.save_form_progress is called after a successful fill action."""
-        bridge.get_form_progress.return_value = None
-        # Use an email field — state machine reliably generates a fill action for it
-        form_snap = _snap_dict(
-            url="https://example.com/apply",
-            fields=[
-                {"selector": "#email", "input_type": "email", "label": "Email"},
-            ],
-        )
-        confirm_snap = _snap_dict(text="Thank you for applying")
-        bridge.get_snapshot.side_effect = [
-            form_snap, form_snap,
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        await orchestrator.apply(
-            url="https://example.com/apply",
-            platform="generic",
-            cv_path=cv_path,
-            profile={"email": "y@test.com"},
-        )
-
-        bridge.save_form_progress.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_clear_form_progress_after_verified_submit(self, orchestrator, bridge, cv_path):
-        """After verified submission, bridge.clear_form_progress is called."""
-        bridge.get_form_progress.return_value = None
-        submit_snap = _snap_dict(
-            url="https://example.com/apply",
-            fields=[],
-            buttons=[
-                {"selector": "#submit", "text": "Submit Application", "enabled": True, "type": "button"},
-            ],
-            text="Review your answers",
-        )
-        bridge.get_snapshot.side_effect = [
-            submit_snap, submit_snap,
-            submit_snap, submit_snap, submit_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-
-        # Mock _verify_submission to return verified
-        with patch.object(orchestrator, "_verify_submission", AsyncMock(return_value={"verified": True})):
-            result = await orchestrator.apply(
-                url="https://example.com/apply",
-                platform="generic",
-                cv_path=cv_path,
-            )
-
-        bridge.clear_form_progress.assert_called()
-
-
-# =========================================================================
-# Gotcha application
-# =========================================================================
-
-
-class TestGotchaApplication:
-    @pytest.mark.asyncio
-    async def test_gotcha_use_force_click_modifies_action(self, orchestrator, bridge):
-        """use_force_click solution → bridge.force_click called instead of bridge.fill."""
-        orchestrator.gotchas.store(
-            "example.com", "#tricky-btn", "click fails silently", "use_force_click"
-        )
-        # Action with type=fill but gotcha redirects to force_click
-        action = {"type": "fill", "selector": "#tricky-btn", "value": "test"}
-        modified = orchestrator._apply_gotcha_to_action(action, "use_force_click")
-        assert modified["type"] == "force_click"
-
-        await orchestrator._execute_action(modified)
-        bridge.force_click.assert_called_once_with("#tricky-btn")
-
-    @pytest.mark.asyncio
-    async def test_gotcha_use_selector_swaps_selector(self, orchestrator, bridge):
-        """use_selector:#alt solution → new selector is used in action."""
-        action = {"type": "fill", "selector": "#old", "value": "hello"}
-        modified = orchestrator._apply_gotcha_to_action(action, "use_selector:#alt-input")
-        assert modified["selector"] == "#alt-input"
-        assert modified["type"] == "fill"
-
-        await orchestrator._execute_action(modified)
-        bridge.fill.assert_called_once_with("#alt-input", "hello")
-
-    @pytest.mark.asyncio
-    async def test_gotcha_scroll_first_pre_step(self, orchestrator, bridge):
-        """scroll_first solution → bridge.scroll_to called as pre-step."""
-        await orchestrator._execute_gotcha_pre_steps("scroll_first", "#target-field")
-        bridge.scroll_to.assert_called_once_with("#target-field")
 
 
 # =========================================================================

@@ -12,7 +12,7 @@ python -m jobpulse.runner briefing     # Morning digest
 python -m jobpulse.runner export       # Full data backup
 python -m jobpulse.runner profile-sync # Refresh skill/project graph (3am cron)
 python -m jobpulse.runner skill-gaps   # Show top missing skills + export CSV
-python -m jobpulse.runner ext-bridge   # Start Chrome extension WebSocket bridge
+python -m jobpulse.runner chrome-pw     # Launch Chrome with CDP for Playwright
 ```
 
 ## Code Intelligence (use for ALL code exploration)
@@ -72,7 +72,7 @@ Every feature, function, and file MUST satisfy all 7 principles. Full checklist:
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~109,000 LOC | 549 Python files | 34 databases | 2893 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~101,000 LOC | 529 Python files | 35 databases | 2580 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)

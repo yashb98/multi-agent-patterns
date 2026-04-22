@@ -1,7 +1,7 @@
 """Driver protocol — interface for form-filling engines.
 
-Both ExtensionBridge and PlaywrightDriver implement this protocol.
-The ApplicationOrchestrator calls these methods without knowing which driver it uses.
+PlaywrightDriver implements this protocol.
+The ApplicationOrchestrator calls these methods via the driver abstraction.
 """
 from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable

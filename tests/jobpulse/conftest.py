@@ -3,11 +3,16 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from jobpulse.ext_bridge import ExtensionBridge
-from jobpulse.ext_models import (
+from jobpulse.form_models import (
     PageSnapshot, FieldInfo, ButtonInfo, VerificationWall,
 )
 from jobpulse.perplexity import CompanyResearch
+
+
+@pytest.fixture
+def mock_ext_bridge():
+    """Minimal AsyncMock driver for orchestrator tests that mock everything else."""
+    return AsyncMock()
 
 
 @pytest.fixture
@@ -48,11 +53,3 @@ def sample_company_research():
         red_flags=[],
         culture="Remote-first, active blog",
     )
-
-
-@pytest.fixture
-def mock_ext_bridge():
-    """A fully-mocked ExtensionBridge for adapter tests."""
-    bridge = AsyncMock(spec=ExtensionBridge)
-    bridge.connected = True
-    return bridge

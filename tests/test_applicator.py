@@ -20,10 +20,10 @@ def test_classify_tier_skip():
 
 
 def test_select_adapter():
-    """All platforms route to ExtensionAdapter (extension-only mode)."""
+    """All platforms route to PlaywrightAdapter."""
     for platform in ["greenhouse", "lever", "workday", None, "unknown_ats"]:
         adapter = select_adapter(platform)
-        assert adapter.name == "extension", f"{platform} should route to extension adapter"
+        assert adapter.name == "playwright", f"{platform} should route to playwright adapter"
 
 
 def test_work_auth_answers():

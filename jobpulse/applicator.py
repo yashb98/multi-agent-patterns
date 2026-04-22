@@ -88,37 +88,20 @@ def _record_agent_performance(
         logger.debug("agent_performance recording failed: %s", exc)
 
 
-def _call_fill_and_submit(adapter: BaseATSAdapter, engine: str = "extension", **kwargs: Any) -> dict:
-    """Call adapter.fill_and_submit(), handling the async ExtensionAdapter.
-
-    ExtensionAdapter.fill_and_submit() is async — we dispatch the coroutine
-    to the bridge's event loop (running on a background thread) so WebSocket
-    calls stay on the correct loop.
-    """
-    result = adapter.fill_and_submit(engine=engine, **kwargs)
+def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
+    """Call adapter.fill_and_submit(), handling the async adapter."""
+    result = adapter.fill_and_submit(**kwargs)
     if inspect.isawaitable(result):
-        # Check if the adapter has a bridge with its own event loop (extension mode)
-        bridge = getattr(adapter, "bridge", None)
-        bridge_loop = getattr(bridge, "_loop", None) if bridge else None
-
-        if bridge_loop and bridge_loop.is_running():
-            # Dispatch to the bridge's event loop thread
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
             import concurrent.futures
-
-            future = asyncio.run_coroutine_threadsafe(result, bridge_loop)
-            result = future.result(timeout=300)  # 5min timeout for long applications
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                result = pool.submit(asyncio.run, result).result()
         else:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop and loop.is_running():
-                import concurrent.futures
-
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    result = pool.submit(asyncio.run, result).result()
-            else:
-                result = asyncio.run(result)
+            result = asyncio.run(result)
     return result
 
 
@@ -131,7 +114,6 @@ def apply_job(
     custom_answers: dict | None = None,
     overrides: dict | None = None,
     dry_run: bool = False,
-    engine: str = "extension",
     job_context: dict | None = None,
 ) -> dict:
     """Submit a job application via the appropriate ATS adapter.
@@ -318,7 +300,6 @@ def apply_job(
         custom_answers=merged_answers,
         overrides=overrides,
         dry_run=dry_run,
-        engine=engine,
     )
 
     # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
@@ -362,7 +343,6 @@ def apply_job(
             custom_answers=merged_answers,
             overrides=overrides,
             dry_run=dry_run,
-            engine=engine,
         )
         # Tag the result so downstream knows this was an external redirect
         result["external_redirect"] = True

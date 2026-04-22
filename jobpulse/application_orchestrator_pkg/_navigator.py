@@ -11,7 +11,7 @@ from typing import Any
 
 from shared.logging_config import get_logger
 
-from jobpulse.ext_models import PageType
+from jobpulse.form_models import PageType
 
 logger = get_logger(__name__)
 
