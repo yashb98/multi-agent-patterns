@@ -291,11 +291,11 @@ def _feed_experience_memory(
         return
 
     try:
-        from shared.experiential_learning import Experience, ExperienceMemory
+        from shared.experiential_learning import Experience, get_shared_experience_memory
 
-        em = ExperienceMemory()
+        em = get_shared_experience_memory()
         score = _compute_strategy_score(strategy)
-        if score < 6.0:
+        if score < 7.5:
             return
 
         pattern = (

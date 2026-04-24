@@ -122,6 +122,67 @@ class FormExperienceDB:
             ).fetchone()
         return dict(row) if row else None
 
+    def validate_against_live(
+        self,
+        domain_or_url: str,
+        live_field_types: list[str],
+        live_page_count: int | None = None,
+        *,
+        match_threshold: float = 0.8,
+    ) -> dict:
+        """Compare stored experience against live DOM scan.
+
+        Args:
+            domain_or_url: The URL or domain to look up.
+            live_field_types: Field types discovered from the current page DOM.
+            live_page_count: Page count from current DOM (if detectable).
+            match_threshold: Minimum overlap ratio to trust stored experience.
+
+        Returns:
+            {"trusted": bool, "match_ratio": float, "stored": dict|None,
+             "diverged_fields": list[str]}
+        """
+        stored = self.lookup(domain_or_url)
+        if not stored or not stored.get("success"):
+            return {"trusted": False, "match_ratio": 0.0, "stored": None,
+                    "diverged_fields": []}
+
+        stored_types = json.loads(stored["field_types"]) if isinstance(stored["field_types"], str) else stored["field_types"]
+
+        if not stored_types and not live_field_types:
+            return {"trusted": True, "match_ratio": 1.0, "stored": stored,
+                    "diverged_fields": []}
+
+        stored_set = set(stored_types)
+        live_set = set(live_field_types)
+        union = stored_set | live_set
+        intersection = stored_set & live_set
+        match_ratio = len(intersection) / len(union) if union else 1.0
+
+        diverged = sorted(stored_set.symmetric_difference(live_set))
+
+        trusted = match_ratio >= match_threshold
+        if not trusted:
+            logger.info(
+                "form_experience: DIVERGENCE on %s — match %.0f%% (threshold %.0f%%), "
+                "diverged fields: %s. Falling back to LLM detection.",
+                self.normalize_domain(domain_or_url),
+                match_ratio * 100, match_threshold * 100,
+                diverged[:10],
+            )
+
+        if live_page_count is not None and stored.get("pages_filled"):
+            if abs(live_page_count - stored["pages_filled"]) > 1:
+                logger.info(
+                    "form_experience: page count mismatch on %s — stored=%d, live=%d",
+                    self.normalize_domain(domain_or_url),
+                    stored["pages_filled"], live_page_count,
+                )
+                trusted = False
+
+        return {"trusted": trusted, "match_ratio": match_ratio,
+                "stored": stored, "diverged_fields": diverged}
+
     def get_stats(self) -> dict:
         with sqlite3.connect(self._db_path) as conn:
             total = conn.execute("SELECT COUNT(*) FROM form_experience").fetchone()[0]

@@ -218,12 +218,9 @@ class TestReflectWithLLM:
 
 
 class TestFeedExperienceMemory:
-    @patch("jobpulse.strategy_reflector.ExperienceMemory", create=True)
-    @patch("jobpulse.strategy_reflector.Experience", create=True)
-    def test_stores_high_score(self, mock_exp_cls, mock_em_cls):
+    def test_stores_high_score(self):
         mock_em = MagicMock()
-        mock_em_cls.return_value = mock_em
-        mock_exp_cls.side_effect = lambda **kw: MagicMock(**kw)
+        mock_exp_cls = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
 
         strategy = _make_strategy(fields_total=10, fields_pattern=8,
                                   fields_corrected=0, total_time_seconds=30)
@@ -231,12 +228,30 @@ class TestFeedExperienceMemory:
 
         with patch.dict("sys.modules", {
             "shared.experiential_learning": MagicMock(
-                ExperienceMemory=mock_em_cls,
+                get_shared_experience_memory=MagicMock(return_value=mock_em),
                 Experience=mock_exp_cls,
             ),
         }):
             _feed_experience_memory(strategy, heuristics)
         mock_em.store.assert_called_once()
+
+    def test_skips_below_threshold(self):
+        """Score 6.0 strategies should NOT be stored (threshold is 7.5)."""
+        mock_em = MagicMock()
+
+        strategy = _make_strategy(fields_total=10, fields_pattern=5,
+                                  fields_corrected=1, total_time_seconds=90)
+        score = _compute_strategy_score(strategy)
+        assert score < 7.5
+
+        with patch.dict("sys.modules", {
+            "shared.experiential_learning": MagicMock(
+                get_shared_experience_memory=MagicMock(return_value=mock_em),
+                Experience=MagicMock(),
+            ),
+        }):
+            _feed_experience_memory(strategy, [{"trigger": "t", "action": "a"}])
+        mock_em.store.assert_not_called()
 
     def test_skips_failed_strategy(self):
         strategy = _make_strategy(success=False)

@@ -76,3 +76,70 @@ def test_failed_record_does_not_overwrite_success(db):
     assert exp["success"] == 1
     assert exp["pages_filled"] == 3
     assert exp["apply_count"] == 2
+
+
+class TestValidateAgainstLive:
+    def test_trusted_when_fields_match(self, db):
+        db.record(domain="g.io", platform="greenhouse", adapter="ext",
+                  pages_filled=2, field_types=["text", "select", "upload"],
+                  screening_questions=[], time_seconds=30.0, success=True)
+        result = db.validate_against_live(
+            "g.io", ["text", "select", "upload"],
+        )
+        assert result["trusted"] is True
+        assert result["match_ratio"] == 1.0
+        assert result["diverged_fields"] == []
+
+    def test_untrusted_when_fields_diverge(self, db):
+        db.record(domain="g.io", platform="greenhouse", adapter="ext",
+                  pages_filled=2, field_types=["text", "select", "upload"],
+                  screening_questions=[], time_seconds=30.0, success=True)
+        result = db.validate_against_live(
+            "g.io", ["text", "checkbox", "radio", "textarea"],
+        )
+        assert result["trusted"] is False
+        assert result["match_ratio"] < 0.8
+        assert len(result["diverged_fields"]) > 0
+
+    def test_trusted_with_partial_overlap_above_threshold(self, db):
+        db.record(domain="g.io", platform="greenhouse", adapter="ext",
+                  pages_filled=2, field_types=["text", "select", "upload", "radio"],
+                  screening_questions=[], time_seconds=30.0, success=True)
+        result = db.validate_against_live(
+            "g.io", ["text", "select", "upload", "checkbox"],
+        )
+        assert result["match_ratio"] == 3 / 5
+        assert result["trusted"] is False
+
+    def test_no_stored_experience(self, db):
+        result = db.validate_against_live("unknown.com", ["text"])
+        assert result["trusted"] is False
+        assert result["stored"] is None
+
+    def test_page_count_mismatch_untrusts(self, db):
+        db.record(domain="g.io", platform="greenhouse", adapter="ext",
+                  pages_filled=3, field_types=["text", "select"],
+                  screening_questions=[], time_seconds=30.0, success=True)
+        result = db.validate_against_live(
+            "g.io", ["text", "select"], live_page_count=6,
+        )
+        assert result["trusted"] is False
+
+    def test_page_count_close_still_trusted(self, db):
+        db.record(domain="g.io", platform="greenhouse", adapter="ext",
+                  pages_filled=3, field_types=["text", "select"],
+                  screening_questions=[], time_seconds=30.0, success=True)
+        result = db.validate_against_live(
+            "g.io", ["text", "select"], live_page_count=4,
+        )
+        assert result["trusted"] is True
+
+    def test_custom_threshold(self, db):
+        db.record(domain="g.io", platform="greenhouse", adapter="ext",
+                  pages_filled=2, field_types=["text", "select", "upload"],
+                  screening_questions=[], time_seconds=30.0, success=True)
+        result = db.validate_against_live(
+            "g.io", ["text", "select"],
+            match_threshold=0.5,
+        )
+        assert result["trusted"] is True

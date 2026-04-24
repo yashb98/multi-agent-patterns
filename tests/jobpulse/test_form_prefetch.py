@@ -141,3 +141,62 @@ def test_no_file_upload_when_not_present(db_paths):
 
     hints = prefetch_form_hints("https://nofile.com/apply", **db_paths)
     assert hints.has_file_upload is False
+
+
+class TestValidateHintsAgainstLive:
+    def test_validates_matching_fields(self, db_paths):
+        from jobpulse.form_experience_db import FormExperienceDB
+        from jobpulse.form_prefetch import validate_hints_against_live
+
+        exp_db = FormExperienceDB(db_path=db_paths["form_exp_db"])
+        exp_db.record(
+            domain="g.io", platform="greenhouse", adapter="ext",
+            pages_filled=2, field_types=["text", "select", "upload"],
+            screening_questions=[], time_seconds=30.0, success=True,
+        )
+
+        hints = prefetch_form_hints("https://g.io/apply", **db_paths)
+        assert hints.known_domain is True
+
+        validated = validate_hints_against_live(
+            hints, ["text", "select", "upload"],
+            url="https://g.io/apply",
+            form_exp_db=db_paths["form_exp_db"],
+        )
+        assert validated.validated is True
+        assert validated.known_domain is True
+        assert validated.match_ratio == 1.0
+
+    def test_invalidates_divergent_fields(self, db_paths):
+        from jobpulse.form_experience_db import FormExperienceDB
+        from jobpulse.form_prefetch import validate_hints_against_live
+
+        exp_db = FormExperienceDB(db_path=db_paths["form_exp_db"])
+        exp_db.record(
+            domain="g.io", platform="greenhouse", adapter="ext",
+            pages_filled=2, field_types=["text", "select", "upload"],
+            screening_questions=[], time_seconds=30.0, success=True,
+        )
+
+        hints = prefetch_form_hints("https://g.io/apply", **db_paths)
+        assert hints.known_domain is True
+
+        validated = validate_hints_against_live(
+            hints, ["checkbox", "radio", "textarea"],
+            url="https://g.io/apply",
+            form_exp_db=db_paths["form_exp_db"],
+        )
+        assert validated.validated is False
+        assert validated.known_domain is False
+        assert len(validated.diverged_fields) > 0
+
+    def test_skips_validation_for_unknown_domain(self, db_paths):
+        from jobpulse.form_prefetch import validate_hints_against_live
+
+        hints = prefetch_form_hints("https://unknown.com/apply", **db_paths)
+        validated = validate_hints_against_live(
+            hints, ["text"], url="https://unknown.com/apply",
+            form_exp_db=db_paths["form_exp_db"],
+        )
+        assert validated.known_domain is False
+        assert validated.validated is False
