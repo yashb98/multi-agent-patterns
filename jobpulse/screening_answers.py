@@ -10,6 +10,7 @@ import re
 from datetime import datetime, timedelta
 
 from shared.agents import get_openai_client, get_model_name, is_local_llm
+from shared.pii import assert_prompt_has_wrapped_pii, wrap_pii_value
 
 from jobpulse.applicator import PROFILE, WORK_AUTH
 from jobpulse.job_db import JobDB
@@ -18,83 +19,69 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+
+def _screening_prompt_profile() -> dict[str, str]:
+    from shared.profile_store import get_profile_store
+    ps = get_profile_store()
+    ident = ps.identity()
+    visa = ps.sensitive("visa_status") or WORK_AUTH.get("visa_status", "")
+    return {
+        "first_name": ident.first_name or PROFILE.get("first_name", ""),
+        "last_name": ident.last_name or PROFILE.get("last_name", ""),
+        "education": ident.education or PROFILE.get("education", ""),
+        "location": ident.location or PROFILE.get("location", ""),
+        "visa_status": visa,
+    }
+
+
+def _screening_profile_summary(profile: dict[str, str]) -> str:
+    return (
+        f"Name: {wrap_pii_value('screening.first_name', profile['first_name'])} "
+        f"{wrap_pii_value('screening.last_name', profile['last_name'])}. "
+        f"Education: {wrap_pii_value('screening.education', profile['education'])}. "
+        f"Location: {wrap_pii_value('screening.location', profile['location'])}. "
+        f"Visa: {wrap_pii_value('screening.visa_status', profile['visa_status'])}."
+    )
+
 # ---------------------------------------------------------------------------
 # Skill-specific experience years (used for "How many years with X?" questions)
 # ---------------------------------------------------------------------------
-SKILL_EXPERIENCE: dict[str, int] = {
-    # 3 years
-    "python": 3, "sql": 3,
-    # 2 years — ML/AI
-    "machine learning": 2, "ml": 2, "deep learning": 2,
-    "natural language processing": 2, "nlp": 2,
-    "large language model": 2, "llm": 2, "generative ai": 2,
-    "artificial intelligence": 2, "ai": 2,
-    "data science": 2, "data analysis": 2, "data analytics": 2,
-    "tensorflow": 2, "pytorch": 2, "scikit-learn": 2, "sklearn": 2,
-    "pandas": 2, "numpy": 2, "scipy": 2,
-    "computer vision": 2, "reinforcement learning": 2,
-    "mlops": 2, "model deployment": 2,
-    "a/b testing": 2, "ab testing": 2, "statistical analysis": 2,
-    "neural network": 2, "transformer": 2,
-    # 2 years — Software/DevOps
-    "software engineering": 2, "software development": 2,
-    "git": 2, "docker": 2, "linux": 2,
-    "aws": 2, "cloud": 2, "gcp": 2, "azure": 2,
-    "ci/cd": 2, "devops": 2,
-    "api": 2, "rest": 2, "fastapi": 2, "flask": 2,
-    # 2 years — Data Engineering
-    "spark": 2, "hadoop": 2, "airflow": 2,
-    "etl": 2, "data pipeline": 2, "data engineering": 2,
-    "tableau": 2, "power bi": 2,
-    "nosql": 2, "mongodb": 2, "redis": 2,
-    "postgresql": 2, "mysql": 2,
-    # 2 years — Other
-    "agile": 2, "scrum": 2, "jira": 2,
-    "r": 2, "matlab": 2, "java": 2, "c++": 2,
-    "javascript": 2, "typescript": 2, "react": 2,
-    # 3 years — Leadership
-    "team management": 3, "leadership": 3, "team leader": 3,
-}
+def _get_skill_experience() -> dict[str, float]:
+    from shared.profile_store import get_profile_store
+    result = get_profile_store().skill_experience()
+    return result if isinstance(result, dict) else {}
+
+SKILL_EXPERIENCE: dict[str, int] = {}  # populated lazily on first use
+_se_lock = __import__("threading").Lock()
+
+
+def _ensure_skill_experience() -> dict[str, float]:
+    global SKILL_EXPERIENCE
+    if not SKILL_EXPERIENCE:
+        with _se_lock:
+            if not SKILL_EXPERIENCE:
+                SKILL_EXPERIENCE = _get_skill_experience()
+    return SKILL_EXPERIENCE
 
 # ---------------------------------------------------------------------------
 # Role-aware salary expectations
 # ---------------------------------------------------------------------------
-ROLE_SALARY: dict[str, int] = {
-    # --- Data Science ---
-    "data scientist": 38000,
-    "graduate data scientist": 35000,
-    "junior data scientist": 36000,
-    "early careers data scientist": 35000,
-    "data science intern": 25000,
-    # --- ML Engineering ---
-    "machine learning engineer": 38000,
-    "ml engineer": 38000,
-    "graduate ml engineer": 35000,
-    "junior ml engineer": 37000,
-    "early careers ml engineer": 35000,
-    "machine learning intern": 25000,
-    # --- AI Engineering ---
-    "ai engineer": 38000,
-    "graduate ai engineer": 35000,
-    "junior ai engineer": 35000,
-    "early careers ai engineer": 35000,
-    "ai intern": 25000,
-    # --- Data Engineering ---
-    "data engineer": 35000,
-    "graduate data engineer": 32000,
-    "junior data engineer": 35000,
-    "early careers data engineer": 32000,
-    "data engineer intern": 24000,
-    # --- Software Engineering ---
-    "software engineer": 35000,
-    "graduate software engineer": 32000,
-    "junior software engineer": 33000,
-    "early careers software engineer": 32000,
-    "software engineer intern": 25000,
-    # --- Other ---
-    "data analyst": 30000,
-    "default": 30000,
-}
+def _get_role_salary() -> dict[str, int]:
+    from shared.profile_store import get_profile_store
+    result = get_profile_store().role_salary()
+    return result if isinstance(result, dict) else {}
+
+ROLE_SALARY: dict[str, int] = {}  # populated lazily on first use
+_rs_lock = __import__("threading").Lock()
+
+
+def _ensure_role_salary() -> dict[str, int]:
+    global ROLE_SALARY
+    if not ROLE_SALARY:
+        with _rs_lock:
+            if not ROLE_SALARY:
+                ROLE_SALARY = _get_role_salary()
+    return ROLE_SALARY
 
 # ---------------------------------------------------------------------------
 # Platform-aware source tracking
@@ -118,19 +105,18 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # WORK AUTHORIZATION & VISA (6 patterns) — specific before general
     # ===================================================================
-    r"right.*work.*type|work.*type|work.*permit|work.*authorization.*type|visa.*type|type.*visa.*hold": "Graduate Visa",
+    r"please.*select.*right.*work.*status|right.*work.*status": "SENSITIVE:visa_status_full",
+    r"right.*work.*type|work.*type|work.*permit|work.*authorization.*type|visa.*type|type.*visa.*hold|eligibility.*based|what.*eligibility": "SENSITIVE:visa_type",
     r"authorized.*work|right to work|legally.*work|eligible.*work|unrestricted.*right": "Yes",
     r"require.*sponsor|visa.*sponsor|sponsorship|need.*sponsor": "No",
-    r"visa.*status|immigration.*status|current.*visa|visa.*expire": (
-        "Student Visa; converting to Graduate Visa from 9 May 2026 (valid 2 years)"
-    ),
+    r"visa.*status|immigration.*status|current.*visa|visa.*expire": "SENSITIVE:visa_status",
     r"british.*citizen|eu.*national|\bilr\b|indefinite.*leave|settled.*status": "No",
     r"subject.*immigration.*restrict|work.*without.*restrict": "No",
 
     # ===================================================================
     # SALARY & COMPENSATION (3 patterns) — current before expected
     # ===================================================================
-    r"current.*salary|salary.*current|present.*salary|current.*compensation|current.*base": "22000",
+    r"current.*salary|salary.*current|present.*salary|current.*compensation|current.*base": "CURRENT_SALARY",
     r"salary.*expect|expected.*salary|desired.*compensation|pay.*expect|minimum.*salary|salary.*range|target.*salary|compensation.*require|salary.*requirement": "ROLE_SALARY",
     r"daily.*rate|hourly.*rate|day.*rate": "150",
 
@@ -139,8 +125,8 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     r"notice.*period|when.*start|available.*start|start.*date|earliest.*start|how.*soon.*start|immediate.*start": "Immediately",
     r"currently.*employ|current.*employment|employment.*status|are.*you.*employ": "Yes",
-    r"current.*job.*title|current.*role|current.*position|present.*role": "Team Leader",
-    r"current.*employer|who.*work.*for|present.*employer|company.*work.*for": "Co-op",
+    r"current.*job.*title|current.*role|current.*position|present.*role": "SCREENING:current_job_title",
+    r"current.*employer|who.*work.*for|present.*employer|company.*work.*for": "SCREENING:current_employer",
     r"reason.*leaving|why.*leaving|why.*seeking|why.*new.*position": None,
 
     # ===================================================================
@@ -187,9 +173,11 @@ COMMON_ANSWERS: dict[str, str | None] = {
     r"permanent.*contract|preferred.*employment|full.?time|part.?time|employment.*type|fixed.?term|looking.*permanent": "Full-time",
 
     # ===================================================================
-    # BACKGROUND, SECURITY & LEGAL (4 patterns)
+    # BACKGROUND, SECURITY & LEGAL (6 patterns) — specific before general
     # ===================================================================
-    r"background.*check|dbs.*check|criminal.*record|unspent.*conviction|willing.*undergo|pre.?employment.*screen": "Yes",
+    r"(?:do|have).*you.*(?:criminal|unspent|civil).*conviction|(?:do|have).*you.*(?:been|ever).*convicted|have.*(?:any|an).*offence": "No",
+    r"(?:anything|something).*(?:to )?disclose|(?:indicate|declare).*(?:anything|something).*disclose": "No",
+    r"background.*check|dbs.*check|criminal.*record|willing.*undergo|pre.?employment.*screen": "Yes",
     r"security.*clearance|hold.*clearance|sc.*clearance|dv.*clearance|bpss|level.*clearance": "None",
     r"non.?compete|restrictive.*covenant|conflict.*interest|gardening.*leave": "No",
     r"based.*in.*uk|resident.*uk|uk.*resid|live.*in.*uk|reside.*in.*united.*kingdom": "No",
@@ -209,15 +197,15 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # DIVERSITY & EQUALITY MONITORING (10 patterns) — specific before general
     # ===================================================================
-    r"gender.*identify|what.*gender|indicate.*gender|what.*your.*sex\b": "Male",
-    r"sexual.*orientation|what.*orientation|indicate.*orientation": "Heterosexual/Straight",
-    r"ethnicity|ethnic.*background|racial|indicate.*ethnicity|race.*ethnic": "Asian or Asian British - Indian",
-    r"disability|disabled|long.?term.*health|equality.*act.*2010|impairment.*health": "No",
+    r"gender.*identit|what.*gender|indicate.*gender|what.*your.*sex\b": "SENSITIVE:gender",
+    r"sexual.*orientation|what.*orientation|indicate.*orientation": "SENSITIVE:sexual_orientation",
+    r"ethnicity|ethnic.*background|racial|indicate.*ethnicity|race.*ethnic": "SENSITIVE:ethnicity",
+    r"disability|disabled|long.?term.*health|equality.*act.*2010|impairment.*health|neurodivergent": "No",
     r"veteran|military": "No",
-    r"religion\b|belief\b|faith\b|spiritual": "Hindu",
-    r"marital.*status|civil.*status|relationship.*status": "Single",
-    r"what.*pronoun|preferred.*pronoun|indicate.*pronoun": "He/Him",
-    r"age.*group|what.*your.*age|date.*birth": "25-29",
+    r"religion\b|belief\b|faith\b|spiritual": "SENSITIVE:religion",
+    r"marital.*status|civil.*status|relationship.*status": "SENSITIVE:marital_status",
+    r"refer.*to.*you|how.*address|what.*pronoun|preferred.*pronoun|indicate.*pronoun": "SENSITIVE:pronouns",
+    r"age.*(?:group|range|band|bracket)|what.*your.*age|date.*birth": "SENSITIVE:age_group",
     r"over.*18|are.*you.*18|above.*18": "Yes",
 
     # ===================================================================
@@ -309,8 +297,8 @@ def _resolve_skill_experience(skill: str | None, *, input_type: str | None) -> s
     if skill is None:
         years = 2
     else:
-        years = SKILL_EXPERIENCE.get(skill.lower(), 2)
-    return str(years)
+        years = _ensure_skill_experience().get(skill.lower(), 2)
+    return str(int(years))
 
 
 def _resolve_role_salary(
@@ -318,9 +306,10 @@ def _resolve_role_salary(
 ) -> str:
     """Return salary expectation based on job title and input type."""
     title = ((job_context or {}).get("job_title") or "").lower()
-    salary = ROLE_SALARY["default"]
+    role_salaries = _ensure_role_salary()
+    salary = role_salaries.get("default", 30000)
     best_len = 0
-    for role_key, role_salary in ROLE_SALARY.items():
+    for role_key, role_salary in role_salaries.items():
         if role_key != "default" and role_key in title and len(role_key) > best_len:
             salary = role_salary
             best_len = len(role_key)
@@ -381,15 +370,52 @@ def _resolve_placeholder(
         return PLATFORM_SOURCE.get(platform or "", PLATFORM_SOURCE["default"])
 
     if answer == "PROFILE_LINK":
+        try:
+            from shared.profile_store import get_profile_store
+            ident = get_profile_store().identity()
+            link = ident.github or ident.portfolio
+            if link:
+                return link
+        except Exception:
+            pass
         return PROFILE.get("github", PROFILE.get("portfolio", ""))
+
+    if answer.startswith("SENSITIVE:"):
+        key = answer[len("SENSITIVE:"):]
+        try:
+            from shared.profile_store import get_profile_store
+            val = get_profile_store().sensitive(key)
+            if val:
+                return val
+        except Exception:
+            pass
+        return "Prefer not to say"
+
+    if answer.startswith("SCREENING:"):
+        key = answer[len("SCREENING:"):]
+        try:
+            from shared.profile_store import get_profile_store
+            val = get_profile_store().screening_default(key)
+            if val:
+                return val
+        except Exception:
+            pass
+        return ""
+
+    if answer == "CURRENT_SALARY":
+        try:
+            from shared.profile_store import get_profile_store
+            val = get_profile_store().sensitive("current_salary")
+            if val:
+                return f"{int(val):,}" if input_type == "text" else val
+        except Exception:
+            pass
+        return "22000"
 
     # Input-type adaptations for non-placeholder answers
     if answer == "Immediately" and input_type == "date":
         target = datetime.now() + timedelta(days=14)
         return target.strftime("%Y-%m-%d")
-
-    if answer == "22000" and input_type == "text":
-        return "22,000"
 
     return answer
 
@@ -562,12 +588,8 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
         company = job_context.get("company", "the company")
         context_line = f" Context: Applying for {title} at {company}."
 
-    profile_summary = (
-        f"Name: {PROFILE['first_name']} {PROFILE['last_name']}. "
-        f"Education: {PROFILE['education']}. "
-        f"Location: {PROFILE['location']}. "
-        f"Visa: {WORK_AUTH['visa_status']}."
-    )
+    prompt_profile = _screening_prompt_profile()
+    profile_summary = _screening_profile_summary(prompt_profile)
 
     # Read optimization correction insights for this domain before generating
     correction_context = ""
@@ -592,6 +614,7 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
         f"Applicant background: {profile_summary}"
         f"{correction_context}"
     )
+    assert_prompt_has_wrapped_pii(task, prompt_profile, "screening")
 
     engine = _get_screening_engine()
     if engine:

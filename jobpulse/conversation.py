@@ -7,6 +7,15 @@ from jobpulse.config import OPENAI_API_KEY, PROJECT_DIR
 
 logger = get_logger(__name__)
 
+
+def _first_name() -> str:
+    try:
+        from shared.profile_store import get_profile_store
+        return get_profile_store().identity().first_name or "Yash"
+    except Exception:
+        return "Yash"
+
+
 # In-memory conversation history (resets on daemon restart)
 _history: list[dict] = []
 MAX_HISTORY = 10
@@ -44,7 +53,7 @@ def _build_system_prompt() -> str:
         logger.debug("Could not check daemon health for conversation context: %s", e)
         status_info = "\nDaemon status: unknown (healthcheck unavailable)"
 
-    return f"""You are Yash's personal AI assistant running on his Mac via the JobPulse system.
+    return f"""You are {_first_name()}'s personal AI assistant running on his Mac via the JobPulse system.
 You have access to his project context and recent agent activity.
 Answer questions helpfully and concisely. Use emoji sparingly.
 If asked to do something you can't do in chat, suggest the right Telegram command.

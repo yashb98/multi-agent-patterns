@@ -18,12 +18,19 @@ logger = get_logger(__name__)
 
 def _build_vision_prompt(question: str, input_type: str) -> str:
     """Build the vision analysis prompt."""
+    try:
+        from shared.profile_store import get_profile_store
+        ps = get_profile_store()
+        ident = ps.identity()
+        visa = ps.sensitive("visa_type") or "Graduate Visa"
+        bio = f"{ident.full_name}, {ident.education}, based in {ident.location} with {visa}"
+    except Exception:
+        bio = "the applicant"
     return (
         "You are filling out a job application form. "
         f'The current field asks: "{question}" (input type: {input_type}). '
         "Look at the screenshot of the form and determine the best answer. "
-        "The applicant is Yash Bishnoi, MSc Computer Science, ML Engineer, "
-        "based in Dundee UK with Graduate Visa. "
+        f"The applicant is {bio}. "
         "Return ONLY the answer value — no explanation, no quotes, no formatting."
     )
 
@@ -51,25 +58,21 @@ async def analyze_field_screenshot(
         b64_image = base64.b64encode(screenshot_png).decode("ascii")
         client = get_openai_client()
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": _build_vision_prompt(question, input_type)},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{b64_image}"},
-                        },
-                    ],
-                }
-            ],
-            max_tokens=100,
-            temperature=0.2,
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": _build_vision_prompt(question, input_type)},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{b64_image}",
+                    },
+                ],
+            }],
         )
 
-        answer = response.choices[0].message.content.strip()
+        answer = response.output_text.strip()
         logger.debug("Vision tier answer for '%s': '%s'", question[:60], answer[:80])
         return answer if answer else None
 

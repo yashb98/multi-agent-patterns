@@ -22,6 +22,15 @@ from jobpulse.paper_discovery import discover_trending_papers
 
 logger = get_logger(__name__)
 
+
+def _get_email() -> str:
+    try:
+        from shared.profile_store import get_profile_store
+        return get_profile_store().identity().email or "noreply@jobpulse.dev"
+    except Exception:
+        return "noreply@jobpulse.dev"
+
+
 # Categories to scan
 CATEGORIES = ["cs.AI", "cs.LG", "cs.CL", "cs.MA", "stat.ML"]
 
@@ -93,7 +102,7 @@ def fetch_papers(max_results: int = 200) -> list[dict]:
     )
 
     # arXiv requires descriptive User-Agent per API policy
-    headers = {"User-Agent": "JobPulse/1.0 (mailto:bishnoiyash274@gmail.com)"}
+    headers = {"User-Agent": f"JobPulse/1.0 (mailto:{_get_email()})"}
 
     resp = None
     for attempt in range(3):

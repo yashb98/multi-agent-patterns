@@ -23,6 +23,18 @@ from jobpulse.config import (
 
 logger = get_logger(__name__)
 
+
+def _file_name_prefix() -> str:
+    try:
+        from shared.profile_store import get_profile_store
+        prefix = get_profile_store().identity().file_name_prefix
+        if prefix:
+            return prefix
+    except Exception:
+        pass
+    return "Yash_Bishnoi"
+
+
 def _get_drive_service() -> Any | None:
     """Build Google Drive API v3 service using stored OAuth2 token.
 
@@ -60,7 +72,16 @@ def _get_drive_service() -> Any | None:
         )
         return None
     except Exception as exc:
-        logger.warning("Failed to build Drive service: %s", exc)
+        err = str(exc).lower()
+        if "invalid_scope" in err:
+            logger.warning(
+                "Drive OAuth scope mismatch (%s). Delete your Google token file and run "
+                "`python scripts/setup_integrations.py` so the token is re-issued with "
+                "the scopes in jobpulse.config.GOOGLE_SCOPES (includes Drive).",
+                exc,
+            )
+        else:
+            logger.warning("Failed to build Drive service: %s", exc)
         return None
 
 
@@ -176,7 +197,7 @@ def upload_cv(cv_path: Path, company: str) -> str | None:
         return None
 
     safe_company = company.replace("/", "_").replace(" ", "_")
-    filename = f"Yash_Bishnoi_{safe_company}.pdf"
+    filename = f"{_file_name_prefix()}_{safe_company}.pdf"
 
     return upload_to_drive(
         cv_path,

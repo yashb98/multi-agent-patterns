@@ -23,6 +23,15 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+
+def _first_name() -> str:
+    try:
+        from shared.profile_store import get_profile_store
+        return get_profile_store().identity().first_name or "Yash"
+    except Exception:
+        return "Yash"
+
+
 # ── Experience Memory (persists across runs in SQLite) ──
 
 import sqlite3
@@ -388,7 +397,7 @@ def dispatch(cmd: ParsedCommand) -> str:
     if len(results) > 1 and any(t.get("rlm") for t in tasks):
         with trail.step("llm_call", "RLM synthesis",
                          step_input=f"{len(results)} sections, {sum(len(v) for v in results.values())} chars") as s:
-            rlm_result = rlm_synthesize(results, f"Create a briefing for Yash from these data sources")
+            rlm_result = rlm_synthesize(results, f"Create a briefing for {_first_name()} from these data sources")
             if rlm_result:
                 final_result = rlm_result
                 s["output"] = f"RLM synthesized {len(rlm_result)} chars"

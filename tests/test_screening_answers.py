@@ -28,6 +28,10 @@ def test_right_to_work_type():
     assert get_answer("What type of visa do you currently hold?") == "Graduate Visa"
 
 
+def test_right_to_work_status_matches_graphcore_option():
+    assert get_answer("Please select your right to work status") == "Tier 4 (General) Student Visa"
+
+
 def test_sponsorship_no():
     assert get_answer("Do you require visa sponsorship?") == "No"
     assert get_answer("Will you need sponsorship to work in the UK?") == "No"
@@ -192,7 +196,7 @@ def test_employment_type():
 
 def test_background_check():
     assert get_answer("Are you willing to undergo a background check?") == "Yes"
-    assert get_answer("Do you have any unspent criminal convictions?") == "Yes"
+    assert get_answer("Do you have any unspent criminal convictions?") == "No"
 
 
 def test_security_clearance():

@@ -7,6 +7,7 @@ Uses the same curl-based Notion API pattern as notion_agent.py.
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 from shared.logging_config import get_logger
@@ -20,6 +21,101 @@ if TYPE_CHECKING:
     from jobpulse.models.application_models import JobListing
 
 logger = get_logger(__name__)
+
+
+def _file_name_prefix() -> str:
+    try:
+        from shared.profile_store import get_profile_store
+        prefix = get_profile_store().identity().file_name_prefix
+        if prefix:
+            return prefix
+    except Exception:
+        pass
+    return "Yash_Bishnoi"
+
+
+_NOTION_UNKNOWN_PROPERTY_RE = re.compile(
+    r"^(?P<prop>.+?) is not a property that exists\.?$",
+    re.MULTILINE,
+)
+
+_TERMINAL_JOB_TRACKER_STATUSES = frozenset({"Applied", "Rejected"})
+
+
+def delete_job_tracker_non_terminal_pages(
+    *,
+    terminal_statuses: frozenset[str] | None = None,
+) -> int:
+    """Trash (delete) Job Tracker pages whose Status is not Applied or Rejected.
+
+    Notion has no hard-delete in the public API: each page is moved to workspace
+    trash via ``in_trash: true`` (same end result as deleting from the database
+    view). ``Applied`` and ``Rejected`` rows are left untouched.
+
+    Uses ``NOTION_APPLICATIONS_DB_ID`` and a ``Status`` property of type *status*.
+    """
+    terminal = terminal_statuses or _TERMINAL_JOB_TRACKER_STATUSES
+    if not NOTION_APPLICATIONS_DB_ID:
+        logger.warning("delete_job_tracker_non_terminal_pages: NOTION_APPLICATIONS_DB_ID unset")
+        return 0
+
+    deleted = 0
+    cursor: str | None = None
+    while True:
+        body: dict = {
+            "page_size": 100,
+            "filter": {
+                "and": [
+                    {"property": "Status", "status": {"does_not_equal": "Applied"}},
+                    {"property": "Status", "status": {"does_not_equal": "Rejected"}},
+                ],
+            },
+        }
+        if cursor:
+            body["start_cursor"] = cursor
+
+        result = _notion_api(
+            "POST",
+            f"/databases/{NOTION_APPLICATIONS_DB_ID}/query",
+            body,
+        )
+
+        if result.get("object") == "error":
+            logger.error(
+                "delete_job_tracker_non_terminal_pages: Notion query failed: %s",
+                result.get("message", result),
+            )
+            return deleted
+
+        for row in result.get("results", []):
+            pid = row.get("id")
+            if not pid:
+                continue
+            patch = _notion_api("PATCH", f"/pages/{pid}", {"in_trash": True})
+            if not patch.get("id"):
+                patch = _notion_api("PATCH", f"/pages/{pid}", {"archived": True})
+            if patch.get("id"):
+                deleted += 1
+            else:
+                logger.warning(
+                    "delete_job_tracker_non_terminal_pages: trash failed for %s: %s",
+                    pid,
+                    patch.get("message", patch),
+                )
+
+        if not result.get("has_more"):
+            break
+        cursor = result.get("next_cursor")
+        if not cursor:
+            break
+
+    logger.info(
+        "delete_job_tracker_non_terminal_pages: trashed %d pages (kept status in %s)",
+        deleted,
+        ", ".join(sorted(terminal)),
+    )
+    return deleted
+
 
 # ---------------------------------------------------------------------------
 # Display name maps
@@ -207,9 +303,10 @@ def build_update_payload(
         properties["ATS Platform"] = {"select": {"name": ats_name}}
 
     safe_company = company.replace("/", "_").replace(" ", "_") if company else None
+    _prefix = _file_name_prefix()
 
     if cv_drive_link is not None:
-        cv_name = f"Yash_Bishnoi_{safe_company}.pdf" if safe_company else "CV.pdf"
+        cv_name = f"{_prefix}_{safe_company}.pdf" if safe_company else "CV.pdf"
         properties["CV Version"] = {
             "files": [{"type": "external", "name": cv_name, "external": {"url": cv_drive_link}}]
         }
@@ -263,23 +360,52 @@ def update_application_page(page_id: str, **kwargs) -> bool:
 
     Accepts the same keyword arguments as build_update_payload().
     Returns True on success, False on failure.
+
+    If the Notion database schema omits a property we send (e.g. no \"Applied Time\"),
+    the API returns 400; we strip that property from the payload and retry until the
+    update succeeds or the error is not recoverable.
     """
     payload = build_update_payload(**kwargs)
     if not payload["properties"]:
         logger.debug("update_application_page called with no fields to update — skipping")
         return True
 
-    result = _notion_api("PATCH", f"/pages/{page_id}", payload)
+    properties: dict = dict(payload["properties"])
+    for _ in range(16):
+        result = _notion_api("PATCH", f"/pages/{page_id}", {"properties": properties})
 
-    if result.get("id"):
-        logger.info("Updated Notion page %s", page_id)
-        return True
+        if result.get("id"):
+            logger.info("Updated Notion page %s", page_id)
+            return True
 
-    logger.error(
-        "Failed to update Notion page %s: %s",
-        page_id,
-        result.get("message", "unknown error"),
-    )
+        if result.get("object") == "error" and result.get("status") == 400:
+            msg = str(result.get("message", ""))
+            m = _NOTION_UNKNOWN_PROPERTY_RE.search(msg)
+            if m:
+                bad = m.group("prop").strip()
+                if bad in properties:
+                    logger.warning(
+                        "Notion schema has no property %r — omitting and retrying page %s",
+                        bad,
+                        page_id,
+                    )
+                    del properties[bad]
+                    if not properties:
+                        logger.error(
+                            "Notion update for %s: no properties left after schema mismatch",
+                            page_id,
+                        )
+                        return False
+                    continue
+
+        logger.error(
+            "Failed to update Notion page %s: %s",
+            page_id,
+            result.get("message", "unknown error"),
+        )
+        return False
+
+    logger.error("Notion update for %s: exhausted property retries", page_id)
     return False
 
 
@@ -304,7 +430,7 @@ def build_page_content(
     Sections: Application Details, Documents, JD Match Analysis, GitHub Repos.
     """
     safe_company = job.company.replace("/", "_").replace(" ", "_")
-    cv_filename = f"Yash_Bishnoi_{safe_company}.pdf"
+    cv_filename = f"{_file_name_prefix()}_{safe_company}.pdf"
     cl_filename = f"Cover_Letter_{safe_company}.pdf"
 
     blocks: list[dict] = []
@@ -367,7 +493,13 @@ def build_page_content(
     if matched_projects:
         blocks.append(_heading2("GitHub Repos"))
         for proj in matched_projects:
-            repo_url = f"https://github.com/yashb98/{proj}"
+            try:
+                from shared.profile_store import get_profile_store
+                gh = get_profile_store().identity().github or "https://github.com"
+                gh_base = gh.rstrip("/")
+            except Exception:
+                gh_base = "https://github.com"
+            repo_url = f"{gh_base}/{proj}"
             blocks.append(_bulleted(f"{proj}: {repo_url}"))
 
     return blocks

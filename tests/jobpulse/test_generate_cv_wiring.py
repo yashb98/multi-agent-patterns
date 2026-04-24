@@ -7,7 +7,6 @@ import pytest
 from jobpulse.cv_templates.generate_cv import (
     build_extra_skills,
     get_role_profile,
-    BASE_SKILLS,
 )
 
 

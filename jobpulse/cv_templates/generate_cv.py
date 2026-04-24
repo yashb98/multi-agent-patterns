@@ -22,7 +22,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 from jobpulse.config import DATA_DIR
-from jobpulse.cv_templates import sanitize_pdf as _sanitize_pdf
+from jobpulse.cv_templates import build_applicant_identity, sanitize_pdf as _sanitize_pdf
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -113,141 +113,67 @@ TEXT_COLOR = '#1a1a1a'     # Near-black for body text
 SUB_COLOR = '#444444'      # Gray for tagline
 
 
-# ---------------------------------------------------------------------------
-# Fixed identity
-# ---------------------------------------------------------------------------
+def _load_education():
+    from shared.profile_store import get_profile_store
+    return [
+        {
+            "degree": e.degree, "institution": e.institution, "dates": e.dates,
+            **({"dissertation": e.dissertation} if e.dissertation else {}),
+            **({"dissertation_url": e.dissertation_url} if e.dissertation_url else {}),
+            **({"modules": e.modules} if e.modules else {}),
+            **({"cgpa": e.grade} if e.grade else {}),
+        }
+        for e in get_profile_store().education()
+    ]
 
-def _build_identity() -> dict[str, str]:
-    from jobpulse.config import APPLICANT_PROFILE as _p
-    return {
-        "name": f"{_p['first_name']} {_p['last_name']}".strip(),
-        "phone": _p["phone"],
-        "email": _p["email"],
-        "linkedin": _p["linkedin"],
-        "github": _p["github"],
-        "portfolio": _p["portfolio"],
-    }
 
-IDENTITY = _build_identity()
+def _load_experience():
+    from shared.profile_store import get_profile_store
+    return [
+        {"title": e.title, "company": e.company, "dates": e.dates, "bullets": e.bullets}
+        for e in get_profile_store().experience()
+    ]
 
-EDUCATION = [
-    {
-        "degree": "MSc Computer Science",
-        "institution": "University of Dundee",
-        "dates": "Jan 2025 - Jan 2026",
-        "dissertation": "Deep Learning for Facial 3D Reconstruction - Simulator",
-        "dissertation_url": "https://github.com/yashb98/Deep-Learning-for-Facial-3D-Reconstruction---Simulator",
-        "modules": "Machine Learning | Advanced Programming Techniques | Design Methods | Software Engineering | Software Development | Web Development | Database Systems",
-    },
-    {
-        "degree": "MBA (Finance)",
-        "institution": "JECRC University",
-        "dates": "2019 - 2021",
-        "cgpa": "8.21/10",
-    },
-]
 
-EXPERIENCE = [
-    {
-        "title": "Team Leader",
-        "company": "Co-op",
-        "dates": "Apr 2025 - Present",
-        "bullets": [
-            '<b>Led</b> a team of 8, coordinating shift operations through clear <b>communication</b> and collaborative <b>decision making</b> under time pressure.',
-            'Developed <b>forecasting</b> processes for stock replenishment, reducing stockout incidents by <b>20%</b> through data-driven decisions and <b>adaptability</b> to demand shifts.',
-            'Automated analysis of sales trends and merchandising KPIs, demonstrating <b>creativity</b> in identifying patterns that drive operational impact.',
-            'Delivered <b>actionable insights</b> to area management, bridging data analysis with commercial execution through strong <b>stakeholder communication</b>.',
-        ],
-    },
-    {
-        "title": "Market Research Analyst",
-        "company": "Nidhi Herbal",
-        "dates": "Jul 2021 - Sep 2024",
-        "bullets": [
-            'Built <b>Power BI</b> dashboards with <b>DAX</b> enabling real-time <b>insights</b> into sales performance, supplier ROI, and trend analysis.',
-            'Automated <b>SQL</b> and Excel ETL workflows using <b>Python</b> and openpyxl, cutting monthly report prep time by <b>35%</b>.',
-            'Collaborated across cross-functional teams, translating complex <b>analytical findings</b> into clear recommendations through effective <b>teamwork</b> and <b>presentation skills</b>.',
-            'Applied <b>critical thinking</b> to identify correlations within large, messy supplier and market datasets, driving strategic <b>decision making</b> for business growth.',
-        ],
-    },
-]
+def _load_certifications():
+    from shared.profile_store import get_profile_store
+    return [(c.name, c.date, c.url) for c in get_profile_store().certifications()]
 
-CERTIFICATIONS = [
-    ("1. IBM Machine Learning", "July 2023", "https://www.coursera.org/account/accomplishments/specialization/certificate/SL9P2Q6Z43JP"),
-    ("2. SQL Essential Learning", "September 2023", "https://www.linkedin.com/learning/certificates/sql-essential"),
-    ("3. Feature Engineering", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/feature-engineering"),
-    ("4. Data Cleaning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/data-cleaning"),
-    ("5. Exploratory Data Analysis for Machine Learning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/eda-ml"),
-    ("6. Deep Learning and Reinforcement Learning", "July 2023", "https://www.coursera.org/account/accomplishments/certificate/S2MJH2ZQ8WF4"),
-    ("7. Introduction to Model Context Protocol", "Feb 2026", "https://verify.skilljar.com/c/nn63q5jje52u"),
-]
 
-COMMUNITY = [
-    {
-        "title": "Quackathon 2025 Participant.",
-        "text": "Built a data-driven prototype in 4 hours with a cross-functional team, demonstrating <b>adaptability</b>, <b>teamwork</b>, and rapid <b>decision making</b> under extreme time pressure.",
-    },
-    {
-        "title": "Friends International, Dundee Chapter.",
-        "text": "Led community initiatives supporting international students, strengthening <b>leadership</b>, cross-cultural <b>collaboration</b>, and <b>communication</b> with diverse stakeholders.",
-    },
-    {
-        "title": "Peer Mentor for Coding Challenges.",
-        "text": "Mentored peers on Python, SQL, and statistical analysis, demonstrating <b>communication</b> skills by distilling complex technical concepts into clear, digestible guidance.",
-    },
-]
+def _load_community():
+    from shared.profile_store import get_profile_store
+    return [{"title": c.title, "text": c.text} for c in get_profile_store().community()]
 
-# Base skills — 5 clean categories
-BASE_SKILLS = {
-    "Languages:": "Python | SQL | JavaScript | TypeScript",
-    "AI/ML:": "NLP | Text Analysis | Clustering | Scikit-learn | PyTorch | TensorFlow | Pandas | NumPy | LangChain | Hugging Face | RAG",
-    "DevOps:": "Docker | Kubernetes | AWS | GCP | Azure | CI/CD | GitHub Actions | Terraform | Linux",
-    "BI/Tools:": "Power BI | DAX | Looker | Excel | APIs | FastAPI | Flask | Git | GitHub | Web Scraping",
-    "Practices:": "Statistical Testing | Forecasting | Dashboards | Data Modelling | EDA | Data Cleaning | MLOps | A/B Testing | Documentation",
+
+def _load_base_skills():
+    from shared.profile_store import get_profile_store
+    return get_profile_store().base_skills()
+
+
+def _load_default_projects():
+    from shared.profile_store import get_profile_store
+    return get_profile_store().cv_projects()
+
+
+_LAZY_LOADERS = {
+    "BASE_SKILLS": _load_base_skills,
+    "DEFAULT_PROJECTS": _load_default_projects,
+    "EDUCATION": _load_education,
+    "EXPERIENCE": _load_experience,
+    "CERTIFICATIONS": _load_certifications,
+    "COMMUNITY": _load_community,
 }
 
-# Default projects
-DEFAULT_PROJECTS = [
-    {
-        "title": "1. Velox AI - Enterprise AI Voice Agent Platform | Python | FastAPI | Docker | GCP",
-        "url": "https://github.com/yashb98/Velox_AI",
-        "bullets": [
-            'Built real-time <b>dashboards</b> tracking performance metrics across <b>1,000+</b> concurrent sessions, reducing latency anomaly detection time by <b>70%</b>.',
-            'Automated <b>analysis</b> of <b>50K+</b> daily session metrics via <b>API</b>-driven data pipelines, cutting manual reporting effort by <b>80%</b>.',
-            'Identified <b>performance patterns</b> through statistical analysis on GCP, delivering <b>sub-150ms</b> response times at scale.',
-        ],
-    },
-    {
-        "title": "2. Cloud Sentinel - AI Powered Cloud Security Platform with Python, React, Docker, Redis, Pinecone",
-        "url": "https://github.com/yashb98/nexusmind",
-        "bullets": [
-            'Built <b>NLP</b> and <b>text-based analysis</b> pipelines extracting insights from <b>10K+</b> unstructured documents with <b>94%</b> retrieval precision.',
-            'Developed <b>clustering</b> and classification workflows grouping <b>500+</b> policy documents by topic, risk level, and compliance status.',
-            'Built <b>dashboards</b> surfacing audit results and compliance metrics, reducing manual review time by <b>55%</b>.',
-            'Delivered clear, <b>actionable insights</b> from messy data sources, bridging data science with strategic compliance decisions.',
-            'Optimised vector insertion pipeline, reducing indexing time by <b>60%</b> through batch processing and query tuning.',
-        ],
-    },
-    {
-        "title": "3. 90 Days Machine learning",
-        "url": "https://github.com/yashb98/90Days_Machine_learinng",
-        "bullets": [
-            '<b>30+</b> projects spanning <b>NLP</b>, <b>web scraping</b>, <b>clustering</b>, <b>forecasting</b>, and statistical testing using <b>Python</b>, <b>SQL</b>, and Scikit-learn.',
-            'Built <b>web scraping</b> pipelines collecting and structuring <b>100K+</b> records from multiple online sources using BeautifulSoup and Scrapy.',
-            'Ran <b>statistical tests</b> (A/B testing, hypothesis validation, correlation analysis) across <b>15+</b> datasets, improving prediction accuracy by <b>12%</b>.',
-            'Standardised <b>data cleaning</b> workflows across multi-source datasets, resolving format inconsistencies that impacted <b>40%</b> of raw inputs.',
-        ],
-    },
-    {
-        "title": "4. Deep Learning for Facial 3D Reconstructions with PyTorch and Computer Vision",
-        "url": "https://github.com/yashb98/Deep-Learning-for-Facial-3D-Reconstruction---Simulator",
-        "bullets": [
-            'Built custom encoder-decoder in <b>PyTorch</b> achieving <b>0.89 SSIM</b> reconstruction quality, outperforming baseline by <b>15%</b>.',
-            'Generated <b>10,000+</b> synthetic samples with automated <b>Python</b> pipelines, identifying spatial <b>patterns</b> across <b>3</b> coordinate systems.',
-            'Presented findings to academic panel, translating complex model architectures into clear visual narratives for non-technical stakeholders.',
-        ],
-    },
-]
+_LAZY_CACHE: dict[str, object] = {}
+
+
+def __getattr__(name: str):
+    loader = _LAZY_LOADERS.get(name)
+    if loader is not None:
+        if name not in _LAZY_CACHE:
+            _LAZY_CACHE[name] = loader()
+        return _LAZY_CACHE[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +278,7 @@ def build_extra_skills(required_skills: list[str], preferred_skills: list[str]) 
         "a/b testing": "ab testing", "ab testing": "a/b testing",
         "mlops": "ml ops", "ml ops": "mlops",
     }
-    for vals in BASE_SKILLS.values():
+    for vals in _load_base_skills().values():
         for s in vals.split(" | "):
             s_lower = s.strip().lower()
             base_set.add(s_lower)
@@ -428,6 +354,7 @@ def generate_cv_pdf(
     Returns Path to generated PDF.
     """
     _register_fonts()
+    identity = build_applicant_identity()
 
     if tagline:
         tagline = normalize_text_for_ats(tagline)[0]
@@ -529,7 +456,7 @@ def generate_cv_pdf(
         out = DATA_DIR / "applications" / safe_company
     out.mkdir(parents=True, exist_ok=True)
 
-    safe_name = IDENTITY["name"].replace(' ', '_')
+    safe_name = identity["name"].replace(' ', '_')
     safe_co = company.replace(' ', '_')
     cv_path = out / f"{safe_name}_{safe_co}.pdf"
 
@@ -539,16 +466,16 @@ def generate_cv_pdf(
     el = []
 
     # ── HEADER ──
-    el.append(Paragraph(B(IDENTITY["name"]), name_s))
+    el.append(Paragraph(B(identity["name"]), name_s))
     el.append(Spacer(1, 1))
     tag = tagline or 'MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | AI/ML | NLP | System Design'
     el.append(Paragraph(tag, tag_s))
     el.append(Paragraph(
-        f'{location} | {IDENTITY["phone"]} | '
-        f'{L("mailto:" + IDENTITY["email"], "Email")} | '
-        f'{L(IDENTITY["linkedin"], "LinkedIn")} | '
-        f'{L(IDENTITY["github"], "GitHub")} | '
-        f'{L(IDENTITY["portfolio"], "Portfolio")}', contact_s))
+        f'{location} | {identity["phone"]} | '
+        f'{L("mailto:" + identity["email"], "Email")} | '
+        f'{L(identity["linkedin"], "LinkedIn")} | '
+        f'{L(identity["github"], "GitHub")} | '
+        f'{L(identity["portfolio"], "Portfolio")}', contact_s))
 
     # ── PROFESSIONAL SUMMARY ──
     section('Professional Summary')
@@ -566,7 +493,7 @@ def generate_cv_pdf(
 
     # ── EDUCATION ──
     section('Education')
-    for i, edu in enumerate(EDUCATION):
+    for i, edu in enumerate(_load_education()):
         if i > 0:
             el.append(Spacer(1, 3))
         row(f'{B(edu["degree"])}, {edu["institution"]}', edu["dates"])
@@ -582,7 +509,7 @@ def generate_cv_pdf(
 
     # ── TECHNICAL SKILLS ──
     section('Technical Skills')
-    for label, vals in BASE_SKILLS.items():
+    for label, vals in _load_base_skills().items():
         skill_row(label, vals)
     if extra_skills:
         for label, vals in extra_skills.items():
@@ -590,7 +517,7 @@ def generate_cv_pdf(
 
     # ── PROJECTS ──
     section('Projects')
-    proj_list = projects or DEFAULT_PROJECTS
+    proj_list = projects or _load_default_projects()
     import re as _re
     for i, proj in enumerate(proj_list):
         title = _re.sub(r"^\d+\.\s*", "", proj["title"])
@@ -602,7 +529,7 @@ def generate_cv_pdf(
 
     # ── EXPERIENCE ──
     section('Experience')
-    for i, exp in enumerate(EXPERIENCE):
+    for i, exp in enumerate(_load_experience()):
         if i > 0:
             el.append(Spacer(1, 2))
         row(B(exp["title"]), exp["dates"])
@@ -612,13 +539,13 @@ def generate_cv_pdf(
 
     # ── CERTIFICATIONS ──
     section('Certifications')
-    for cert_name, cert_date, cert_url in CERTIFICATIONS:
+    for cert_name, cert_date, cert_url in _load_certifications():
         verify_text = f'{cert_date} - {L(cert_url, "Verify")}' if cert_url else cert_date
         row(B(cert_name), verify_text, body_s, sr)
 
     # ── COMMUNITY AND LEADERSHIP ──
     section('Community and Leadership')
-    for i, item in enumerate(COMMUNITY):
+    for i, item in enumerate(_load_community()):
         el.append(Paragraph(
             f'{B(f"{i+1}.  {item["title"]}")}  {item["text"]}', comm_s))
 

@@ -15,6 +15,15 @@ from jobpulse.config import DATA_DIR
 
 logger = get_logger(__name__)
 
+
+def _get_email() -> str:
+    try:
+        from shared.profile_store import get_profile_store
+        return get_profile_store().identity().email or "noreply@jobpulse.dev"
+    except Exception:
+        return "noreply@jobpulse.dev"
+
+
 NITTER_INSTANCES = [
     "https://nitter.net",
     "https://nitter.privacydev.net",
@@ -292,7 +301,7 @@ def fetch_arxiv_rss_fallback() -> list[dict]:
         try:
             resp = httpx.get(
                 f"https://rss.arxiv.org/rss/{category}",
-                headers={"User-Agent": "JobPulse/1.0 (mailto:bishnoiyash274@gmail.com)"},
+                headers={"User-Agent": f"JobPulse/1.0 (mailto:{_get_email()})"},
                 timeout=15,
             )
             resp.raise_for_status()

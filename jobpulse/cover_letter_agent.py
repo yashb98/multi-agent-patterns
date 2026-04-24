@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from shared.pii import assert_prompt_has_wrapped_pii, wrap_pii_value
+
 if TYPE_CHECKING:
     from jobpulse.models.application_models import JobListing
 
@@ -19,33 +21,37 @@ if TYPE_CHECKING:
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "Cover letter template.md"
 
 def _build_profile() -> dict:
-    """Build profile dict by merging applicator.PROFILE with cover-letter-specific fields.
-
-    Uses a lazy import to avoid circular dependency (applicator imports ats_adapters).
-    """
+    """Build profile dict from ProfileStore with applicator fallback."""
     try:
+        from shared.profile_store import get_profile_store
+        ps = get_profile_store()
+        ident = ps.identity()
+        name = ident.full_name or "Yash B"
+        visa = ps.sensitive("visa_status") or ""
+        edu_entries = ps.education()
+        exp_entries = ps.experience()
+        education = [f"{e.degree}, {e.institution} ({e.dates})" for e in edu_entries] or [ident.education]
+        experience = [f"{e.title}, {e.company} ({e.dates})" for e in exp_entries]
+    except Exception as _exc:
+        from shared.logging_config import get_logger as _gl
+        _gl(__name__).debug("ProfileStore unavailable, falling back to applicator: %s", _exc)
         from jobpulse.applicator import PROFILE as _AP
-        name = f"{_AP.get('first_name', 'Yash')} {_AP.get('last_name', 'B')}".strip()
-        visa = _AP.get("visa_status", "Student Visa; converting to Graduate Visa from 9 May 2026")
-    except Exception:  # pragma: no cover — guard against import issues
-        name = "Yash B"
-        visa = "Student Visa; converting to Graduate Visa from 9 May 2026"
+        name = f"{_AP.get('first_name', '')} {_AP.get('last_name', '')}".strip() or "Yash B"
+        visa = ""
+        education = []
+        experience = []
 
-    return {
-        "name": name,
-        "education": [
-            "MSc Computer Science, University of Dundee (Jan 2025 - Jan 2026)",
-            "MBA Finance, JECRC University (2019-2021)",
-        ],
-        "experience": [
-            "Team Leader, Co-op (Apr 2025 - Present)",
-            "Market Research Analyst, Nidhi Herbal (Jul 2021 - Sep 2024)",
-        ],
-        "visa": visa,
-    }
+    return {"name": name, "education": education, "experience": experience, "visa": visa}
 
 
-_PROFILE = _build_profile()
+_PROFILE: dict | None = None
+
+
+def _get_profile() -> dict:
+    global _PROFILE
+    if _PROFILE is None:
+        _PROFILE = _build_profile()
+    return _PROFILE
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +71,16 @@ def _load_template() -> str:
             _TEMPLATE_PATH,
         )
         return ""
+
+
+def _cover_letter_prompt_profile() -> dict:
+    p = _get_profile()
+    return {
+        "name": p["name"],
+        "education": p["education"],
+        "experience": p["experience"],
+        "visa": p["visa"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +105,7 @@ def build_cover_letter_prompt(
     - Instructions: follow template exactly, 4 numbered points, 250-350 words, professional tone
     """
     template = _load_template()
+    prompt_profile = _cover_letter_prompt_profile()
 
     if len(jd_text) <= 2000:
         jd_snippet = jd_text
@@ -98,8 +115,14 @@ def build_cover_letter_prompt(
         jd_snippet = cut[:last_period + 1] if last_period > 1500 else cut
     skills_str = ", ".join(matched_skills)
     projects_str = ", ".join(matched_projects)
-    education_str = "\n".join(f"  - {e}" for e in _PROFILE["education"])
-    experience_str = "\n".join(f"  - {x}" for x in _PROFILE["experience"])
+    education_str = "\n".join(
+        f"  - {wrap_pii_value(f'cover_letter.education[{index}]', value)}"
+        for index, value in enumerate(prompt_profile["education"])
+    )
+    experience_str = "\n".join(
+        f"  - {wrap_pii_value(f'cover_letter.experience[{index}]', value)}"
+        for index, value in enumerate(prompt_profile["experience"])
+    )
 
     prompt = f"""You are writing a professional cover letter for a job application.
 
@@ -114,12 +137,12 @@ Use the following template structure exactly:
 {jd_snippet}
 
 ## APPLICANT PROFILE
-- Name: {_PROFILE["name"]}
+- Name: {wrap_pii_value("cover_letter.name", prompt_profile["name"])}
 - Education:
 {education_str}
 - Work Experience:
 {experience_str}
-- Visa Status: {_PROFILE["visa"]}
+- Visa Status: {wrap_pii_value("cover_letter.visa", prompt_profile["visa"])}
 
 ## MATCHED SKILLS (use these to write the 4 numbered points)
 {skills_str}
@@ -136,6 +159,7 @@ Use the following template structure exactly:
 5. Tailor the hook (first 2 lines) specifically to {company} and the {role} role.
 6. Output plain text only — no markdown fences, no LaTeX, no HTML.
 """
+    assert_prompt_has_wrapped_pii(prompt, prompt_profile, "cover_letter")
     return prompt
 
 

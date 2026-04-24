@@ -225,8 +225,8 @@ class TestPatternOrdering:
 
     ORDERING_TESTS = [
         # (question, expected_answer_substring)
-        ("What is your Right to Work Type?", "Graduate Visa"),
-        ("What is your current salary?", "22000"),
+        ("What is your Right to Work Type?", "SENSITIVE:visa_type"),
+        ("What is your current salary?", "CURRENT_SALARY"),
         ("How many direct reports have you managed?", "8"),
     ]
 

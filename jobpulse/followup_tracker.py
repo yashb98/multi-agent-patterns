@@ -16,6 +16,18 @@ from jobpulse.config import DATA_DIR
 
 logger = get_logger(__name__)
 
+
+def _sender_name() -> str:
+    try:
+        from shared.profile_store import get_profile_store
+        name = get_profile_store().identity().full_name
+        if name:
+            return name
+    except Exception:
+        pass
+    return "Yash Bishnoi"
+
+
 _DEFAULT_DB_PATH = str(DATA_DIR / "followups.db")
 
 # ---------------------------------------------------------------------------
@@ -196,7 +208,7 @@ _EMAIL_TEMPLATES = {
         "confirm my application was received. I'm particularly interested in this "
         "role given my experience with production Python systems and data pipelines.\n\n"
         "Happy to provide any additional information.\n\n"
-        "Best regards,\nYash Bishnoi"
+        "Best regards,\n{sender_name}"
     ),
     1: (
         "Subject: {role} at {company} — checking in\n\n"
@@ -204,7 +216,7 @@ _EMAIL_TEMPLATES = {
         "I wanted to follow up on my application for {role} at {company}. "
         "I remain very interested and would welcome the opportunity to discuss "
         "how my background in ML systems and data analysis aligns with your needs.\n\n"
-        "Best regards,\nYash Bishnoi"
+        "Best regards,\n{sender_name}"
     ),
 }
 
@@ -232,7 +244,7 @@ def generate_followup_draft(
     templates = _LINKEDIN_TEMPLATES if channel == "linkedin" else _EMAIL_TEMPLATES
     idx = min(followup_count, max(templates.keys()))
     template = templates.get(idx, templates[0])
-    draft = template.format(company=company, role=role, status=status)
+    draft = template.format(company=company, role=role, status=status, sender_name=_sender_name())
     if channel == "linkedin" and len(draft) > 300:
         draft = draft[:297] + "..."
     return draft

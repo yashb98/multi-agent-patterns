@@ -13,6 +13,17 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+def _first_name() -> str:
+    try:
+        from shared.profile_store import get_profile_store
+        name = get_profile_store().identity().first_name
+        if name:
+            return name
+    except Exception:
+        pass
+    return "Yash"
+
+
 def build_and_send(trigger: str = "cron_morning"):
     """Collect all sections and send one consolidated Telegram message."""
     from jobpulse.process_logger import ProcessTrail
@@ -150,7 +161,7 @@ def build_and_send(trigger: str = "cron_morning"):
         logger.error("Job stats for briefing failed: %s", e)
 
     # ── Build Message ──
-    message = f"""☀️ Good Morning Yash! Here's your briefing for {today}:
+    message = f"""☀️ Good Morning {_first_name()}! Here's your briefing for {today}:
 
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -224,7 +235,7 @@ Have a productive day! 🚀"""
 
     # Send separate Notion todo prompt if no tasks
     if not tasks:
-        todo_prompt = """📝 Hey Yash! Quick check on your day:
+        todo_prompt = f"""📝 Hey {_first_name()}! Quick check on your day:
 
 I didn't find a todo list for today in Notion.
 

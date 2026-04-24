@@ -1,12 +1,15 @@
 """Tests for jobpulse/job_notion_sync.py — payload building only, no API calls."""
 
 from datetime import date, datetime
+from unittest.mock import patch
 
 import pytest
 from jobpulse.job_notion_sync import (
     build_create_payload,
     build_update_payload,
+    delete_job_tracker_non_terminal_pages,
     platform_display,
+    update_application_page,
 )
 from jobpulse.models.application_models import JobListing
 
@@ -77,3 +80,44 @@ def test_platform_display_name() -> None:
     assert platform_display("totaljobs") == "TotalJobs"
     assert platform_display("glassdoor") == "Glassdoor"
     assert platform_display("reed") == "Reed"
+
+
+@patch("jobpulse.job_notion_sync.NOTION_APPLICATIONS_DB_ID", "db-123")
+@patch("jobpulse.job_notion_sync._notion_api")
+def test_delete_job_tracker_non_terminal_pages_trashes_rows(mock_api) -> None:
+    page_a = {"id": "p1", "object": "page"}
+    mock_api.side_effect = [
+        {"object": "list", "results": [page_a], "has_more": False},
+        {"object": "page", "id": "p1"},
+    ]
+    n = delete_job_tracker_non_terminal_pages()
+    assert n == 1
+    assert mock_api.call_count == 2
+    q = mock_api.call_args_list[0][0][2]
+    assert q["filter"]["and"][0]["property"] == "Status"
+    trash_body = mock_api.call_args_list[1][0][2]
+    assert trash_body == {"in_trash": True}
+
+
+@patch("jobpulse.job_notion_sync._notion_api")
+def test_update_application_page_retries_without_unknown_property(mock_api) -> None:
+    """Notion 400 'not a property' drops that field and PATCHes again."""
+    mock_api.side_effect = [
+        {
+            "object": "error",
+            "status": 400,
+            "message": "Applied Time is not a property that exists.",
+        },
+        {"object": "page", "id": "abc"},
+    ]
+    ok = update_application_page(
+        "page-123",
+        status="Applied",
+        applied_date=date(2026, 4, 23),
+        applied_time="2026-04-23T12:00:00Z",
+    )
+    assert ok is True
+    assert mock_api.call_count == 2
+    second = mock_api.call_args_list[1][0][2]["properties"]
+    assert "Applied Time" not in second
+    assert second["Status"]["status"]["name"] == "Applied"

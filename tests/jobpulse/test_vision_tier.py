@@ -23,11 +23,10 @@ def test_build_vision_prompt_textarea():
 async def test_analyze_returns_answer_on_success():
     """Vision tier returns parsed answer from LLM."""
     mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = "Male"
+    mock_response.output_text = "Male"
 
     mock_client = MagicMock()
-    mock_client.chat.completions.create.return_value = mock_response
+    mock_client.responses.create.return_value = mock_response
 
     with patch("jobpulse.vision_tier.OPENAI_API_KEY", "test-key"), \
          patch("jobpulse.vision_tier.get_openai_client", return_value=mock_client):
@@ -43,7 +42,7 @@ async def test_analyze_returns_answer_on_success():
 async def test_analyze_returns_none_on_error():
     """Vision tier returns None when API fails."""
     mock_client = MagicMock()
-    mock_client.chat.completions.create.side_effect = Exception("API down")
+    mock_client.responses.create.side_effect = Exception("API down")
 
     with patch("jobpulse.vision_tier.OPENAI_API_KEY", "test-key"), \
          patch("jobpulse.vision_tier.get_openai_client", return_value=mock_client):
