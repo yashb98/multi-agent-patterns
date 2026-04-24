@@ -112,13 +112,10 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
         return PageType.LOGIN_FORM, 0.9
 
     # 5.5 Modal/dialog with form fields — application form regardless of background
-    page_text_lower = page_text.lower()
-    has_dialog_hint = (
-        'role="dialog"' in page_text_lower
-        or "aria-modal" in page_text_lower
-        or any("dialog" in f.get("selector", "").lower() for f in fields)
-    )
-    if has_dialog_hint and (has_application_fields or len(fields) >= 2):
+    has_dialog = snapshot.get("has_dialog", False)
+    if not has_dialog:
+        has_dialog = any("dialog" in f.get("selector", "").lower() for f in fields)
+    if has_dialog and (has_application_fields or len(fields) >= 2):
         return PageType.APPLICATION_FORM, 0.9
 
     # 6. Job description: Apply button, few form fields

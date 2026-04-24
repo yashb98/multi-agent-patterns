@@ -358,6 +358,13 @@ class PlaywrightDriver:
         except Exception as exc:
             logger.debug("get_snapshot: a11y merge failed: %s", exc)
 
+        # Check for dialog/modal presence
+        try:
+            dialog_locator = self._page.locator('[role="dialog"], [aria-modal="true"]')
+            snapshot["has_dialog"] = bool(await dialog_locator.count())
+        except Exception:
+            snapshot["has_dialog"] = False
+
         return snapshot
 
     async def wait_for_apply(self, timeout_ms: int = 10000) -> dict:
