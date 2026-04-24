@@ -79,7 +79,10 @@ async def test_scan_fields_text_inputs():
     file_loc.all = AsyncMock(return_value=[])
     page.locator = lambda sel: textarea_loc if "textarea" in sel else file_loc
 
-    with patch.object(filler, "_get_accessible_name", return_value="First Name"):
+    from jobpulse.form_scanner import FormScanResult
+    with patch("jobpulse.form_scanner.scan_form", new_callable=AsyncMock,
+               return_value=FormScanResult(fields=[])), \
+         patch.object(filler, "_get_accessible_name", return_value="First Name"):
         fields = await filler._scan_fields()
 
     assert len(fields) == 1
@@ -125,7 +128,10 @@ async def test_scan_fields_select_with_options():
     file_loc.all = AsyncMock(return_value=[])
     page.locator = lambda sel: textarea_loc if "textarea" in sel else file_loc
 
-    with patch.object(filler, "_get_accessible_name", return_value="Country"):
+    from jobpulse.form_scanner import FormScanResult
+    with patch("jobpulse.form_scanner.scan_form", new_callable=AsyncMock,
+               return_value=FormScanResult(fields=[])), \
+         patch.object(filler, "_get_accessible_name", return_value="Country"):
         fields = await filler._scan_fields()
 
     assert len(fields) == 1
@@ -166,7 +172,10 @@ async def test_scan_fields_checkbox():
     file_loc.all = AsyncMock(return_value=[])
     page.locator = lambda sel: textarea_loc if "textarea" in sel else file_loc
 
-    with patch.object(filler, "_get_accessible_name", return_value="Agree to terms"):
+    from jobpulse.form_scanner import FormScanResult
+    with patch("jobpulse.form_scanner.scan_form", new_callable=AsyncMock,
+               return_value=FormScanResult(fields=[])), \
+         patch.object(filler, "_get_accessible_name", return_value="Agree to terms"):
         fields = await filler._scan_fields()
 
     assert len(fields) == 1
@@ -233,6 +242,36 @@ async def test_fill_by_label_select():
 
     assert result["success"] is True
     el.select_option.assert_called_once_with(label="United States", timeout=5000)
+
+
+@pytest.mark.asyncio
+async def test_fill_by_label_select_reports_unverified_when_value_does_not_stick():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    el = AsyncMock()
+    el.evaluate = AsyncMock(side_effect=["select", "select", "Canada"])
+    el.get_attribute = AsyncMock(return_value=None)
+    el.select_option = AsyncMock()
+    option_locator = AsyncMock()
+    option_locator.all_text_contents = AsyncMock(return_value=["United States", "Canada"])
+    el.locator = MagicMock(return_value=option_locator)
+
+    label_locator = MagicMock()
+    label_locator.count = AsyncMock(return_value=1)
+    label_locator.nth = MagicMock(return_value=el)
+    label_locator.first = el
+
+    page.get_by_label = MagicMock(return_value=label_locator)
+
+    with patch.object(filler, "_smart_scroll", new_callable=AsyncMock), \
+         patch.object(filler, "_move_mouse_to", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler._fill_by_label("Country", "United States")
+
+    assert result["success"] is True
+    assert result["value_verified"] is False
+    assert result["actual_value"] == "Canada"
 
 
 @pytest.mark.asyncio
@@ -312,6 +351,230 @@ async def test_fill_by_label_placeholder_fallback():
     page.get_by_placeholder.assert_called_once()
 
 
+def test_best_option_match_prefers_united_kingdom_plus44():
+    from jobpulse.native_form_filler import _best_option_match
+
+    options = ["Ukraine (+380)", "United Kingdom (+44)", "United States (+1)"]
+    assert _best_option_match("Phone Country", "UK", options) == "United Kingdom (+44)"
+    assert _best_option_match("Country", "+44", options) == "United Kingdom (+44)"
+
+
+def test_best_option_match_picks_student_visa_status():
+    from jobpulse.native_form_filler import _best_option_match
+
+    options = [
+        "British or Irish Citizen",
+        "Tier 4 (General) Student Visa",
+        "Graduate Visa",
+        "Other",
+    ]
+    value = "Student Visa; converting to Graduate Visa from 9 May 2026 (valid 2 years)"
+    assert _best_option_match("Please select your right to work status", value, options) == (
+        "Tier 4 (General) Student Visa"
+    )
+
+
+def test_best_option_match_understands_gender_and_asian_indian_intent():
+    from jobpulse.native_form_filler import _best_option_match
+
+    assert _best_option_match("I identify my gender as", "Male", ["Woman", "Man", "Non-binary"]) == "Man"
+    assert _best_option_match(
+        "What is your ethnicity?",
+        "Asian or Asian British - Indian",
+        [
+            "Arab",
+            "Asian (Indian, Pakistani, Bangladeshi, Chinese, Any other Asian background)",
+            "White",
+        ],
+    ) == "Asian (Indian, Pakistani, Bangladeshi, Chinese, Any other Asian background)"
+
+
+# ── _build_option_aliases ──
+
+
+def _make_profile_store(tmp_path):
+    """Create a ProfileStore with tmp_path DB for testing."""
+    from shared.profile_store import ProfileStore
+
+    db_path = tmp_path / "test_profile.db"
+    key_path = tmp_path / ".test_key"
+    store = ProfileStore(db_path=db_path, key_path=key_path)
+    return store
+
+
+def test_build_option_aliases_includes_gender_aliases():
+    """Generic gender aliases are always present regardless of store."""
+    from jobpulse.native_form_filler import _build_option_aliases
+
+    aliases = _build_option_aliases()
+    assert "man" in aliases["male"]
+    assert "male" in aliases["man"]
+
+
+def test_build_option_aliases_includes_country_aliases():
+    """Generic country aliases map between abbreviations and full names."""
+    from jobpulse.native_form_filler import _build_option_aliases
+
+    aliases = _build_option_aliases()
+    assert "united kingdom" in aliases["uk"]
+    assert "uk" in aliases["united kingdom"]
+
+
+def test_build_option_aliases_includes_ethnicity_aliases():
+    """Ethnicity aliases cover common ATS form variations."""
+    from jobpulse.native_form_filler import _build_option_aliases
+
+    aliases = _build_option_aliases()
+    # "asian indian" should map to common ATS long-form labels
+    assert any("asian" in a for a in aliases.get("asian indian", ()))
+
+
+def test_build_option_aliases_with_store_does_not_crash(tmp_path):
+    """Passing a ProfileStore does not crash and returns the same generic aliases.
+
+    The store parameter is a forward-compatible placeholder (Task 2).  It is
+    intentionally unused today — generic tables cover all needed aliases.
+    """
+    from jobpulse.native_form_filler import _build_option_aliases
+
+    store = _make_profile_store(tmp_path)
+    store.set_screening_default("gender", "Male")
+    store.set_screening_default("ethnicity", "Asian Indian")
+
+    aliases_with_store = _build_option_aliases(store)
+    aliases_without_store = _build_option_aliases(None)
+
+    # Store is unused: output must be identical to the no-store path
+    assert aliases_with_store == aliases_without_store
+    store.close()
+
+
+def test_build_option_aliases_no_store_still_works():
+    """Without a store, _build_option_aliases returns generic aliases only."""
+    from jobpulse.native_form_filler import _build_option_aliases
+
+    aliases = _build_option_aliases(None)
+    assert isinstance(aliases, dict)
+    assert "male" in aliases
+    assert "uk" in aliases
+
+
+# ── _canonicalize_country_value with store ──
+
+
+def test_canonicalize_country_value_uk_without_store():
+    """Without a store, UK-style values still canonicalize to United Kingdom."""
+    from jobpulse.native_form_filler import _canonicalize_country_value
+
+    assert _canonicalize_country_value("Country", "UK") == "United Kingdom"
+    assert _canonicalize_country_value("Country", "gb") == "United Kingdom"
+    assert _canonicalize_country_value("Country", "+44") == "United Kingdom"
+
+
+def test_canonicalize_country_value_with_store_uses_profile_country(tmp_path):
+    """With a store, canonicalization reads user's country from profile location."""
+    from jobpulse.native_form_filler import _canonicalize_country_value
+
+    store = _make_profile_store(tmp_path)
+    store.set_identity(location="Berlin, Germany")
+
+    # When store has a different country, "de" should canonicalize to Germany
+    assert _canonicalize_country_value("Country", "de", store=store) == "Germany"
+    store.close()
+
+
+def test_canonicalize_country_value_non_country_label_passes_through():
+    """Non-country labels pass through without canonicalization."""
+    from jobpulse.native_form_filler import _canonicalize_country_value
+
+    assert _canonicalize_country_value("First Name", "UK") == "UK"
+
+
+def test_canonicalize_country_value_unknown_value_passes_through():
+    """Values that don't match any country alias pass through."""
+    from jobpulse.native_form_filler import _canonicalize_country_value
+
+    assert _canonicalize_country_value("Country", "Narnia") == "Narnia"
+
+
+# ── _best_option_match with store kwarg ──
+
+
+def test_best_option_match_accepts_store_kwarg(tmp_path):
+    """_best_option_match accepts an optional store kwarg."""
+    from jobpulse.native_form_filler import _best_option_match
+
+    store = _make_profile_store(tmp_path)
+    store.set_identity(location="London, United Kingdom")
+
+    options = ["Ukraine (+380)", "United Kingdom (+44)", "United States (+1)"]
+    result = _best_option_match("Phone Country", "UK", options, store=store)
+    assert result == "United Kingdom (+44)"
+    store.close()
+
+
+def test_best_option_match_store_none_works():
+    """_best_option_match still works when store=None (backward compat)."""
+    from jobpulse.native_form_filler import _best_option_match
+
+    options = ["Ukraine (+380)", "United Kingdom (+44)", "United States (+1)"]
+    result = _best_option_match("Phone Country", "UK", options, store=None)
+    assert result == "United Kingdom (+44)"
+
+
+@pytest.mark.asyncio
+async def test_normalize_phone_value_for_split_uk_widget():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    plus44 = MagicMock()
+    plus44.count = AsyncMock(return_value=1)
+    page.get_by_text = MagicMock(return_value=plus44)
+
+    assert await filler._normalize_phone_value("Phone", "07909 445288") == "7909445288"
+
+
+@pytest.mark.asyncio
+async def test_fill_special_widget_sets_country_options_to_united_kingdom():
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    button = AsyncMock()
+    button.count = AsyncMock(return_value=1)
+    button.click = AsyncMock()
+    button.get_attribute = AsyncMock(return_value="Change country, selected United Kingdom (+44)")
+
+    search = AsyncMock()
+    search.fill = AsyncMock()
+    search.press = AsyncMock()
+    search.count = AsyncMock(return_value=1)
+
+    option = AsyncMock()
+    option.count = AsyncMock(return_value=1)
+    option.click = AsyncMock()
+
+    def locator(selector, **kwargs):
+        if selector == "button.iti__selected-country":
+            return MagicMock(first=button)
+        if selector == "#iti-0__search-input":
+            return MagicMock(first=search)
+        if selector == "#iti-0__country-listbox li":
+            return MagicMock(first=option)
+        raise AssertionError(selector)
+
+    page.locator = MagicMock(side_effect=locator)
+
+    with patch.object(filler, "_smart_scroll", new_callable=AsyncMock), \
+         patch.object(filler, "_move_mouse_to", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler._fill_by_label("Country Options", "UK")
+
+    assert result["success"] is True
+    assert result["value_verified"] is True
+    search.fill.assert_any_call("United Kingdom")
+    option.click.assert_called_once()
+
+
 # ── _map_fields (LLM Call 1) ──
 
 
@@ -351,23 +614,46 @@ async def test_map_fields_skips_file_fields():
 
 @pytest.mark.asyncio
 async def test_map_fields_includes_options():
-    """Dropdown options are passed in the prompt."""
+    """Text field options are passed in the prompt."""
     filler = _make_filler()
     fields = [
-        {"label": "Country", "type": "select", "options": ["USA", "UK"], "value": ""},
+        {"label": "Preferred Location", "type": "text", "options": ["USA", "UK"], "value": ""},
     ]
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = '{"Country": "UK"}'
+    mock_response.choices[0].message.content = '{"Preferred Location": "UK"}'
 
     with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
         result = await filler._map_fields(fields, {}, {}, "greenhouse")
 
-    assert result == {"Country": "UK"}
+    assert result == {"Preferred Location": "UK"}
     prompt = mock_openai.return_value.chat.completions.create.call_args[1]["messages"][0]["content"]
     assert "USA" in prompt
+
+
+@pytest.mark.asyncio
+async def test_map_fields_keeps_seed_mapping_and_leaves_question_fields_for_screening():
+    filler = _make_filler()
+    fields = [
+        {"label": "Website", "type": "text", "value": ""},
+        {"label": "How did you hear about this role?", "type": "text", "value": ""},
+    ]
+    profile = {"portfolio": "https://yashbishnoi.io"}
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = (
+        '{"Website": "", "How did you hear about this role?": "LinkedIn"}'
+    )
+
+    with patch.object(filler, "_try_cached_mapping", return_value=None), \
+         patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        result = await filler._map_fields(fields, profile, {}, "linkedin")
+
+    assert result == {"Website": "https://yashbishnoi.io"}
 
 
 # ── _screen_questions (LLM Call 2) ──
@@ -492,8 +778,8 @@ async def test_upload_files_cv_only():
         {"idx": 0, "id": "resume", "name": "", "label": "upload resume"},
     ])
     fi = MagicMock()
-    nth_mock = MagicMock(return_value=fi)
-    page.locator = MagicMock(return_value=MagicMock(nth=nth_mock))
+    locator_mock = MagicMock(first=fi, nth=MagicMock(return_value=fi))
+    page.locator = MagicMock(return_value=locator_mock)
 
     with patch.object(filler, "_upload_pdf", new_callable=AsyncMock) as mock_upload:
         await filler._upload_files("/tmp/cv.pdf", None)
@@ -512,8 +798,17 @@ async def test_upload_files_cv_and_cl():
     ])
     fi_cv = MagicMock()
     fi_cl = MagicMock()
-    nth_mock = MagicMock(side_effect=lambda i: fi_cv if i == 0 else fi_cl)
-    page.locator = MagicMock(return_value=MagicMock(nth=nth_mock))
+    cv_locator = MagicMock(first=fi_cv)
+    cl_locator = MagicMock(first=fi_cl)
+
+    def _locator_factory(sel):
+        if "resume" in sel:
+            return cv_locator
+        if "cover_letter" in sel:
+            return cl_locator
+        return MagicMock(first=MagicMock())
+
+    page.locator = MagicMock(side_effect=_locator_factory)
 
     with patch.object(filler, "_upload_pdf", new_callable=AsyncMock) as mock_upload:
         await filler._upload_files("/tmp/cv.pdf", "/tmp/cl.pdf")
@@ -816,6 +1111,50 @@ async def test_fill_dry_run_stops():
     assert result["success"] is True
     assert result["dry_run"] is True
     assert "agent_mapping" in result
+
+
+@pytest.mark.asyncio
+async def test_fill_retries_unverified_fields_with_llm_recovery():
+    filler = _make_filler()
+    fields = [{"label": "Country", "type": "combobox", "value": "", "required": True}]
+
+    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+         patch.object(filler, "_scan_fields", return_value=fields), \
+         patch.object(filler, "_is_confirmation_page", return_value=False), \
+         patch.object(filler, "_map_fields", return_value={"Country": "UK"}), \
+         patch.object(
+             filler,
+             "_fill_by_label",
+             side_effect=[
+                 {"success": True, "value_verified": False, "actual_value": "Select..."},
+                 {"success": True, "value_verified": True, "actual_value": "United Kingdom"},
+             ],
+         ) as mock_fill, \
+         patch.object(
+             filler,
+             "_recover_failed_fields_with_llm",
+             new_callable=AsyncMock,
+             return_value={"Country": "United Kingdom"},
+         ) as mock_recover, \
+         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
+         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch.object(filler, "_is_submit_page", return_value=False), \
+         patch.object(filler, "_click_navigation", return_value="submitted"), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler.fill(
+            platform="greenhouse",
+            cv_path="/tmp/cv.pdf",
+            cl_path=None,
+            profile={},
+            custom_answers={},
+            dry_run=False,
+        )
+
+    assert result["success"] is True
+    mock_recover.assert_awaited_once()
+    assert mock_fill.call_args_list[0].args == ("Country", "UK")
+    assert mock_fill.call_args_list[1].args == ("Country", "United Kingdom")
+    assert result["agent_mapping"]["Country"] == "United Kingdom"
 
 
 @pytest.mark.asyncio
