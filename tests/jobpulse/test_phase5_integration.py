@@ -32,6 +32,12 @@ def bridge():
     b.get_form_progress = AsyncMock(return_value=None)
     b.save_form_progress = AsyncMock(return_value=True)
     b.clear_form_progress = AsyncMock(return_value=True)
+    # Modal wait loop needs page.locator() to return a proper mock
+    no_dialog = AsyncMock()
+    no_dialog.count = AsyncMock(return_value=0)
+    mock_page = MagicMock()
+    mock_page.locator = MagicMock(return_value=no_dialog)
+    b.page = mock_page
     return b
 
 
