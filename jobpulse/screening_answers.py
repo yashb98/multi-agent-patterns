@@ -7,6 +7,8 @@ with LLM fallback for open-ended questions and SQLite caching via JobDB.
 from __future__ import annotations
 
 import re
+import threading
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from shared.agents import get_openai_client, get_model_name, is_local_llm
@@ -18,6 +20,17 @@ from jobpulse.pipeline_hooks import with_tone_filter
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Strategy tier tracking — thread-local so concurrent form fills don't collide
+_strategy_local = threading.local()
+
+
+@dataclass
+class AnswerResult:
+    """Answer + metadata about how it was resolved."""
+    answer: str
+    strategy: str  # StrategyTier value
+    confidence: float  # 0.0 - 1.0
 
 
 def _screening_prompt_profile() -> dict[str, str]:
@@ -466,6 +479,7 @@ def get_answer(
                     input_type=input_type, platform=platform, db=db,
                 )
                 logger.debug("Pattern match for '%s' -> '%s'", normalised[:60], resolved[:80])
+                _strategy_local.last = AnswerResult(resolved, "pattern_match", 0.95)
                 return with_tone_filter(resolved, normalised, None)
             # Matched but needs LLM (answer is None) — cache result for reuse
             logger.debug("Pattern match (LLM-required) for '%s'", normalised[:60])
@@ -473,6 +487,7 @@ def get_answer(
             llm_answer = _generate_answer(normalised, job_context)
             _db_tier1.cache_answer(normalised, llm_answer)
             logger.info("Generated + cached Tier 1 answer for '%s'", normalised[:60])
+            _strategy_local.last = AnswerResult(llm_answer, "llm_tier3", 0.6)
             return with_tone_filter(llm_answer, normalised, None)
 
     # --- Tier 1.5: agent rules (learned from corrections) -----------------
@@ -487,6 +502,7 @@ def get_answer(
             _rule_val = _rules_db.apply_rule(_rule, "", None)
             if _rule_val is not None:
                 logger.debug("Agent rule match for '%s' -> '%s'", normalised[:60], _rule_val[:80])
+                _strategy_local.last = AnswerResult(_rule_val, "agent_rule", 0.85)
                 return with_tone_filter(_rule_val, normalised, None)
     except Exception:
         pass
@@ -496,13 +512,33 @@ def get_answer(
     cached = _db.get_cached_answer(normalised)
     if cached is not None:
         logger.debug("Cache hit for '%s'", normalised[:60])
+        _strategy_local.last = AnswerResult(cached, "cache_hit", 0.8)
         return with_tone_filter(cached, normalised, None)
 
     # --- Tier 3: LLM generation ------------------------------------------
     answer = _generate_answer(normalised, job_context)
     _db.cache_answer(normalised, answer)
     logger.info("Generated + cached answer for '%s'", normalised[:60])
+    _strategy_local.last = AnswerResult(answer, "llm_tier3", 0.6)
     return with_tone_filter(answer, normalised, None)
+
+
+def get_last_strategy() -> AnswerResult | None:
+    """Return the strategy tier used for the last get_answer() call (thread-local)."""
+    return getattr(_strategy_local, "last", None)
+
+
+def get_answer_with_strategy(
+    question: str,
+    job_context: dict | None = None,
+    **kwargs,
+) -> AnswerResult:
+    """Like get_answer() but returns AnswerResult with strategy metadata."""
+    answer = get_answer(question, job_context, **kwargs)
+    result = getattr(_strategy_local, "last", None)
+    if result is not None:
+        return result
+    return AnswerResult(answer=answer, strategy="default_fallback", confidence=0.3)
 
 
 def cache_answer(question: str, answer: str, *, db: JobDB | None = None) -> None:

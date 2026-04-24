@@ -52,8 +52,13 @@ class CorrectionCapture:
         platform: str,
         agent_mapping: dict[str, str],
         final_mapping: dict[str, str],
+        *,
+        job_id: str = "",
     ) -> dict:
         """Diff agent_mapping vs final_mapping and store each correction.
+
+        Args:
+            job_id: If provided, also marks matching field_trajectories as corrected.
 
         Returns:
             {"corrections": [{"field": ..., "agent": ..., "user": ...}, ...],
@@ -92,6 +97,17 @@ class CorrectionCapture:
                 "correction_capture: %d corrections, %d unchanged (domain=%s)",
                 len(corrections), unchanged, domain,
             )
+
+            # Link corrections to field trajectories
+            if job_id:
+                try:
+                    from jobpulse.trajectory_store import get_trajectory_store
+                    ts = get_trajectory_store()
+                    for c in corrections:
+                        ts.mark_corrected(job_id, domain, c["field"], c["user"])
+                except Exception as exc:
+                    logger.debug("trajectory linkage failed: %s", exc)
+
             try:
                 from shared.optimization import get_optimization_engine
                 engine = get_optimization_engine()

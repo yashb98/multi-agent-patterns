@@ -17,6 +17,7 @@ from shared.logging_config import get_logger
 
 from jobpulse.drive_uploader import upload_cover_letter, upload_cv
 from jobpulse.form_experience_db import FormExperienceDB
+from jobpulse.job_db import JobDB
 from jobpulse.job_notion_sync import update_application_page
 
 logger = get_logger(__name__)
@@ -97,6 +98,33 @@ def post_apply_hook(
             )
         except Exception as exc:
             logger.warning("post_apply_hook: Notion update failed: %s", exc)
+
+    job_id = (job_context.get("job_id") or "").strip()
+    if job_id:
+        try:
+            JobDB().mark_applied(job_id)
+        except Exception as exc:
+            logger.warning("post_apply_hook: JobDB mark_applied failed: %s", exc)
+
+    # --- 4. Strategy reflection + heuristic extraction ---
+    if job_id:
+        try:
+            from jobpulse.strategy_reflector import reflect_on_application
+            from jobpulse.trajectory_store import get_trajectory_store
+            store = get_trajectory_store()
+            strategy = reflect_on_application(store, job_id, job_context)
+            import json as _json
+            h_count = len(_json.loads(strategy.heuristics or "[]"))
+            logger.info(
+                "post_apply_hook: strategy reflection done for %s "
+                "(fields=%d, pattern=%d, llm=%d, corrected=%d, heuristics=%d)",
+                company,
+                strategy.fields_total, strategy.fields_pattern,
+                strategy.fields_llm, strategy.fields_corrected,
+                h_count,
+            )
+        except Exception as exc:
+            logger.warning("post_apply_hook: strategy reflection failed: %s", exc)
 
     elapsed = time.monotonic() - start
     logger.info(
