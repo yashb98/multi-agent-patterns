@@ -699,6 +699,12 @@ class NativeFormFiller:
         elif input_type == "radio":
             await page.get_by_label(fill_value).check()
         elif await el.get_attribute("role") == "combobox":
+            # Try strategy combobox override first
+            strategy = getattr(self, "_strategy", None)
+            if strategy and hasattr(strategy, "fill_combobox"):
+                override_result = await strategy.fill_combobox(self._page, el, fill_value, label)
+                if override_result is not None:
+                    return {"success": True, "value_set": override_result, "value_verified": True}
             fill_value = _canonicalize_country_value(label, fill_value, store=self._profile_store)
             from jobpulse.form_scanner import (
                 best_option_match as ax_best_match,
@@ -1764,6 +1770,19 @@ class NativeFormFiller:
             self._profile_store = get_profile_store()
         except Exception:
             self._profile_store = None
+
+        # Load platform strategy
+        from jobpulse.ats_adapters.strategy import get_strategy
+        self._strategy = get_strategy(platform)
+
+        # Call pre_fill hook
+        if self._strategy:
+            try:
+                pre_result = await self._strategy.pre_fill(self._page, cv_path, profile, custom_answers)
+                if pre_result.get("cv_uploaded"):
+                    custom_answers["_cv_pre_uploaded"] = True
+            except Exception as exc:
+                logger.debug("Strategy pre_fill failed: %s", exc)
 
         # 0b. Handle modal-based CV upload (Reed Easy Apply pattern)
         await self._handle_modal_cv_upload(cv_path)

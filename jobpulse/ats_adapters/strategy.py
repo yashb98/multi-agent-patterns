@@ -65,3 +65,9 @@ class BasePlatformStrategy(ABC):
 
     def field_fill_overrides(self) -> dict[str, Any]:
         return {}
+
+    async def fill_combobox(
+        self, page: "Page", locator: Any, value: str, label: str,
+    ) -> str | None:
+        """Override combobox fill behavior. Return selected text, or None to use default."""
+        return None
