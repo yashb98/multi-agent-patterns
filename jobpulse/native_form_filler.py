@@ -180,9 +180,7 @@ def _screening_prompt_background(profile: dict[str, Any], store: Any = None) -> 
         relocation = store.screening_default("relocation") or "Yes"
         commuting = store.screening_default("commuting") or "Yes"
         right_to_work = store.screening_default("right_to_work") or "Yes"
-        location = store.identity().location or ""
-        parts = [p.strip() for p in location.split(",")]
-        country = parts[-1] if len(parts) >= 2 else "the UK"
+        country = _country_from_location(store.identity().location or "") or "the UK"
 
     return (
         f"Name: {wrap_pii_value('applicant.first_name', profile['first_name'])} "
@@ -269,6 +267,12 @@ def _get_field_gap(label_text: str = "") -> float:
 
 def _normalize_match_text(text: str) -> str:
     return re.sub(r"[^a-z0-9+]+", " ", str(text).lower()).strip()
+
+
+def _country_from_location(location: str) -> str:
+    """Extract country from 'City, Country' location string."""
+    parts = [p.strip() for p in location.split(",")]
+    return parts[-1] if len(parts) >= 2 else ""
 
 
 def _canonicalize_country_value(label: str, value: str, *, store: Any | None = None) -> str:
@@ -568,9 +572,7 @@ class NativeFormFiller:
         phone_code = "44"  # default
         store = getattr(self, "_profile_store", None)
         if store:
-            location = store.identity().location or ""
-            parts = [p.strip() for p in location.split(",")]
-            country = parts[-1] if len(parts) >= 2 else ""
+            country = _country_from_location(store.identity().location or "")
             if country:
                 country_info = _COUNTRY_DATA.get(country, ())
                 for alias in country_info:
@@ -811,9 +813,7 @@ class NativeFormFiller:
         phone_code = "+44"
         store = getattr(self, "_profile_store", None)
         if store:
-            location = store.identity().location or ""
-            parts = [p.strip() for p in location.split(",")]
-            country = parts[-1] if len(parts) >= 2 else ""
+            country = _country_from_location(store.identity().location or "")
             if country and country in _COUNTRY_DATA:
                 search_term = country
                 for alias in _COUNTRY_DATA[country]:

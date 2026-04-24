@@ -1226,7 +1226,8 @@ async def test_fill_single_page_success():
          patch.object(filler, "_check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=False), \
          patch.object(filler, "_click_navigation", return_value="submitted"), \
-         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
+         patch("shared.profile_store.get_profile_store", return_value=None):
 
         result = await filler.fill(
             platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
@@ -1254,7 +1255,8 @@ async def test_fill_dry_run_stops():
          patch.object(filler, "_is_submit_page", return_value=True), \
          patch.object(filler, "_review_form", return_value={"pass": True}), \
          patch.object(filler, "_click_navigation", return_value="dry_run_stop"), \
-         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
+         patch("shared.profile_store.get_profile_store", return_value=None):
 
         result = await filler.fill(
             platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
@@ -1293,7 +1295,8 @@ async def test_fill_retries_unverified_fields_with_llm_recovery():
          patch.object(filler, "_check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=False), \
          patch.object(filler, "_click_navigation", return_value="submitted"), \
-         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
+         patch("shared.profile_store.get_profile_store", return_value=None):
         result = await filler.fill(
             platform="greenhouse",
             cv_path="/tmp/cv.pdf",
@@ -1317,7 +1320,8 @@ async def test_fill_confirmation_page():
     with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
          patch.object(filler, "_scan_fields", return_value=[]), \
          patch.object(filler, "_is_confirmation_page", return_value=True), \
-         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
+         patch("shared.profile_store.get_profile_store", return_value=None):
 
         result = await filler.fill(
             platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
@@ -1342,7 +1346,8 @@ async def test_fill_no_nav_button():
          patch.object(filler, "_check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=False), \
          patch.object(filler, "_click_navigation", return_value=""), \
-         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
+         patch("shared.profile_store.get_profile_store", return_value=None):
 
         result = await filler.fill(
             platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
@@ -1374,7 +1379,8 @@ async def test_fill_calls_screening_for_unresolved():
          patch.object(filler, "_check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=False), \
          patch.object(filler, "_click_navigation", return_value="submitted"), \
-         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
+         patch("shared.profile_store.get_profile_store", return_value=None):
 
         result = await filler.fill(
             platform="greenhouse", cv_path="/tmp/cv.pdf", cl_path=None,
