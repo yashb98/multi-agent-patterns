@@ -146,7 +146,18 @@ def _profile_prompt_json(profile: dict[str, Any]) -> str:
     return pii_json(profile, "applicant.profile")
 
 
-def _screening_prompt_profile() -> dict[str, Any]:
+def _screening_prompt_profile(store: Any = None) -> dict[str, Any]:
+    if store:
+        ident = store.identity()
+        work_auth = store.as_work_auth()
+        return {
+            "first_name": ident.first_name,
+            "last_name": ident.last_name,
+            "education": ident.education,
+            "location": ident.location,
+            "visa_status": work_auth.get("visa_status", ""),
+            "notice_period": work_auth.get("notice_period", ""),
+        }
     from jobpulse.applicator import PROFILE, WORK_AUTH
 
     return {
@@ -159,7 +170,20 @@ def _screening_prompt_profile() -> dict[str, Any]:
     }
 
 
-def _screening_prompt_background(profile: dict[str, Any]) -> str:
+def _screening_prompt_background(profile: dict[str, Any], store: Any = None) -> str:
+    relocation = "Yes"
+    commuting = "Yes"
+    right_to_work = "Yes"
+    country = "the UK"
+
+    if store:
+        relocation = store.screening_default("relocation") or "Yes"
+        commuting = store.screening_default("commuting") or "Yes"
+        right_to_work = store.screening_default("right_to_work") or "Yes"
+        location = store.identity().location or ""
+        parts = [p.strip() for p in location.split(",")]
+        country = parts[-1] if len(parts) >= 2 else "the UK"
+
     return (
         f"Name: {wrap_pii_value('applicant.first_name', profile['first_name'])} "
         f"{wrap_pii_value('applicant.last_name', profile['last_name'])}. "
@@ -167,9 +191,9 @@ def _screening_prompt_background(profile: dict[str, Any]) -> str:
         f"Location: {wrap_pii_value('applicant.location', profile['location'])}. "
         f"Visa: {wrap_pii_value('applicant.visa_status', profile['visa_status'])}. "
         f"Notice: {wrap_pii_value('applicant.notice_period', profile['notice_period'])}. "
-        f"Willing to relocate: Yes, anywhere in the UK. "
-        f"Commuting: Yes, willing to commute to any UK office. "
-        f"Right to work UK: Yes."
+        f"Willing to relocate: {relocation}. "
+        f"Commuting: {commuting}. "
+        f"Right to work {country}: {right_to_work}."
     )
 
 
@@ -372,6 +396,7 @@ class NativeFormFiller:
         self._driver = driver
         self._correction_warning: str = ""
         self._llm_fallback_count: int = 0
+        self._profile_store: Any = None
 
     # ── Label Extraction ──
 
@@ -531,7 +556,7 @@ class NativeFormFiller:
             await self._driver._move_mouse_to(el)
 
     async def _normalize_phone_value(self, label: str, value: str) -> str:
-        """Normalize UK phone numbers for split country-code widgets."""
+        """Normalize phone numbers for split country-code widgets."""
         if "phone" not in _normalize_match_text(label):
             return value
 
@@ -539,23 +564,37 @@ class NativeFormFiller:
         if not digits:
             return value
 
+        # Get phone code from ProfileStore country
+        phone_code = "44"  # default
+        store = getattr(self, "_profile_store", None)
+        if store:
+            location = store.identity().location or ""
+            parts = [p.strip() for p in location.split(",")]
+            country = parts[-1] if len(parts) >= 2 else ""
+            if country:
+                country_info = _COUNTRY_DATA.get(country, ())
+                for alias in country_info:
+                    if alias.startswith("+"):
+                        phone_code = alias.lstrip("+")
+                        break
+
         has_split_country_code = False
         try:
-            country_hint = self._page.get_by_text("+44", exact=False)
+            country_hint = self._page.get_by_text(f"+{phone_code}", exact=False)
             has_split_country_code = bool(await country_hint.count())
         except Exception:
             has_split_country_code = False
 
         if has_split_country_code:
-            if digits.startswith("44"):
-                digits = digits[2:]
+            if digits.startswith(phone_code):
+                digits = digits[len(phone_code):]
             if digits.startswith("0") and len(digits) >= 10:
                 digits = digits[1:]
             return digits
 
         if digits.startswith("0") and len(digits) >= 10:
-            return f"+44{digits[1:]}"
-        if digits.startswith("44"):
+            return f"+{phone_code}{digits[1:]}"
+        if digits.startswith(phone_code):
             return f"+{digits}"
         return value
 
@@ -611,7 +650,7 @@ class NativeFormFiller:
         input_type = await el.get_attribute("type") or ""
         role = await el.get_attribute("role") or ""
 
-        fill_value = _canonicalize_country_value(label, value)
+        fill_value = _canonicalize_country_value(label, value, store=self._profile_store)
         options_seen: list[str] = []
         expected_value = fill_value
 
@@ -628,7 +667,7 @@ class NativeFormFiller:
                 pass
             # Try deterministic option matching with UK/+44 preference
             if not selected:
-                matched_option = _best_option_match(label, fill_value, options_stripped)
+                matched_option = _best_option_match(label, fill_value, options_stripped, store=self._profile_store)
                 if matched_option is not None:
                     try:
                         await el.select_option(label=matched_option, timeout=5000)
@@ -658,7 +697,7 @@ class NativeFormFiller:
         elif input_type == "radio":
             await page.get_by_label(fill_value).check()
         elif await el.get_attribute("role") == "combobox":
-            fill_value = _canonicalize_country_value(label, fill_value)
+            fill_value = _canonicalize_country_value(label, fill_value, store=self._profile_store)
             from jobpulse.form_scanner import (
                 best_option_match as ax_best_match,
                 best_range_match,
@@ -704,7 +743,7 @@ class NativeFormFiller:
                 except Exception:
                     option_texts = []
                 options_seen = option_texts
-                matched_option = _best_option_match(label, fill_value, option_texts)
+                matched_option = _best_option_match(label, fill_value, option_texts, store=self._profile_store)
                 if matched_option:
                     expected_value = matched_option
                     option = page.get_by_role("option", name=matched_option, exact=False)
@@ -767,15 +806,31 @@ class NativeFormFiller:
         if not await button.count():
             return {"success": False, "error": "No phone country widget found"}
 
+        # Resolve country from ProfileStore
+        search_term = "United Kingdom"
+        phone_code = "+44"
+        store = getattr(self, "_profile_store", None)
+        if store:
+            location = store.identity().location or ""
+            parts = [p.strip() for p in location.split(",")]
+            country = parts[-1] if len(parts) >= 2 else ""
+            if country and country in _COUNTRY_DATA:
+                search_term = country
+                for alias in _COUNTRY_DATA[country]:
+                    if alias.startswith("+"):
+                        phone_code = alias
+                        break
+
         await self._smart_scroll(button)
         await self._move_mouse_to(button)
         await button.click()
         search = self._page.locator("#iti-0__search-input").first
         await search.fill("")
-        await search.fill("United Kingdom")
+        await search.fill(search_term)
         await asyncio.sleep(0.5)
 
-        option = self._page.locator("#iti-0__country-listbox li", has_text="United Kingdom (+44)").first
+        expected = f"{search_term} ({phone_code})"
+        option = self._page.locator("#iti-0__country-listbox li", has_text=expected).first
         if await option.count():
             await option.click()
         else:
@@ -784,14 +839,14 @@ class NativeFormFiller:
             await search.press("Enter")
 
         actual = (await button.get_attribute("aria-label")) or ""
-        verified = "united kingdom" in actual.lower() and "+44" in actual
+        verified = search_term.lower() in actual.lower() and phone_code in actual
         return {
             "success": True,
-            "value_set": "United Kingdom (+44)",
+            "value_set": expected,
             "value_verified": verified,
             "actual_value": actual,
-            "options_seen": ["United Kingdom (+44)"],
-            "expected_value": "United Kingdom (+44)",
+            "options_seen": [expected],
+            "expected_value": expected,
         }
 
     # ── Field Mapping (deterministic first, LLM fallback) ──
@@ -1018,8 +1073,8 @@ class NativeFormFiller:
             opts = f.get("options", "free text")
             questions.append(f"Q: {f['label']} Options: {opts}")
 
-        prompt_profile = _screening_prompt_profile()
-        applicant_bg = _screening_prompt_background(prompt_profile)
+        prompt_profile = _screening_prompt_profile(self._profile_store)
+        applicant_bg = _screening_prompt_background(prompt_profile, self._profile_store)
         prompt = (
             f"Answer these screening questions for a job application.\n"
             f"Context: {job_context or 'Not provided'}\n"
@@ -1702,6 +1757,13 @@ class NativeFormFiller:
                 self._correction_warning = ""
         else:
             self._correction_warning = ""
+
+        # Load ProfileStore for dynamic data
+        try:
+            from shared.profile_store import get_profile_store
+            self._profile_store = get_profile_store()
+        except Exception:
+            self._profile_store = None
 
         # 0b. Handle modal-based CV upload (Reed Easy Apply pattern)
         await self._handle_modal_cv_upload(cv_path)

@@ -523,21 +523,30 @@ def test_best_option_match_store_none_works():
 
 
 @pytest.mark.asyncio
-async def test_normalize_phone_value_for_split_uk_widget():
+async def test_normalize_phone_value_for_split_uk_widget(tmp_path):
     page = MagicMock()
     filler = _make_filler(page_mock=page)
+
+    store = _make_profile_store(tmp_path)
+    store.set_identity(location="London, United Kingdom")
+    filler._profile_store = store
 
     plus44 = MagicMock()
     plus44.count = AsyncMock(return_value=1)
     page.get_by_text = MagicMock(return_value=plus44)
 
     assert await filler._normalize_phone_value("Phone", "07909 445288") == "7909445288"
+    store.close()
 
 
 @pytest.mark.asyncio
-async def test_fill_special_widget_sets_country_options_to_united_kingdom():
+async def test_fill_special_widget_sets_country_options_to_united_kingdom(tmp_path):
     page = MagicMock()
     filler = _make_filler(page_mock=page)
+
+    store = _make_profile_store(tmp_path)
+    store.set_identity(location="London, United Kingdom")
+    filler._profile_store = store
 
     button = AsyncMock()
     button.count = AsyncMock(return_value=1)
@@ -573,6 +582,150 @@ async def test_fill_special_widget_sets_country_options_to_united_kingdom():
     assert result["value_verified"] is True
     search.fill.assert_any_call("United Kingdom")
     option.click.assert_called_once()
+    store.close()
+
+
+# ── _screening_prompt with ProfileStore ──
+
+
+def test_screening_prompt_background_from_profile_store(tmp_path):
+    """Screening prompt uses ProfileStore for relocation/commuting/right_to_work."""
+    from jobpulse.native_form_filler import _screening_prompt_background
+
+    store = _make_profile_store(tmp_path)
+    store.set_identity(
+        first_name="Jane", last_name="Doe",
+        location="Berlin, Germany", education="MSc CS",
+    )
+    store.set_screening_default("relocation", "No")
+    store.set_screening_default("commuting", "No")
+    store.set_screening_default("right_to_work", "Yes")
+
+    profile = {
+        "first_name": "Jane", "last_name": "Doe",
+        "education": "MSc CS", "location": "Berlin, Germany",
+        "visa_status": "EU citizen", "notice_period": "2 weeks",
+    }
+    result = _screening_prompt_background(profile, store=store)
+
+    assert "Willing to relocate: No." in result
+    assert "Commuting: No." in result
+    assert "Right to work Germany: Yes." in result
+    # Hardcoded UK references should NOT appear
+    assert "anywhere in the UK" not in result
+    assert "any UK office" not in result
+    store.close()
+
+
+def test_screening_prompt_background_without_store_defaults_to_uk():
+    """Without a store, screening prompt falls back to UK defaults."""
+    from jobpulse.native_form_filler import _screening_prompt_background
+
+    profile = {
+        "first_name": "Test", "last_name": "User",
+        "education": "BSc", "location": "London",
+        "visa_status": "Graduate", "notice_period": "1 month",
+    }
+    result = _screening_prompt_background(profile)
+
+    assert "Willing to relocate: Yes." in result
+    assert "Commuting: Yes." in result
+    assert "Right to work the UK: Yes." in result
+
+
+def test_screening_prompt_profile_from_store(tmp_path):
+    """_screening_prompt_profile reads from ProfileStore when available."""
+    from jobpulse.native_form_filler import _screening_prompt_profile
+
+    store = _make_profile_store(tmp_path)
+    store.set_identity(
+        first_name="Alice", last_name="Smith",
+        location="Munich, Germany", education="PhD Physics",
+    )
+    store.set_sensitive("visa_status", "EU citizen", "work_auth")
+    store.set_screening_default("notice_period", "3 months")
+
+    result = _screening_prompt_profile(store=store)
+
+    assert result["first_name"] == "Alice"
+    assert result["last_name"] == "Smith"
+    assert result["location"] == "Munich, Germany"
+    assert result["education"] == "PhD Physics"
+    assert result["visa_status"] == "EU citizen"
+    assert result["notice_period"] == "3 months"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_normalize_phone_value_uses_profile_country(tmp_path):
+    """Phone normalization uses ProfileStore country code instead of hardcoded +44."""
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    store = _make_profile_store(tmp_path)
+    store.set_identity(location="Berlin, Germany")
+    filler._profile_store = store
+
+    # Simulate a page with +49 country code widget
+    plus49 = MagicMock()
+    plus49.count = AsyncMock(return_value=1)
+    page.get_by_text = MagicMock(return_value=plus49)
+
+    # German number starting with 0 should strip leading 0 for split widget
+    result = await filler._normalize_phone_value("Phone", "0171 1234567")
+    assert result == "1711234567"
+
+    # Without split widget, should prepend +49
+    plus49.count = AsyncMock(return_value=0)
+    result = await filler._normalize_phone_value("Phone", "0171 1234567")
+    assert result == "+491711234567"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_fill_special_widget_uses_profile_country(tmp_path):
+    """Special widget fills the country from ProfileStore instead of hardcoded UK."""
+    page = MagicMock()
+    filler = _make_filler(page_mock=page)
+
+    store = _make_profile_store(tmp_path)
+    store.set_identity(location="Berlin, Germany")
+    filler._profile_store = store
+
+    button = AsyncMock()
+    button.count = AsyncMock(return_value=1)
+    button.click = AsyncMock()
+    button.get_attribute = AsyncMock(return_value="Change country, selected Germany (+49)")
+
+    search = AsyncMock()
+    search.fill = AsyncMock()
+    search.press = AsyncMock()
+
+    option = AsyncMock()
+    option.count = AsyncMock(return_value=1)
+    option.click = AsyncMock()
+
+    def locator(selector, **kwargs):
+        if selector == "button.iti__selected-country":
+            return MagicMock(first=button)
+        if selector == "#iti-0__search-input":
+            return MagicMock(first=search)
+        if selector == "#iti-0__country-listbox li":
+            return MagicMock(first=option)
+        raise AssertionError(selector)
+
+    page.locator = MagicMock(side_effect=locator)
+
+    with patch.object(filler, "_smart_scroll", new_callable=AsyncMock), \
+         patch.object(filler, "_move_mouse_to", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock):
+        result = await filler._fill_by_label("Country Options", "DE")
+
+    assert result["success"] is True
+    assert result["value_set"] == "Germany (+49)"
+    search.fill.assert_any_call("Germany")
+    option.click.assert_called_once()
+    store.close()
 
 
 # ── _map_fields (LLM Call 1) ──
