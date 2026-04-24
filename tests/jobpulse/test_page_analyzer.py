@@ -207,3 +207,20 @@ async def test_hybrid_empty_screenshot_degrades_gracefully():
     )
     result = await analyzer.detect(s)
     assert result == PageType.UNKNOWN
+
+
+def test_dom_detect_dialog_with_fields():
+    """Modal dialog with form fields classified as APPLICATION_FORM."""
+    snapshot = {
+        "buttons": [{"text": "Submit application"}],
+        "fields": [
+            {"label": "First Name", "input_type": "text", "selector": '[role="dialog"] input'},
+            {"label": "Last Name", "input_type": "text", "selector": '[role="dialog"] input'},
+        ],
+        "page_text_preview": 'Some job description role="dialog" with a form',
+        "url": "https://linkedin.com/jobs/view/123",
+        "has_file_inputs": False,
+    }
+    page_type, confidence = _dom_detect(snapshot)
+    assert page_type == PageType.APPLICATION_FORM
+    assert confidence >= 0.85

@@ -84,7 +84,7 @@ class FormNavigator:
                 action = learned_step.get("action", "")
                 step_page_type = learned_step.get("page_type", "")
                 try:
-                    if action == "click_apply" or action == "click_apply_guess":
+                    if action in {"click_apply", "click_apply_guess", "linkedin_direct_apply"}:
                         snapshot = await self.click_apply_button(snapshot)
                     elif action == "fill_login":
                         snapshot = await self.auth.handle_login(snapshot, platform)
@@ -141,35 +141,28 @@ class FormNavigator:
                     return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
                 current_url = snapshot.get("url", "") if isinstance(snapshot, dict) else ""
 
-                # LinkedIn shortcut: navigate directly to /apply/ URL (avoids modal click issues)
-                if "linkedin.com/jobs/view/" in current_url and "/apply" not in current_url:
-                    apply_url = current_url.split("?")[0].rstrip("/") + "/apply/"
-                    logger.info("LinkedIn shortcut: navigating directly to %s", apply_url)
-                    await self.driver.navigate(apply_url)
-                    await asyncio.sleep(5)
-                    snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
-                    steps.append({"page_type": "job_description", "action": "linkedin_direct_apply"})
-                else:
-                    # Use wait_for_apply: polls DOM for up to 10s for apply button to render
-                    try:
-                        result = await self.driver.wait_for_apply(timeout_ms=10000)
-                        if isinstance(result, dict):
-                            snapshot = self._as_dict(await self.driver.get_snapshot())
-                            waited = result.get("waited_ms", 0)
-                            diag = result.get("apply_diagnostics", [])
-                            if diag and isinstance(diag, list):
-                                logger.info(
-                                    "wait_for_apply: %dms, %d elements with 'apply' text: %s",
-                                    waited, len(diag),
-                                    [d.get("text", "")[:40] for d in diag[:5]],
-                                )
-                            else:
-                                logger.warning("wait_for_apply: %dms, NO elements with 'apply' text found", waited)
-                    except (TimeoutError, ConnectionError, TypeError, AttributeError):
-                        logger.warning("wait_for_apply unavailable — using cached snapshot")
+                # Click the real visible apply control on the live page.
+                # Some LinkedIn job pages render an external "Apply" button where
+                # the old `/apply/` URL shortcut lands on a 404 page.
+                try:
+                    result = await self.driver.wait_for_apply(timeout_ms=10000)
+                    if isinstance(result, dict):
+                        snapshot = self._as_dict(await self.driver.get_snapshot())
+                        waited = result.get("waited_ms", 0)
+                        diag = result.get("apply_diagnostics", [])
+                        if diag and isinstance(diag, list):
+                            logger.info(
+                                "wait_for_apply: %dms, %d elements with 'apply' text: %s",
+                                waited, len(diag),
+                                [d.get("text", "")[:40] for d in diag[:5]],
+                            )
+                        else:
+                            logger.warning("wait_for_apply: %dms, NO elements with 'apply' text found", waited)
+                except (TimeoutError, ConnectionError, TypeError, AttributeError):
+                    logger.warning("wait_for_apply unavailable — using cached snapshot")
 
-                    snapshot = await self.click_apply_button(snapshot)
-                    steps.append({"page_type": "job_description", "action": "click_apply"})
+                snapshot = await self.click_apply_button(snapshot)
+                steps.append({"page_type": "job_description", "action": "click_apply"})
 
             elif page_type == PageType.LOGIN_FORM:
                 sso = self.sso.detect_sso(snapshot)
@@ -245,11 +238,18 @@ class FormNavigator:
         strong = [b for b in apply_matches if strong_pattern.search(b.get("text", ""))]
         ranked = strong if strong else apply_matches
 
-        # Strategy: if the match is a link with href, navigate directly (most reliable)
-        # This avoids target="_blank" new-tab issues entirely
+        current_page = getattr(self.driver, "page", None)
+        before_pages = []
+        if current_page is not None:
+            with_pages = getattr(current_page, "context", None)
+            before_pages = list(with_pages.pages) if with_pages is not None else []
+
+        # Strategy: if the match is a normal link with href, navigate directly.
+        # But LinkedIn outbound apply links (`/safety/go`) must be clicked on-page
+        # so LinkedIn can open the external ATS tab correctly.
         for btn in ranked:
             href = btn.get("href", "")
-            if href and href.startswith("http"):
+            if href and href.startswith("http") and "linkedin.com/safety/go" not in href:
                 logger.info("Apply link found: '%s' → navigating to %s", btn["text"][:40], href[:100])
                 await self.driver.navigate(href)
                 await asyncio.sleep(3)
@@ -258,15 +258,71 @@ class FormNavigator:
         # Fallback: click the button directly (Easy Apply modals, non-link buttons)
         btn = ranked[0]
         logger.info("Clicking apply button: '%s' via %s", btn["text"][:60], btn["selector"])
+        button_text = (btn.get("text") or "").strip()
         try:
-            await self.driver.click(btn["selector"])
+            clicked = False
+            if current_page is not None and button_text:
+                for role in ("link", "button"):
+                    locator = current_page.get_by_role(role, name=button_text).first
+                    try:
+                        if await locator.count():
+                            await locator.click()
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+            if not clicked:
+                await self.driver.click(btn["selector"])
         except (TimeoutError, Exception) as exc:
             logger.warning("Click timed out (%s) — trying force_click", exc)
             try:
-                await self.driver.force_click(btn["selector"])
+                if current_page is not None and button_text:
+                    forced = False
+                    for role in ("link", "button"):
+                        locator = current_page.get_by_role(role, name=button_text).first
+                        try:
+                            if await locator.count():
+                                await locator.click(force=True)
+                                forced = True
+                                break
+                        except Exception:
+                            continue
+                    if not forced:
+                        await self.driver.force_click(btn["selector"])
+                else:
+                    await self.driver.force_click(btn["selector"])
             except Exception as e:
                 logger.debug("Force click also failed: %s", e)
-        await asyncio.sleep(3)
+
+        # Wait for modal or new form fields (max 8s, 0.5s intervals)
+        modal_found = False
+        for _ in range(16):
+            try:
+                dialog = self.driver.page.locator('[role="dialog"], [aria-modal="true"]')
+                if await dialog.count():
+                    modal_found = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+        if not modal_found:
+            await asyncio.sleep(1)  # brief fallback wait
+
+        # Follow external applications that open in a new tab/window.
+        if current_page is not None:
+            context = getattr(current_page, "context", None)
+            if context is not None:
+                new_pages = [page for page in context.pages if page not in before_pages]
+                if new_pages:
+                    newest = new_pages[-1]
+                    try:
+                        await newest.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except Exception:
+                        pass
+                    logger.info("Apply click opened a new page: %s", newest.url)
+                    self.driver._page = newest
+
         return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 
     async def verify_submission(self) -> dict:

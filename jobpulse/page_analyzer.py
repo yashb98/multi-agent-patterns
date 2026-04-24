@@ -111,6 +111,16 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     if has_login_button and has_password and has_email and not has_application_fields:
         return PageType.LOGIN_FORM, 0.9
 
+    # 5.5 Modal/dialog with form fields — application form regardless of background
+    page_text_lower = page_text.lower()
+    has_dialog_hint = (
+        'role="dialog"' in page_text_lower
+        or "aria-modal" in page_text_lower
+        or any("dialog" in f.get("selector", "").lower() for f in fields)
+    )
+    if has_dialog_hint and (has_application_fields or len(fields) >= 2):
+        return PageType.APPLICATION_FORM, 0.9
+
     # 6. Job description: Apply button, few form fields
     has_apply_button = any(_APPLY_BUTTONS.search(t) for t in button_texts if t)
     if has_apply_button and len(fields) <= 2 and not has_application_fields:

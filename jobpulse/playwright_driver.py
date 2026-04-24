@@ -8,16 +8,25 @@ from __future__ import annotations
 import asyncio
 import base64
 import math
+import os
 import random
+import subprocess
+import time
 from typing import Any
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from shared.logging_config import get_logger
-from jobpulse.config import PLAYWRIGHT_CDP_URL
+from jobpulse.config import PLAYWRIGHT_CDP_PORT, PLAYWRIGHT_CDP_URL
 
 logger = get_logger(__name__)
 
 CDP_URL = PLAYWRIGHT_CDP_URL
+CDP_CONNECT_TIMEOUT_SECONDS = 20
+CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_PROFILE_DIR = os.path.expanduser("~/.chrome-playwright-profile")
 
 
 async def _with_retry(fn, max_retries=2, delay_ms=500):
@@ -94,6 +103,66 @@ def _bezier_points(x0, y0, x1, y1, steps=15):
     return points
 
 
+def _cdp_healthcheck_url(cdp_url: str) -> str:
+    """Return the `/json/version` probe URL for a CDP endpoint."""
+    parsed = urllib_parse.urlparse(cdp_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or int(PLAYWRIGHT_CDP_PORT)
+    return f"http://{host}:{port}/json/version"
+
+
+def _wait_for_cdp_http(cdp_url: str, timeout_seconds: float = 15.0) -> bool:
+    """Return True once the Chrome CDP HTTP endpoint responds."""
+    probe_url = _cdp_healthcheck_url(cdp_url)
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            with urllib_request.urlopen(probe_url, timeout=1.5) as response:
+                if response.status == 200:
+                    return True
+        except (urllib_error.URLError, TimeoutError, OSError):
+            time.sleep(0.5)
+    return False
+
+
+def _restart_cdp_chrome(cdp_url: str) -> None:
+    """Relaunch the dedicated Playwright Chrome profile on the configured port."""
+    port = str(urllib_parse.urlparse(cdp_url).port or PLAYWRIGHT_CDP_PORT)
+    try:
+        out = subprocess.check_output(["ps", "-Ao", "pid=,command="], text=True)
+    except Exception as exc:
+        logger.warning("PlaywrightDriver: failed to inspect running Chrome processes: %s", exc)
+        out = ""
+
+    for line in out.splitlines():
+        if f"--remote-debugging-port={port}" not in line:
+            continue
+        if CHROME_PROFILE_DIR not in line:
+            continue
+        try:
+            pid = int(line.strip().split(None, 1)[0])
+            os.kill(pid, 15)
+        except Exception as exc:
+            logger.debug("PlaywrightDriver: failed to stop stale Chrome process: %s", exc)
+
+    time.sleep(2)
+    subprocess.Popen(
+        [
+            CHROME_PATH,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={CHROME_PROFILE_DIR}",
+            "--no-first-run",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    if not _wait_for_cdp_http(cdp_url, timeout_seconds=20.0):
+        raise ConnectionError(
+            f"Restarted Chrome but CDP endpoint never became ready at {_cdp_healthcheck_url(cdp_url)}"
+        )
+
+
 class PlaywrightDriver:
     """Form-filling driver using Playwright connected to real Chrome via CDP."""
 
@@ -141,15 +210,39 @@ class PlaywrightDriver:
     async def connect(self, cdp_url: str | None = None) -> None:
         """Connect to Chrome via CDP. Call before any other method."""
         url = cdp_url or CDP_URL
-        self._pw = await async_playwright().start()
-        try:
-            self._browser = await self._pw.chromium.connect_over_cdp(url)
-        except Exception as exc:
-            await self._pw.stop()
+
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            self._pw = await async_playwright().start()
+            try:
+                self._browser = await asyncio.wait_for(
+                    self._pw.chromium.connect_over_cdp(url),
+                    timeout=CDP_CONNECT_TIMEOUT_SECONDS,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                await self._pw.stop()
+                self._pw = None
+                self._browser = None
+                if attempt == 0:
+                    logger.warning(
+                        "PlaywrightDriver: CDP attach failed for %s (%s). Restarting dedicated Chrome and retrying once.",
+                        url,
+                        exc,
+                    )
+                    _restart_cdp_chrome(url)
+                    continue
+                raise ConnectionError(
+                    f"Cannot connect to Chrome at {url}. "
+                    "Start Chrome with: python -m jobpulse.runner chrome-pw"
+                ) from exc
+
+        if self._browser is None:
             raise ConnectionError(
                 f"Cannot connect to Chrome at {url}. "
                 "Start Chrome with: python -m jobpulse.runner chrome-pw"
-            ) from exc
+            ) from last_exc
         self._context = self._browser.contexts[0]
         self._page = await self._context.new_page()
         logger.info("PlaywrightDriver connected to Chrome at %s", url)
@@ -181,7 +274,7 @@ class PlaywrightDriver:
 
     async def get_snapshot(self, **kwargs) -> dict:
         """Scan DOM for form fields, buttons, and page text — returns same shape as extension snapshots."""
-        return await self._page.evaluate("""() => {
+        snapshot = await self._page.evaluate("""() => {
             // 1. Fields
             const fields = [];
             document.querySelectorAll('input, select, textarea, [contenteditable="true"]').forEach(el => {
@@ -216,7 +309,7 @@ class PlaywrightDriver:
 
             // 2. Buttons and links
             const buttons = [];
-            document.querySelectorAll('button, a[role="button"], input[type="submit"], [role="button"]').forEach(el => {
+            document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]').forEach(el => {
                 const rect = el.getBoundingClientRect();
                 if (rect.width === 0 && rect.height === 0) return;
                 const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
@@ -244,6 +337,68 @@ class PlaywrightDriver:
                 has_file_inputs,
             };
         }""")
+
+        # Merge a11y tree fields — discovers fields in modals and shadow DOM
+        try:
+            from jobpulse.form_scanner import scan_form
+            scan = await scan_form(self._page)
+            if scan.fields:
+                existing_labels = {f.get("label", "").lower().strip() for f in snapshot.get("fields", [])}
+                existing_labels.discard("")
+                for ff in scan.fields:
+                    if ff.label.lower().strip() not in existing_labels:
+                        snapshot["fields"].append({
+                            "selector": f'[role="{ff.role}"][name="{ff.label}"]',
+                            "type": ff.role,
+                            "input_type": ff.role,
+                            "value": ff.value,
+                            "label": ff.label,
+                            "required": ff.required,
+                        })
+        except Exception as exc:
+            logger.debug("get_snapshot: a11y merge failed: %s", exc)
+
+        return snapshot
+
+    async def wait_for_apply(self, timeout_ms: int = 10000) -> dict:
+        """Poll the page until an apply-like control is visible."""
+        async def _scan_apply_controls() -> list[dict]:
+            return await self._page.evaluate("""() => {
+                const pattern = /(easy\\s*apply|apply\\s*(now|for\\s*this|on\\s*company)?|start\\s*application|i.?m\\s*interested|submit\\s*interest)/i;
+                const controls = [];
+                for (const el of document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]')) {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) continue;
+                    const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
+                    if (!text) continue;
+                    if (!pattern.test(text)) continue;
+                    controls.push({
+                        text,
+                        href: el.href || null,
+                        selector: el.id
+                            ? '#' + el.id
+                            : (el.name
+                                ? '[name="' + el.name + '"]'
+                                : el.tagName.toLowerCase() + (el.className ? '.' + el.className.split(' ')[0] : '')),
+                    });
+                }
+                return controls;
+            }""")
+
+        deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+        while True:
+            diagnostics = await _scan_apply_controls()
+            if diagnostics:
+                return {"waited_ms": max(0, timeout_ms - int((deadline - asyncio.get_running_loop().time()) * 1000)), "apply_diagnostics": diagnostics}
+            if asyncio.get_running_loop().time() >= deadline:
+                return {"waited_ms": timeout_ms, "apply_diagnostics": []}
+            await asyncio.sleep(0.25)
+
+    async def force_click(self, selector: str) -> dict:
+        """Force-click a selector when normal click heuristics fail."""
+        loc = self._page.locator(selector).first
+        await loc.click(force=True, timeout=3000)
+        return {"success": True, "forced": True}
 
     async def scan_validation_errors(self) -> dict:
         """Scan for validation errors using the 5-strategy scanner."""
