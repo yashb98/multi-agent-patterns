@@ -35,9 +35,15 @@ class NavigationLearner:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     replay_count INTEGER DEFAULT 0,
-                    fail_count INTEGER DEFAULT 0
+                    fail_count INTEGER DEFAULT 0,
+                    platform TEXT DEFAULT ''
                 )
             """)
+            # Migration: add platform column if missing
+            try:
+                conn.execute("SELECT platform FROM sequences LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE sequences ADD COLUMN platform TEXT DEFAULT ''")
 
     @staticmethod
     def _normalize_domain(domain_or_url: str) -> str:
@@ -58,21 +64,34 @@ class NavigationLearner:
             return None
         return json.loads(row[0])
 
-    def save_sequence(self, domain_or_url: str, steps: list[dict], success: bool):
+    def save_sequence(self, domain_or_url: str, steps: list[dict], success: bool, platform: str = ""):
         """Save a navigation sequence for a domain."""
         domain = self._normalize_domain(domain_or_url)
         now = datetime.now(UTC).isoformat()
+
+        # Don't overwrite a non-empty successful sequence with empty steps
+        if not steps and success:
+            with sqlite3.connect(self._db_path) as conn:
+                row = conn.execute(
+                    "SELECT steps FROM sequences WHERE domain = ? AND success = 1",
+                    (domain,),
+                ).fetchone()
+            if row and json.loads(row[0]):
+                logger.debug("Skipping empty-steps save for %s — non-empty sequence already exists", domain)
+                return
+
         steps_json = json.dumps(steps)
 
         with sqlite3.connect(self._db_path) as conn:
             conn.execute(
-                """INSERT INTO sequences (domain, steps, success, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO sequences (domain, steps, success, created_at, updated_at, platform)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(domain) DO UPDATE SET
                        steps = excluded.steps,
                        success = excluded.success,
-                       updated_at = excluded.updated_at""",
-                (domain, steps_json, int(success), now, now),
+                       updated_at = excluded.updated_at,
+                       platform = CASE WHEN excluded.platform != '' THEN excluded.platform ELSE platform END""",
+                (domain, steps_json, int(success), now, now, platform),
             )
         logger.info("Saved navigation sequence for %s (success=%s, %d steps)", domain, success, len(steps))
         try:
@@ -87,6 +106,41 @@ class NavigationLearner:
             )
         except Exception as e:
             logger.debug("Optimization signal failed: %s", e)
+
+    def get_platform_pattern(self, platform: str, exclude_domain: str = "", min_observations: int = 3) -> list[dict] | None:
+        """Return the most common action pattern for a platform across all domains.
+
+        Requires at least `min_observations` domains sharing the same action sequence.
+        """
+        from collections import Counter
+
+        exclude = self._normalize_domain(exclude_domain) if exclude_domain else ""
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT steps FROM sequences WHERE platform = ? AND success = 1 AND domain != ?",
+                (platform, exclude),
+            ).fetchall()
+
+        if not rows:
+            return None
+
+        # Build a fingerprint from the ordered list of action values only (ignore selectors)
+        def _action_key(steps_json: str) -> tuple:
+            steps = json.loads(steps_json)
+            return tuple(s.get("action", "") for s in steps)
+
+        counts: Counter = Counter(_action_key(row[0]) for row in rows)
+        most_common_key, count = counts.most_common(1)[0]
+
+        if count < min_observations:
+            return None
+
+        # Return the full steps from the first row matching the most common pattern
+        for row in rows:
+            if _action_key(row[0]) == most_common_key:
+                return json.loads(row[0])
+
+        return None  # pragma: no cover
 
     def mark_failed(self, domain_or_url: str):
         """Mark a learned sequence as failed (invalidate it)."""

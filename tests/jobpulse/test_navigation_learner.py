@@ -63,3 +63,54 @@ def test_get_stats(learner):
     stats = learner.get_stats()
     assert stats["total_domains"] == 3
     assert stats["successful_domains"] == 2
+
+
+def test_platform_nav_pattern_fallback(tmp_path):
+    """When no domain sequence exists, return the most common platform pattern."""
+    learner = NavigationLearner(db_path=str(tmp_path / "nav.db"))
+
+    for domain in ["acme.com", "beta.com", "gamma.com"]:
+        learner.save_sequence(domain, [
+            {"page_type": "job_description", "action": "click_apply"},
+        ], success=True, platform="greenhouse")
+
+    assert learner.get_sequence("newcompany.com") is None
+
+    pattern = learner.get_platform_pattern("greenhouse", exclude_domain="newcompany.com")
+    assert pattern is not None
+    assert len(pattern) == 1
+    assert pattern[0]["action"] == "click_apply"
+
+
+def test_platform_nav_pattern_needs_minimum_observations(tmp_path):
+    """Platform pattern requires >=3 successful domains to be trustworthy."""
+    learner = NavigationLearner(db_path=str(tmp_path / "nav.db"))
+
+    learner.save_sequence("acme.com", [
+        {"page_type": "login_form", "action": "fill_login"},
+    ], success=True, platform="greenhouse")
+
+    pattern = learner.get_platform_pattern("greenhouse")
+    assert pattern is None
+
+
+def test_empty_steps_do_not_overwrite_existing(tmp_path):
+    """Empty steps must not overwrite a non-empty learned sequence."""
+    learner = NavigationLearner(db_path=str(tmp_path / "nav.db"))
+    good = [{"page_type": "login_form", "action": "fill_login"}, {"page_type": "job_description", "action": "click_apply"}]
+    learner.save_sequence("acme.com", good, success=True)
+    learner.save_sequence("acme.com", [], success=True)
+    result = learner.get_sequence("acme.com")
+    assert result is not None
+    assert len(result) == 2
+
+
+def test_save_sequence_with_platform(tmp_path):
+    """save_sequence stores platform and get_platform_pattern uses it."""
+    import sqlite3
+    learner = NavigationLearner(db_path=str(tmp_path / "nav.db"))
+    learner.save_sequence("acme.com", [{"action": "click_apply"}], success=True, platform="lever")
+
+    with sqlite3.connect(str(tmp_path / "nav.db")) as conn:
+        row = conn.execute("SELECT platform FROM sequences WHERE domain = ?", ("acme.com",)).fetchone()
+    assert row[0] == "lever"

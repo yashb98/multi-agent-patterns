@@ -76,6 +76,10 @@ class FormNavigator:
         # Try learned sequence first
         domain = extract_domain(url)
         learned = self.learner.get_sequence(domain)
+        if not learned and platform:
+            learned = self.learner.get_platform_pattern(platform, exclude_domain=domain)
+            if learned:
+                logger.info("Using PLATFORM pattern for %s (%s, no domain-specific data)", domain, platform)
         if learned:
             logger.info("Replaying learned navigation for %s (%d steps)", domain, len(learned))
             self.learner.increment_replay(domain)

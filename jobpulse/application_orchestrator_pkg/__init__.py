@@ -235,7 +235,7 @@ class ApplicationOrchestrator:
         # Save successful navigation for future replay
         if result.get("success"):
             domain = extract_domain(url)
-            self.learner.save_sequence(domain, navigation_steps, success=True)
+            self.learner.save_sequence(domain, navigation_steps, success=True, platform=platform)
 
         # Complete trajectory
         _outcome = "success" if result.get("success") else "failure"
