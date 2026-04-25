@@ -225,3 +225,60 @@ def test_dom_detect_dialog_with_fields():
     page_type, confidence = _dom_detect(snapshot)
     assert page_type == PageType.APPLICATION_FORM
     assert confidence >= 0.85
+
+
+@pytest.mark.asyncio
+async def test_stability_wait_uses_platform_aggregate():
+    """PageAnalyzer uses platform aggregate for new domains (no per-domain data)."""
+    from unittest.mock import MagicMock
+
+    bridge = AsyncMock()
+    analyzer = PageAnalyzer(bridge)
+
+    mock_exp = MagicMock()
+    mock_exp.lookup.return_value = None
+    mock_exp.get_platform_aggregate.return_value = {
+        "avg_field_count": 10.0,
+        "observation_count": 15,
+    }
+    analyzer.form_experience = mock_exp
+
+    sparse = _snapshot(
+        fields=[
+            {"input_type": "text", "label": "First Name", "current_value": ""},
+            {"input_type": "email", "label": "Email", "current_value": ""},
+        ],
+        url="https://boards.greenhouse.io/newcompany/jobs/123",
+    )
+
+    full = _snapshot(
+        fields=[
+            {"input_type": "text", "label": "First Name", "current_value": ""},
+            {"input_type": "text", "label": "Last Name", "current_value": ""},
+            {"input_type": "email", "label": "Email", "current_value": ""},
+            {"input_type": "tel", "label": "Phone", "current_value": ""},
+            {"input_type": "file", "label": "Resume", "current_value": ""},
+        ] + [{"input_type": "select", "label": f"Q{i}", "current_value": ""} for i in range(5)],
+        url="https://boards.greenhouse.io/newcompany/jobs/123",
+        has_file_inputs=True,
+    )
+    bridge.get_snapshot = AsyncMock(return_value=full)
+
+    result = await analyzer.detect(sparse)
+    assert result == PageType.APPLICATION_FORM
+    mock_exp.get_platform_aggregate.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_no_stability_wait_without_form_experience():
+    """Without form experience, classify immediately (no bridge.get_snapshot)."""
+    bridge = AsyncMock()
+    analyzer = PageAnalyzer(bridge)
+    analyzer.form_experience = None
+
+    s = _snapshot(
+        fields=[{"input_type": "text", "label": "First Name", "current_value": ""}],
+        url="https://unknown-ats.com/apply",
+    )
+    result = await analyzer.detect(s)
+    bridge.get_snapshot.assert_not_called()

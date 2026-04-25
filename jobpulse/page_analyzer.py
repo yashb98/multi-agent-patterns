@@ -118,16 +118,13 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     if has_dialog and (has_application_fields or len(fields) >= 2):
         return PageType.APPLICATION_FORM, 0.9
 
-    # 6. Job description: Apply button, few form fields
+    # 6. Job description: Apply button present, no application-specific fields
     has_apply_button = any(_APPLY_BUTTONS.search(t) for t in button_texts if t)
-    if has_apply_button and len(fields) <= 2 and not has_application_fields:
+    has_file_input = snapshot.get("has_file_inputs", False)
+    if has_apply_button and not has_application_fields and not has_file_input:
         return PageType.JOB_DESCRIPTION, 0.85
 
     # 7. URL hint — known job view page patterns (SPA may not have apply button in DOM yet)
-    # MUST come before the generic "3+ fields = application" rule because
-    # LinkedIn job pages have search/nav fields that trigger false positives.
-    # But if form has file inputs or many fields, it's an application form, not JD.
-    has_file_input = snapshot.get("has_file_inputs", False)
     if url and _JOB_VIEW_URLS.search(url) and not has_application_fields and not has_file_input and len(fields) <= 5:
         return PageType.JOB_DESCRIPTION, 0.7
 
@@ -211,12 +208,19 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
 class PageAnalyzer:
     """Hybrid page type detector: DOM first, vision LLM fallback."""
 
-    def __init__(self, bridge: Any):
+    def __init__(self, bridge: Any, form_experience=None):
         self.bridge = bridge
+        self.form_experience = form_experience
 
     async def detect(self, snapshot: dict) -> PageType:
         """Detect page type. Uses DOM analysis first; falls back to vision if unsure."""
         page_type, confidence = _dom_detect(snapshot)
+
+        # Stability wait for APPLICATION_FORM/UNKNOWN when platform data predicts more fields
+        if self.form_experience is not None and page_type in (PageType.APPLICATION_FORM, PageType.UNKNOWN):
+            url = snapshot.get("url", "")
+            snapshot = await self._stability_wait(snapshot, url)
+            page_type, confidence = _dom_detect(snapshot)
 
         if confidence >= _VISION_THRESHOLD:
             logger.debug("DOM detection: %s (confidence=%.2f)", page_type, confidence)
@@ -241,3 +245,72 @@ class PageAnalyzer:
             logger.warning("Vision fallback failed: %r", exc, exc_info=True)
 
         return page_type
+
+    async def _stability_wait(self, snapshot: dict, url: str, max_polls: int = 6, interval: float = 0.5) -> dict:
+        """Wait for DOM to stabilize when platform data predicts more fields."""
+        import asyncio
+
+        if not url:
+            return snapshot
+
+        expected_count = self._get_expected_field_count(url)
+        if expected_count is None:
+            return snapshot
+
+        current_count = len(snapshot.get("fields", []))
+        if current_count >= expected_count * 0.6:
+            return snapshot
+
+        logger.info("DOM stability wait: %d fields, platform avg %.0f — polling", current_count, expected_count)
+        for _ in range(max_polls):
+            await asyncio.sleep(interval)
+            try:
+                fresh = await self.bridge.get_snapshot(force_refresh=True)
+                if hasattr(fresh, "model_dump"):
+                    fresh = fresh.model_dump()
+                new_count = len(fresh.get("fields", []))
+                if new_count >= expected_count * 0.6:
+                    logger.info("DOM stabilized: %d fields (expected %.0f)", new_count, expected_count)
+                    return fresh
+                if new_count == current_count:
+                    return fresh
+                current_count = new_count
+                snapshot = fresh
+            except Exception:
+                break
+        return snapshot
+
+    def _get_expected_field_count(self, url: str) -> float | None:
+        """Get expected field count: per-domain first, platform aggregate fallback."""
+        import json as _json
+
+        per_domain = self.form_experience.lookup(url)
+        if per_domain and per_domain.get("success"):
+            stored = per_domain.get("field_types", "[]")
+            if isinstance(stored, str):
+                stored = _json.loads(stored)
+            return float(len(stored))
+
+        platform = self._infer_platform(url)
+        if platform:
+            agg = self.form_experience.get_platform_aggregate(platform)
+            if agg and agg["observation_count"] >= 3:
+                return agg["avg_field_count"]
+
+        return None
+
+    @staticmethod
+    def _infer_platform(url: str) -> str | None:
+        url_lower = url.lower()
+        for platform, pattern in [
+            ("greenhouse", "greenhouse"),
+            ("lever", "lever.co"),
+            ("workday", "myworkdayjobs"),
+            ("smartrecruiters", "smartrecruiters"),
+            ("indeed", "indeed.com"),
+            ("ashby", "ashbyhq.com"),
+            ("icims", "icims.com"),
+        ]:
+            if pattern in url_lower:
+                return platform
+        return None

@@ -59,7 +59,7 @@ class ApplicationOrchestrator:
         self.accounts = account_manager or AccountManager()
         self.gmail = gmail_verifier or GmailVerifier()
         self.learner = navigation_learner or NavigationLearner()
-        self.analyzer = PageAnalyzer(self.driver)
+        self.analyzer = PageAnalyzer(self.driver, form_experience=self._get_form_experience())
         self.cookie_dismisser = CookieBannerDismisser(self.driver)
         self.sso = SSOHandler(self.driver)
         self.gotchas = GotchasDB()
@@ -70,6 +70,14 @@ class ApplicationOrchestrator:
         self._navigator = FormNavigator(self, self._auth)
         self._filler = FormFiller(self, self._executor, self._navigator)
         self._bind_compat_aliases()
+
+    @staticmethod
+    def _get_form_experience():
+        try:
+            from jobpulse.form_experience_db import FormExperienceDB
+            return FormExperienceDB()
+        except Exception:
+            return None
 
     @staticmethod
     def _as_dict(snapshot: Any) -> dict:
