@@ -179,6 +179,20 @@ class ApplicationOrchestrator:
             form_intelligence=form_intelligence,
         )
 
+        # Re-auth retry on session expiry during form fill
+        if result.get("error") == "session_expired" and not result.get("_reauth_attempted"):
+            logger.info("Session expired during form fill — re-authenticating")
+            reauth = await self._navigator.navigate_to_form(url, platform, navigation_steps)
+            if reauth["page_type"] == PageType.APPLICATION_FORM:
+                result = await self._filler.fill_application(
+                    platform=platform, snapshot=reauth["snapshot"],
+                    cv_path=cv_path, cover_letter_path=cover_letter_path,
+                    profile=profile, custom_answers=custom_answers,
+                    overrides=overrides, dry_run=dry_run,
+                    form_intelligence=form_intelligence,
+                )
+                result["_reauth_attempted"] = True
+
         try:
             if _tid and _opt_engine:
                 _opt_engine.log_step(_tid, TrajectoryStep(

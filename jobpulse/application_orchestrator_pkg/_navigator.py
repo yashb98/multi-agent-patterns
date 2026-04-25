@@ -196,6 +196,27 @@ class FormNavigator:
                 snapshot = await self.auth.handle_email_verification(snapshot, platform, url)
                 steps.append({"page_type": "email_verification", "action": "verify_email"})
 
+            elif page_type == PageType.SESSION_EXPIRED:
+                sso = self.sso.detect_sso(snapshot)
+                if sso:
+                    await self.sso.click_sso(sso)
+                    snapshot = self._as_dict(await self.driver.get_snapshot())
+                    steps.append({"page_type": "session_expired", "action": f"sso_{sso['provider']}"})
+                else:
+                    snapshot = await self.auth.handle_login(snapshot, platform)
+                    steps.append({"page_type": "session_expired", "action": "fill_login"})
+
+            elif page_type == PageType.CONSENT_GATE:
+                for btn in snapshot.get("buttons", []):
+                    if btn.get("enabled", True) and re.search(
+                        r"(accept|agree|continue|proceed|i\s*accept)", btn.get("text", ""), re.IGNORECASE
+                    ):
+                        logger.info("Accepting consent gate: '%s'", btn.get("text", ""))
+                        await self.driver.click(btn["selector"])
+                        break
+                snapshot = self._as_dict(await self.driver.get_snapshot())
+                steps.append({"page_type": "consent_gate", "action": "accept_consent"})
+
             elif page_type == PageType.UNKNOWN:
                 apply_btn = find_apply_button(snapshot)
                 if apply_btn:

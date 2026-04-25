@@ -45,6 +45,22 @@ _EMAIL_VERIFY_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_SESSION_EXPIRED_PATTERNS = re.compile(
+    r"(session\s*(has\s*)?(expired|timed?\s*out)"
+    r"|please\s*(sign|log)\s*in\s*again"
+    r"|you\s*(have\s*)?been\s*(signed|logged)\s*out"
+    r"|login\s*session\s*(has\s*)?(expired|ended))",
+    re.IGNORECASE,
+)
+
+_CONSENT_GATE_PATTERNS = re.compile(
+    r"(agree\s*to\s*(our\s*)?(privacy|data)\s*(policy|processing)"
+    r"|consent\s*to\s*(the\s*)?(processing|collection|use)\s*of\s*(your\s*)?(personal\s*)?data"
+    r"|accept\s*(our\s*)?terms\s*(and|&)\s*(conditions|privacy)"
+    r"|by\s*continuing.*consent\s*to)",
+    re.IGNORECASE,
+)
+
 # --- Field labels that indicate application forms ---
 _APPLICATION_LABELS = re.compile(
     r"(first\s*name|last\s*name|phone|resume|cv|cover\s*letter|linkedin|portfolio"
@@ -78,6 +94,7 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     button_texts = [b.get("text", "") for b in buttons]
     field_types = [f.get("input_type", "") for f in fields]
     field_labels = [f.get("label", "") for f in fields]
+    has_application_fields = any(_APPLICATION_LABELS.search(lbl) for lbl in field_labels if lbl)
 
     # 1. Verification wall (CAPTCHA) — highest priority
     if verification_wall:
@@ -90,6 +107,16 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     # 3. Email verification page
     if _EMAIL_VERIFY_PATTERNS.search(page_text):
         return PageType.EMAIL_VERIFICATION, 0.9
+
+    # 3.5 Session expired
+    if _SESSION_EXPIRED_PATTERNS.search(page_text):
+        return PageType.SESSION_EXPIRED, 0.95
+
+    # 3.6 Consent gate (full-page, not cookie banner — only if no application fields visible)
+    if _CONSENT_GATE_PATTERNS.search(page_text) and not has_application_fields:
+        if any(re.search(r"(accept|agree|continue|proceed)", b.get("text", ""), re.IGNORECASE)
+               for b in buttons if b.get("enabled", True)):
+            return PageType.CONSENT_GATE, 0.9
 
     # 4. Signup form: confirm password OR signup button + password
     password_count = sum(1 for t in field_types if t == "password")
@@ -106,7 +133,6 @@ def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     has_email = any(t == "email" for t in field_types) or any(
         "email" in lbl.lower() for lbl in field_labels
     )
-    has_application_fields = any(_APPLICATION_LABELS.search(lbl) for lbl in field_labels if lbl)
 
     if has_login_button and has_password and has_email and not has_application_fields:
         return PageType.LOGIN_FORM, 0.9
@@ -163,7 +189,7 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
                         "Return ONLY a JSON object with 'page_type' and 'confidence' (0.0-1.0).\n"
                         "Page types: job_description, login_form, signup_form, "
                         "email_verification, application_form, confirmation, "
-                        "verification_wall, unknown"
+                        "verification_wall, session_expired, consent_gate, unknown"
                     ),
                 },
                 {

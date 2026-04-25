@@ -282,3 +282,36 @@ async def test_no_stability_wait_without_form_experience():
     )
     result = await analyzer.detect(s)
     bridge.get_snapshot.assert_not_called()
+
+
+def test_dom_session_expired():
+    s = _snapshot(page_text="Your session has expired. Please sign in again.")
+    result, confidence = _dom_detect(s)
+    assert result == PageType.SESSION_EXPIRED
+    assert confidence >= 0.9
+
+
+def test_dom_session_timed_out():
+    s = _snapshot(page_text="Session timed out. Please log in to continue.")
+    result, confidence = _dom_detect(s)
+    assert result == PageType.SESSION_EXPIRED
+
+
+def test_dom_consent_gate_privacy():
+    s = _snapshot(
+        page_text="Please agree to our privacy policy to continue your application.",
+        buttons=[{"text": "I Accept", "enabled": True}, {"text": "Decline", "enabled": True}],
+    )
+    result, confidence = _dom_detect(s)
+    assert result == PageType.CONSENT_GATE
+    assert confidence >= 0.8
+
+
+def test_dom_consent_gate_not_cookie_banner():
+    """Cookie text alone should NOT trigger CONSENT_GATE."""
+    s = _snapshot(
+        page_text="We use cookies to improve your experience",
+        buttons=[{"text": "Accept All", "enabled": True}],
+    )
+    result, confidence = _dom_detect(s)
+    assert result != PageType.CONSENT_GATE

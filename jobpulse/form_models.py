@@ -18,6 +18,8 @@ class PageType(StrEnum):
     APPLICATION_FORM = "application_form"
     CONFIRMATION = "confirmation"
     VERIFICATION_WALL = "verification_wall"
+    SESSION_EXPIRED = "session_expired"
+    CONSENT_GATE = "consent_gate"
     UNKNOWN = "unknown"
 
 
