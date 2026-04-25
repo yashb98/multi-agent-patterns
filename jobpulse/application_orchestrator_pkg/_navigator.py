@@ -133,9 +133,17 @@ class FormNavigator:
         snapshot = self._as_dict(await self.driver.get_snapshot())
 
         apply_attempts = 0
+        visited_states: dict[tuple[str, str], int] = {}
         for step in range(MAX_NAVIGATION_STEPS):
             page_type = await self.analyzer.detect(snapshot)
             logger.info("Navigation step %d: %s", step + 1, page_type)
+
+            current_url = snapshot.get("url", "") if isinstance(snapshot, dict) else ""
+            _loop_key = (_extract_loop_domain(current_url), str(page_type))
+            visited_states[_loop_key] = visited_states.get(_loop_key, 0) + 1
+            if visited_states[_loop_key] >= 3:
+                logger.warning("Redirect loop: %s × %d — aborting", _loop_key, visited_states[_loop_key])
+                return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
             if page_type in (PageType.APPLICATION_FORM, PageType.VERIFICATION_WALL, PageType.CONFIRMATION):
                 return {"page_type": page_type, "snapshot": snapshot}
@@ -376,6 +384,12 @@ class FormNavigator:
 # ── Module-level utilities ──
 
 def extract_domain(url: str) -> str:
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    return parsed.netloc.lower().removeprefix("www.") if parsed.netloc else url
+
+
+def _extract_loop_domain(url: str) -> str:
     from urllib.parse import urlparse
     parsed = urlparse(url)
     return parsed.netloc.lower().removeprefix("www.") if parsed.netloc else url

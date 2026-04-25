@@ -145,3 +145,67 @@ def test_consecutive_failures_purge_sequence(learner):
     with sqlite3.connect(learner._db_path) as conn:
         row = conn.execute("SELECT * FROM sequences WHERE domain = ?", ("acme.com",)).fetchone()
     assert row is None
+
+
+@pytest.mark.asyncio
+async def test_redirect_loop_detected():
+    """Navigator aborts when same (domain, page_type) appears 3 times."""
+    from unittest.mock import AsyncMock, MagicMock
+    from jobpulse.application_orchestrator_pkg._navigator import FormNavigator, MAX_NAVIGATION_STEPS
+    from jobpulse.form_models import PageType
+    from jobpulse.page_analyzer import PageAnalyzer
+
+    # Build a minimal orchestrator mock
+    orch = MagicMock()
+    orch.cookie_dismisser = MagicMock()
+    orch.cookie_dismisser.dismiss = AsyncMock(return_value=False)
+
+    mock_learner = MagicMock()
+    mock_learner.get_sequence = MagicMock(return_value=None)
+    mock_learner.get_platform_pattern = MagicMock(return_value=None)
+    orch.learner = mock_learner
+
+    # Create a real PageAnalyzer with mock bridge — we'll mock _dom_detect instead
+    mock_bridge = AsyncMock()
+    orch.analyzer = PageAnalyzer(mock_bridge)
+
+    orch.sso = MagicMock()
+    orch.sso.detect_sso = MagicMock(return_value=None)
+
+    auth = AsyncMock()
+    nav = FormNavigator(orch, auth)
+
+    login_snap = {
+        "url": "https://ats.example.com/login",
+        "buttons": [{"text": "Sign in", "enabled": True}],
+        "fields": [
+            {"input_type": "email", "label": "Email", "current_value": ""},
+            {"input_type": "password", "label": "Password", "current_value": ""},
+        ],
+        "page_text_preview": "",
+        "has_file_inputs": False,
+    }
+
+    # Alternate between login and some other page that re-triggers login
+    call_count = 0
+    async def mock_get_snapshot(force_refresh=False):
+        nonlocal call_count
+        call_count += 1
+        return login_snap
+
+    orch.driver = AsyncMock()
+    orch.driver.navigate = AsyncMock()
+    orch.driver.get_snapshot = mock_get_snapshot
+    orch.driver.click = AsyncMock()
+    orch.driver.page = None
+    orch.driver.wait_for_apply = AsyncMock(side_effect=AttributeError)
+
+    auth.handle_login = AsyncMock(return_value=login_snap)
+
+    steps = []
+    result = await nav.navigate_to_form("https://ats.example.com/jobs/123", "generic", steps)
+    # Should have aborted due to loop detection (login appearing 3 times)
+    assert result["page_type"] in (PageType.LOGIN_FORM, PageType.UNKNOWN)
+    # Without loop detection: 10 full steps → 12 get_snapshot calls.
+    # With loop detection at threshold=3: aborts at step 3 → ≤8 calls.
+    assert call_count <= 8, f"Expected loop abort within 8 get_snapshot calls, got {call_count}"
