@@ -18,6 +18,8 @@ from jobpulse.config import DATA_DIR
 logger = get_logger(__name__)
 
 _DEFAULT_DB = str(DATA_DIR / "navigation_learning.db")
+_SEQUENCE_TTL_DAYS = 30
+_MAX_CONSECUTIVE_FAILURES = 3
 
 
 class NavigationLearner:
@@ -53,15 +55,22 @@ class NavigationLearner:
         return domain_or_url.lower().removeprefix("www.")
 
     def get_sequence(self, domain_or_url: str) -> list[dict] | None:
-        """Get a successful navigation sequence for a domain. Returns None if none exists."""
+        """Get a successful navigation sequence for a domain. Returns None if none exists or expired."""
         domain = self._normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
             row = conn.execute(
-                "SELECT steps FROM sequences WHERE domain = ? AND success = 1",
+                "SELECT steps, updated_at FROM sequences WHERE domain = ? AND success = 1",
                 (domain,),
             ).fetchone()
         if not row:
             return None
+        try:
+            updated = datetime.fromisoformat(row[1])
+            if (datetime.now(UTC) - updated).days > _SEQUENCE_TTL_DAYS:
+                logger.info("Navigation sequence for %s expired (%s)", domain, row[1])
+                return None
+        except (ValueError, TypeError):
+            pass
         return json.loads(row[0])
 
     def save_sequence(self, domain_or_url: str, steps: list[dict], success: bool, platform: str = ""):
@@ -143,14 +152,31 @@ class NavigationLearner:
         return None  # pragma: no cover
 
     def mark_failed(self, domain_or_url: str):
-        """Mark a learned sequence as failed (invalidate it)."""
+        """Mark a learned sequence as failed. Purges after 3 consecutive failures."""
         domain = self._normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
             conn.execute(
                 "UPDATE sequences SET success = 0, fail_count = fail_count + 1 WHERE domain = ?",
                 (domain,),
             )
-        logger.info("Invalidated navigation sequence for %s", domain)
+            row = conn.execute("SELECT fail_count FROM sequences WHERE domain = ?", (domain,)).fetchone()
+            if row and row[0] >= _MAX_CONSECUTIVE_FAILURES:
+                conn.execute("DELETE FROM sequences WHERE domain = ?", (domain,))
+                logger.info("Purged navigation sequence for %s after %d failures", domain, row[0])
+            else:
+                logger.info("Invalidated navigation for %s (fail_count=%d)", domain, row[0] if row else 0)
+        try:
+            from shared.optimization import get_optimization_engine
+            get_optimization_engine().emit(
+                signal_type="failure",
+                source_loop="navigation_learner",
+                domain=domain,
+                agent_name="navigator",
+                payload={"param": "navigation_path", "reason": "replay_failed"},
+                session_id=f"nl_fail_{domain}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+            )
+        except Exception as e:
+            logger.debug("Optimization signal failed: %s", e)
 
     def increment_replay(self, domain_or_url: str):
         """Track that a sequence was replayed."""

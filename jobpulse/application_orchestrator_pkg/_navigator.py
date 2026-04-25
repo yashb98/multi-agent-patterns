@@ -115,6 +115,7 @@ class FormNavigator:
                     snapshot = self._as_dict(await self.driver.get_snapshot())
                 except Exception as replay_exc:
                     logger.warning("Replay step failed (action=%s): %s — falling through to fresh detection", action, replay_exc)
+                    self.learner.mark_failed(domain)
                     replay_ok = False
                     break
 
@@ -125,6 +126,7 @@ class FormNavigator:
                     logger.info("Replay succeeded: reached APPLICATION_FORM for %s", domain)
                     return {"page_type": page_type_after, "snapshot": snapshot}
                 logger.info("Replay completed but page_type=%s — continuing with fresh detection", page_type_after)
+                self.learner.mark_failed(domain)
 
         # Dismiss cookie banner
         await self.cookie_dismisser.dismiss(snapshot)

@@ -1,6 +1,7 @@
 """Tests for NavigationLearner — per-domain sequence replay."""
 
 import pytest
+from datetime import UTC, datetime
 from jobpulse.navigation_learner import NavigationLearner
 
 
@@ -114,3 +115,33 @@ def test_save_sequence_with_platform(tmp_path):
     with sqlite3.connect(str(tmp_path / "nav.db")) as conn:
         row = conn.execute("SELECT platform FROM sequences WHERE domain = ?", ("acme.com",)).fetchone()
     assert row[0] == "lever"
+
+
+def test_ttl_expired_sequence_not_returned(learner):
+    """Sequences older than 30 days are not returned."""
+    from datetime import timedelta
+    import sqlite3
+
+    steps = [{"page_type": "job_description", "action": "click_apply"}]
+    learner.save_sequence("acme.com", steps, success=True)
+
+    old_date = (datetime.now(UTC) - timedelta(days=31)).isoformat()
+    with sqlite3.connect(learner._db_path) as conn:
+        conn.execute("UPDATE sequences SET updated_at = ? WHERE domain = ?", (old_date, "acme.com"))
+
+    assert learner.get_sequence("acme.com") is None
+
+
+def test_consecutive_failures_purge_sequence(learner):
+    """3 consecutive mark_failed() calls delete the sequence."""
+    steps = [{"page_type": "login_form", "action": "fill_login"}]
+    learner.save_sequence("acme.com", steps, success=True)
+
+    learner.mark_failed("acme.com")
+    learner.mark_failed("acme.com")
+    learner.mark_failed("acme.com")
+
+    import sqlite3
+    with sqlite3.connect(learner._db_path) as conn:
+        row = conn.execute("SELECT * FROM sequences WHERE domain = ?", ("acme.com",)).fetchone()
+    assert row is None
