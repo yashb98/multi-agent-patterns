@@ -63,5 +63,18 @@ class SSOHandler:
 
     async def click_sso(self, sso: dict):
         """Click an SSO button and wait for redirect."""
+        import asyncio
         logger.info("Clicking SSO: %s at %s", sso["provider"], sso["selector"])
         await self.bridge.click(sso["selector"])
+        for _ in range(20):
+            await asyncio.sleep(0.5)
+            try:
+                snap = await self.bridge.get_snapshot()
+                if hasattr(snap, "model_dump"):
+                    snap = snap.model_dump()
+                url = snap.get("url", "").lower()
+                if "oauth" not in url and "accounts.google" not in url and "login" not in url:
+                    break
+            except Exception:
+                continue
+        logger.info("SSO flow completed for %s", sso["provider"])

@@ -13,6 +13,8 @@ from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+_ACTION_TIMEOUT = 30
+
 
 class ActionExecutor:
     """Dispatches form actions to the driver with retry and validation."""
@@ -43,6 +45,34 @@ class ActionExecutor:
             tier = action.get("tier", 1)
             confidence = action.get("confidence", 1.0)
 
+        try:
+            await asyncio.wait_for(
+                self._dispatch(atype, selector, value, file_path),
+                timeout=_ACTION_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Action %s on %s timed out after %ds",
+                atype,
+                selector[:60] if selector else "?",
+                _ACTION_TIMEOUT,
+            )
+            raise TimeoutError(f"Action {atype} timed out")
+
+        # Stream field progress to Telegram in real-time
+        if tg_stream is not None and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date"):
+            try:
+                await tg_stream.stream_field(
+                    label=str(label),
+                    value=str(value),
+                    tier=int(tier),
+                    confident=float(confidence) >= 0.7,
+                )
+            except Exception as _se:
+                logger.debug("stream_field failed: %s", _se)
+
+    async def _dispatch(self, atype: str, selector: str, value: str, file_path: str | None):
+        """Dispatch action to driver."""
         if atype == "fill":
             await self.driver.fill(selector, value)
         elif atype == "upload":
@@ -75,18 +105,6 @@ class ActionExecutor:
             await self.driver.force_click(selector)
         elif atype == "check_consent_boxes":
             await self.driver.check_consent_boxes(selector or None)
-
-        # Stream field progress to Telegram in real-time
-        if tg_stream is not None and atype in ("fill", "select", "fill_radio_group", "fill_custom_select", "fill_autocomplete", "fill_date"):
-            try:
-                await tg_stream.stream_field(
-                    label=str(label),
-                    value=str(value),
-                    tier=int(tier),
-                    confident=float(confidence) >= 0.7,
-                )
-            except Exception as _se:
-                logger.debug("stream_field failed: %s", _se)
 
     async def execute_action_with_retry(
         self, action: Any, tg_stream: Any = None, max_retries: int = 2

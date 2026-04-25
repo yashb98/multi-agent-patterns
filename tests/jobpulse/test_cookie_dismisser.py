@@ -37,6 +37,7 @@ async def test_dismiss_i_agree(dismisser, bridge):
         "buttons": [
             {"text": "I Agree", "enabled": True, "selector": "#agree"},
         ],
+        "page_text_preview": "We use cookies to improve your experience",
     }
     dismissed = await dismisser.dismiss(snapshot)
     assert dismissed is True
@@ -60,6 +61,7 @@ async def test_dismiss_got_it(dismisser, bridge):
         "buttons": [
             {"text": "Got it!", "enabled": True, "selector": "#gotit"},
         ],
+        "page_text_preview": "This site uses cookies and tracking technologies",
     }
     dismissed = await dismisser.dismiss(snapshot)
     assert dismissed is True
@@ -89,3 +91,25 @@ async def test_dismiss_close_x_button(dismisser, bridge):
     dismissed = await dismisser.dismiss(snapshot)
     assert dismissed is True
     bridge.click.assert_called_once_with(".cookie-close")
+
+
+@pytest.mark.asyncio
+async def test_dismiss_german_akzeptieren(dismisser, bridge):
+    snapshot = {"buttons": [{"text": "Alle akzeptieren", "enabled": True, "selector": "#de"}],
+                "page_text_preview": "Wir verwenden Cookies"}
+    assert await dismisser.dismiss(snapshot) is True
+    bridge.click.assert_called_with("#de")
+
+@pytest.mark.asyncio
+async def test_dismiss_french_accepter(dismisser, bridge):
+    snapshot = {"buttons": [{"text": "Tout accepter", "enabled": True, "selector": "#fr"}],
+                "page_text_preview": "Ce site utilise des cookies"}
+    assert await dismisser.dismiss(snapshot) is True
+    bridge.click.assert_called_with("#fr")
+
+@pytest.mark.asyncio
+async def test_dismiss_spanish_aceptar(dismisser, bridge):
+    snapshot = {"buttons": [{"text": "Aceptar todas", "enabled": True, "selector": "#es"}],
+                "page_text_preview": "Utilizamos cookies"}
+    assert await dismisser.dismiss(snapshot) is True
+    bridge.click.assert_called_with("#es")

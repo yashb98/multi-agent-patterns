@@ -366,8 +366,8 @@ class FormNavigator:
         snapshot = await self.driver.get_snapshot(force_refresh=True)
         if not snapshot:
             return {"verified": False, "reason": "no_snapshot"}
-
-        text = (snapshot.page_text_preview or "").lower()
+        snapshot = self._as_dict(snapshot)
+        text = (snapshot.get("page_text_preview") or "").lower()
 
         # Success indicators
         success_patterns = [
@@ -383,7 +383,7 @@ class FormNavigator:
                 return {"verified": True, "pattern": pat}
 
         # URL-based confirmation
-        url = (snapshot.url or "").lower()
+        url = (snapshot.get("url") or "").lower()
         for path in ("/confirmation", "/thank-you", "/success", "/applied", "/complete"):
             if path in url:
                 return {"verified": True, "url_match": path}

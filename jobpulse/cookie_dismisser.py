@@ -20,17 +20,26 @@ _ACCEPT_PATTERNS = [
     re.compile(r"(got\s*it|okay|ok)(!|\.)?$", re.IGNORECASE),
     re.compile(r"allow\s*(all\s*)?(cookies?)?", re.IGNORECASE),
     re.compile(r"consent", re.IGNORECASE),
+    re.compile(r"(alle\s*)?akzeptieren", re.IGNORECASE),
+    re.compile(r"zustimmen", re.IGNORECASE),
+    re.compile(r"(tout\s*)?accepter", re.IGNORECASE),
+    re.compile(r"j.accepte", re.IGNORECASE),
+    re.compile(r"aceptar\s*(todas?)?", re.IGNORECASE),
 ]
 
 # Secondary: close button when cookie context detected in page text
 _COOKIE_CONTEXT = re.compile(
-    r"(cookie|gdpr|privacy|consent|tracking)", re.IGNORECASE
+    r"(cookie|gdpr|privacy|consent|tracking"
+    r"|datenschutz|privacidad|confidentialit[eé]"
+    r"|wir\s*verwenden|utilizamos|ce\s*site\s*utilise)", re.IGNORECASE
 )
 _CLOSE_PATTERN = re.compile(r"^(close|dismiss|\u00d7|\u2715|x)$", re.IGNORECASE)
 
 # Never click these
 _ANTI_PATTERNS = re.compile(
-    r"(reject|decline|manage|customize|preferences|settings|policy|learn\s*more)",
+    r"(reject|decline|manage|customize|preferences|settings|policy|learn\s*more"
+    r"|user\s*agreement|terms|copyright"
+    r"|ablehnen|verwalten|einstellungen|rechazar|gestionar|refuser|param[eè]tres)",
     re.IGNORECASE,
 )
 
@@ -47,11 +56,14 @@ class CookieBannerDismisser:
             snapshot = snapshot.model_dump()
         buttons = snapshot.get("buttons", [])
         page_text = snapshot.get("page_text_preview", "")
+        has_cookie_context = bool(_COOKIE_CONTEXT.search(page_text))
 
         # Try accept/agree buttons first
         for btn in buttons:
             text = btn.get("text", "")
             if not btn.get("enabled", True) or not text:
+                continue
+            if not has_cookie_context and not _COOKIE_CONTEXT.search(text):
                 continue
             if _ANTI_PATTERNS.search(text):
                 continue
@@ -62,7 +74,7 @@ class CookieBannerDismisser:
                     return True
 
         # If page mentions cookies, try close button
-        if _COOKIE_CONTEXT.search(page_text):
+        if has_cookie_context:
             for btn in buttons:
                 text = btn.get("text", "")
                 if _CLOSE_PATTERN.search(text) and not _ANTI_PATTERNS.search(text):
@@ -71,3 +83,31 @@ class CookieBannerDismisser:
                     return True
 
         return False
+
+
+async def dismiss_cookie_banner_playwright(page: Any, timeout_ms: int = 3000) -> bool:
+    """Playwright-native cookie dismissal with short visibility timeout.
+
+    Use when the extension bridge isn't available (e.g. direct CDP sessions).
+    Checks visibility before clicking to avoid timeouts on invisible elements.
+    """
+    selectors = [
+        "#onetrust-accept-btn-handler",
+        "button:has-text('Accept All')",
+        "button:has-text('Accept Cookies')",
+        "button:has-text('I agree')",
+        "button:has-text('Got it')",
+        "button:has-text('Allow All')",
+        "[data-testid='cookie-accept']",
+        ".cookie-accept",
+    ]
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=timeout_ms):
+                await loc.click(timeout=timeout_ms)
+                logger.info("cookie_dismisser: clicked %s", sel)
+                return True
+        except Exception:
+            continue
+    return False
