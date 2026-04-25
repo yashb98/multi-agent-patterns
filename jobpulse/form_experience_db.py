@@ -42,6 +42,15 @@ class FormExperienceDB:
                     updated_at TEXT NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS field_label_mappings (
+                    domain TEXT,
+                    field_label TEXT,
+                    profile_key TEXT,
+                    confidence REAL DEFAULT 1.0,
+                    PRIMARY KEY (domain, field_label)
+                )
+            """)
 
     @staticmethod
     def normalize_domain(domain_or_url: str) -> str:
@@ -183,6 +192,64 @@ class FormExperienceDB:
         return {"trusted": trusted, "match_ratio": match_ratio,
                 "stored": stored, "diverged_fields": diverged}
 
+    def get_platform_aggregate(self, platform: str) -> dict | None:
+        """Aggregate form experience across ALL domains for a platform."""
+        from collections import Counter
+
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                """SELECT COUNT(*), AVG(pages_filled), AVG(time_seconds),
+                          GROUP_CONCAT(field_types, '|||'),
+                          GROUP_CONCAT(screening_questions, '|||')
+                   FROM form_experience
+                   WHERE platform = ? AND success = 1""",
+                (platform,),
+            ).fetchone()
+
+        if not row or row[0] == 0:
+            return None
+
+        observation_count, avg_pages_raw, avg_time_raw, ft_concat, sq_concat = row
+
+        # Parse field_types JSON blobs and build frequency counts
+        field_type_counter: Counter = Counter()
+        total_field_count = 0
+        if ft_concat:
+            for blob in ft_concat.split("|||"):
+                try:
+                    fields = json.loads(blob)
+                except (ValueError, TypeError):
+                    fields = []
+                field_type_counter.update(fields)
+                total_field_count += len(fields)
+
+        avg_field_count = round(total_field_count / observation_count, 1) if observation_count else 0.0
+        field_type_frequencies = dict(field_type_counter)
+        common_field_types = [ft for ft, _ in field_type_counter.most_common()]
+
+        # Parse screening_questions JSON blobs and build frequency counts
+        sq_counter: Counter = Counter()
+        if sq_concat:
+            for blob in sq_concat.split("|||"):
+                try:
+                    questions = json.loads(blob)
+                except (ValueError, TypeError):
+                    questions = []
+                sq_counter.update(questions)
+
+        common_screening_questions = sq_counter.most_common()
+
+        return {
+            "platform": platform,
+            "observation_count": observation_count,
+            "avg_pages": round(avg_pages_raw, 1),
+            "avg_field_count": avg_field_count,
+            "avg_time_seconds": round(avg_time_raw, 1),
+            "common_field_types": common_field_types,
+            "field_type_frequencies": field_type_frequencies,
+            "common_screening_questions": common_screening_questions,
+        }
+
     def get_stats(self) -> dict:
         with sqlite3.connect(self._db_path) as conn:
             total = conn.execute("SELECT COUNT(*) FROM form_experience").fetchone()[0]
@@ -190,3 +257,27 @@ class FormExperienceDB:
                 "SELECT COUNT(*) FROM form_experience WHERE success = 1"
             ).fetchone()[0]
         return {"total_domains": total, "successful_domains": successful}
+
+    def get_field_mappings(self, domain_or_url: str) -> dict[str, str]:
+        """Return {field_label: profile_key} for a domain."""
+        domain = self.normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT field_label, profile_key FROM field_label_mappings WHERE domain = ?",
+                (domain,),
+            ).fetchall()
+        return {label: key for label, key in rows}
+
+    def save_field_mappings(self, domain_or_url: str, mappings: dict[str, str]) -> None:
+        """Persist {field_label: profile_key} for a domain."""
+        domain = self.normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            for field_label, profile_key in mappings.items():
+                conn.execute(
+                    """INSERT INTO field_label_mappings (domain, field_label, profile_key, confidence)
+                       VALUES (?, ?, ?, 1.0)
+                       ON CONFLICT(domain, field_label) DO UPDATE SET
+                           profile_key = excluded.profile_key""",
+                    (domain, field_label, profile_key),
+                )
+        logger.info("Saved %d field mappings for %s", len(mappings), domain)
