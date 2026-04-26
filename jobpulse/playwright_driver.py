@@ -462,6 +462,29 @@ class PlaywrightDriver:
             "count": len(errors),
         }
 
+    async def rescan_after_fill(self, selector: str) -> dict:
+        """Read back element value and check for validation errors after a fill."""
+        result: dict = {"success": True, "current_value": None, "validation_errors": []}
+
+        try:
+            el = await self._page.query_selector(selector)
+            if el:
+                result["current_value"] = await el.evaluate("el => el.value || el.textContent || ''")
+        except Exception:
+            pass
+
+        try:
+            error_scan = await self.scan_validation_errors()
+            if error_scan.get("has_errors"):
+                result["validation_errors"] = [
+                    e for e in error_scan.get("errors", [])
+                    if not selector or e.get("field_selector", "") == selector or not e.get("field_selector")
+                ]
+        except Exception:
+            pass
+
+        return result
+
     async def fill(self, selector: str, value: str, label: str = "") -> dict:
         """Fill a text input with human-like timing and verification."""
         async def _do():
