@@ -1,18 +1,15 @@
-"""NativeFormFiller — Playwright native form-filling pipeline.
+"""NativeFormFiller — Playwright native form-filling orchestrator.
 
-Uses Playwright's locator API (get_by_label, get_by_role, accessibility tree)
-and LLM calls instead of extension-style snapshots and state machines.
-
-Single Responsibility: this class owns field scanning, LLM mapping, label-based
-filling, file uploads, consent, and navigation for the native engine. The
-ApplicationOrchestrator delegates to this class when engine="playwright".
+Thin coordinator that delegates to focused modules in jobpulse/form_engine/:
+- field_scanner: a11y tree + Playwright field discovery
+- field_resolver: lookup tables + deterministic answer resolution
+- field_mapper: LLM mapping, screening, recovery, vision fallback
+- file_uploader: CV/CL uploads, consent, modal CV handling
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
-import os
 import random
 import re
 import time
@@ -20,14 +17,64 @@ from typing import TYPE_CHECKING, Any
 
 from shared.agents import get_openai_client, get_model_name
 from shared.logging_config import get_logger
-from shared.pii import assert_prompt_has_wrapped_pii, pii_json, wrap_pii_value
+from shared.pii import assert_prompt_has_wrapped_pii
+
+from jobpulse.form_engine.field_resolver import (
+    _best_option_match,
+    _build_option_aliases,
+    _canonicalize_country_value,
+    _COUNTRY_DATA,
+    _country_from_location,
+    _ensure_label_db,
+    _FIELD_LABEL_TO_PROFILE_KEY,
+    _fuzzy_label_to_profile_key,
+    _get_field_gap,
+    _normalize_match_text,
+    _persist_label_mapping,
+    _profile_prompt_json,
+    _screening_prompt_background,
+    _screening_prompt_profile,
+)
+from jobpulse.form_engine.field_scanner import (
+    get_accessible_name,
+    scan_fields,
+)
+from jobpulse.form_engine.field_mapper import (
+    clean_mapping,
+    is_screening_like_field,
+    learn_field_mapping,
+    map_fields,
+    recover_failed_fields_with_llm,
+    recover_failed_fields_with_vision,
+    review_form,
+    screen_questions,
+    seed_mapping,
+    try_cached_mapping,
+    vision_map_unlabeled_fields,
+)
+from jobpulse.form_engine.file_uploader import (
+    check_consent,
+    handle_modal_cv_upload,
+    upload_files,
+    upload_pdf,
+)
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
 logger = get_logger(__name__)
 
-# Per-platform minimum page times (seconds) — kept in sync with orchestrator
+# Re-export for backward compatibility (tests import these from native_form_filler)
+__all__ = [
+    "NativeFormFiller",
+    "_best_option_match",
+    "_build_option_aliases",
+    "_canonicalize_country_value",
+    "_fuzzy_label_to_profile_key",
+    "_screening_prompt_background",
+    "_screening_prompt_profile",
+]
+
 _PLATFORM_MIN_PAGE_TIME: dict[str, float] = {
     "workday": 45.0,
     "linkedin": 3.0,
@@ -39,361 +86,9 @@ _PLATFORM_MIN_PAGE_TIME: dict[str, float] = {
 
 MAX_FORM_PAGES = 20
 
-# Deterministic label→profile_key mapping. Grows as the LLM discovers new labels.
-# Seed dict (always present), augmented by learned mappings from SQLite on first use.
-_SEED_LABEL_TO_PROFILE_KEY: dict[str, str] = {
-    "first name": "first_name", "last name": "last_name",
-    "email": "email", "email address": "email",
-    "confirm your email": "email", "confirm email": "email",
-    "phone": "phone", "phone number": "phone", "mobile number": "phone",
-    "linkedin": "linkedin", "linkedin url": "linkedin", "linkedin profile": "linkedin",
-    "website": "portfolio", "portfolio": "portfolio", "personal website": "portfolio",
-    "github": "github", "github url": "github",
-    "city": "location", "location": "location",
-    "headline": "headline", "current title": "headline",
-    "address": "address", "street address": "address",
-    "postcode": "postcode", "zip code": "postcode", "postal code": "postcode",
-    "country": "country",
-    "name": "full_name",
-}
-
-_FIELD_LABEL_TO_PROFILE_KEY: dict[str, str] = dict(_SEED_LABEL_TO_PROFILE_KEY)
-_label_db_loaded = False
-
-# ── Generic lookup tables (NOT personal data) ──
-
-_GENDER_ALIASES: dict[str, tuple[str, ...]] = {
-    "male": ("man",),
-    "man": ("male",),
-    "female": ("woman",),
-    "woman": ("female",),
-    "non-binary": ("nonbinary", "non binary", "prefer to self-describe"),
-}
-
-_ETHNICITY_ALIASES: dict[str, tuple[str, ...]] = {
-    "asian indian": (
-        "asian (indian, pakistani, bangladeshi, chinese, any other asian background)",
-        "asian or asian british - indian",
-    ),
-    "asian or asian british - indian": (
-        "asian (indian, pakistani, bangladeshi, chinese, any other asian background)",
-        "asian indian",
-    ),
-    "white": ("white or caucasian", "white british", "white european"),
-    "black african": ("black or black british - african",),
-    "black caribbean": ("black or black british - caribbean",),
-    "mixed": ("mixed or multiple ethnic groups",),
-}
-
-# ISO-style country data: canonical_name → (abbreviations + dial codes)
-_COUNTRY_DATA: dict[str, tuple[str, ...]] = {
-    "United Kingdom": ("uk", "gb", "u k", "great britain", "+44", "44", "united kingdom (+44)"),
-    "United States": ("us", "usa", "+1", "1", "united states (+1)"),
-    "Germany": ("de", "deutschland", "+49", "49"),
-    "France": ("fr", "+33", "33"),
-    "India": ("in", "+91", "91"),
-    "Canada": ("ca", "+1"),
-    "Australia": ("au", "+61", "61"),
-    "Ireland": ("ie", "+353", "353"),
-    "Netherlands": ("nl", "+31", "31"),
-    "Spain": ("es", "+34", "34"),
-    "Italy": ("it", "+39", "39"),
-    "Japan": ("jp", "+81", "81"),
-    "China": ("cn", "+86", "86"),
-    "Brazil": ("br", "+55", "55"),
-    "Singapore": ("sg", "+65", "65"),
-    "Switzerland": ("ch", "+41", "41"),
-    "Sweden": ("se", "+46", "46"),
-    "Poland": ("pl", "+48", "48"),
-    "Portugal": ("pt", "+351", "351"),
-    "Belgium": ("be", "+32", "32"),
-}
-
-
-def _build_option_aliases(
-    store: Any | None = None,
-) -> dict[str, tuple[str, ...]]:
-    """Build alias dict from generic data tables.
-
-    Generic tables (_GENDER_ALIASES, _ETHNICITY_ALIASES, _COUNTRY_DATA)
-    provide all needed infrastructure mappings.  The ``store`` parameter is
-    reserved for future use (Task 2 integration) and is currently unused —
-    the generic tables already cover all common ATS option variants.
-    """
-    aliases: dict[str, tuple[str, ...]] = {}
-    # Gender
-    aliases.update(_GENDER_ALIASES)
-    # Ethnicity
-    aliases.update(_ETHNICITY_ALIASES)
-    # Country: build bidirectional mappings from _COUNTRY_DATA
-    for canonical, abbrevs in _COUNTRY_DATA.items():
-        canonical_lower = canonical.lower()
-        # canonical → abbreviations
-        existing = aliases.get(canonical_lower, ())
-        aliases[canonical_lower] = existing + tuple(
-            a for a in abbrevs if a not in existing
-        )
-        # each abbreviation → canonical
-        for abbr in abbrevs:
-            existing = aliases.get(abbr, ())
-            if canonical_lower not in existing:
-                aliases[abbr] = existing + (canonical_lower,)
-
-    return aliases
-
-
-def _profile_prompt_json(profile: dict[str, Any]) -> str:
-    return pii_json(profile, "applicant.profile")
-
-
-def _screening_prompt_profile(store: Any = None) -> dict[str, Any]:
-    if store:
-        ident = store.identity()
-        work_auth = store.as_work_auth()
-        return {
-            "first_name": ident.first_name,
-            "last_name": ident.last_name,
-            "education": ident.education,
-            "location": ident.location,
-            "visa_status": work_auth.get("visa_status", ""),
-            "notice_period": work_auth.get("notice_period", ""),
-        }
-    from jobpulse.applicator import PROFILE, WORK_AUTH
-
-    return {
-        "first_name": PROFILE["first_name"],
-        "last_name": PROFILE["last_name"],
-        "education": PROFILE["education"],
-        "location": PROFILE["location"],
-        "visa_status": WORK_AUTH["visa_status"],
-        "notice_period": WORK_AUTH["notice_period"],
-    }
-
-
-def _screening_prompt_background(profile: dict[str, Any], store: Any = None) -> str:
-    relocation = "Yes"
-    commuting = "Yes"
-    right_to_work = "Yes"
-    country = "the UK"
-
-    if store:
-        relocation = store.screening_default("relocation") or "Yes"
-        commuting = store.screening_default("commuting") or "Yes"
-        right_to_work = store.screening_default("right_to_work") or "Yes"
-        country = _country_from_location(store.identity().location or "") or "the UK"
-
-    return (
-        f"Name: {wrap_pii_value('applicant.first_name', profile['first_name'])} "
-        f"{wrap_pii_value('applicant.last_name', profile['last_name'])}. "
-        f"Education: {wrap_pii_value('applicant.education', profile['education'])}. "
-        f"Location: {wrap_pii_value('applicant.location', profile['location'])}. "
-        f"Visa: {wrap_pii_value('applicant.visa_status', profile['visa_status'])}. "
-        f"Notice: {wrap_pii_value('applicant.notice_period', profile['notice_period'])}. "
-        f"Willing to relocate: {relocation}. "
-        f"Commuting: {commuting}. "
-        f"Right to work {country}: {right_to_work}."
-    )
-
-
-def _get_label_db_path() -> str:
-    from jobpulse.config import DATA_DIR
-    return str(DATA_DIR / "field_label_mappings.db")
-
-
-def _ensure_label_db() -> None:
-    """Load persisted label→profile_key mappings from SQLite on first use."""
-    global _label_db_loaded
-    if _label_db_loaded:
-        return
-    _label_db_loaded = True
-    import sqlite3
-    db_path = _get_label_db_path()
-    try:
-        with sqlite3.connect(db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS label_mappings (
-                    label TEXT PRIMARY KEY,
-                    profile_key TEXT NOT NULL,
-                    times_used INTEGER DEFAULT 1,
-                    created_at TEXT NOT NULL
-                )
-            """)
-            rows = conn.execute("SELECT label, profile_key FROM label_mappings").fetchall()
-            for label, key in rows:
-                if label not in _FIELD_LABEL_TO_PROFILE_KEY:
-                    _FIELD_LABEL_TO_PROFILE_KEY[label] = key
-        if rows:
-            logger.info("Loaded %d persisted label mappings from SQLite", len(rows))
-    except Exception as exc:
-        logger.debug("Could not load label mappings: %s", exc)
-
-
-def _persist_label_mapping(label: str, profile_key: str) -> None:
-    """Save a new label→profile_key mapping to SQLite for future sessions."""
-    import sqlite3
-    from datetime import datetime, timezone
-    try:
-        with sqlite3.connect(_get_label_db_path()) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS label_mappings (
-                    label TEXT PRIMARY KEY,
-                    profile_key TEXT NOT NULL,
-                    times_used INTEGER DEFAULT 1,
-                    created_at TEXT NOT NULL
-                )
-            """)
-            conn.execute(
-                """INSERT INTO label_mappings (label, profile_key, times_used, created_at)
-                   VALUES (?, ?, 1, ?)
-                   ON CONFLICT(label) DO UPDATE SET
-                       times_used = times_used + 1""",
-                (label, profile_key, datetime.now(timezone.utc).isoformat()),
-            )
-    except Exception as exc:
-        logger.debug("Could not persist label mapping: %s", exc)
-
-
-def _get_field_gap(label_text: str = "") -> float:
-    """Return delay in seconds based on label length (simulates reading)."""
-    length = len(label_text)
-    if length < 10:
-        return 0.3 + random.uniform(0, 0.15)
-    if length < 30:
-        return 0.5 + random.uniform(0, 0.3)
-    if length < 60:
-        return 0.8 + random.uniform(0, 0.4)
-    return 1.2 + random.uniform(0, 0.5)
-
-
-def _normalize_match_text(text: str) -> str:
-    return re.sub(r"[^a-z0-9+]+", " ", str(text).lower()).strip()
-
-
-def _country_from_location(location: str) -> str:
-    """Extract country from 'City, Country' location string."""
-    parts = [p.strip() for p in location.split(",")]
-    return parts[-1] if len(parts) >= 2 else ""
-
-
-def _canonicalize_country_value(label: str, value: str, *, store: Any | None = None) -> str:
-    """Normalize country abbreviations to canonical names using _COUNTRY_DATA.
-
-    When *store* is provided, extracts the user's country from
-    ``store.identity().location`` to resolve their home country.
-    Falls back to _COUNTRY_DATA lookup otherwise.
-    """
-    norm_label = _normalize_match_text(label)
-    if "country" not in norm_label:
-        return value
-
-    norm_value = _normalize_match_text(value)
-
-    # Try ProfileStore location first
-    if store is not None:
-        try:
-            location = store.identity().location
-            if location:
-                # Extract country from "City, Country" format
-                country_part = location.rsplit(",", 1)[-1].strip()
-                for canonical, abbrevs in _COUNTRY_DATA.items():
-                    if canonical.lower() == country_part.lower():
-                        if norm_value in abbrevs or norm_value == canonical.lower():
-                            return canonical
-        except Exception:
-            pass
-
-    # Fall back to _COUNTRY_DATA lookup
-    for canonical, abbrevs in _COUNTRY_DATA.items():
-        if norm_value in abbrevs or norm_value == canonical.lower():
-            return canonical
-
-    return value
-
-
-def _best_option_match(
-    label: str, value: str, options: list[str], *, store: Any | None = None,
-) -> str | None:
-    """Return the best option match with country/gender/ethnicity alias support."""
-    if not options:
-        return None
-
-    canonical_value = _canonicalize_country_value(label, value, store=store)
-    norm_label = _normalize_match_text(label)
-    norm_value = _normalize_match_text(canonical_value)
-    normalized_options = [_normalize_match_text(opt) for opt in options]
-    if not norm_value:
-        return None
-
-    if "country" in norm_label and norm_value == "united kingdom":
-        for opt, norm_opt in zip(options, normalized_options):
-            if "united kingdom" in norm_opt and "+44" in opt:
-                return opt
-        for opt, norm_opt in zip(options, normalized_options):
-            if norm_opt == "united kingdom" or norm_opt.startswith("united kingdom"):
-                return opt
-        for opt in options:
-            if "+44" in opt:
-                return opt
-
-    if "right to work status" in norm_label or ("visa" in norm_label and "status" in norm_label):
-        if "student visa" in norm_value:
-            for opt, norm_opt in zip(options, normalized_options):
-                if "student visa" in norm_opt:
-                    return opt
-        if "graduate visa" in norm_value:
-            for opt, norm_opt in zip(options, normalized_options):
-                if "graduate visa" in norm_opt:
-                    return opt
-        if "skilled worker" in norm_value or "tier 2" in norm_value:
-            for opt, norm_opt in zip(options, normalized_options):
-                if "skilled worker" in norm_opt or "tier 2" in norm_opt:
-                    return opt
-
-    option_aliases = _build_option_aliases(store)
-    for alias in option_aliases.get(norm_value, ()):
-        norm_alias = _normalize_match_text(alias)
-        for opt, norm_opt in zip(options, normalized_options):
-            if norm_opt == norm_alias or norm_alias.startswith(norm_opt) or norm_opt.startswith(norm_alias):
-                return opt
-
-    for opt, norm_opt in zip(options, normalized_options):
-        if norm_opt == norm_value:
-            return opt
-    for opt, norm_opt in zip(options, normalized_options):
-        if norm_opt.startswith(norm_value):
-            return opt
-    if len(norm_value) >= 4:
-        for opt, norm_opt in zip(options, normalized_options):
-            if norm_value in norm_opt:
-                return opt
-
-    value_tokens = {
-        token for token in norm_value.split()
-        if len(token) > 2 and token not in {"and", "for", "the", "with", "from", "valid"}
-    }
-    best_option = None
-    best_score = 0
-    for opt, norm_opt in zip(options, normalized_options):
-        option_tokens = {
-            token for token in norm_opt.split()
-            if len(token) > 2 and token not in {"and", "for", "the", "with"}
-        }
-        overlap = len(value_tokens & option_tokens)
-        if overlap > best_score:
-            best_score = overlap
-            best_option = opt
-    if best_option is not None and best_score >= 2:
-        return best_option
-    return None
-
 
 class NativeFormFiller:
-    """Playwright-native form filler using locators and LLM calls.
-
-    Constructor receives:
-        page — Playwright Page for locator-based field access
-        driver — PlaywrightDriver for human-like mouse/scroll behavior
-    """
+    """Playwright-native form filler using locators and LLM calls."""
 
     def __init__(self, page: "Page", driver: Any) -> None:
         self._page = page
@@ -401,137 +96,149 @@ class NativeFormFiller:
         self._correction_warning: str = ""
         self._llm_fallback_count: int = 0
         self._profile_store: Any = None
+        self._known_domain: bool = False
+        self._platform_strategy: dict[str, Any] | None = None
+        self._domain_field_mappings: dict[str, str] = {}
+        self._cached_screening: dict[str, str] = {}
+        self._iframe_resolved: bool = False
+        self._strategy: Any = None
+        self._risk_delay_multiplier: float = 1.0
 
-    # ── Label Extraction ──
+    # ── Platform Strategy + Domain Knowledge ──
+
+    def _load_platform_strategy(self, platform: str) -> None:
+        from jobpulse.config import DATA_DIR
+        strategy_path = DATA_DIR / "platform_strategies" / f"{platform}.json"
+        if strategy_path.exists():
+            try:
+                with open(strategy_path) as f:
+                    self._platform_strategy = json.load(f)
+                logger.info("Loaded platform strategy for %s (%d quirks)",
+                            platform, len(self._platform_strategy.get("quirks", [])))
+            except Exception as exc:
+                logger.debug("Could not load platform strategy: %s", exc)
+
+    def _load_domain_field_mappings(self) -> None:
+        try:
+            from jobpulse.form_experience_db import FormExperienceDB
+            url = getattr(self._page, 'url', '') or ''
+            if not url:
+                return
+            db = FormExperienceDB()
+            self._domain_field_mappings = db.get_field_mappings(url)
+            if self._domain_field_mappings:
+                logger.info("Loaded %d domain-specific field mappings for %s",
+                            len(self._domain_field_mappings),
+                            FormExperienceDB.normalize_domain(url))
+        except Exception as exc:
+            logger.debug("Could not load domain field mappings: %s", exc)
+
+    def _load_cached_screening_answers(self) -> None:
+        try:
+            from jobpulse.job_db import JobDB
+            self._cached_screening = JobDB().get_all_cached_answers()
+            if self._cached_screening:
+                logger.info("Loaded %d cached screening answers", len(self._cached_screening))
+        except Exception as exc:
+            logger.debug("Could not load cached screening answers: %s", exc)
+
+    async def _resolve_page_context(self) -> None:
+        if self._iframe_resolved:
+            return
+        self._iframe_resolved = True
+
+        page = self._page
+        iframe_names = []
+        if self._platform_strategy:
+            for quirk in self._platform_strategy.get("quirks", []):
+                if isinstance(quirk, str) and quirk.startswith("iframe:"):
+                    iframe_names.append(quirk.split(":", 1)[1].strip())
+
+        iframe_names.append("icims_content_iframe")
+
+        for name in iframe_names:
+            try:
+                frame = page.frame(name=name)
+                if frame is not None:
+                    self._page = frame  # type: ignore[assignment]
+                    logger.info("Switched to iframe '%s' for form filling", name)
+                    return
+            except Exception:
+                pass
+
+    async def _fill_by_element_ids(
+        self, profile: dict[str, str], custom_answers: dict[str, Any],
+    ) -> dict[str, str]:
+        if not self._domain_field_mappings:
+            return {}
+
+        from jobpulse.applicator import PROFILE, WORK_AUTH
+        profile_flat = {**PROFILE, **profile}
+
+        fills: dict[str, str] = {}
+        for element_id, profile_key in self._domain_field_mappings.items():
+            value = profile_flat.get(profile_key, "")
+            if not value:
+                value = custom_answers.get(profile_key, "")
+            if value:
+                fills[element_id] = str(value)
+
+        if not fills:
+            return {}
+
+        page = self._page
+        results = await page.evaluate("""(fills) => {
+            const out = {};
+            for (const [id, val] of Object.entries(fills)) {
+                const el = document.getElementById(id);
+                if (!el) { out[id] = 'NOT_FOUND'; continue; }
+                const tag = el.tagName.toLowerCase();
+                if (tag === 'select') {
+                    let found = false;
+                    for (let i = 0; i < el.options.length; i++) {
+                        if (el.options[i].value === val || el.options[i].textContent.trim() === val) {
+                            el.selectedIndex = i;
+                            found = true;
+                            break;
+                        }
+                    }
+                    out[id] = found ? 'SET' : 'NO_OPTION';
+                } else if (tag === 'input' || tag === 'textarea') {
+                    const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                    setter.call(el, val);
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    out[id] = 'SET';
+                } else {
+                    out[id] = 'UNKNOWN_TAG';
+                }
+            }
+            return out;
+        }""", fills)
+
+        filled = {k: fills[k] for k, v in results.items() if v == "SET"}
+        failed = {k: v for k, v in results.items() if v != "SET"}
+        if filled:
+            logger.info("DIRECT ID FILL: %d/%d fields set in single evaluate()",
+                        len(filled), len(fills))
+        if failed:
+            logger.warning("DIRECT ID FILL: %d fields failed: %s", len(failed), failed)
+        return filled
+
+    # ── Label Extraction (delegates to field_scanner) ──
 
     async def _get_accessible_name(self, locator: Any) -> str:
-        """Extract the label a screen reader would announce for this element.
+        return await get_accessible_name(locator)
 
-        Excludes aria-hidden children (e.g. required-field asterisks) so
-        the returned text matches what Playwright's get_by_label() sees.
-        """
-        return await locator.evaluate(
-            "el => {"
-            "  const lbl = el.labels?.[0];"
-            "  if (lbl) {"
-            "    const clone = lbl.cloneNode(true);"
-            "    clone.querySelectorAll('[aria-hidden]').forEach(n => n.remove());"
-            "    const t = clone.textContent.trim();"
-            "    if (t) return t;"
-            "  }"
-            "  return el.getAttribute('aria-label') || el.placeholder || '';"
-            "}"
-        )
-
-    # ── Field Scanning ──
+    # ── Field Scanning (delegates to field_scanner) ──
 
     async def _scan_fields(self) -> list[dict]:
-        """Scan visible form fields — a11y tree first, Playwright fallback.
-
-        Uses CDP Accessibility.getFullAXTree to pierce shadow DOM (discovers
-        fields invisible to standard DOM queries like SmartRecruiters spl-*
-        web components).  Falls back to role-based locators when CDP is
-        unavailable.
-
-        Returns a list of dicts with: label, type, locator, and
-        type-specific keys (value, options, checked, required).
-        """
-        from jobpulse.form_scanner import scan_form
-
-        page = self._page
-
-        scan = await scan_form(page)
-        if scan.fields:
-            return self._ax_scan_to_field_dicts(scan)
-
-        return await self._scan_fields_locator_fallback()
-
-    def _ax_scan_to_field_dicts(self, scan) -> list[dict]:
-        """Convert FormScanResult to the legacy field-dict format."""
-        page = self._page
-        _ROLE_TO_TYPE = {
-            "textbox": "text", "combobox": "combobox", "spinbutton": "text",
-            "radio": "radio", "checkbox": "checkbox", "button": "button",
-        }
-        fields: list[dict] = []
-        for ff in scan.fields:
-            ftype = _ROLE_TO_TYPE.get(ff.role, ff.role)
-            locator = page.get_by_role(ff.role, name=ff.label)
-            entry: dict = {
-                "label": ff.label,
-                "type": ftype,
-                "locator": locator,
-                "value": ff.value,
-                "required": ff.required,
-            }
-            if ff.role == "checkbox":
-                entry["checked"] = ff.value == "checked" or ff.value == "true"
-            if ff.options:
-                entry["options"] = ff.options
-            fields.append(entry)
-        return fields
-
-    async def _scan_fields_locator_fallback(self) -> list[dict]:
-        """Legacy scanner using Playwright role locators (no shadow DOM)."""
-        page = self._page
-        fields: list[dict] = []
-
-        for loc in await page.get_by_role("textbox").all():
-            label = await self._get_accessible_name(loc)
-            fields.append({
-                "label": label, "type": "text", "locator": loc,
-                "value": await loc.input_value(),
-                "required": await loc.get_attribute("required") is not None,
-            })
-
-        for loc in await page.get_by_role("combobox").all():
-            label = await self._get_accessible_name(loc)
-            tag = await loc.evaluate("el => el.tagName.toLowerCase()")
-            if tag == "select":
-                options = await loc.locator("option").all_text_contents()
-                fields.append({
-                    "label": label, "type": "select", "locator": loc,
-                    "options": options, "value": await loc.input_value(),
-                })
-            else:
-                fields.append({
-                    "label": label, "type": "combobox", "locator": loc,
-                    "value": await loc.input_value(),
-                })
-
-        for loc in await page.get_by_role("radiogroup").all():
-            label = await self._get_accessible_name(loc)
-            radios = await loc.get_by_role("radio").all()
-            option_labels = [await self._get_accessible_name(r) for r in radios]
-            fields.append({
-                "label": label, "type": "radio", "options": option_labels,
-                "locator": loc,
-            })
-
-        for loc in await page.get_by_role("checkbox").all():
-            label = await self._get_accessible_name(loc)
-            fields.append({
-                "label": label, "type": "checkbox", "locator": loc,
-                "checked": await loc.is_checked(),
-            })
-
-        for loc in await page.locator("textarea:visible").all():
-            label = await self._get_accessible_name(loc)
-            fields.append({
-                "label": label, "type": "textarea", "locator": loc,
-                "value": await loc.input_value(),
-            })
-
-        for loc in await page.locator("input[type='file']").all():
-            label = await self._get_accessible_name(loc)
-            fields.append({"label": label, "type": "file", "locator": loc})
-
-        return fields
+        return await scan_fields(self._page)
 
     # ── Auto-Gotcha Learning ──
 
     def _save_gotcha(self, label: str, problem: str, solution: str) -> None:
-        """Auto-save a form-filling gotcha for the current domain."""
         try:
             from urllib.parse import urlparse
             from jobpulse.form_engine.gotchas import GotchasDB
@@ -545,22 +252,24 @@ class NativeFormFiller:
         except Exception as exc:
             logger.debug("Could not save gotcha: %s", exc)
 
+    @staticmethod
+    def _fingerprint_fields(fields: list[dict]) -> str:
+        parts = sorted(f"{f.get('type', '')}:{f.get('label', '')}" for f in fields)
+        return "|".join(parts)
+
     # ── Human-Like Behavior (delegates to driver) ──
 
     async def _smart_scroll(self, el: Any) -> None:
-        """Scroll element into view with human-like delay."""
         if hasattr(self._driver, '_smart_scroll'):
             await self._driver._smart_scroll(el)
         else:
             await el.scroll_into_view_if_needed()
 
     async def _move_mouse_to(self, el: Any) -> None:
-        """Move mouse to element with Bezier curve."""
         if hasattr(self._driver, '_move_mouse_to'):
             await self._driver._move_mouse_to(el)
 
     async def _normalize_phone_value(self, label: str, value: str) -> str:
-        """Normalize phone numbers for split country-code widgets."""
         if "phone" not in _normalize_match_text(label):
             return value
 
@@ -568,8 +277,7 @@ class NativeFormFiller:
         if not digits:
             return value
 
-        # Get phone code from ProfileStore country
-        phone_code = "44"  # default
+        phone_code = "44"
         store = getattr(self, "_profile_store", None)
         if store:
             country = _country_from_location(store.identity().location or "")
@@ -603,46 +311,69 @@ class NativeFormFiller:
     # ── Fill By Label ──
 
     async def _fill_by_label(self, label: str, value: str) -> dict:
-        """Fill a single form field using Playwright's label-based locator.
-
-        Tries get_by_label first, falls back to get_by_placeholder.
-        Handles text, select, checkbox, and radio input types.
-        Returns {"success": bool, "value_set": str, "value_verified": bool}.
-        """
         page = self._page
-        await asyncio.sleep(_get_field_gap(label))
+        await asyncio.sleep(_get_field_gap(label) * self._risk_delay_multiplier)
 
         special_result = await self._fill_special_widget(label, value)
         if special_result is not None:
             return special_result
 
-        # Try label-based locator first
-        locator = page.get_by_label(label, exact=False)
+        nth_index = 0
+        base_label = label
+        dup_match = re.match(r"^(.+?)\s+#(\d+)$", label)
+        if dup_match:
+            base_label = dup_match.group(1)
+            nth_index = int(dup_match.group(2)) - 1
+
+        locator = page.get_by_label(base_label, exact=False)
 
         if not await locator.count():
-            locator = page.get_by_placeholder(label, exact=False)
+            locator = page.get_by_placeholder(base_label, exact=False)
+
+        _from_role_fallback = False
+        if not await locator.count():
+            for _role in ("combobox", "textbox", "spinbutton"):
+                _fallback = page.get_by_role(_role, name=base_label)
+                if await _fallback.count():
+                    locator = _fallback
+                    _from_role_fallback = True
+                    logger.debug("Shadow DOM fallback: found '%s' via get_by_role('%s')", base_label, _role)
+                    break
 
         if not await locator.count():
-            logger.warning("No field found for label '%s'", label)
-            return {"success": False, "error": f"No field for '{label}'"}
+            logger.warning("No field found for label '%s'", base_label)
+            return {"success": False, "error": f"No field for '{base_label}'"}
 
-        # Find the first fillable element among matches (skip icons, images, etc.)
         _FILLABLE_TAGS = {"input", "textarea", "select"}
         el = None
-        try:
-            for i in range(await locator.count()):
-                candidate = locator.nth(i)
-                t = await candidate.evaluate("el => el.tagName.toLowerCase()")
-                if t in _FILLABLE_TAGS or await candidate.get_attribute("contenteditable"):
-                    el = candidate
-                    break
-        except Exception:
-            pass
+        if _from_role_fallback:
+            el = locator.nth(nth_index) if await locator.count() > nth_index else locator.first
+        else:
+            fillable_idx = 0
+            try:
+                for i in range(await locator.count()):
+                    candidate = locator.nth(i)
+                    t = await candidate.evaluate("el => el.tagName.toLowerCase()")
+                    if t in _FILLABLE_TAGS or await candidate.get_attribute("contenteditable"):
+                        if fillable_idx == nth_index:
+                            el = candidate
+                            break
+                        fillable_idx += 1
+            except Exception as exc:
+                logger.debug("Fillable element scan failed for '%s': %s", base_label, exc)
         if el is None:
-            locator = page.get_by_placeholder(label, exact=False)
+            for _role in ("combobox", "textbox", "spinbutton"):
+                _fb = page.get_by_role(_role, name=base_label)
+                if await _fb.count():
+                    el = _fb.nth(nth_index) if await _fb.count() > nth_index else _fb.first
+                    role = _role
+                    logger.debug("Shadow DOM element: '%s' via get_by_role('%s')", base_label, _role)
+                    break
+        if el is None:
+            locator = page.get_by_placeholder(base_label, exact=False)
             if not await locator.count():
-                logger.warning("No fillable field found for label '%s'", label)
-                return {"success": False, "error": f"No fillable field for '{label}'"}
+                logger.warning("No fillable field found for label '%s'", base_label)
+                return {"success": False, "error": f"No fillable field for '{base_label}'"}
             el = locator.first
 
         await self._smart_scroll(el)
@@ -660,14 +391,24 @@ class NativeFormFiller:
             selected = False
             options = await el.locator("option").all_text_contents()
             options_stripped = [o.strip() for o in options]
+            meaningful = [o for o in options_stripped if o and not re.match(
+                r"^(|—.*—|please select.*|select\.{0,3}|choose\.{0,3}|-999|not applicable)$",
+                o, re.IGNORECASE,
+            )]
+            if not meaningful:
+                try:
+                    await el.click()
+                    await asyncio.sleep(0.8)
+                    options = await el.locator("option").all_text_contents()
+                    options_stripped = [o.strip() for o in options]
+                except Exception:
+                    pass
             options_seen = options_stripped
-            # Try exact label match
             try:
                 await el.select_option(label=fill_value, timeout=5000)
                 selected = True
             except Exception:
                 pass
-            # Try deterministic option matching with UK/+44 preference
             if not selected:
                 matched_option = _best_option_match(label, fill_value, options_stripped, store=self._profile_store)
                 if matched_option is not None:
@@ -675,14 +416,12 @@ class NativeFormFiller:
                         await el.select_option(label=matched_option, timeout=5000)
                         selected = True
                         expected_value = matched_option
-                        # Auto-save gotcha: exact match failed, fuzzy worked
                         self._save_gotcha(
                             label, "select_exact_failed",
                             f"Use option '{matched_option}' for value '{fill_value}'",
                         )
                     except Exception:
                         pass
-            # Try by value attribute
             if not selected:
                 try:
                     await el.select_option(value=fill_value, timeout=5000)
@@ -699,7 +438,6 @@ class NativeFormFiller:
         elif input_type == "radio":
             await page.get_by_label(fill_value).check()
         elif await el.get_attribute("role") == "combobox":
-            # Try strategy combobox override first
             strategy = getattr(self, "_strategy", None)
             if strategy and hasattr(strategy, "fill_combobox"):
                 override_result = await strategy.fill_combobox(self._page, el, fill_value, label)
@@ -739,8 +477,8 @@ class NativeFormFiller:
                         await el.press("Enter")
             else:
                 await el.fill("")
-                await el.fill(fill_value)
-                await asyncio.sleep(0.8)
+                await el.type(fill_value, delay=80)
+                await asyncio.sleep(1.2)
                 option_group = page.get_by_role("option")
                 option_texts: list[str] = []
                 try:
@@ -805,7 +543,6 @@ class NativeFormFiller:
         }
 
     async def _fill_special_widget(self, label: str, value: str) -> dict[str, Any] | None:
-        """Handle widgets that are not exposed by a usable label locator."""
         norm_label = _normalize_match_text(label)
         if "country options" not in norm_label:
             return None
@@ -814,7 +551,6 @@ class NativeFormFiller:
         if not await button.count():
             return {"success": False, "error": "No phone country widget found"}
 
-        # Resolve country from ProfileStore
         search_term = "United Kingdom"
         phone_code = "+44"
         store = getattr(self, "_profile_store", None)
@@ -855,785 +591,287 @@ class NativeFormFiller:
             "expected_value": expected,
         }
 
-    # ── Field Mapping (deterministic first, LLM fallback) ──
-
-    @staticmethod
-    def _is_screening_like_field(field: dict[str, Any]) -> bool:
-        return (
-            field.get("type") in {"select", "combobox", "radio", "checkbox"}
-            or "?" in field.get("label", "")
-        )
-
-    @staticmethod
-    def _learn_field_mapping(mapping: dict[str, str], profile: dict) -> None:
-        """Learn new label→profile_key associations from LLM results.
-
-        Persists new mappings to SQLite so future sessions skip the LLM.
-        """
-        from jobpulse.applicator import PROFILE
-        profile_flat = {**PROFILE, **profile}
-
-        value_to_key: dict[str, str] = {}
-        for k, v in profile_flat.items():
-            if v and isinstance(v, str):
-                value_to_key[v.strip().lower()] = k
-
-        new_count = 0
-        for label, value in mapping.items():
-            label_lower = label.lower()
-            if label_lower in _FIELD_LABEL_TO_PROFILE_KEY:
-                continue
-            val_lower = str(value).strip().lower()
-            profile_key = value_to_key.get(val_lower)
-            if profile_key:
-                _FIELD_LABEL_TO_PROFILE_KEY[label_lower] = profile_key
-                _persist_label_mapping(label_lower, profile_key)
-                new_count += 1
-
-        if new_count:
-            logger.info("Learned %d new field label mappings (persisted to SQLite)", new_count)
-
-    def _try_cached_mapping(
-        self, fields: list[dict], profile: dict, custom_answers: dict,
-    ) -> dict | None:
-        """Try to resolve field mapping from cached label→profile_key templates."""
-        _ensure_label_db()
-        try:
-            from jobpulse.form_experience_db import FormExperienceDB
-            url = getattr(self._page, 'url', '') or ''
-            if not url:
-                return None
-            db = FormExperienceDB()
-            exp = db.lookup(url)
-            if not exp or not exp.get("field_types"):
-                return None
-
-            from jobpulse.applicator import PROFILE, WORK_AUTH
-            profile_flat = {**PROFILE, **profile}
-            label_key_map = _FIELD_LABEL_TO_PROFILE_KEY
-
-            mapping: dict[str, str] = {}
-            unmapped: list[str] = []
-            for f in fields:
-                if f["type"] == "file" or f.get("value"):
-                    continue
-                label = f["label"]
-                key = label_key_map.get(label.lower())
-                if key and key in profile_flat:
-                    mapping[label] = profile_flat[key]
-                elif label.lower() in custom_answers:
-                    mapping[label] = custom_answers[label.lower()]
-                else:
-                    unmapped.append(label)
-
-            if unmapped:
-                return None
-            if mapping:
-                logger.info("Field mapping: %d fields resolved from cache (0 LLM calls)", len(mapping))
-            return mapping if mapping else None
-        except Exception:
-            return None
-
-    @staticmethod
-    def _clean_mapping(mapping: dict[str, Any]) -> dict[str, str]:
-        cleaned: dict[str, str] = {}
-        for label, value in mapping.items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                cleaned[label] = text
-        return cleaned
-
-    def _seed_mapping(
-        self,
-        fields: list[dict],
-        profile: dict,
-        custom_answers: dict,
-    ) -> tuple[dict[str, str], list[dict]]:
-        """Resolve any field that has a deterministic profile/custom answer."""
-        _ensure_label_db()
-        from jobpulse.applicator import PROFILE
-
-        profile_flat = {**PROFILE, **profile}
-        mapping: dict[str, str] = {}
-        unresolved: list[dict] = []
-
-        for field in fields:
-            if field["type"] == "file" or field.get("value"):
-                continue
-
-            label = field["label"]
-            label_lower = label.lower()
-            custom_value = custom_answers.get(label_lower)
-            if isinstance(custom_value, str) and custom_value.strip():
-                mapping[label] = custom_value.strip()
-                continue
-
-            profile_key = _FIELD_LABEL_TO_PROFILE_KEY.get(label_lower)
-            profile_value = profile_flat.get(profile_key, "") if profile_key else ""
-            if isinstance(profile_value, str) and profile_value.strip():
-                mapping[label] = profile_value.strip()
-                continue
-
-            unresolved.append(field)
-
-        return mapping, unresolved
-
-    async def _map_fields(
-        self, fields: list[dict], profile: dict,
-        custom_answers: dict, platform: str,
-    ) -> dict:
-        """Map profile data to form field labels.
-
-        Tries deterministic cache first; falls back to LLM.
-        Returns {"label": "value"} for each field the LLM can fill.
-        """
-        # Tier 1: full cached mapping if we already know every field
-        cached = self._try_cached_mapping(fields, profile, custom_answers)
-        if cached is not None:
-            return self._clean_mapping(cached)
-
-        # Tier 1b: merge deterministic profile/custom mappings first, then ask
-        # the LLM only for the labels we still cannot resolve locally.
-        mapping, unresolved = self._seed_mapping(fields, profile, custom_answers)
-        if not unresolved:
-            return mapping
-
-        # Tier 2: LLM mapping (fallback) for profile-like fields only.
-        # Screening-style prompts (question labels, selects, radios, checkboxes)
-        # should flow through `try_instant_answer()` / `_screen_questions()`
-        # so option-aware logic can choose a valid answer.
-        llm_fields = [
-            field for field in unresolved
-            if field["type"] not in {"select", "combobox", "radio", "checkbox"}
-            and "?" not in field["label"]
-        ]
-        if not llm_fields:
-            return mapping
-
-        self._llm_fallback_count += 1
-        field_descriptions = []
-        for f in llm_fields:
-            desc = f"- {f['label']} ({f['type']})"
-            if f.get("options"):
-                desc += f" options: {f['options'][:10]}"
-            if f.get("value"):
-                desc += f" [already filled: {f['value']}]"
-            if f.get("required"):
-                desc += " *required"
-            field_descriptions.append(desc)
-
-        if not field_descriptions:
-            return {}
-
-        prompt = (
-            f'Map profile data to form fields. Return JSON {{"label": "value"}}.\n'
-            f"CRITICAL: JSON keys MUST be the EXACT label text from the Fields list below. "
-            f"Do NOT rename, normalize, or invent keys. Only include fields that appear in the list.\n"
-            f"Skip fields marked [already filled]. Skip file upload fields.\n\n"
-            f"Fields:\n{chr(10).join(field_descriptions)}\n\n"
-            f"Profile: {_profile_prompt_json(profile)}\n"
-            f"Platform: {platform}\n"
-            f"Known answers: {json.dumps({k: v for k, v in custom_answers.items() if not k.startswith('_')})}"
-            f"{self._correction_warning}"
-        )
-        assert_prompt_has_wrapped_pii(prompt, profile, "applicant.profile")
-
-        client = get_openai_client()
-        try:
-            response = client.chat.completions.create(
-                model=get_model_name(),
-                max_tokens=2000,
-                temperature=0.0,
-                timeout=30,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = response.choices[0].message.content.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            llm_mapping = self._clean_mapping(json.loads(raw))
-        except json.JSONDecodeError as e:
-            logger.error("LLM returned invalid JSON for field mapping: %s", e)
-            return mapping
-        except Exception as e:
-            logger.error("LLM field mapping call failed: %s", e)
-            return mapping
-
-        # Learn: save label→profile_key for deterministic reuse
-        self._learn_field_mapping(llm_mapping, profile)
-        mapping.update(llm_mapping)
-
-        return mapping
-
-    async def _screen_questions(
-        self, unresolved_fields: list[dict], job_context: str | None,
-    ) -> dict:
-        """LLM Call 2: answer screening questions not mapped from profile.
-
-        Only called when _map_fields left non-file fields unresolved.
-        Returns {"label": "answer"} dict.
-        """
-        questions = []
-        for f in unresolved_fields:
-            opts = f.get("options", "free text")
-            questions.append(f"Q: {f['label']} Options: {opts}")
-
-        prompt_profile = _screening_prompt_profile(self._profile_store)
-        applicant_bg = _screening_prompt_background(prompt_profile, self._profile_store)
-        prompt = (
-            f"Answer these screening questions for a job application.\n"
-            f"Context: {job_context or 'Not provided'}\n"
-            f"Applicant: {applicant_bg}\n\n"
-            f"{chr(10).join(questions)}\n\n"
-            f"CRITICAL: JSON keys MUST be the EXACT question label text. "
-            f"Choose ONLY from the given options when options are listed.\n"
-            f'Return JSON {{"label": "answer"}}.'
-            f"{self._correction_warning}"
-        )
-        assert_prompt_has_wrapped_pii(prompt, prompt_profile, "applicant")
-
-        client = get_openai_client()
-        try:
-            response = client.chat.completions.create(
-                model=get_model_name(),
-                max_tokens=2000,
-                temperature=0.0,
-                timeout=30,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = response.choices[0].message.content.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            answers = json.loads(raw)
-        except json.JSONDecodeError as e:
-            logger.error("LLM returned invalid JSON for screening answers: %s", e)
-            return {}
-        except Exception as e:
-            logger.error("LLM screening answer call failed: %s", e)
-            return {}
-
-        self._llm_fallback_count += 1
-        # Cache LLM answers so the same questions never hit the LLM again
-        try:
-            from jobpulse.job_db import JobDB
-            db = JobDB()
-            for q, a in answers.items():
-                db.cache_answer(q, str(a))
-            logger.info("Cached %d screening answers from LLM", len(answers))
-        except Exception as exc:
-            logger.debug("Could not cache screening answers: %s", exc)
-
-        return answers
-
-    async def _recover_failed_fields_with_llm(
-        self,
-        failed_fields: list[dict[str, Any]],
-        profile: dict[str, Any],
-        custom_answers: dict[str, Any],
-        platform: str,
-    ) -> dict[str, str]:
-        """Ask the LLM for alternate values after a DOM fill did not verify."""
-        if not failed_fields:
-            return {}
-
-        from jobpulse.applicator import PROFILE
-
-        profile_full = {**PROFILE, **profile}
-        field_lines: list[str] = []
-        for item in failed_fields:
-            field = item["field"]
-            result = item["result"]
-            attempted = item["attempted_value"]
-            actual = result.get("actual_value") or "<empty>"
-            desc = (
-                f"- {field['label']} ({field['type']}) attempted: {attempted!r}; "
-                f"actual on page after fill: {actual!r}"
-            )
-            options = result.get("options_seen") or field.get("options") or []
-            if options:
-                desc += f"; visible options: {options[:15]}"
-            field_lines.append(desc)
-
-        prompt = (
-            "A job application field fill did not stick in the DOM. "
-            "Suggest alternate values only for fields you can improve.\n"
-            f"Platform: {platform}\n"
-            f"Job context: {custom_answers.get('_job_context') or 'Not provided'}\n"
-            f"Applicant profile: {_profile_prompt_json(profile_full)}\n\n"
-            f"Failed fields:\n{chr(10).join(field_lines)}\n\n"
-            "Rules:\n"
-            "- Return JSON only.\n"
-            "- JSON keys must be the exact field labels above.\n"
-            "- If options are listed, choose only from those options.\n"
-            "- Prefer a different value from the failed attempt when that will help the widget stick.\n"
-            "- Omit fields where the failure is browser/widget behavior rather than the value itself.\n"
-        )
-        assert_prompt_has_wrapped_pii(prompt, profile_full, "applicant.profile")
-
-        self._llm_fallback_count += 1
-        client = get_openai_client()
-        try:
-            response = client.chat.completions.create(
-                model=get_model_name(),
-                max_tokens=1200,
-                temperature=0.0,
-                timeout=30,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = response.choices[0].message.content.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            recovered = self._clean_mapping(json.loads(raw))
-        except json.JSONDecodeError as exc:
-            logger.error("LLM returned invalid JSON for fill recovery: %s", exc)
-            return {}
-        except Exception as exc:
-            logger.error("LLM recovery call failed: %s", exc)
-            return {}
-
-        if not recovered:
-            return {}
-
-        try:
-            from jobpulse.job_db import JobDB
-
-            db = JobDB()
-            failed_by_label = {item["field"]["label"]: item for item in failed_fields}
-            for label, value in recovered.items():
-                item = failed_by_label.get(label)
-                if item and self._is_screening_like_field(item["field"]):
-                    db.cache_answer(label, value)
-                if item:
-                    attempted = item["attempted_value"]
-                    actual = item["result"].get("actual_value") or "<empty>"
-                    self._save_gotcha(
-                        label,
-                        "dom_fill_unverified",
-                        f"LLM recovery suggested '{value}' after '{attempted}' verified as '{actual}'",
-                    )
-        except Exception as exc:
-            logger.debug("Could not persist LLM recovery learning: %s", exc)
-
-        return recovered
-
-    async def _recover_failed_fields_with_vision(
-        self,
-        failed_fields: list[dict[str, Any]],
-        profile: dict[str, Any],
-        custom_answers: dict[str, Any],
-        platform: str,
-    ) -> dict[str, str]:
-        """Vision fallback: screenshot the form and ask a vision model to suggest values."""
-        if not failed_fields:
-            return {}
-
-        try:
-            screenshot_png = await self._page.screenshot(type="png")
-        except Exception as exc:
-            logger.warning("Vision recovery: could not capture screenshot: %s", exc)
-            return {}
-
-        from jobpulse.applicator import PROFILE
-
-        profile_full = {**PROFILE, **profile}
-        field_lines = []
-        for item in failed_fields:
-            field = item["field"]
-            attempted = item["attempted_value"]
-            actual = item["result"].get("actual_value") or "<empty>"
-            desc = f"- {field['label']} ({field['type']}) attempted: {attempted!r}, actual: {actual!r}"
-            options = item["result"].get("options_seen") or field.get("options") or []
-            if options:
-                desc += f"; options: {options[:10]}"
-            field_lines.append(desc)
-
-        b64_image = base64.b64encode(screenshot_png).decode("ascii")
-        job_ctx = custom_answers.get("_job_context") or "Not provided"
-        prompt = (
-            "Look at this job application form screenshot. "
-            "Some fields were not filled correctly. "
-            "For each failed field below, identify the field in the screenshot and suggest the correct value.\n\n"
-            f"Failed fields:\n{chr(10).join(field_lines)}\n\n"
-            f"Applicant: {_profile_prompt_json(profile_full)}\n"
-            f"Job context: {job_ctx}\n"
-            f"Platform: {platform}\n\n"
-            "Rules:\n"
-            '- Return JSON only: {{"label": "value"}}.\n'
-            "- Keys must be the exact field labels above.\n"
-            "- If you can see dropdown options in the screenshot, choose from visible options.\n"
-            "- Omit fields you cannot identify in the screenshot.\n"
-        )
-        assert_prompt_has_wrapped_pii(prompt, profile_full, "applicant.profile")
-
-        self._llm_fallback_count += 1
-        client = get_openai_client()
-        try:
-            response = client.responses.create(
-                model="gpt-4.1-mini",
-                input=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt},
-                        {
-                            "type": "input_image",
-                            "image_url": f"data:image/png;base64,{b64_image}",
-                        },
-                    ],
-                }],
-            )
-            raw = response.output_text.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            recovered = self._clean_mapping(json.loads(raw))
-            logger.info("Vision recovery mapped %d fields", len(recovered))
-        except json.JSONDecodeError as exc:
-            logger.error("Vision recovery returned invalid JSON: %s", exc)
-            return {}
-        except Exception as exc:
-            logger.error("Vision recovery call failed: %s", exc)
-            return {}
-
-        return recovered
-
-    async def _vision_map_unlabeled_fields(
-        self,
-        fields: list[dict],
-        profile: dict[str, Any],
-        custom_answers: dict[str, Any],
-        platform: str,
-    ) -> dict[str, str]:
-        """Vision fallback for fields with empty/missing labels (shadow DOM).
-
-        Takes a screenshot and asks the vision model to identify unlabeled
-        fields by their visual position and context on the page.
-        """
-        unlabeled = [f for f in fields if not f.get("label", "").strip() and f["type"] != "file"]
-        if not unlabeled:
-            return {}
-
-        try:
-            screenshot_png = await self._page.screenshot(type="png")
-        except Exception as exc:
-            logger.warning("Vision unlabeled scan: could not capture screenshot: %s", exc)
-            return {}
-
-        from jobpulse.applicator import PROFILE
-
-        profile_full = {**PROFILE, **profile}
-        b64_image = base64.b64encode(screenshot_png).decode("ascii")
-
-        field_descs = []
-        for i, f in enumerate(unlabeled):
-            desc = f"- Field #{i+1} (type: {f['type']})"
-            if f.get("value"):
-                desc += f" [current value: {f['value']}]"
-            if f.get("options"):
-                desc += f" options: {f['options'][:10]}"
-            field_descs.append(desc)
-
-        job_ctx = custom_answers.get("_job_context") or "Not provided"
-        prompt = (
-            "Look at this job application form screenshot. "
-            f"There are {len(unlabeled)} form fields with no accessible label (shadow DOM). "
-            "Identify each field by its visual position and surrounding text in the screenshot.\n\n"
-            f"Unlabeled fields:\n{chr(10).join(field_descs)}\n\n"
-            f"Applicant profile: {_profile_prompt_json(profile_full)}\n"
-            f"Job context: {job_ctx}\n"
-            f"Platform: {platform}\n\n"
-            "For each field you can identify, return the answer.\n"
-            'Return JSON: {{"Field #1": "value", "Field #2": "value"}}.\n'
-            "Only include fields you can confidently identify."
-        )
-        assert_prompt_has_wrapped_pii(prompt, profile_full, "applicant.profile")
-
-        self._llm_fallback_count += 1
-        client = get_openai_client()
-        try:
-            response = client.responses.create(
-                model="gpt-4.1-mini",
-                input=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt},
-                        {
-                            "type": "input_image",
-                            "image_url": f"data:image/png;base64,{b64_image}",
-                        },
-                    ],
-                }],
-            )
-            raw = response.output_text.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            vision_map = json.loads(raw)
-            logger.info("Vision identified %d unlabeled fields", len(vision_map))
-        except json.JSONDecodeError as exc:
-            logger.error("Vision unlabeled mapping returned invalid JSON: %s", exc)
-            return {}
-        except Exception as exc:
-            logger.error("Vision unlabeled mapping failed: %s", exc)
-            return {}
-
-        mapping: dict[str, str] = {}
-        for key, value in vision_map.items():
-            m = re.match(r"Field #(\d+)", key)
-            if not m:
-                continue
-            idx = int(m.group(1)) - 1
-            if 0 <= idx < len(unlabeled):
-                label = unlabeled[idx].get("label") or f"_unlabeled_{idx}"
-                mapping[label] = str(value).strip()
-
-        return mapping
-
-    async def _review_form(self) -> dict:
-        """LLM Call 3: screenshot-based pre-submit review of the filled form.
-
-        Returns {"pass": true} or {"pass": false, "issues": [...]}.
-        """
-        screenshot_bytes = await self._page.screenshot(type="png")
-        b64 = base64.b64encode(screenshot_bytes).decode()
-
-        prompt = (
-            "Review this filled application form. Any empty required fields, "
-            'wrong values, or mismatches? Return {"pass": true} or '
-            '{"pass": false, "issues": [...]}'
-        )
-
-        self._llm_fallback_count += 1
-        client = get_openai_client()
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            max_tokens=1000,
-            temperature=0.0,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:image/png;base64,{b64}",
-                    }},
-                ],
-            }],
-        )
-        raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
-
-    # ── Deterministic Helpers ──
-
-    @staticmethod
-    async def _upload_pdf(locator, file_path: str) -> None:
-        """Upload a PDF with explicit MIME type and filename for ATS compatibility."""
-        from pathlib import Path
-        p = Path(file_path)
-        await locator.set_input_files({
-            "name": p.name,
-            "mimeType": "application/pdf",
-            "buffer": p.read_bytes(),
-        })
-
-    async def _page_has_cover_letter_file_input(self) -> bool:
-        """True if a visible file input is clearly for a cover letter."""
-        return await self._page.evaluate("""() => {
-            const ins = document.querySelectorAll("input[type='file']");
-            for (const el of ins) {
-                const parts = [
-                    (el.labels && el.labels[0] && el.labels[0].textContent) || "",
-                    el.getAttribute("aria-label") || "",
-                    el.id || "",
-                    el.name || "",
-                ].join(" ").toLowerCase();
-                if (parts.includes("cover") || (parts.includes("letter") && !parts.includes("newsletter")))
-                    return true;
+    async def _overwrite_experience_descriptions(self) -> None:
+        """Overwrite auto-parsed experience descriptions with structured versions."""
+        from jobpulse.config import EXPERIENCE_DESCRIPTIONS
+        if not EXPERIENCE_DESCRIPTIONS:
+            return
+        page = self._page
+        all_btns = await page.locator("button").all()
+        for role_key, desc in EXPERIENCE_DESCRIPTIONS.items():
+            for btn in all_btns:
+                try:
+                    label = await btn.get_attribute("aria-label") or ""
+                    if "Edit experience" not in label or role_key not in label:
+                        continue
+                    await btn.click()
+                    await asyncio.sleep(1.5)
+                    textareas = await page.locator("textarea:visible").all()
+                    for ta in textareas:
+                        val = await ta.input_value()
+                        if len(val) > 30:
+                            await ta.fill(desc)
+                            logger.info("Overwrote experience description for '%s'", role_key)
+                            break
+                    save_btns = await page.get_by_role("button", name="Save").all()
+                    for sb in save_btns:
+                        if await sb.is_visible():
+                            await sb.click()
+                            break
+                    await asyncio.sleep(1.5)
+                    break
+                except Exception as exc:
+                    logger.debug("Experience overwrite failed for '%s': %s", role_key, exc)
+
+    async def _fill_toggle_buttons(
+        self, mapping: dict[str, str], custom_answers: dict[str, Any] | None,
+    ) -> int:
+        """Click YES/NO toggle buttons matched by screening answers. Returns count filled."""
+        page = self._page
+        groups = await page.evaluate("""() => {
+            const allBtns = Array.from(document.querySelectorAll('button'));
+            const yesBtns = allBtns.filter(b => /^yes$/i.test(b.textContent.trim()));
+            const results = [];
+            for (const yBtn of yesBtns) {
+                const parent = yBtn.parentElement;
+                if (!parent) continue;
+                const noBtn = Array.from(parent.querySelectorAll('button'))
+                    .find(b => /^no$/i.test(b.textContent.trim()) && b !== yBtn);
+                if (!noBtn) continue;
+                let questionText = '';
+                let node = parent;
+                for (let i = 0; node && i < 8; i++, node = node.parentElement) {
+                    const candidates = node.querySelectorAll(
+                        'label, legend, h3, h4, p, [class*="question"], [class*="label"]'
+                    );
+                    for (const c of candidates) {
+                        const t = (c.textContent || '').trim();
+                        if (t.length > 10 && t.length < 500 && !/^(yes|no)$/i.test(t)) {
+                            questionText = t;
+                            break;
+                        }
+                    }
+                    if (questionText) break;
+                }
+                if (!questionText) continue;
+                results.push({
+                    question: questionText,
+                    yesIdx: allBtns.indexOf(yBtn),
+                    noIdx: allBtns.indexOf(noBtn),
+                });
             }
-            return false;
+            return results;
         }""")
 
-    async def _enable_optional_cover_letter_checkbox(self) -> None:
-        """Tick optional 'include cover letter' style checkboxes when present."""
-        positive = (
-            "include a cover letter",
-            "attach a cover letter",
-            "add a cover letter",
-            "upload a cover letter",
-            "include cover letter",
-        )
-        try:
-            for cb in await self._page.get_by_role("checkbox").all():
-                label = (await self._get_accessible_name(cb)).strip().lower()
-                if not label:
-                    continue
-                if not any(p in label for p in positive):
-                    continue
-                if await cb.is_checked():
-                    continue
-                logger.info(
-                    "native_form_filler: enabling optional cover-letter checkbox: %s",
-                    label[:100],
-                )
-                await cb.check()
-                return
-        except Exception as exc:
-            logger.debug("native_form_filler: optional CL checkbox pass failed: %s", exc)
+        if not groups:
+            return 0
 
-    async def _resolve_lazy_cover_letter_path(
-        self,
-        cl_path: str | None,
-        custom_answers: dict | None,
-    ) -> str | None:
-        """Generate cover letter PDF only when the page exposes a CL file slot."""
-        if cl_path:
-            return cl_path
-        gen = (custom_answers or {}).get("_cl_generator")
-        if not callable(gen):
-            return None
-        if not await self._page_has_cover_letter_file_input():
-            return None
-        try:
-            p = gen()
-            return str(p) if p else None
-        except Exception as exc:
-            logger.warning("native_form_filler: lazy cover letter generation failed: %s", exc)
-            return None
+        filled = 0
+        for group in groups:
+            question = group["question"]
+            q_norm = _normalize_match_text(question)
+            answer = None
+            for label, value in mapping.items():
+                l_norm = _normalize_match_text(label)
+                if l_norm and q_norm and (l_norm in q_norm or q_norm in l_norm):
+                    answer = str(value).strip()
+                    break
 
-    async def _upload_files(
-        self,
-        cv_path: str | None,
-        cl_path: str | None,
-        custom_answers: dict | None = None,
-    ) -> None:
-        """Upload CV and cover letter to file inputs (deterministic, no LLM).
+            if not answer:
+                from jobpulse.screening_answers import try_instant_answer
+                _job_ctx_raw = (custom_answers or {}).get("_job_context")
+                _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+                cached = try_instant_answer(question, _job_ctx)
+                if cached:
+                    answer = str(cached).strip()
 
-        Matches by label keyword, falling back to input id/name attributes.
-        Skips autofill/drag-and-drop inputs. Uploads CV at most once.
-        Cover letter PDF may be created lazily via ``custom_answers['_cl_generator']``.
-        """
-        await self._enable_optional_cover_letter_checkbox()
-        cl_path = await self._resolve_lazy_cover_letter_path(cl_path, custom_answers)
-
-        file_meta = await self._page.evaluate("""() => {
-            return Array.from(document.querySelectorAll("input[type='file']")).map((el, idx) => ({
-                idx,
-                id: (el.id || '').toLowerCase(),
-                name: (el.name || '').toLowerCase(),
-                label: (el.labels?.[0]?.textContent?.trim() || el.getAttribute('aria-label') || '').toLowerCase(),
-            }));
-        }""")
-        cv_uploaded = False
-        cl_uploaded = False
-
-        for meta in file_meta:
-            identifiers = f"{meta['label']} {meta['id']} {meta['name']}"
-
-            if "autofill" in meta["label"] or "drag and drop" in meta["label"]:
+            if not answer:
                 continue
 
-            if meta["id"]:
-                fi = self._page.locator(f'input[type="file"][id="{meta["id"]}"]').first
-            elif meta["name"]:
-                fi = self._page.locator(f'input[type="file"][name="{meta["name"]}"]').first
-            else:
-                fi = self._page.locator("input[type='file']").nth(meta["idx"])
-
-            if any(kw in identifiers for kw in ("cover", "cl", "letter")) and cl_path and not cl_uploaded:
-                await self._upload_pdf(fi, str(cl_path))
-                cl_uploaded = True
-            elif cv_path and not cv_uploaded:
-                await self._upload_pdf(fi, str(cv_path))
-                cv_uploaded = True
-
-    async def _check_consent(self) -> None:
-        """Auto-check unchecked *required* consent checkboxes.
-
-        Policy lives in ``jobpulse.form_engine.consent_policy``:
-        - Marketing / newsletter / third-party-sharing / future-role opt-ins
-          are left unchecked (GDPR exposure we don't get to opt out of).
-        - Only required application consents (terms of service, privacy
-          policy, data processing for this application) are auto-ticked.
-        - Ambiguous labels default to unchecked so the user can handle them
-          manually and the correction-capture flow can learn from it.
-        """
-        from jobpulse.form_engine.consent_policy import is_required_consent
-
-        checkboxes = await self._page.get_by_role("checkbox").all()
-
-        for cb in checkboxes:
-            label = await self._get_accessible_name(cb)
-            if not is_required_consent(label):
-                if label.strip():
-                    logger.debug("consent: skipping non-required checkbox: %r", label)
+            is_yes = answer.lower() in ("yes", "true", "1")
+            is_no = answer.lower() in ("no", "false", "0")
+            if not is_yes and not is_no:
                 continue
-            if not await cb.is_checked():
-                logger.info("consent: auto-ticking required consent: %r", label)
-                await cb.check()
 
-    # ── Modal CV Upload (Reed, etc.) ──
+            idx = group["yesIdx"] if is_yes else group["noIdx"]
+            btn = page.locator("button").nth(idx)
+            try:
+                await self._smart_scroll(btn)
+                await btn.click()
+                filled += 1
+                logger.info("Toggle button: '%s' → %s", question[:80], "YES" if is_yes else "NO")
+            except Exception as exc:
+                logger.warning("Toggle button click failed for '%s': %s", question[:80], exc)
 
-    async def _handle_modal_cv_upload(self, cv_path: str | None) -> bool:
-        """Detect and handle modal-based CV upload (Reed Easy Apply pattern).
+        return filled
 
-        Reed shows a modal with a pre-filled CV from the user profile.
-        If the expected tailored CV filename doesn't match, clicks Update
-        and uploads via the file chooser dialog.
+    async def _fill_radio_groups(
+        self, mapping: dict[str, str], custom_answers: dict[str, Any] | None,
+        fields: list[dict] | None = None,
+    ) -> int:
+        """Fill Yes/No radio groups extracted from visible page text.
 
-        Returns True if a modal was handled, False if no modal detected.
+        Shadow DOM (SmartRecruiters spl-*) blocks both DOM queries and CDP
+        a11y labels for radiogroups. Instead we:
+        1. Extract question text from page.inner_text (works across shadow DOM)
+        2. Parse "question ... Yes No" patterns to pair questions with radio indices
+        3. Match questions against screening answers
+        4. Click the correct radio via CDP-indexed locator
         """
-        if not cv_path:
-            return False
+        page = self._page
 
-        modal = self._page.locator('[data-qa="apply-job-modal"]')
-        if not await modal.count():
-            return False
+        radio_fields = [
+            f for f in (fields or [])
+            if f.get("type") == "radio" and f.get("options")
+        ]
+        if radio_fields:
+            return await self._fill_radio_groups_from_scan(
+                radio_fields, mapping, custom_answers,
+            )
 
-        modal_text = await modal.text_content() or ""
-        expected_filename = os.path.basename(cv_path)
+        all_radios = page.get_by_role("radio")
+        radio_count = await all_radios.count()
+        if radio_count < 2:
+            return 0
 
-        if expected_filename in modal_text:
-            logger.info("Modal CV already matches: %s", expected_filename)
-            return True
+        radio_info: list[dict] = []
+        for ri in range(radio_count):
+            r = all_radios.nth(ri)
+            info = await r.evaluate("""el => {
+                const label = el.getAttribute("aria-label") || el.labels?.[0]?.textContent?.trim() || el.value || "";
+                let q = "";
+                let node = el;
+                for (let i = 0; node && i < 15; i++) {
+                    const next = node.parentElement || (node.getRootNode && node.getRootNode() !== node ? node.getRootNode().host : null);
+                    if (!next) break;
+                    node = next;
+                    const txt = (node.textContent || "").trim();
+                    if (txt.length > 20 && txt.length < 500) { q = txt; break; }
+                }
+                return {label, question: q, checked: el.checked};
+            }""")
+            radio_info.append({"index": ri, **info})
 
-        logger.info("Modal CV mismatch — uploading tailored CV: %s", expected_filename)
+        seen_questions: dict[str, list[dict]] = {}
+        for ri in radio_info:
+            q = ri["question"]
+            if q:
+                seen_questions.setdefault(q, []).append(ri)
 
-        update_btn = self._page.locator('[data-qa="UpdateCvBtn"]')
-        if not await update_btn.count():
-            return False
+        filled = 0
+        for question, radios_in_group in seen_questions.items():
+            if any(r["checked"] for r in radios_in_group):
+                continue
 
-        await update_btn.click()
-        await asyncio.sleep(2)
+            answer: str | None = None
+            q_norm = _normalize_match_text(question)
+            for label, value in mapping.items():
+                l_norm = _normalize_match_text(label)
+                if l_norm and q_norm and (l_norm in q_norm or q_norm in l_norm):
+                    answer = str(value).strip()
+                    break
 
-        choose_btn = self._page.locator('text=Choose your CV file')
-        if await choose_btn.is_visible(timeout=5000):
-            async with self._page.expect_file_chooser(timeout=10000) as fc_info:
-                await choose_btn.click()
-            file_chooser = await fc_info.value
-            from pathlib import Path as _Path
-            _p = _Path(cv_path)
-            await file_chooser.set_files({
-                "name": _p.name,
-                "mimeType": "application/pdf",
-                "buffer": _p.read_bytes(),
-            })
-            logger.info("Uploaded tailored CV via modal file chooser")
-            await asyncio.sleep(3)
-            return True
+            if not answer:
+                from jobpulse.screening_answers import try_instant_answer
+                _job_ctx_raw = (custom_answers or {}).get("_job_context")
+                _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+                cached = try_instant_answer(question, _job_ctx)
+                if cached:
+                    answer = str(cached).strip()
 
-        file_inputs = await self._page.locator("input[type='file']").all()
-        if file_inputs:
-            await self._upload_pdf(file_inputs[0], str(cv_path))
-            logger.info("Uploaded tailored CV via hidden file input")
-            await asyncio.sleep(3)
-            return True
+            if not answer:
+                logger.debug("Radio group unanswered: '%s'", question[:80])
+                continue
 
-        logger.warning("Could not find file upload mechanism in CV modal")
-        return False
+            is_yes = answer.lower() in ("yes", "true", "1")
+            is_no = answer.lower() in ("no", "false", "0")
+            if not is_yes and not is_no:
+                continue
+
+            target = None
+            for r in radios_in_group:
+                lbl = str(r["label"]).lower()
+                if is_yes and lbl in ("1", "yes", "true"):
+                    target = r
+                    break
+                if is_no and lbl in ("0", "no", "false"):
+                    target = r
+                    break
+
+            if target is None:
+                continue
+
+            try:
+                radio = all_radios.nth(target["index"])
+                await self._smart_scroll(radio)
+                await radio.check(force=True)
+                filled += 1
+                logger.info("Radio group: '%s' → %s", question[:80], "Yes" if is_yes else "No")
+            except Exception as exc:
+                logger.warning("Radio group fill failed for '%s': %s", question[:80], exc)
+
+        return filled
+
+    async def _fill_radio_groups_from_scan(
+        self, radio_fields: list[dict], mapping: dict[str, str],
+        custom_answers: dict[str, Any] | None,
+    ) -> int:
+        """Fill radiogroup fields that have labels+options from CDP scan."""
+        page = self._page
+        filled = 0
+        for field in radio_fields:
+            question = field["label"]
+            options = field.get("options", [])
+            if not question or len(question) < 5 or not options:
+                continue
+
+            answer: str | None = None
+            q_norm = _normalize_match_text(question)
+            for label, value in mapping.items():
+                l_norm = _normalize_match_text(label)
+                if l_norm and q_norm and (l_norm in q_norm or q_norm in l_norm):
+                    answer = str(value).strip()
+                    break
+
+            if not answer:
+                from jobpulse.screening_answers import try_instant_answer
+                _job_ctx_raw = (custom_answers or {}).get("_job_context")
+                _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+                cached = try_instant_answer(question, _job_ctx)
+                if cached:
+                    answer = str(cached).strip()
+
+            if not answer:
+                continue
+
+            target = None
+            answer_lower = answer.lower()
+            for opt in options:
+                if opt.lower() == answer_lower:
+                    target = opt
+                    break
+            if not target:
+                if answer_lower in ("yes", "true", "1"):
+                    target = next((o for o in options if o.lower() == "yes"), None)
+                elif answer_lower in ("no", "false", "0"):
+                    target = next((o for o in options if o.lower() == "no"), None)
+            if not target:
+                continue
+
+            try:
+                radio = page.get_by_role("radio", name=target, exact=True)
+                if await radio.count():
+                    await self._smart_scroll(radio.first)
+                    await radio.first.check(force=True)
+                    filled += 1
+                    logger.info("Radio group: '%s' → '%s'", question[:80], target)
+            except Exception as exc:
+                logger.warning("Radio group fill failed for '%s': %s", question[:80], exc)
+        return filled
 
     # ── Page Detection ──
 
     async def _is_confirmation_page(self) -> bool:
-        """Check if current page is a confirmation/thank-you page."""
         body = await self._page.locator("body").text_content()
         body_lower = (body or "").lower()[:2000]
         return any(phrase in body_lower for phrase in (
@@ -1644,7 +882,6 @@ class NativeFormFiller:
         ))
 
     async def _is_submit_page(self) -> bool:
-        """Check if current page has a visible submit button (final page)."""
         for name in ["Submit Application", "Submit", "Apply"]:
             btn = self._page.get_by_role("button", name=name, exact=False)
             if await btn.count() and await btn.first.is_visible():
@@ -1654,14 +891,6 @@ class NativeFormFiller:
     # ── Navigation ──
 
     async def _click_navigation(self, dry_run: bool) -> str:
-        """Find and click the next/submit button.
-
-        Returns:
-            'submitted' — clicked a submit button
-            'next' — clicked a continue/next button
-            'dry_run_stop' — submit found but dry_run=True
-            '' — no navigation button found
-        """
         page = self._page
         button_names = [
             ("submit", ["Submit Application", "Submit", "Apply"]),
@@ -1676,9 +905,6 @@ class NativeFormFiller:
                         return "dry_run_stop"
                     await self._move_mouse_to(btn.first)
                     await btn.first.click()
-                    # Modal-based forms (LinkedIn Easy Apply) don't trigger
-                    # full page navigation — use a short sleep instead of
-                    # networkidle which would timeout on modal overlays.
                     try:
                         await page.wait_for_load_state(
                             "networkidle", timeout=5000,
@@ -1687,7 +913,6 @@ class NativeFormFiller:
                         await asyncio.sleep(2)
                     return "submitted" if action == "submit" else "next"
 
-        # Fallback: links with submit-like text
         for name in ["Submit", "Apply Now", "Continue"]:
             link = page.get_by_role("link", name=name, exact=False)
             if await link.count() and await link.first.is_visible():
@@ -1705,7 +930,6 @@ class NativeFormFiller:
     # ── Public Interface ──
 
     async def scan_current_values(self) -> dict[str, str]:
-        """Read current field values from the form — call after user corrections."""
         fields = await self._scan_fields()
         values: dict[str, str] = {}
         for f in fields:
@@ -1734,21 +958,7 @@ class NativeFormFiller:
         custom_answers: dict,
         dry_run: bool,
     ) -> dict:
-        """Fill an application form using native Playwright locators + LLM.
-
-        Per-page loop:
-        1. Scan fields via role-based locators
-        2. Detect confirmation page -> done
-        3. LLM Call 1: map profile -> field values
-        4. LLM Call 2: screening questions (optional, for unresolved fields)
-        5. Fill each field by label (DOM order)
-        6. Upload files (deterministic)
-        7. Auto-check consent boxes
-        8. Anti-detection timing
-        9. Pre-submit review on final page (LLM Call 3)
-        10. Click next/submit
-        """
-        # 0. Build correction warning from form hints (once per fill)
+        # 0. Build correction warning from form hints
         hints = custom_answers.get("_form_hints")
         if hints and hints.get("correction_accuracy") is not None:
             acc = hints["correction_accuracy"]
@@ -1764,28 +974,57 @@ class NativeFormFiller:
         else:
             self._correction_warning = ""
 
-        # Load ProfileStore for dynamic data
+        # Risk-based delay multiplier from scan_learning
+        self._risk_delay_multiplier = 1.0
+        if hints:
+            risk = hints.get("risk_level", "low")
+            if risk == "medium":
+                self._risk_delay_multiplier = 1.5
+            elif risk == "high":
+                self._risk_delay_multiplier = 2.5
+
         try:
             from shared.profile_store import get_profile_store
             self._profile_store = get_profile_store()
         except Exception:
             self._profile_store = None
 
-        # Load platform strategy
         from jobpulse.ats_adapters.strategy import get_strategy
         self._strategy = get_strategy(platform)
 
-        # Call pre_fill hook
         if self._strategy:
             try:
                 pre_result = await self._strategy.pre_fill(self._page, cv_path, profile, custom_answers)
                 if pre_result.get("cv_uploaded"):
                     custom_answers["_cv_pre_uploaded"] = True
+                    await self._overwrite_experience_descriptions()
             except Exception as exc:
                 logger.debug("Strategy pre_fill failed: %s", exc)
 
-        # 0b. Handle modal-based CV upload (Reed Easy Apply pattern)
-        await self._handle_modal_cv_upload(cv_path)
+        self._load_platform_strategy(platform)
+        await self._resolve_page_context()
+
+        try:
+            from jobpulse.form_experience_db import FormExperienceDB
+            url = getattr(self._page, 'url', '') or ''
+            if url:
+                exp = FormExperienceDB().lookup(url)
+                if exp and exp.get("success"):
+                    self._known_domain = True
+                    logger.info("FAST PATH: domain %s known (%d prior applies), skipping LLM/vision",
+                                FormExperienceDB.normalize_domain(url), exp.get("apply_count", 0))
+        except Exception:
+            pass
+
+        self._load_domain_field_mappings()
+        self._load_cached_screening_answers()
+
+        if self._domain_field_mappings:
+            direct_filled = await self._fill_by_element_ids(profile, custom_answers)
+            if direct_filled:
+                logger.info("DIRECT ID FILL: pre-filled %d fields before page loop", len(direct_filled))
+
+        await handle_modal_cv_upload(self._page, cv_path)
 
         seen_field_types: list[str] = []
         seen_screening: list[str] = []
@@ -1794,6 +1033,8 @@ class NativeFormFiller:
         total_fields_filled = 0
         total_fill_failures: list[str] = []
         t0 = time.monotonic()
+        _prev_fingerprint = ""
+        _stuck_count = 0
 
         def _result(base: dict) -> dict:
             base.setdefault("field_types", seen_field_types)
@@ -1809,36 +1050,74 @@ class NativeFormFiller:
             }
             return base
 
+        page_url = getattr(self._page, 'url', '') or ''
+
         for page_num in range(1, MAX_FORM_PAGES + 1):
             # 1. Scan fields
             fields = await self._scan_fields()
 
-            # Track field types for form experience learning
+            _cur_fingerprint = self._fingerprint_fields(fields)
+            if _cur_fingerprint == _prev_fingerprint and page_num > 1:
+                _stuck_count += 1
+                if _stuck_count >= 2:
+                    logger.warning(
+                        "Stuck: identical page fingerprint for %d consecutive pages", _stuck_count + 1,
+                    )
+                    return _result({"success": False, "error": f"Stuck on identical page (page {page_num})"})
+                logger.info(
+                    "Page %d fingerprint matches previous — possible stuck (count=%d)", page_num, _stuck_count,
+                )
+            else:
+                _stuck_count = 0
+            _prev_fingerprint = _cur_fingerprint
+
             for f in fields:
                 ft = f"{f['type']}:{f['label'].lower().replace(' ', '_')[:40]}"
                 seen_field_types.append(ft)
             fields_by_label = {f["label"]: f for f in fields}
 
+            try:
+                from jobpulse.form_interaction_log import FormInteractionLog
+                from urllib.parse import urlparse
+                domain = urlparse(page_url).netloc.lower().removeprefix("www.")
+                if domain:
+                    FormInteractionLog().log_page_structure(
+                        domain=domain,
+                        platform=platform,
+                        page_num=page_num,
+                        page_title=await self._page.title(),
+                        field_labels=[f["label"] for f in fields],
+                        field_types=[f["type"] for f in fields],
+                        has_file_upload=any(f["type"] == "file" for f in fields),
+                    )
+            except Exception as exc:
+                logger.debug("form_interaction_log: %s", exc)
+
             # 2. Confirmation page?
             if await self._is_confirmation_page():
                 return _result({"success": True, "pages_filled": page_num})
 
-            # 3. LLM Call 1: map fields
-            mapping = await self._map_fields(
-                fields, profile, custom_answers, platform,
+            # 3. Map fields — deterministic first, LLM only when needed
+            mapping, llm_calls = await map_fields(
+                page_url, fields, profile, custom_answers, platform,
+                self._known_domain, self._correction_warning,
+                self._domain_field_mappings, self._cached_screening,
             )
+            self._llm_fallback_count += llm_calls
 
-            # 3b. Vision fallback for fields with empty labels (shadow DOM)
-            vision_unlabeled = await self._vision_map_unlabeled_fields(
-                fields, profile, custom_answers, platform,
-            )
-            if vision_unlabeled:
-                mapping.update(vision_unlabeled)
-                for lbl in vision_unlabeled:
-                    if lbl not in fields_by_label:
-                        fields_by_label[lbl] = {"label": lbl, "type": "text"}
+            # 3b. Vision fallback — SKIP for known domains
+            if not self._known_domain:
+                vision_unlabeled, v_calls = await vision_map_unlabeled_fields(
+                    self._page, fields, profile, custom_answers, platform,
+                )
+                self._llm_fallback_count += v_calls
+                if vision_unlabeled:
+                    mapping.update(vision_unlabeled)
+                    for lbl in vision_unlabeled:
+                        if lbl not in fields_by_label:
+                            fields_by_label[lbl] = {"label": lbl, "type": "text"}
 
-            # 4. Screening: cache/pattern first, LLM only for remainder
+            # 4. Screening: DB cache → pattern → LLM
             unresolved = [
                 f for f in fields
                 if f["label"] not in mapping and f["type"] != "file"
@@ -1849,6 +1128,11 @@ class NativeFormFiller:
                 _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
                 still_unresolved = []
                 for f in unresolved:
+                    db_answer = self._cached_screening.get(f["label"].lower().strip())
+                    if db_answer:
+                        mapping[f["label"]] = db_answer
+                        seen_screening.append(f"{f['label']}:{db_answer}")
+                        continue
                     cached = try_instant_answer(
                         f["label"], _job_ctx,
                         input_type=f.get("type"), platform=platform,
@@ -1863,14 +1147,16 @@ class NativeFormFiller:
                     else:
                         still_unresolved.append(f)
                 if still_unresolved:
-                    screening = self._clean_mapping(await self._screen_questions(
+                    screening, s_calls = await screen_questions(
                         still_unresolved, custom_answers.get("_job_context"),
-                    ))
+                        self._profile_store, self._correction_warning,
+                    )
+                    self._llm_fallback_count += s_calls
+                    screening = clean_mapping(screening)
                     mapping.update(screening)
                     for q, a in screening.items():
                         seen_screening.append(f"{q}:{a}")
 
-            # Track agent's original mapping for correction capture
             all_agent_mappings.update({k: str(v) for k, v in mapping.items()})
 
             # 5. Fill each field by label
@@ -1899,25 +1185,32 @@ class NativeFormFiller:
                         "result": {"success": False, "error": str(fill_err)},
                     })
 
+            # 5b. Toggle buttons (YES/NO pairs not handled by _fill_by_label)
+            toggle_filled = await self._fill_toggle_buttons(mapping, custom_answers)
+            total_fields_filled += toggle_filled
+
+            # 5c. Radio groups (pierces shadow DOM via get_by_role)
+            radio_filled = await self._fill_radio_groups(mapping, custom_answers, fields)
+            total_fields_filled += radio_filled
+
             # 6. File uploads
-            await self._upload_files(cv_path, cl_path, custom_answers)
+            await upload_files(self._page, cv_path, cl_path, custom_answers, self._get_accessible_name)
 
             # 7. Consent boxes
-            await self._check_consent()
+            await check_consent(self._page, self._get_accessible_name)
 
-            # 7b. Second-chance LLM recovery for fields whose values did not
-            # verify in the DOM. This lets the agent learn alternate phrasing
-            # or exact widget option text after a deterministic attempt fails.
-            if pending_retries:
+            # 7b. Second-chance recovery — LLM only for UNKNOWN domains
+            if pending_retries and not self._known_domain:
                 retry_candidates = [
                     item for item in pending_retries
                     if item["field"].get("type") != "checkbox"
                 ]
-                recovered = await self._recover_failed_fields_with_llm(
-                    retry_candidates, profile, custom_answers, platform,
+                recovered, r_calls = await recover_failed_fields_with_llm(
+                    page_url, retry_candidates, profile, custom_answers, platform,
                 )
+                self._llm_fallback_count += r_calls
                 if recovered:
-                    self._learn_field_mapping(recovered, profile)
+                    learn_field_mapping(recovered, profile)
 
                 still_failing: list[dict[str, Any]] = []
                 for item in pending_retries:
@@ -1930,17 +1223,17 @@ class NativeFormFiller:
                             total_fields_filled += 1
                             mapping[label] = retry_value
                             all_agent_mappings[label] = retry_value
-                            if self._is_screening_like_field(item["field"]):
+                            if is_screening_like_field(item["field"]):
                                 seen_screening.append(f"{label}:{retry_value}")
                             continue
                     still_failing.append(item)
 
-                # 7c. Vision recovery: screenshot-based fallback for fields
-                # that text-only LLM recovery could not fix.
-                if still_failing:
-                    vision_recovered = await self._recover_failed_fields_with_vision(
-                        still_failing, profile, custom_answers, platform,
+                # 7c. Vision recovery — SKIP for known domains
+                if still_failing and not self._known_domain:
+                    vision_recovered, vr_calls = await recover_failed_fields_with_vision(
+                        self._page, still_failing, profile, custom_answers, platform,
                     )
+                    self._llm_fallback_count += vr_calls
                     final_failed_labels: list[str] = []
                     for item in still_failing:
                         label = item["field"]["label"]
@@ -1963,23 +1256,31 @@ class NativeFormFiller:
 
                 fill_failures.extend(final_failed_labels)
                 total_fill_failures.extend(final_failed_labels)
+            elif pending_retries and self._known_domain:
+                total_fill_failures.extend(
+                    item["field"]["label"] for item in pending_retries
+                )
+                logger.info("FAST PATH: %d fields failed fill (no LLM recovery on known domain)",
+                            len(pending_retries))
 
             # 8. Anti-detection timing
             min_time = _PLATFORM_MIN_PAGE_TIME.get(platform, 5.0)
             await asyncio.sleep(min_time * random.uniform(0.8, 1.2))
 
-            # 9. Pre-submit review on final page
+            # 9. Pre-submit review — SKIP for known domains
             if await self._is_submit_page():
                 if dry_run:
                     return _result({
                         "success": True, "dry_run": True,
                         "pages_filled": page_num,
                     })
-                review = await self._review_form()
-                if not review.get("pass"):
-                    logger.warning(
-                        "Pre-submit review failed: %s", review.get("issues"),
-                    )
+                if not self._known_domain:
+                    review_result, rev_calls = await review_form(self._page)
+                    self._llm_fallback_count += rev_calls
+                    if not review_result.get("pass"):
+                        logger.warning(
+                            "Pre-submit review failed: %s", review_result.get("issues"),
+                        )
 
             # 10. Click next/submit
             clicked = await self._click_navigation(dry_run)

@@ -7,11 +7,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _empty_locator():
+    """Return a locator-like mock that reports 0 elements."""
+    loc = MagicMock()
+    loc.count = AsyncMock(return_value=0)
+    loc.all = AsyncMock(return_value=[])
+    return loc
+
+
 def _make_filler(page_mock=None, driver_mock=None):
     """Create a NativeFormFiller with mocked dependencies."""
     from jobpulse.native_form_filler import NativeFormFiller
 
     page = page_mock or MagicMock()
+    if not isinstance(page.evaluate, AsyncMock):
+        page.evaluate = AsyncMock(return_value=[])
+    if not isinstance(page.frame, AsyncMock):
+        page.frame = MagicMock(return_value=None)
+    page.get_by_role = MagicMock(side_effect=lambda *a, **kw: _empty_locator())
     driver = driver_mock or AsyncMock()
     driver.page = page
     return NativeFormFiller(page=page, driver=driver)
@@ -82,7 +95,8 @@ async def test_scan_fields_text_inputs():
     from jobpulse.form_scanner import FormScanResult
     with patch("jobpulse.form_scanner.scan_form", new_callable=AsyncMock,
                return_value=FormScanResult(fields=[])), \
-         patch.object(filler, "_get_accessible_name", return_value="First Name"):
+         patch("jobpulse.form_engine.field_scanner.get_accessible_name",
+               new_callable=AsyncMock, return_value="First Name"):
         fields = await filler._scan_fields()
 
     assert len(fields) == 1
@@ -131,7 +145,8 @@ async def test_scan_fields_select_with_options():
     from jobpulse.form_scanner import FormScanResult
     with patch("jobpulse.form_scanner.scan_form", new_callable=AsyncMock,
                return_value=FormScanResult(fields=[])), \
-         patch.object(filler, "_get_accessible_name", return_value="Country"):
+         patch("jobpulse.form_engine.field_scanner.get_accessible_name",
+               new_callable=AsyncMock, return_value="Country"):
         fields = await filler._scan_fields()
 
     assert len(fields) == 1
@@ -175,7 +190,8 @@ async def test_scan_fields_checkbox():
     from jobpulse.form_scanner import FormScanResult
     with patch("jobpulse.form_scanner.scan_form", new_callable=AsyncMock,
                return_value=FormScanResult(fields=[])), \
-         patch.object(filler, "_get_accessible_name", return_value="Agree to terms"):
+         patch("jobpulse.form_engine.field_scanner.get_accessible_name",
+               new_callable=AsyncMock, return_value="Agree to terms"):
         fields = await filler._scan_fields()
 
     assert len(fields) == 1
@@ -728,13 +744,14 @@ async def test_fill_special_widget_uses_profile_country(tmp_path):
     store.close()
 
 
-# ── _map_fields (LLM Call 1) ──
+# ── map_fields (LLM Call 1) ──
 
 
 @pytest.mark.asyncio
 async def test_map_fields_basic():
     """Maps profile data to form fields via LLM."""
-    filler = _make_filler()
+    from jobpulse.form_engine.field_mapper import map_fields
+
     fields = [
         {"label": "Email", "type": "text", "value": "", "required": True},
         {"label": "Phone", "type": "text", "value": "", "required": False},
@@ -746,9 +763,9 @@ async def test_map_fields_basic():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"Email": "test@example.com", "Phone": "+44123456789"}'
 
-    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result = await filler._map_fields(fields, profile, {}, "greenhouse")
+        result, _ = await map_fields("", fields, profile, {}, "greenhouse", False, "")
 
     assert result == {"Email": "test@example.com", "Phone": "+44123456789"}
 
@@ -756,19 +773,21 @@ async def test_map_fields_basic():
 @pytest.mark.asyncio
 async def test_map_fields_skips_file_fields():
     """File fields are excluded from the LLM prompt."""
-    filler = _make_filler()
+    from jobpulse.form_engine.field_mapper import map_fields
+
     fields = [
         {"label": "Resume", "type": "file"},
     ]
 
-    result = await filler._map_fields(fields, {}, {}, "linkedin")
+    result, _ = await map_fields("", fields, {}, {}, "linkedin", False, "")
     assert result == {}
 
 
 @pytest.mark.asyncio
 async def test_map_fields_includes_options():
     """Text field options are passed in the prompt."""
-    filler = _make_filler()
+    from jobpulse.form_engine.field_mapper import map_fields
+
     fields = [
         {"label": "Preferred Location", "type": "text", "options": ["USA", "UK"], "value": ""},
     ]
@@ -777,9 +796,9 @@ async def test_map_fields_includes_options():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"Preferred Location": "UK"}'
 
-    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result = await filler._map_fields(fields, {}, {}, "greenhouse")
+        result, _ = await map_fields("", fields, {}, {}, "greenhouse", False, "")
 
     assert result == {"Preferred Location": "UK"}
     prompt = mock_openai.return_value.chat.completions.create.call_args[1]["messages"][0]["content"]
@@ -788,7 +807,8 @@ async def test_map_fields_includes_options():
 
 @pytest.mark.asyncio
 async def test_map_fields_keeps_seed_mapping_and_leaves_question_fields_for_screening():
-    filler = _make_filler()
+    from jobpulse.form_engine.field_mapper import map_fields
+
     fields = [
         {"label": "Website", "type": "text", "value": ""},
         {"label": "How did you hear about this role?", "type": "text", "value": ""},
@@ -801,20 +821,21 @@ async def test_map_fields_keeps_seed_mapping_and_leaves_question_fields_for_scre
         '{"Website": "", "How did you hear about this role?": "LinkedIn"}'
     )
 
-    with patch.object(filler, "_try_cached_mapping", return_value=None), \
-         patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+    with patch("jobpulse.form_engine.field_mapper.try_cached_mapping", return_value=None), \
+         patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result = await filler._map_fields(fields, profile, {}, "linkedin")
+        result, _ = await map_fields("", fields, profile, {}, "linkedin", False, "")
 
     assert result == {"Website": "https://yashbishnoi.io"}
 
 
-# ── _screen_questions (LLM Call 2) ──
+# ── screen_questions (LLM Call 2) ──
 
 
 @pytest.mark.asyncio
 async def test_screen_questions_basic():
-    filler = _make_filler()
+    from jobpulse.form_engine.field_mapper import screen_questions
+
     unresolved = [
         {"label": "Are you authorized to work in the UK?", "type": "radio",
          "options": ["Yes", "No"]},
@@ -827,9 +848,9 @@ async def test_screen_questions_basic():
         '{"Are you authorized to work in the UK?": "Yes", "Expected salary": "50000"}'
     )
 
-    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result = await filler._screen_questions(unresolved, "SWE at Acme")
+        result, _ = await screen_questions(unresolved, "SWE at Acme", None, "")
 
     assert result["Are you authorized to work in the UK?"] == "Yes"
     assert result["Expected salary"] == "50000"
@@ -837,7 +858,8 @@ async def test_screen_questions_basic():
 
 @pytest.mark.asyncio
 async def test_screen_questions_includes_options():
-    filler = _make_filler()
+    from jobpulse.form_engine.field_mapper import screen_questions
+
     unresolved = [
         {"label": "Years of experience", "type": "select",
          "options": ["0-1", "2-3", "4-5", "6+"]},
@@ -847,41 +869,43 @@ async def test_screen_questions_includes_options():
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"Years of experience": "2-3"}'
 
-    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result = await filler._screen_questions(unresolved, "Data Analyst")
+        result, _ = await screen_questions(unresolved, "Data Analyst", None, "")
 
     prompt = mock_openai.return_value.chat.completions.create.call_args[1]["messages"][0]["content"]
     assert "0-1" in prompt
 
 
-# ── _review_form (LLM Call 3) ──
+# ── review_form (LLM Call 3) ──
 
 import base64
 
 
 @pytest.mark.asyncio
 async def test_review_form_pass():
+    from jobpulse.form_engine.field_mapper import review_form
+
     page = MagicMock()
     page.screenshot = AsyncMock(return_value=b"\x89PNG fake")
-    filler = _make_filler(page_mock=page)
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"pass": true}'
 
-    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result = await filler._review_form()
+        result, _ = await review_form(page)
 
     assert result["pass"] is True
 
 
 @pytest.mark.asyncio
 async def test_review_form_fail_with_issues():
+    from jobpulse.form_engine.field_mapper import review_form
+
     page = MagicMock()
     page.screenshot = AsyncMock(return_value=b"\x89PNG fake")
-    filler = _make_filler(page_mock=page)
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
@@ -889,9 +913,9 @@ async def test_review_form_fail_with_issues():
         '{"pass": false, "issues": ["Phone empty", "Wrong country"]}'
     )
 
-    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result = await filler._review_form()
+        result, _ = await review_form(page)
 
     assert result["pass"] is False
     assert len(result["issues"]) == 2
@@ -900,17 +924,18 @@ async def test_review_form_fail_with_issues():
 @pytest.mark.asyncio
 async def test_review_form_sends_image():
     """Screenshot is sent as base64 image_url in the LLM message."""
+    from jobpulse.form_engine.field_mapper import review_form
+
     page = MagicMock()
     page.screenshot = AsyncMock(return_value=b"\x89PNG test")
-    filler = _make_filler(page_mock=page)
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = '{"pass": true}'
 
-    with patch("jobpulse.native_form_filler.get_openai_client") as mock_openai:
+    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
         mock_openai.return_value.chat.completions.create.return_value = mock_response
-        await filler._review_form()
+        await review_form(page)
 
     messages = mock_openai.return_value.chat.completions.create.call_args[1]["messages"]
     content = messages[0]["content"]
@@ -919,32 +944,38 @@ async def test_review_form_sends_image():
     assert len(image_parts) == 1
 
 
-# ── _upload_files ──
+# ── upload_files ──
 
 
 @pytest.mark.asyncio
 async def test_upload_files_cv_only():
-    page = MagicMock()
-    filler = _make_filler(page_mock=page)
+    from jobpulse.form_engine.file_uploader import upload_files
 
+    page = MagicMock()
     page.evaluate = AsyncMock(return_value=[
         {"idx": 0, "id": "resume", "name": "", "label": "upload resume"},
     ])
     fi = MagicMock()
     locator_mock = MagicMock(first=fi, nth=MagicMock(return_value=fi))
     page.locator = MagicMock(return_value=locator_mock)
+    checkbox_group = AsyncMock()
+    checkbox_group.all = AsyncMock(return_value=[])
+    page.get_by_role = MagicMock(return_value=checkbox_group)
 
-    with patch.object(filler, "_upload_pdf", new_callable=AsyncMock) as mock_upload:
-        await filler._upload_files("/tmp/cv.pdf", None)
+    async def _mock_name(loc):
+        return ""
+
+    with patch("jobpulse.form_engine.file_uploader.upload_pdf", new_callable=AsyncMock) as mock_upload:
+        await upload_files(page, "/tmp/cv.pdf", None, None, _mock_name)
 
     mock_upload.assert_called_once_with(fi, "/tmp/cv.pdf")
 
 
 @pytest.mark.asyncio
 async def test_upload_files_cv_and_cl():
-    page = MagicMock()
-    filler = _make_filler(page_mock=page)
+    from jobpulse.form_engine.file_uploader import upload_files
 
+    page = MagicMock()
     page.evaluate = AsyncMock(return_value=[
         {"idx": 0, "id": "resume", "name": "", "label": "upload resume"},
         {"idx": 1, "id": "cover_letter", "name": "", "label": "upload cover letter"},
@@ -962,9 +993,15 @@ async def test_upload_files_cv_and_cl():
         return MagicMock(first=MagicMock())
 
     page.locator = MagicMock(side_effect=_locator_factory)
+    checkbox_group = AsyncMock()
+    checkbox_group.all = AsyncMock(return_value=[])
+    page.get_by_role = MagicMock(return_value=checkbox_group)
 
-    with patch.object(filler, "_upload_pdf", new_callable=AsyncMock) as mock_upload:
-        await filler._upload_files("/tmp/cv.pdf", "/tmp/cl.pdf")
+    async def _mock_name(loc):
+        return ""
+
+    with patch("jobpulse.form_engine.file_uploader.upload_pdf", new_callable=AsyncMock) as mock_upload:
+        await upload_files(page, "/tmp/cv.pdf", "/tmp/cl.pdf", None, _mock_name)
 
     assert mock_upload.call_count == 2
     mock_upload.assert_any_call(fi_cv, "/tmp/cv.pdf")
@@ -973,28 +1010,34 @@ async def test_upload_files_cv_and_cl():
 
 @pytest.mark.asyncio
 async def test_upload_files_skips_autofill():
-    page = MagicMock()
-    filler = _make_filler(page_mock=page)
+    from jobpulse.form_engine.file_uploader import upload_files
 
+    page = MagicMock()
     page.evaluate = AsyncMock(return_value=[
         {"idx": 0, "id": "resume", "name": "", "label": "autofill from resume"},
     ])
     page.locator = MagicMock(return_value=MagicMock(nth=MagicMock()))
+    checkbox_group = AsyncMock()
+    checkbox_group.all = AsyncMock(return_value=[])
+    page.get_by_role = MagicMock(return_value=checkbox_group)
 
-    with patch.object(filler, "_upload_pdf", new_callable=AsyncMock) as mock_upload:
-        await filler._upload_files("/tmp/cv.pdf", None)
+    async def _mock_name(loc):
+        return ""
+
+    with patch("jobpulse.form_engine.file_uploader.upload_pdf", new_callable=AsyncMock) as mock_upload:
+        await upload_files(page, "/tmp/cv.pdf", None, None, _mock_name)
 
     mock_upload.assert_not_called()
 
 
-# ── _check_consent ──
+# ── check_consent ──
 
 
 @pytest.mark.asyncio
 async def test_check_consent_checks_unchecked():
-    page = MagicMock()
-    filler = _make_filler(page_mock=page)
+    from jobpulse.form_engine.file_uploader import check_consent
 
+    page = MagicMock()
     cb = AsyncMock()
     cb.is_checked = AsyncMock(return_value=False)
     cb.check = AsyncMock()
@@ -1003,17 +1046,20 @@ async def test_check_consent_checks_unchecked():
     checkbox_group.all = AsyncMock(return_value=[cb])
     page.get_by_role = MagicMock(return_value=checkbox_group)
 
-    with patch.object(filler, "_get_accessible_name", return_value="I agree to the terms"):
-        await filler._check_consent()
+    async def _mock_name(loc):
+        return "I agree to the terms"
+
+    with patch("jobpulse.form_engine.file_uploader.check_consent_selects", new_callable=AsyncMock):
+        await check_consent(page, _mock_name)
 
     cb.check.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_check_consent_skips_non_consent():
-    page = MagicMock()
-    filler = _make_filler(page_mock=page)
+    from jobpulse.form_engine.file_uploader import check_consent
 
+    page = MagicMock()
     cb = AsyncMock()
     cb.is_checked = AsyncMock(return_value=False)
     cb.check = AsyncMock()
@@ -1022,17 +1068,20 @@ async def test_check_consent_skips_non_consent():
     checkbox_group.all = AsyncMock(return_value=[cb])
     page.get_by_role = MagicMock(return_value=checkbox_group)
 
-    with patch.object(filler, "_get_accessible_name", return_value="Subscribe to newsletter"):
-        await filler._check_consent()
+    async def _mock_name(loc):
+        return "Subscribe to newsletter"
+
+    with patch("jobpulse.form_engine.file_uploader.check_consent_selects", new_callable=AsyncMock):
+        await check_consent(page, _mock_name)
 
     cb.check.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_check_consent_skips_already_checked():
-    page = MagicMock()
-    filler = _make_filler(page_mock=page)
+    from jobpulse.form_engine.file_uploader import check_consent
 
+    page = MagicMock()
     cb = AsyncMock()
     cb.is_checked = AsyncMock(return_value=True)
     cb.check = AsyncMock()
@@ -1041,10 +1090,105 @@ async def test_check_consent_skips_already_checked():
     checkbox_group.all = AsyncMock(return_value=[cb])
     page.get_by_role = MagicMock(return_value=checkbox_group)
 
-    with patch.object(filler, "_get_accessible_name", return_value="I accept privacy policy"):
-        await filler._check_consent()
+    async def _mock_name(loc):
+        return "I accept privacy policy"
+
+    with patch("jobpulse.form_engine.file_uploader.check_consent_selects", new_callable=AsyncMock):
+        await check_consent(page, _mock_name)
 
     cb.check.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_consent_selects_i_accept():
+    """iCIMS GDPR pattern: select dropdown with 'I accept' option."""
+    from jobpulse.form_engine.file_uploader import check_consent_selects
+
+    page = MagicMock()
+    option_loc = MagicMock()
+    option_loc.all_text_contents = AsyncMock(
+        return_value=["— Make a Selection —", "I accept"],
+    )
+    select_loc = MagicMock()
+    select_loc.locator = MagicMock(return_value=option_loc)
+    select_loc.evaluate = AsyncMock(return_value="— Make a Selection —")
+    select_loc.select_option = AsyncMock()
+
+    select_group = MagicMock()
+    select_group.all = AsyncMock(return_value=[select_loc])
+    page.locator = MagicMock(return_value=select_group)
+
+    await check_consent_selects(page)
+
+    select_loc.select_option.assert_called_once_with(label="I accept", timeout=5000)
+
+
+@pytest.mark.asyncio
+async def test_check_consent_selects_already_accepted():
+    """Skip consent select when already set to 'I accept'."""
+    from jobpulse.form_engine.file_uploader import check_consent_selects
+
+    page = MagicMock()
+    option_loc = MagicMock()
+    option_loc.all_text_contents = AsyncMock(
+        return_value=["— Make a Selection —", "I accept"],
+    )
+    select_loc = MagicMock()
+    select_loc.locator = MagicMock(return_value=option_loc)
+    select_loc.evaluate = AsyncMock(return_value="I accept")
+    select_loc.select_option = AsyncMock()
+
+    select_group = MagicMock()
+    select_group.all = AsyncMock(return_value=[select_loc])
+    page.locator = MagicMock(return_value=select_group)
+
+    await check_consent_selects(page)
+
+    select_loc.select_option.assert_not_called()
+
+
+# ── _fuzzy_label_to_profile_key ──
+
+
+class TestFuzzyLabelMatcher:
+    """Fuzzy label→profile_key matching handles unknown ATS label variants."""
+
+    def test_standard_labels(self):
+        from jobpulse.native_form_filler import _fuzzy_label_to_profile_key as f
+        assert f("first name") == "first_name"
+        assert f("last name") == "last_name"
+        assert f("email address") == "email"
+        assert f("phone number") == "phone"
+
+    def test_icims_labels(self):
+        from jobpulse.native_form_filler import _fuzzy_label_to_profile_key as f
+        assert f("legal first name") == "first_name"
+        assert f("legal last name") == "last_name"
+        assert f("preferred first name") == "first_name"
+
+    def test_international_labels(self):
+        from jobpulse.native_form_filler import _fuzzy_label_to_profile_key as f
+        assert f("given name") == "first_name"
+        assert f("family name") == "last_name"
+
+    def test_address_labels(self):
+        from jobpulse.native_form_filler import _fuzzy_label_to_profile_key as f
+        assert f("street address") == "address"
+        assert f("address line 1") == "address"
+        assert f("postal code") == "postcode"
+        assert f("zip code") == "postcode"
+
+    def test_ambiguous_single_tokens_rejected(self):
+        from jobpulse.native_form_filler import _fuzzy_label_to_profile_key as f
+        assert f("type") is None
+        assert f("number") is None
+        assert f("name") is None
+
+    def test_unknown_labels(self):
+        from jobpulse.native_form_filler import _fuzzy_label_to_profile_key as f
+        assert f("how did you hear about us") is None
+        assert f("are you willing to relocate") is None
+        assert f("company name") is None
 
 
 # ── _is_confirmation_page ──
@@ -1217,13 +1361,14 @@ async def test_fill_single_page_success():
         {"label": "Resume", "type": "file", "locator": AsyncMock()},
     ]
 
-    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+    with patch("jobpulse.native_form_filler.handle_modal_cv_upload", new_callable=AsyncMock), \
          patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
-         patch.object(filler, "_map_fields", return_value={"Email": "test@test.com"}), \
+         patch("jobpulse.native_form_filler.map_fields", new_callable=AsyncMock,
+               return_value=({"Email": "test@test.com"}, 0)), \
          patch.object(filler, "_fill_by_label", return_value={"success": True}), \
-         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
-         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.upload_files", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=False), \
          patch.object(filler, "_click_navigation", return_value="submitted"), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
@@ -1245,15 +1390,15 @@ async def test_fill_dry_run_stops():
 
     fields = [{"label": "Name", "type": "text", "value": "", "required": True}]
 
-    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+    with patch("jobpulse.native_form_filler.handle_modal_cv_upload", new_callable=AsyncMock), \
          patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
-         patch.object(filler, "_map_fields", return_value={"Name": "John"}), \
+         patch("jobpulse.native_form_filler.map_fields", new_callable=AsyncMock,
+               return_value=({"Name": "John"}, 0)), \
          patch.object(filler, "_fill_by_label", return_value={"success": True}), \
-         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
-         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.upload_files", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=True), \
-         patch.object(filler, "_review_form", return_value={"pass": True}), \
          patch.object(filler, "_click_navigation", return_value="dry_run_stop"), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
          patch("shared.profile_store.get_profile_store", return_value=None):
@@ -1273,10 +1418,11 @@ async def test_fill_retries_unverified_fields_with_llm_recovery():
     filler = _make_filler()
     fields = [{"label": "Country", "type": "combobox", "value": "", "required": True}]
 
-    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+    with patch("jobpulse.native_form_filler.handle_modal_cv_upload", new_callable=AsyncMock), \
          patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
-         patch.object(filler, "_map_fields", return_value={"Country": "UK"}), \
+         patch("jobpulse.native_form_filler.map_fields", new_callable=AsyncMock,
+               return_value=({"Country": "UK"}, 0)), \
          patch.object(
              filler,
              "_fill_by_label",
@@ -1285,14 +1431,11 @@ async def test_fill_retries_unverified_fields_with_llm_recovery():
                  {"success": True, "value_verified": True, "actual_value": "United Kingdom"},
              ],
          ) as mock_fill, \
-         patch.object(
-             filler,
-             "_recover_failed_fields_with_llm",
-             new_callable=AsyncMock,
-             return_value={"Country": "United Kingdom"},
-         ) as mock_recover, \
-         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
-         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.recover_failed_fields_with_llm",
+               new_callable=AsyncMock,
+               return_value=({"Country": "United Kingdom"}, 1)) as mock_recover, \
+         patch("jobpulse.native_form_filler.upload_files", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=False), \
          patch.object(filler, "_click_navigation", return_value="submitted"), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
@@ -1317,7 +1460,7 @@ async def test_fill_retries_unverified_fields_with_llm_recovery():
 async def test_fill_confirmation_page():
     filler = _make_filler()
 
-    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+    with patch("jobpulse.native_form_filler.handle_modal_cv_upload", new_callable=AsyncMock), \
          patch.object(filler, "_scan_fields", return_value=[]), \
          patch.object(filler, "_is_confirmation_page", return_value=True), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
@@ -1337,13 +1480,14 @@ async def test_fill_no_nav_button():
 
     fields = [{"label": "Name", "type": "text", "value": "", "required": True}]
 
-    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+    with patch("jobpulse.native_form_filler.handle_modal_cv_upload", new_callable=AsyncMock), \
          patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
-         patch.object(filler, "_map_fields", return_value={"Name": "John"}), \
+         patch("jobpulse.native_form_filler.map_fields", new_callable=AsyncMock,
+               return_value=({"Name": "John"}, 0)), \
          patch.object(filler, "_fill_by_label", return_value={"success": True}), \
-         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
-         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.upload_files", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=False), \
          patch.object(filler, "_click_navigation", return_value=""), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
@@ -1360,7 +1504,7 @@ async def test_fill_no_nav_button():
 
 @pytest.mark.asyncio
 async def test_fill_calls_screening_for_unresolved():
-    """fill() calls _screen_questions for unresolved non-file fields."""
+    """fill() calls screen_questions for unresolved non-file fields."""
     filler = _make_filler()
 
     fields = [
@@ -1368,15 +1512,17 @@ async def test_fill_calls_screening_for_unresolved():
         {"label": "Work auth?", "type": "radio", "options": ["Yes", "No"]},
     ]
 
-    with patch.object(filler, "_handle_modal_cv_upload", new_callable=AsyncMock), \
+    with patch("jobpulse.native_form_filler.handle_modal_cv_upload", new_callable=AsyncMock), \
          patch.object(filler, "_scan_fields", return_value=fields), \
          patch.object(filler, "_is_confirmation_page", return_value=False), \
-         patch.object(filler, "_map_fields", return_value={"Email": "a@b.com"}), \
+         patch("jobpulse.native_form_filler.map_fields", new_callable=AsyncMock,
+               return_value=({"Email": "a@b.com"}, 0)), \
          patch("jobpulse.screening_answers.try_instant_answer", return_value=None), \
-         patch.object(filler, "_screen_questions", return_value={"Work auth?": "Yes"}) as mock_screen, \
+         patch("jobpulse.native_form_filler.screen_questions", new_callable=AsyncMock,
+               return_value=({"Work auth?": "Yes"}, 1)) as mock_screen, \
          patch.object(filler, "_fill_by_label", return_value={"success": True}), \
-         patch.object(filler, "_upload_files", new_callable=AsyncMock), \
-         patch.object(filler, "_check_consent", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.upload_files", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.check_consent", new_callable=AsyncMock), \
          patch.object(filler, "_is_submit_page", return_value=False), \
          patch.object(filler, "_click_navigation", return_value="submitted"), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
@@ -1401,6 +1547,7 @@ async def test_fill_application_routes_to_native_filler():
     """fill_application creates NativeFormFiller when engine='playwright'."""
     driver = AsyncMock()
     driver.page = MagicMock()
+    driver.page.frame = MagicMock(return_value=None)
     orch = ApplicationOrchestrator(driver=driver, engine="playwright")
 
     with patch("jobpulse.native_form_filler.NativeFormFiller") as MockFiller:
@@ -1423,5 +1570,81 @@ async def test_fill_application_routes_to_native_filler():
     MockFiller.assert_called_once_with(page=driver.page, driver=driver)
     mock_instance.fill.assert_called_once()
     assert result["success"] is True
+
+
+# ── _fingerprint_fields / stuck detection ──
+
+
+def test_fingerprint_fields_deterministic():
+    """Same fields in different order produce the same fingerprint."""
+    from jobpulse.native_form_filler import NativeFormFiller
+
+    fields_a = [
+        {"type": "text", "label": "First Name"},
+        {"type": "email", "label": "Email"},
+        {"type": "select", "label": "Country"},
+    ]
+    fields_b = [
+        {"type": "select", "label": "Country"},
+        {"type": "text", "label": "First Name"},
+        {"type": "email", "label": "Email"},
+    ]
+    assert NativeFormFiller._fingerprint_fields(fields_a) == NativeFormFiller._fingerprint_fields(fields_b)
+
+
+def test_fingerprint_fields_different():
+    """Different fields produce different fingerprints."""
+    from jobpulse.native_form_filler import NativeFormFiller
+
+    fields_a = [{"type": "text", "label": "First Name"}]
+    fields_b = [{"type": "text", "label": "Last Name"}]
+    assert NativeFormFiller._fingerprint_fields(fields_a) != NativeFormFiller._fingerprint_fields(fields_b)
+
+
+@pytest.mark.asyncio
+async def test_stuck_detection_aborts_after_two_identical_pages():
+    """fill() returns success=False when the same page fingerprint appears 3 times in a row."""
+    from jobpulse.native_form_filler import NativeFormFiller
+
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=[])
+    page.frame = MagicMock(return_value=None)
+    page.get_by_role = MagicMock(side_effect=lambda *a, **kw: _empty_locator())
+    page.locator = MagicMock(return_value=_empty_locator())
+    page.url = "https://example.com/apply"
+    driver = AsyncMock()
+    driver.page = page
+
+    filler = NativeFormFiller(page=page, driver=driver)
+
+    same_fields = [
+        {"type": "text", "label": "First Name", "locator": MagicMock()},
+        {"type": "email", "label": "Email", "locator": MagicMock()},
+    ]
+
+    with patch.object(filler, "_scan_fields", new_callable=AsyncMock, return_value=same_fields), \
+         patch.object(filler, "_click_navigation", new_callable=AsyncMock, return_value="next"), \
+         patch.object(filler, "_is_confirmation_page", new_callable=AsyncMock, return_value=False), \
+         patch.object(filler, "_is_submit_page", new_callable=AsyncMock, return_value=False), \
+         patch.object(filler, "_resolve_page_context", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.map_fields", new_callable=AsyncMock,
+               return_value=({}, 0)), \
+         patch("jobpulse.native_form_filler.handle_modal_cv_upload", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.upload_files", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.check_consent", new_callable=AsyncMock), \
+         patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
+         patch("jobpulse.form_experience_db.FormExperienceDB", MagicMock()):
+
+        result = await filler.fill(
+            cv_path=None,
+            cl_path=None,
+            profile={"name": "Test"},
+            custom_answers={},
+            platform="generic",
+            dry_run=False,
+        )
+
+    assert result["success"] is False
+    assert "Stuck" in result["error"]
 
 
