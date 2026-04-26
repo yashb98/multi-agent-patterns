@@ -279,15 +279,17 @@ class PageAnalyzer:
         if not url:
             return snapshot
 
-        expected_count = self._get_expected_field_count(url)
-        if expected_count is None:
+        result = self._get_expected_field_count(url)
+        if result is None:
             return snapshot
 
+        expected_count, confidence_ratio = result
         current_count = len(snapshot.get("fields", []))
-        if current_count >= expected_count * 0.6:
+        if current_count >= expected_count * confidence_ratio:
             return snapshot
 
-        logger.info("DOM stability wait: %d fields, platform avg %.0f — polling", current_count, expected_count)
+        logger.info("DOM stability wait: %d fields, expected %.0f (ratio=%.1f) — polling",
+                    current_count, expected_count, confidence_ratio)
         for _ in range(max_polls):
             await asyncio.sleep(interval)
             try:
@@ -295,7 +297,7 @@ class PageAnalyzer:
                 if hasattr(fresh, "model_dump"):
                     fresh = fresh.model_dump()
                 new_count = len(fresh.get("fields", []))
-                if new_count >= expected_count * 0.6:
+                if new_count >= expected_count * confidence_ratio:
                     logger.info("DOM stabilized: %d fields (expected %.0f)", new_count, expected_count)
                     return fresh
                 if new_count == current_count:
@@ -306,8 +308,8 @@ class PageAnalyzer:
                 break
         return snapshot
 
-    def _get_expected_field_count(self, url: str) -> float | None:
-        """Get expected field count: per-domain first, platform aggregate fallback."""
+    def _get_expected_field_count(self, url: str) -> tuple[float, float] | None:
+        """Get expected field count with confidence. Returns (count, confidence_ratio) or None."""
         import json as _json
 
         per_domain = self.form_experience.lookup(url)
@@ -315,13 +317,21 @@ class PageAnalyzer:
             stored = per_domain.get("field_types", "[]")
             if isinstance(stored, str):
                 stored = _json.loads(stored)
-            return float(len(stored))
+            return float(len(stored)), 0.6  # per-domain = high confidence
 
         platform = self._infer_platform(url)
         if platform:
             agg = self.form_experience.get_platform_aggregate(platform)
-            if agg and agg["observation_count"] >= 3:
-                return agg["avg_field_count"]
+            if agg and agg["observation_count"] >= 1:
+                obs = agg["observation_count"]
+                # Adaptive: 1 obs → 0.3, 2 obs → 0.4, 3+ obs → 0.6
+                if obs >= 3:
+                    confidence = 0.6
+                elif obs == 2:
+                    confidence = 0.4
+                else:
+                    confidence = 0.3
+                return agg["avg_field_count"], confidence
 
         return None
 

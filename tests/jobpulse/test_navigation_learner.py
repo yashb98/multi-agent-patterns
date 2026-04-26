@@ -147,6 +147,19 @@ def test_consecutive_failures_purge_sequence(learner):
     assert row is None
 
 
+def test_platform_pattern_with_two_observations(tmp_path):
+    """Platform pattern works with 2 observations (lowered from 3)."""
+    learner = NavigationLearner(db_path=str(tmp_path / "nav.db"))
+    for domain in ["a.com", "b.com"]:
+        learner.save_sequence(domain, [
+            {"page_type": "job_description", "action": "click_apply"},
+        ], success=True, platform="lever")
+
+    pattern = learner.get_platform_pattern("lever")
+    assert pattern is not None
+    assert pattern[0]["action"] == "click_apply"
+
+
 @pytest.mark.asyncio
 async def test_redirect_loop_detected():
     """Navigator aborts when same (domain, page_type) appears 3 times."""

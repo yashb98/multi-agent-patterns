@@ -297,6 +297,36 @@ def test_dom_session_timed_out():
     assert result == PageType.SESSION_EXPIRED
 
 
+@pytest.mark.asyncio
+async def test_stability_wait_low_confidence_single_observation():
+    """With only 1 observation, uses wider tolerance (0.3x)."""
+    from unittest.mock import MagicMock
+
+    bridge = AsyncMock()
+    analyzer = PageAnalyzer(bridge)
+
+    mock_exp = MagicMock()
+    mock_exp.lookup.return_value = None
+    mock_exp.get_platform_aggregate.return_value = {
+        "avg_field_count": 10.0,
+        "observation_count": 1,  # Only 1 observation
+    }
+    analyzer.form_experience = mock_exp
+
+    # 3 fields = 30% of 10 = meets 0.3 threshold, should NOT wait
+    s = _snapshot(
+        fields=[
+            {"input_type": "text", "label": "First Name", "current_value": ""},
+            {"input_type": "email", "label": "Email", "current_value": ""},
+            {"input_type": "tel", "label": "Phone", "current_value": ""},
+        ],
+        url="https://boards.greenhouse.io/newco/jobs/1",
+    )
+    result = await analyzer.detect(s)
+    # Should classify without waiting (3 >= 10*0.3)
+    bridge.get_snapshot.assert_not_called()
+
+
 def test_dom_consent_gate_privacy():
     s = _snapshot(
         page_text="Please agree to our privacy policy to continue your application.",

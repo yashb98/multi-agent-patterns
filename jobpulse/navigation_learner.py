@@ -116,7 +116,7 @@ class NavigationLearner:
         except Exception as e:
             logger.debug("Optimization signal failed: %s", e)
 
-    def get_platform_pattern(self, platform: str, exclude_domain: str = "", min_observations: int = 3) -> list[dict] | None:
+    def get_platform_pattern(self, platform: str, exclude_domain: str = "", min_observations: int = 2) -> list[dict] | None:
         """Return the most common action pattern for a platform across all domains.
 
         Requires at least `min_observations` domains sharing the same action sequence.
