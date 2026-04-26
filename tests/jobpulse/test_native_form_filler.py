@@ -1603,7 +1603,7 @@ def test_fingerprint_fields_different():
 
 @pytest.mark.asyncio
 async def test_stuck_detection_aborts_after_two_identical_pages():
-    """fill() returns success=False when the same page fingerprint appears 3 times in a row."""
+    """fill() returns success=False when the same page fingerprint appears 2 times in a row."""
     from jobpulse.native_form_filler import NativeFormFiller
 
     page = MagicMock()

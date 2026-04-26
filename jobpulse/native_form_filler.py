@@ -1059,7 +1059,7 @@ class NativeFormFiller:
             _cur_fingerprint = self._fingerprint_fields(fields)
             if _cur_fingerprint == _prev_fingerprint and page_num > 1:
                 _stuck_count += 1
-                if _stuck_count >= 2:
+                if _stuck_count >= 1:
                     logger.warning(
                         "Stuck: identical page fingerprint for %d consecutive pages", _stuck_count + 1,
                     )
