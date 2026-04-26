@@ -43,7 +43,8 @@ async def _with_retry(fn, max_retries=2, delay_ms=500):
 
 
 def _fuzzy_match(value: str, options: list[str]) -> str | None:
-    """Match value against options: exact → startswith → contains."""
+    """Match value against options: exact → startswith → contains → token overlap → numeric range."""
+    import re as _re
     v = value.lower().strip()
     for opt in options:
         if opt.lower().strip() == v:
@@ -54,6 +55,30 @@ def _fuzzy_match(value: str, options: list[str]) -> str | None:
     for opt in options:
         if v in opt.lower().strip():
             return opt
+
+    # Token overlap (handles word reordering, formatting differences)
+    best_score, best_opt = 0.0, None
+    for opt in options:
+        tokens_v = set(_re.split(r'[\s\-_/,;:]+', v))
+        tokens_o = set(_re.split(r'[\s\-_/,;:]+', opt.lower().strip()))
+        tokens_v.discard('')
+        tokens_o.discard('')
+        if tokens_v and tokens_o:
+            score = len(tokens_v & tokens_o) / len(tokens_v | tokens_o)
+            if score > best_score:
+                best_score = score
+                best_opt = opt
+    if best_score >= 0.5 and best_opt is not None:
+        return best_opt
+
+    # Numeric range overlap (handles "3-5 years" vs "3 to 5 years")
+    nums_v = [int(n) for n in _re.findall(r'\d+', v)]
+    if nums_v:
+        for opt in options:
+            nums_o = [int(n) for n in _re.findall(r'\d+', opt.lower())]
+            if nums_o and nums_v[0] == nums_o[0]:
+                return opt
+
     return None
 
 
@@ -244,8 +269,9 @@ class PlaywrightDriver:
                 "Start Chrome with: python -m jobpulse.runner chrome-pw"
             ) from last_exc
         self._context = self._browser.contexts[0]
-        self._page = await self._context.new_page()
-        logger.info("PlaywrightDriver connected to Chrome at %s", url)
+        pages = self._context.pages
+        self._page = pages[-1] if pages else await self._context.new_page()
+        logger.info("PlaywrightDriver connected to Chrome at %s (tab: %s)", url, self._page.url[:80])
 
     async def close(self) -> None:
         """Close the tab and disconnect."""
@@ -274,10 +300,30 @@ class PlaywrightDriver:
 
     async def get_snapshot(self, **kwargs) -> dict:
         """Scan DOM for form fields, buttons, and page text — returns same shape as extension snapshots."""
-        snapshot = await self._page.evaluate("""() => {
+        # Use iframe content frame if an ATS iframe exists (e.g. iCIMS)
+        scan_frame = self._page
+        for iframe_name in ("icims_content_iframe",):
+            frame = self._page.frame(name=iframe_name)
+            if frame is not None:
+                scan_frame = frame
+                logger.debug("get_snapshot: scanning inside iframe %s", iframe_name)
+                break
+
+        snapshot = await scan_frame.evaluate("""() => {
+            // Scope to a visible dialog/modal if one is open — avoids picking up background chrome
+            let dialog = null;
+            for (const el of document.querySelectorAll('[role="dialog"], [aria-modal="true"]')) {
+                if (el.getAttribute('aria-hidden') === 'true') continue;
+                if (getComputedStyle(el).display === 'none') continue;
+                if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
+                dialog = el;
+                break;
+            }
+            const root = dialog || document;
+
             // 1. Fields
             const fields = [];
-            document.querySelectorAll('input, select, textarea, [contenteditable="true"]').forEach(el => {
+            root.querySelectorAll('input, select, textarea, [contenteditable="true"]').forEach(el => {
                 const rect = el.getBoundingClientRect();
                 if (rect.width === 0 && rect.height === 0) return;
                 // Try to find label
@@ -309,7 +355,7 @@ class PlaywrightDriver:
 
             // 2. Buttons and links
             const buttons = [];
-            document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]').forEach(el => {
+            root.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]').forEach(el => {
                 const rect = el.getBoundingClientRect();
                 if (rect.width === 0 && rect.height === 0) return;
                 const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
@@ -323,10 +369,11 @@ class PlaywrightDriver:
             });
 
             // 3. Page text preview
-            const page_text_preview = document.body ? document.body.innerText.substring(0, 3000) : '';
+            const textRoot = dialog || document.body;
+            const page_text_preview = textRoot ? textRoot.innerText.substring(0, 3000) : '';
 
             // 4. File inputs
-            const has_file_inputs = document.querySelectorAll('input[type="file"]').length > 0;
+            const has_file_inputs = root.querySelectorAll('input[type="file"]').length > 0;
 
             return {
                 url: location.href,
@@ -335,13 +382,15 @@ class PlaywrightDriver:
                 buttons,
                 page_text_preview,
                 has_file_inputs,
+                has_dialog: !!dialog,
             };
         }""")
 
         # Merge a11y tree fields — discovers fields in modals and shadow DOM
+        # Skip when scanning an iframe (DOM evaluate already covers it, CDP can't target iframes)
         try:
             from jobpulse.form_scanner import scan_form
-            scan = await scan_form(self._page)
+            scan = await scan_form(self._page) if scan_frame is self._page else None
             if scan.fields:
                 existing_labels = {f.get("label", "").lower().strip() for f in snapshot.get("fields", [])}
                 existing_labels.discard("")
@@ -358,12 +407,7 @@ class PlaywrightDriver:
         except Exception as exc:
             logger.debug("get_snapshot: a11y merge failed: %s", exc)
 
-        # Check for dialog/modal presence
-        try:
-            dialog_locator = self._page.locator('[role="dialog"], [aria-modal="true"]')
-            snapshot["has_dialog"] = bool(await dialog_locator.count())
-        except Exception:
-            snapshot["has_dialog"] = False
+        # has_dialog is already set by the JS evaluate — no extra check needed
 
         return snapshot
 

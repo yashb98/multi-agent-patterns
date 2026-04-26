@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re as _re
+
 from shared.logging_config import get_logger
 
 from jobpulse.form_engine.models import FillResult
@@ -11,6 +13,9 @@ logger = get_logger(__name__)
 # Common abbreviation→full mappings for fuzzy matching
 _ABBREVIATIONS: dict[str, str] = {
     "uk": "united kingdom",
+    "gb": "united kingdom",
+    "+44": "united kingdom",
+    "44": "united kingdom",
     "us": "united states",
     "usa": "united states of america",
 }
@@ -21,10 +26,49 @@ def _normalize(text: str) -> str:
     return text.lower().strip().strip(".,;:!?")
 
 
+def _token_overlap(a: str, b: str) -> float:
+    """Jaccard similarity of token sets after normalization."""
+    # Strip possessives ('s) before tokenizing so "bachelor's" matches "bachelor"
+    a_clean = _re.sub(r"'s?\b", '', a.lower().strip())
+    b_clean = _re.sub(r"'s?\b", '', b.lower().strip())
+    tokens_a = set(_re.split(r'[\s\-_/,;:]+', a_clean))
+    tokens_b = set(_re.split(r'[\s\-_/,;:]+', b_clean))
+    tokens_a.discard('')
+    tokens_b.discard('')
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
+
+
+def _numeric_range_match(value: str, option: str) -> bool:
+    """Check if numeric values/ranges in both strings overlap."""
+    nums_v = [int(n) for n in _re.findall(r'\d+', value)]
+    nums_o = [int(n) for n in _re.findall(r'\d+', option)]
+    if not nums_v or not nums_o:
+        return False
+    # Detect "less than N" in option — treat as upper-bound range (0, N-1)
+    if _re.search(r'\bless\s+than\b|\bunder\b|\bbelow\b', option.lower()):
+        upper = nums_o[0] - 1
+        range_o = (0, upper)
+        range_v = (min(nums_v), max(nums_v))
+        return range_v[0] <= range_o[1] and range_o[0] <= range_v[1]
+    # If both have the same first number, likely a match (e.g., "3-5" vs "3 to 5")
+    if nums_v[0] == nums_o[0]:
+        return True
+    # Check range overlap
+    range_v = (min(nums_v), max(nums_v))
+    range_o = (min(nums_o), max(nums_o))
+    return range_v[0] <= range_o[1] and range_o[0] <= range_v[1]
+
+
 def _fuzzy_match_option(value: str, options: list[str]) -> str | None:
     """Find the best matching option for a value.
 
-    Priority: exact → abbreviation → startswith → contains → None.
+    Priority: exact → abbreviation → startswith → numeric range → token overlap → contains → None.
+    Numeric range is checked before contains to avoid substring false positives
+    (e.g., "1 year" is a substring of "Less than 1 year" but should match "1-2 years").
     """
     norm_value = _normalize(value)
 
@@ -39,6 +83,25 @@ def _fuzzy_match_option(value: str, options: list[str]) -> str | None:
         if _normalize(opt).startswith(expanded):
             return opt
 
+    # Tier 3: Numeric range match (before contains to avoid substring false positives)
+    nums_in_value = _re.findall(r'\d+', expanded)
+    if nums_in_value:
+        for opt in options:
+            if _numeric_range_match(expanded, _normalize(opt)):
+                return opt
+
+    # Tier 4: Token overlap (handles word reordering, formatting differences)
+    best_overlap = 0.0
+    best_match = None
+    for opt in options:
+        score = _token_overlap(expanded, _normalize(opt))
+        if score > best_overlap:
+            best_overlap = score
+            best_match = opt
+    if best_overlap >= 0.5 and best_match is not None:
+        return best_match
+
+    # Tier 5: Substring contains (broad fallback)
     for opt in options:
         if expanded in _normalize(opt):
             return opt
