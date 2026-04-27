@@ -375,3 +375,82 @@ async def test_scan_form_falls_back_to_full_tree_on_partial_failure():
     result = await scan_form(mock_page, container_backend_node_id="99")
     assert len(result.fields) == 1
     assert result.fields[0].label == "Email"
+
+
+# ── resolve_form_container ──
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_tier1_learned(tmp_path):
+    """Tier 1: returns stored container from FormExperienceDB."""
+    from jobpulse.form_experience_db import FormExperienceDB
+    from jobpulse.ats_adapters.strategy import get_strategy
+    from jobpulse.form_engine.field_scanner import resolve_form_container
+
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    db.store_container("greenhouse.io", "#application")
+
+    mock_page = AsyncMock()
+    mock_page.url = "https://greenhouse.io/apply/123"
+    mock_locator = AsyncMock()
+    mock_locator.count = AsyncMock(return_value=1)
+    mock_page.locator = MagicMock(return_value=mock_locator)
+
+    strategy = get_strategy("greenhouse")
+    result = await resolve_form_container(mock_page, strategy, db)
+    assert result == "#application"
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_tier1_stale_falls_to_tier3(tmp_path):
+    """Tier 1 selector returns 0 elements -> deletes it -> falls to Tier 3 hint."""
+    from jobpulse.form_experience_db import FormExperienceDB
+    from jobpulse.ats_adapters.strategy import get_strategy
+    from jobpulse.form_engine.field_scanner import resolve_form_container
+
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    db.store_container("greenhouse.io", "#old-form-gone")
+
+    mock_page = AsyncMock()
+    mock_page.url = "https://greenhouse.io/apply/123"
+    stale_locator = AsyncMock()
+    stale_locator.count = AsyncMock(return_value=0)
+    hint_locator = AsyncMock()
+    hint_locator.count = AsyncMock(return_value=1)
+
+    def mock_locator_fn(selector):
+        if selector == "#old-form-gone":
+            return stale_locator
+        if selector == "#application":
+            return hint_locator
+        return stale_locator
+
+    mock_page.locator = mock_locator_fn
+    mock_page.evaluate = AsyncMock(return_value=None)
+
+    strategy = get_strategy("greenhouse")
+    result = await resolve_form_container(mock_page, strategy, db)
+    assert result == "#application"
+    assert db.get_container("greenhouse.io") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_returns_none_when_all_fail(tmp_path):
+    """All tiers fail -> returns None for full-page scan."""
+    from jobpulse.form_experience_db import FormExperienceDB
+    from jobpulse.ats_adapters.strategy import get_strategy
+    from jobpulse.form_engine.field_scanner import resolve_form_container
+
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+
+    mock_page = AsyncMock()
+    mock_page.url = "https://unknown-ats.com/apply"
+
+    empty_locator = AsyncMock()
+    empty_locator.count = AsyncMock(return_value=0)
+    mock_page.locator = MagicMock(return_value=empty_locator)
+    mock_page.evaluate = AsyncMock(return_value=None)
+
+    strategy = get_strategy("generic")
+    result = await resolve_form_container(mock_page, strategy, db)
+    assert result is None
