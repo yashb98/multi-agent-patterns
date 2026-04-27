@@ -92,6 +92,51 @@ class TestNoMatch:
         assert semantic_option_match("yes", []) is None
 
 
+class TestOptionsAwareMapping:
+    """Test that seed_mapping resolves constrained fields via semantic matching."""
+
+    def test_seed_mapping_resolves_gender_dropdown(self):
+        from jobpulse.form_engine.field_mapper import seed_mapping
+
+        fields = [
+            {"label": "Gender", "type": "select", "options": ["Man", "Woman", "Non-binary", "Prefer not to say"]},
+        ]
+        profile = {"gender": "male"}
+        custom_answers = {}
+        mapping, unresolved = seed_mapping(fields, profile, custom_answers)
+        assert mapping.get("Gender") == "Man"
+        assert len(unresolved) == 0
+
+    def test_seed_mapping_resolves_salary_range(self):
+        from jobpulse.form_engine.field_mapper import seed_mapping
+
+        fields = [
+            {"label": "Desired Salary", "type": "select", "options": [
+                "£20,000 - £30,000", "£30,000 - £40,000", "£40,000 - £50,000",
+            ]},
+        ]
+        profile = {}
+        custom_answers = {"desired salary": "35000"}
+        mapping, unresolved = seed_mapping(fields, profile, custom_answers)
+        assert mapping.get("Desired Salary") == "£30,000 - £40,000"
+
+    def test_seed_mapping_applies_normalize_label(self):
+        """Strategy.normalize_label() should strip '(Required)' before lookup."""
+        from jobpulse.form_engine.field_mapper import seed_mapping
+        from jobpulse.ats_adapters.strategy import get_strategy
+
+        fields = [
+            {"label": "First Name (Required)", "type": "text"},
+        ]
+        profile = {"first_name": "Yash"}
+        custom_answers = {}
+        strategy = get_strategy("workday")
+        mapping, unresolved = seed_mapping(
+            fields, profile, custom_answers, strategy=strategy,
+        )
+        assert mapping.get("First Name (Required)") == "Yash"
+
+
 class TestCheckboxIntent:
     def test_privacy_consent_check(self):
         from jobpulse.form_engine.semantic_matcher import checkbox_intent
