@@ -337,3 +337,40 @@ class TestLabelMappingPersistence:
         assert filler._domain_field_mappings["country"] == "location"
         assert filler._domain_field_mappings["first name"] == "first_name"
         assert filler._domain_field_mappings["email"] == "email"
+
+
+class TestTimingInstrumentation:
+    def test_timing_stored_and_averaged(self, seeded_exp_db):
+        """T8: store_timing records and get_timing returns running averages."""
+        seeded_exp_db.store_timing(
+            "job-boards.greenhouse.io",
+            hydration_ms=150, fill_ms=3000, transition_ms=800,
+        )
+        seeded_exp_db.store_timing(
+            "job-boards.greenhouse.io",
+            hydration_ms=250, fill_ms=5000, transition_ms=1200,
+        )
+        timing = seeded_exp_db.get_timing("job-boards.greenhouse.io")
+        assert timing is not None
+        assert timing["sample_count"] == 2
+        assert timing["avg_hydration_ms"] == (150 + 250) // 2
+        assert timing["avg_fill_ms"] == (3000 + 5000) // 2
+        assert timing["avg_transition_ms"] == (800 + 1200) // 2
+
+
+class TestSuccessNeverOverwrittenByFailure:
+    def test_success_preserved_when_failure_recorded(self, seeded_exp_db):
+        """T9: Existing success record not overwritten by failure."""
+        exp_before = seeded_exp_db.lookup("linkedin.com")
+        assert exp_before["success"] == 1
+        old_count = exp_before["apply_count"]
+
+        seeded_exp_db.record(
+            domain="linkedin.com", platform="linkedin", adapter="extension",
+            pages_filled=0, field_types=[], screening_questions=[],
+            time_seconds=5.0, success=False,
+        )
+
+        exp_after = seeded_exp_db.lookup("linkedin.com")
+        assert exp_after["success"] == 1
+        assert exp_after["apply_count"] == old_count + 1

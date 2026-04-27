@@ -1242,6 +1242,7 @@ class NativeFormFiller:
         t0 = time.monotonic()
         _prev_fingerprint = ""
         _stuck_count = 0
+        page_timings_list: list[tuple[int, int, int]] = []
 
         def _result(base: dict) -> dict:
             base.setdefault("field_types", seen_field_types)
@@ -1262,6 +1263,17 @@ class NativeFormFiller:
                         self._fe_db.store_container(page_url, self._container_selector)
                 except Exception:
                     pass
+            if page_timings_list and self._fe_db:
+                _page_url = getattr(self._page, "url", "") or ""
+                if _page_url:
+                    avg_h = sum(h for h, _, _ in page_timings_list) // len(page_timings_list)
+                    avg_f = sum(f for _, f, _ in page_timings_list) // len(page_timings_list)
+                    transitions = [t for _, _, t in page_timings_list if t > 0]
+                    avg_t = sum(transitions) // len(transitions) if transitions else 0
+                    try:
+                        self._fe_db.store_timing(_page_url, avg_h, avg_f, avg_t)
+                    except Exception:
+                        pass
             return base
 
         page_url = getattr(self._page, 'url', '') or ''
@@ -1269,8 +1281,10 @@ class NativeFormFiller:
         for page_num in range(1, MAX_FORM_PAGES + 1):
             await self._dismiss_stale_dialogs()
 
-            # 1. Scan fields
+            # 1. Scan fields (measure hydration time)
+            t_hydration = time.monotonic()
             fields = await self._scan_fields()
+            hydration_ms = int((time.monotonic() - t_hydration) * 1000)
 
             _cur_fingerprint = self._fingerprint_fields(fields)
             if _cur_fingerprint == _prev_fingerprint and page_num > 1:
@@ -1563,22 +1577,14 @@ class NativeFormFiller:
                 total_fill_failures.extend(final_failed_labels)
 
             # 8. Anti-detection timing + timing measurement
-            page_fill_ms = int((time.monotonic() - t0) * 1000) if page_num == 1 else None
-            if page_fill_ms is not None:
-                try:
-                    from jobpulse.form_experience_db import FormExperienceDB
-                    FormExperienceDB().store_timing(
-                        page_url,
-                        hydration_ms=0,
-                        fill_ms=page_fill_ms,
-                        transition_ms=0,
-                    )
-                except Exception:
-                    pass
+            page_fill_ms = int((time.monotonic() - t_hydration) * 1000)
 
             page_delay = _get_adaptive_page_delay(platform, self._timing_data)
             if page_delay > 0:
                 await asyncio.sleep(page_delay * random.uniform(0.8, 1.2))
+
+            transition_ms = int((time.monotonic() - t_hydration) * 1000) - page_fill_ms if page_num > 1 else 0
+            page_timings_list.append((hydration_ms, page_fill_ms, transition_ms))
 
             # 9. Pre-submit review — SKIP for known domains
             if await self._is_submit_page():
