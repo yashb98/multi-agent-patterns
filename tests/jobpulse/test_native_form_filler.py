@@ -785,24 +785,24 @@ async def test_map_fields_skips_file_fields():
 
 @pytest.mark.asyncio
 async def test_map_fields_includes_options():
-    """Text field options are passed in the prompt."""
+    """Text field options are passed in the LLM prompt."""
     from jobpulse.form_engine.field_mapper import map_fields
 
     fields = [
         {"label": "Preferred Location", "type": "text", "options": ["USA", "UK"], "value": ""},
     ]
 
-    mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = '{"Preferred Location": "UK"}'
+    captured_prompt = {}
 
-    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
-        mock_openai.return_value.chat.completions.create.return_value = mock_response
+    def fake_cognitive_llm_call(*, task, domain, stakes):
+        captured_prompt["task"] = task
+        return '{"Preferred Location": "UK"}'
+
+    with patch("shared.agents.cognitive_llm_call", side_effect=fake_cognitive_llm_call):
         result, _ = await map_fields("", fields, {}, {}, "greenhouse", False, "")
 
     assert result == {"Preferred Location": "UK"}
-    prompt = mock_openai.return_value.chat.completions.create.call_args[1]["messages"][0]["content"]
-    assert "USA" in prompt
+    assert "USA" in captured_prompt["task"]
 
 
 @pytest.mark.asyncio
@@ -842,15 +842,18 @@ async def test_screen_questions_basic():
         {"label": "Expected salary", "type": "text"},
     ]
 
-    mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = (
-        '{"Are you authorized to work in the UK?": "Yes", "Expected salary": "50000"}'
-    )
+    def fake_answer(question, field=None, job_context=None):
+        answers = {
+            "Are you authorized to work in the UK?": "Yes",
+            "Expected salary": "50000",
+        }
+        return {"answer": answers.get(question, ""), "confidence": 1.0, "source": "mock"}
 
-    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
-        mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result, _ = await screen_questions(unresolved, "SWE at Acme", None, "")
+    with patch("jobpulse.screening_pipeline.ScreeningPipeline") as MockPipeline:
+        MockPipeline.return_value.answer = fake_answer
+        result, _ = await screen_questions(
+            unresolved, {"title": "SWE at Acme"}, None, "",
+        )
 
     assert result["Are you authorized to work in the UK?"] == "Yes"
     assert result["Expected salary"] == "50000"
@@ -865,16 +868,20 @@ async def test_screen_questions_includes_options():
          "options": ["0-1", "2-3", "4-5", "6+"]},
     ]
 
-    mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = '{"Years of experience": "2-3"}'
+    captured_fields = []
 
-    with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
-        mock_openai.return_value.chat.completions.create.return_value = mock_response
-        result, _ = await screen_questions(unresolved, "Data Analyst", None, "")
+    def fake_answer(question, field=None, job_context=None):
+        captured_fields.append(field)
+        return {"answer": "2-3", "confidence": 1.0, "source": "mock"}
 
-    prompt = mock_openai.return_value.chat.completions.create.call_args[1]["messages"][0]["content"]
-    assert "0-1" in prompt
+    with patch("jobpulse.screening_pipeline.ScreeningPipeline") as MockPipeline:
+        MockPipeline.return_value.answer = fake_answer
+        result, _ = await screen_questions(
+            unresolved, {"title": "Data Analyst"}, None, "",
+        )
+
+    assert result["Years of experience"] == "2-3"
+    assert captured_fields[0]["options"] == ["0-1", "2-3", "4-5", "6+"]
 
 
 # ── review_form (LLM Call 3) ──
@@ -1622,6 +1629,13 @@ async def test_stuck_detection_aborts_after_two_identical_pages():
         {"type": "email", "label": "Email", "locator": MagicMock()},
     ]
 
+    mock_fe_db = MagicMock()
+    mock_fe_db.return_value.get_timing.return_value = None
+    mock_fe_db.return_value.get_container.return_value = None
+    mock_fe_db.return_value.lookup.return_value = None
+    mock_fe_db.return_value.get_field_mappings.return_value = {}
+    mock_fe_db.normalize_domain.return_value = "example.com"
+
     with patch.object(filler, "_scan_fields", new_callable=AsyncMock, return_value=same_fields), \
          patch.object(filler, "_click_navigation", new_callable=AsyncMock, return_value="next"), \
          patch.object(filler, "_is_confirmation_page", new_callable=AsyncMock, return_value=False), \
@@ -1633,7 +1647,7 @@ async def test_stuck_detection_aborts_after_two_identical_pages():
          patch("jobpulse.native_form_filler.upload_files", new_callable=AsyncMock), \
          patch("jobpulse.native_form_filler.check_consent", new_callable=AsyncMock), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
-         patch("jobpulse.form_experience_db.FormExperienceDB", MagicMock()):
+         patch("jobpulse.form_experience_db.FormExperienceDB", mock_fe_db):
 
         result = await filler.fill(
             cv_path=None,
