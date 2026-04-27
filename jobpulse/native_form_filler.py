@@ -155,10 +155,14 @@ class NativeFormFiller:
                 return
             db = FormExperienceDB()
             self._domain_field_mappings = db.get_field_mappings(url)
+            global_mappings = db.get_field_mappings("_global")
+            for label, key in global_mappings.items():
+                self._domain_field_mappings.setdefault(label, key)
             if self._domain_field_mappings:
-                logger.info("Loaded %d domain-specific field mappings for %s",
+                logger.info("Loaded %d field mappings for %s (%d global)",
                             len(self._domain_field_mappings),
-                            FormExperienceDB.normalize_domain(url))
+                            FormExperienceDB.normalize_domain(url),
+                            len(global_mappings))
         except Exception as exc:
             logger.debug("Could not load domain field mappings: %s", exc)
 

@@ -729,7 +729,12 @@ _FIELD_LABEL_TO_PROFILE_KEY: dict[str, str] = dict(_SEED_LABELS)
 _build_option_aliases = build_option_aliases
 _ensure_label_db = lambda: None  # No-op — LabelMappingStore auto-loads
 _fuzzy_label_to_profile_key = fuzzy_label_to_profile_key
-_persist_label_mapping = lambda label, key: None  # No-op in old API
+def _persist_label_mapping(label: str, profile_key: str) -> None:
+    try:
+        from jobpulse.form_experience_db import FormExperienceDB
+        FormExperienceDB().save_field_mappings("_global", {label: profile_key})
+    except Exception:
+        pass
 _profile_prompt_json = profile_prompt_json
 _screening_prompt_background = screening_prompt_background
 _screening_prompt_profile = screening_prompt_profile

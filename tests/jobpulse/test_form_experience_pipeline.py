@@ -10,6 +10,7 @@ import sqlite3
 import pytest
 
 from jobpulse.form_experience_db import FormExperienceDB
+from jobpulse.native_form_filler import NativeFormFiller
 
 
 @pytest.fixture
@@ -291,3 +292,48 @@ class TestValidateAgainstLive:
         )
         assert result["trusted"] is True
         assert result["match_ratio"] >= 0.8
+
+
+class TestLabelMappingPersistence:
+    def test_persist_label_mapping_writes_to_global(self, tmp_path, monkeypatch):
+        """T7: _persist_label_mapping stores under _global domain."""
+        db_path = str(tmp_path / "form_experience.db")
+        db = FormExperienceDB(db_path)
+
+        monkeypatch.setattr(
+            "jobpulse.form_experience_db._DEFAULT_DB", db_path,
+        )
+
+        from jobpulse.form_engine.field_resolver import _persist_label_mapping
+
+        _persist_label_mapping("first name", "first_name")
+        _persist_label_mapping("last name", "last_name")
+        _persist_label_mapping("email address", "email")
+
+        mappings = db.get_field_mappings("_global")
+        assert mappings["first name"] == "first_name"
+        assert mappings["last name"] == "last_name"
+        assert mappings["email address"] == "email"
+
+    def test_global_mappings_loaded_by_native_filler(self, tmp_path, monkeypatch):
+        """T7b: NativeFormFiller loads _global mappings in addition to domain-specific."""
+        db_path = str(tmp_path / "form_experience.db")
+        db = FormExperienceDB(db_path)
+        db.save_field_mappings("_global", {"first name": "first_name", "email": "email"})
+        db.save_field_mappings("greenhouse.io", {"country": "location"})
+
+        monkeypatch.setattr(
+            "jobpulse.form_experience_db._DEFAULT_DB", db_path,
+        )
+
+        from unittest.mock import MagicMock
+        mock_page = MagicMock()
+        mock_page.url = "https://greenhouse.io/jobs/apply"
+        filler = NativeFormFiller.__new__(NativeFormFiller)
+        filler._page = mock_page
+        filler._domain_field_mappings = {}
+        filler._load_domain_field_mappings()
+
+        assert filler._domain_field_mappings["country"] == "location"
+        assert filler._domain_field_mappings["first name"] == "first_name"
+        assert filler._domain_field_mappings["email"] == "email"
