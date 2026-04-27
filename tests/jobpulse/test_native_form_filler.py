@@ -1648,3 +1648,54 @@ async def test_stuck_detection_aborts_after_two_identical_pages():
     assert "Stuck" in result["error"]
 
 
+# ── Adaptive timing ──
+
+
+def test_platform_min_page_time_dict_removed():
+    """_PLATFORM_MIN_PAGE_TIME should no longer exist."""
+    import jobpulse.native_form_filler as mod
+    assert not hasattr(mod, "_PLATFORM_MIN_PAGE_TIME")
+
+
+def test_risk_delay_multiplier_removed():
+    """NativeFormFiller should not have _risk_delay_multiplier after init."""
+    import jobpulse.native_form_filler as mod
+    from unittest.mock import AsyncMock, MagicMock
+    page = AsyncMock()
+    driver = MagicMock()
+    filler = mod.NativeFormFiller(page, driver)
+    assert not hasattr(filler, "_risk_delay_multiplier")
+
+
+def test_fast_fill_env_var_skips_delays(monkeypatch):
+    """When FAST_FILL=true, _get_adaptive_page_delay returns 0."""
+    monkeypatch.setenv("FAST_FILL", "true")
+    from jobpulse.native_form_filler import _get_adaptive_page_delay
+    delay = _get_adaptive_page_delay("workday", None)
+    assert delay == 0.0
+
+
+def test_adaptive_delay_uses_measured_timing():
+    """When timing_data is available, uses measured values."""
+    from jobpulse.native_form_filler import _get_adaptive_page_delay
+    timing = {"avg_fill_ms": 10000}
+    delay = _get_adaptive_page_delay("workday", timing)
+    assert delay == 11.0  # 10000/1000 * 1.1
+
+
+def test_adaptive_delay_minimum_3_seconds():
+    """Minimum delay is 3 seconds even with fast measured timing."""
+    from jobpulse.native_form_filler import _get_adaptive_page_delay
+    timing = {"avg_fill_ms": 1000}
+    delay = _get_adaptive_page_delay("workday", timing)
+    assert delay == 3.0  # max(1.1, 3.0)
+
+
+def test_adaptive_delay_defaults_by_platform():
+    """Without timing data, falls back to platform defaults."""
+    from jobpulse.native_form_filler import _get_adaptive_page_delay
+    assert _get_adaptive_page_delay("workday", None) == 8.0
+    assert _get_adaptive_page_delay("linkedin", None) == 3.0
+    assert _get_adaptive_page_delay("unknown", None) == 5.0
+
+

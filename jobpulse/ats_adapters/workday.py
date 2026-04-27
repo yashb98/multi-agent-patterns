@@ -55,8 +55,7 @@ class WorkdayStrategy(BasePlatformStrategy):
         return (3, 20)
 
     def wait_for_form_hydrated_ms(self) -> int:
-        # Workday is notoriously slow
-        return 15000
+        return 10000
 
     def known_widget_libraries(self) -> list[str]:
         # Workday uses its own custom combobox component

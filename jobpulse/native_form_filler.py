@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import random
 import re
 import time
@@ -75,16 +76,28 @@ __all__ = [
     "_screening_prompt_profile",
 ]
 
-_PLATFORM_MIN_PAGE_TIME: dict[str, float] = {
-    "workday": 45.0,
-    "linkedin": 3.0,
-    "greenhouse": 5.0,
-    "lever": 5.0,
-    "indeed": 10.0,
-    "generic": 5.0,
-}
-
 MAX_FORM_PAGES = 20
+
+
+def _get_adaptive_page_delay(platform: str, timing_data: dict | None) -> float:
+    """Return adaptive page delay based on measured timing data.
+    Returns 0 when FAST_FILL=true (Claude Code assisted mode).
+    """
+    if os.environ.get("FAST_FILL"):
+        return 0.0
+
+    if timing_data:
+        measured = timing_data.get("avg_fill_ms", 5000) / 1000.0
+        return max(measured * 1.1, 3.0)
+
+    _STRATEGY_DEFAULTS = {
+        "workday": 8.0,
+        "linkedin": 3.0,
+        "greenhouse": 5.0,
+        "lever": 5.0,
+        "indeed": 8.0,
+    }
+    return _STRATEGY_DEFAULTS.get(platform, 5.0)
 
 
 class NativeFormFiller:
@@ -102,7 +115,6 @@ class NativeFormFiller:
         self._cached_screening: dict[str, str] = {}
         self._iframe_resolved: bool = False
         self._strategy: Any = None
-        self._risk_delay_multiplier: float = 1.0
 
     # ── Platform Strategy + Domain Knowledge ──
 
@@ -257,6 +269,64 @@ class NativeFormFiller:
         parts = sorted(f"{f.get('type', '')}:{f.get('label', '')}" for f in fields)
         return "|".join(parts)
 
+    async def _try_cognitive_unstuck(
+        self, fields: list[dict], platform: str, page_url: str
+    ) -> bool:
+        """Use cognitive reasoning to escape a stuck form page.
+
+        Called when the same field fingerprint appears for consecutive pages.
+        Returns True if the cognitive engine suggested a viable next action.
+        """
+        try:
+            from shared.cognitive import get_cognitive_engine
+
+            engine = get_cognitive_engine("form_filler")
+            if not engine:
+                return False
+
+            field_summary = "\n".join(
+                f"- {f.get('label', 'unknown')} ({f.get('type', 'unknown')})"
+                for f in fields[:10]
+            )
+            task = (
+                f"Platform: {platform}\n"
+                f"URL: {page_url}\n"
+                f"Current fields:\n{field_summary}\n\n"
+                "The form appears stuck — the same page keeps appearing after clicking Next. "
+                "What is the most likely cause and what single action should be taken to proceed? "
+                "Answer in ONE sentence with a concrete action."
+            )
+            result = engine.think_sync(
+                task=task,
+                domain="form_navigation",
+                stakes="medium",
+            )
+            if result and result.score >= 5.0:
+                suggestion = result.answer.strip()
+                logger.info("Cognitive unstuck suggestion (score=%.1f): %s", result.score, suggestion[:200])
+                # Emit an optimization signal so the system learns
+                try:
+                    from shared.optimization import get_optimization_engine
+
+                    get_optimization_engine().emit(
+                        signal_type="adaptation",
+                        source_loop="native_form_filler",
+                        domain=platform,
+                        agent_name="form_filler",
+                        payload={
+                            "param": "stuck_recovery",
+                            "old_value": "abort",
+                            "new_value": suggestion,
+                            "reason": f"Cognitive unstuck for {platform}",
+                        },
+                    )
+                except Exception:
+                    pass
+                return True
+        except Exception as exc:
+            logger.debug("Cognitive unstuck failed: %s", exc)
+        return False
+
     # ── Human-Like Behavior (delegates to driver) ──
 
     async def _smart_scroll(self, el: Any) -> None:
@@ -312,7 +382,8 @@ class NativeFormFiller:
 
     async def _fill_by_label(self, label: str, value: str) -> dict:
         page = self._page
-        await asyncio.sleep(_get_field_gap(label) * self._risk_delay_multiplier)
+        if not os.environ.get("FAST_FILL"):
+            await asyncio.sleep(_get_field_gap(label))
 
         special_result = await self._fill_special_widget(label, value)
         if special_result is not None:
@@ -386,8 +457,10 @@ class NativeFormFiller:
         fill_value = _canonicalize_country_value(label, value, store=self._profile_store)
         options_seen: list[str] = []
         expected_value = fill_value
+        fill_technique = "direct_fill"
 
         if tag == "select":
+            fill_technique = "select_option"
             selected = False
             options = await el.locator("option").all_text_contents()
             options_stripped = [o.strip() for o in options]
@@ -444,12 +517,24 @@ class NativeFormFiller:
                 if override_result is not None:
                     return {"success": True, "value_set": override_result, "value_verified": True}
             fill_value = _canonicalize_country_value(label, fill_value, store=self._profile_store)
+            stored_technique = None
+            try:
+                from jobpulse.form_experience_db import FormExperienceDB
+                page_url = getattr(self._page, "url", "") or ""
+                if page_url:
+                    techniques = FormExperienceDB().get_fill_techniques(page_url)
+                    stored_technique = techniques.get(label, {}).get("technique")
+            except Exception:
+                pass
             from jobpulse.form_scanner import (
                 best_option_match as ax_best_match,
                 best_range_match,
                 scan_combobox_options,
             )
-            ax_options = await scan_combobox_options(page, label)
+            if stored_technique == "combobox_type_to_search":
+                ax_options = []
+            else:
+                ax_options = await scan_combobox_options(page, label)
             if ax_options:
                 options_seen = ax_options
                 matched_option = ax_best_match(
@@ -463,6 +548,7 @@ class NativeFormFiller:
                     except (ValueError, TypeError):
                         pass
                 if matched_option:
+                    fill_technique = "combobox_prescanned_match"
                     expected_value = matched_option
                     await el.click(timeout=3000)
                     await asyncio.sleep(0.3)
@@ -475,7 +561,10 @@ class NativeFormFiller:
                         await el.press("ArrowDown")
                         await asyncio.sleep(0.2)
                         await el.press("Enter")
-            else:
+            if not ax_options or not matched_option:
+                fill_technique = "combobox_type_to_search"
+                await el.click(timeout=3000)
+                await asyncio.sleep(0.3)
                 await el.fill("")
                 await el.type(fill_value, delay=80)
                 await asyncio.sleep(1.2)
@@ -533,6 +622,23 @@ class NativeFormFiller:
             or norm_expected in norm_actual
             or norm_actual in norm_expected
         )
+
+        if verified:
+            try:
+                from jobpulse.form_experience_db import FormExperienceDB
+                page_url = getattr(self._page, "url", "") or ""
+                if page_url:
+                    FormExperienceDB().record_fill_technique(
+                        domain_or_url=page_url,
+                        field_label=label,
+                        field_type=f"{tag}:{input_type or role}",
+                        technique=fill_technique,
+                        value_used=actual or fill_value,
+                        success=True,
+                    )
+            except Exception:
+                pass
+
         return {
             "success": True,
             "value_set": fill_value,
@@ -540,6 +646,7 @@ class NativeFormFiller:
             "actual_value": actual,
             "options_seen": options_seen,
             "expected_value": expected_value,
+            "fill_technique": fill_technique,
         }
 
     async def _fill_special_widget(self, label: str, value: str) -> dict[str, Any] | None:
@@ -881,6 +988,47 @@ class NativeFormFiller:
             "successfully submitted",
         ))
 
+    async def _dismiss_stale_dialogs(self) -> None:
+        """Dismiss LinkedIn 'Save this application?' and similar blocking overlays."""
+        page = self._page
+        # Check for the overlay container first — if it exists, we MUST dismiss it
+        overlay = page.locator('[data-test-easy-apply-discard-confirmation]')
+        try:
+            if await overlay.count():
+                logger.info("Detected LinkedIn discard-confirmation overlay — dismissing")
+                # Click Discard inside the overlay with force to bypass pointer-events
+                discard_btn = overlay.locator('button:has-text("Discard")')
+                if await discard_btn.count():
+                    await discard_btn.first.click(force=True)
+                    await asyncio.sleep(1)
+                    logger.info("Dismissed discard-confirmation overlay via Discard button")
+                    return
+                # Fallback: any button with "discard" in the overlay
+                any_btn = overlay.get_by_role("button").last
+                if await any_btn.count():
+                    await any_btn.click(force=True)
+                    await asyncio.sleep(1)
+                    logger.info("Dismissed discard-confirmation overlay via last button")
+                    return
+        except Exception as exc:
+            logger.debug("Overlay dismiss attempt failed: %s", exc)
+
+        # Broader selectors for other dialog types
+        for selector in (
+            'button[data-control-name="discard_application_confirm_btn"]',
+            'div[data-test-modal-container] button:has-text("Discard")',
+            'button:has-text("Discard")',
+        ):
+            try:
+                btn = page.locator(selector)
+                if await btn.count() and await btn.first.is_visible():
+                    await btn.first.click(force=True)
+                    await asyncio.sleep(0.5)
+                    logger.info("Dismissed stale dialog via selector: %s", selector)
+                    return
+            except Exception as exc:
+                logger.debug("Dialog dismiss selector %s failed: %s", selector, exc)
+
     async def _is_submit_page(self) -> bool:
         for name in ["Submit Application", "Submit", "Apply"]:
             btn = self._page.get_by_role("button", name=name, exact=False)
@@ -974,14 +1122,14 @@ class NativeFormFiller:
         else:
             self._correction_warning = ""
 
-        # Risk-based delay multiplier from scan_learning
-        self._risk_delay_multiplier = 1.0
-        if hints:
-            risk = hints.get("risk_level", "low")
-            if risk == "medium":
-                self._risk_delay_multiplier = 1.5
-            elif risk == "high":
-                self._risk_delay_multiplier = 2.5
+        self._timing_data = None
+        try:
+            from jobpulse.form_experience_db import FormExperienceDB
+            url = getattr(self._page, 'url', '') or ''
+            if url:
+                self._timing_data = FormExperienceDB().get_timing(url)
+        except Exception:
+            self._timing_data = None
 
         try:
             from shared.profile_store import get_profile_store
@@ -1026,6 +1174,8 @@ class NativeFormFiller:
 
         await handle_modal_cv_upload(self._page, cv_path)
 
+        await self._dismiss_stale_dialogs()
+
         seen_field_types: list[str] = []
         seen_screening: list[str] = []
         all_agent_mappings: dict[str, str] = {}
@@ -1053,6 +1203,8 @@ class NativeFormFiller:
         page_url = getattr(self._page, 'url', '') or ''
 
         for page_num in range(1, MAX_FORM_PAGES + 1):
+            await self._dismiss_stale_dialogs()
+
             # 1. Scan fields
             fields = await self._scan_fields()
 
@@ -1063,6 +1215,14 @@ class NativeFormFiller:
                     logger.warning(
                         "Stuck: identical page fingerprint for %d consecutive pages", _stuck_count + 1,
                     )
+                    # Cognitive fallback: try to reason our way out of the stuck state
+                    cognitive_unstuck = await self._try_cognitive_unstuck(
+                        fields, platform, page_url
+                    )
+                    if cognitive_unstuck:
+                        logger.info("Cognitive unstuck succeeded — continuing fill")
+                        _stuck_count = 0
+                        continue
                     return _result({"success": False, "error": f"Stuck on identical page (page {page_num})"})
                 logger.info(
                     "Page %d fingerprint matches previous — possible stuck (count=%d)", page_num, _stuck_count,
@@ -1117,13 +1277,13 @@ class NativeFormFiller:
                         if lbl not in fields_by_label:
                             fields_by_label[lbl] = {"label": lbl, "type": "text"}
 
-            # 4. Screening: DB cache → pattern → LLM
+            # 4. Screening: DB cache → pattern → V2 pipeline → LLM
             unresolved = [
                 f for f in fields
                 if f["label"] not in mapping and f["type"] != "file"
             ]
             if unresolved:
-                from jobpulse.screening_answers import try_instant_answer
+                from jobpulse.screening_answers import try_instant_answer, try_screening_v2
                 _job_ctx_raw = custom_answers.get("_job_context")
                 _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
                 still_unresolved = []
@@ -1144,8 +1304,23 @@ class NativeFormFiller:
                             seen_screening.append(f"{f['label']}:{cached_text}")
                         else:
                             still_unresolved.append(f)
+                        continue
+
+                    # V2 pipeline: semantic cache → intent → regex → rules → LLM
+                    v2_answer = try_screening_v2(
+                        f["label"], _job_ctx,
+                        field={"type": f.get("type"), "options": f.get("options")},
+                    )
+                    if v2_answer:
+                        v2_text = str(v2_answer).strip()
+                        if v2_text:
+                            mapping[f["label"]] = v2_text
+                            seen_screening.append(f"{f['label']}:{v2_text}")
+                        else:
+                            still_unresolved.append(f)
                     else:
                         still_unresolved.append(f)
+
                 if still_unresolved:
                     screening, s_calls = await screen_questions(
                         still_unresolved, custom_answers.get("_job_context"),
@@ -1178,6 +1353,17 @@ class NativeFormFiller:
                             "result": result,
                         })
                 except Exception as fill_err:
+                    err_str = str(fill_err).lower()
+                    if "intercept" in err_str or "pointer" in err_str:
+                        logger.warning("Overlay blocking '%s' — dismissing and retrying", label)
+                        await self._dismiss_stale_dialogs()
+                        try:
+                            result = await self._fill_by_label(label, value_text)
+                            if result.get("success") and result.get("value_verified", True):
+                                total_fields_filled += 1
+                                continue
+                        except Exception:
+                            pass
                     logger.warning("Field fill failed for '%s': %s", label, fill_err)
                     pending_retries.append({
                         "field": fields_by_label.get(label, {"label": label, "type": "text"}),
@@ -1199,8 +1385,8 @@ class NativeFormFiller:
             # 7. Consent boxes
             await check_consent(self._page, self._get_accessible_name)
 
-            # 7b. Second-chance recovery — LLM only for UNKNOWN domains
-            if pending_retries and not self._known_domain:
+            # 7b. Second-chance recovery — LLM for all domains, vision only for unknown
+            if pending_retries:
                 retry_candidates = [
                     item for item in pending_retries
                     if item["field"].get("type") != "checkbox"
@@ -1256,16 +1442,24 @@ class NativeFormFiller:
 
                 fill_failures.extend(final_failed_labels)
                 total_fill_failures.extend(final_failed_labels)
-            elif pending_retries and self._known_domain:
-                total_fill_failures.extend(
-                    item["field"]["label"] for item in pending_retries
-                )
-                logger.info("FAST PATH: %d fields failed fill (no LLM recovery on known domain)",
-                            len(pending_retries))
 
-            # 8. Anti-detection timing
-            min_time = _PLATFORM_MIN_PAGE_TIME.get(platform, 5.0)
-            await asyncio.sleep(min_time * random.uniform(0.8, 1.2))
+            # 8. Anti-detection timing + timing measurement
+            page_fill_ms = int((time.monotonic() - t0) * 1000) if page_num == 1 else None
+            if page_fill_ms is not None:
+                try:
+                    from jobpulse.form_experience_db import FormExperienceDB
+                    FormExperienceDB().store_timing(
+                        page_url,
+                        hydration_ms=0,
+                        fill_ms=page_fill_ms,
+                        transition_ms=0,
+                    )
+                except Exception:
+                    pass
+
+            page_delay = _get_adaptive_page_delay(platform, self._timing_data)
+            if page_delay > 0:
+                await asyncio.sleep(page_delay * random.uniform(0.8, 1.2))
 
             # 9. Pre-submit review — SKIP for known domains
             if await self._is_submit_page():
