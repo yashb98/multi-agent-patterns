@@ -240,3 +240,54 @@ class TestPostApplyHookFailurePath:
         assert len(failures) == 2
         labels = {f["field_label"] for f in failures}
         assert labels == {"Sponsorship status", "Disability"}
+
+
+class TestCrossPlatformTechniques:
+    def test_platform_fill_techniques_returns_cross_domain(self, seeded_exp_db):
+        """T4: get_platform_fill_techniques returns techniques from all greenhouse domains."""
+        techniques = seeded_exp_db.get_platform_fill_techniques("greenhouse")
+        assert len(techniques) > 0
+        labels = [t["field_label"] for t in techniques]
+        assert "Country" in labels
+        assert "First Name" in labels
+        technique_map = {t["field_label"]: t["technique"] for t in techniques}
+        assert technique_map["Country"] == "combobox_prescanned_match"
+
+    def test_platform_fill_techniques_sorted_by_apply_count(self, seeded_exp_db):
+        """T4b: Techniques are sorted by apply_count DESC (most used first)."""
+        techniques = seeded_exp_db.get_platform_fill_techniques("linkedin")
+        assert len(techniques) > 0
+        counts = [t["apply_count"] for t in techniques]
+        assert counts == sorted(counts, reverse=True)
+
+
+class TestValidateAgainstLive:
+    def test_trusted_when_fields_match(self, seeded_exp_db):
+        """T5: validate_against_live returns trusted when live matches stored."""
+        live_types = ["text:first_name", "text:last_name", "text:email",
+                      "combobox:country", "combobox:do_you_hold_the_right_to_work"]
+        result = seeded_exp_db.validate_against_live(
+            "job-boards.greenhouse.io", live_types,
+        )
+        assert result["trusted"] is True
+        assert result["match_ratio"] >= 0.8
+
+    def test_drift_detected_with_divergent_fields(self, seeded_exp_db):
+        """T6: validate_against_live detects drift when fields completely different."""
+        live_types = ["textarea:cover_letter", "file:portfolio", "radio:remote_preference"]
+        result = seeded_exp_db.validate_against_live(
+            "job-boards.greenhouse.io", live_types,
+        )
+        assert result["trusted"] is False
+        assert len(result["diverged_fields"]) > 0
+        assert result["match_ratio"] < 0.8
+
+    def test_partial_overlap_uses_threshold(self, seeded_exp_db):
+        """T5b: Partial overlap trusted if above 80% threshold."""
+        live_types = ["text:first_name", "text:last_name", "text:email",
+                      "combobox:country"]
+        result = seeded_exp_db.validate_against_live(
+            "job-boards.greenhouse.io", live_types,
+        )
+        assert result["trusted"] is True
+        assert result["match_ratio"] >= 0.8
