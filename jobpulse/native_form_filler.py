@@ -129,6 +129,8 @@ class NativeFormFiller:
         self._cached_screening: dict[str, str] = {}
         self._iframe_resolved: bool = False
         self._strategy: Any = None
+        self._fe_db: Any = None
+        self._container_selector: str | None = None
 
     # ── Platform Strategy + Domain Knowledge ──
 
@@ -260,7 +262,11 @@ class NativeFormFiller:
     # ── Field Scanning (delegates to field_scanner) ──
 
     async def _scan_fields(self) -> list[dict]:
-        return await scan_fields(self._page)
+        return await scan_fields(
+            self._page,
+            strategy=self._strategy,
+            form_experience_db=self._fe_db,
+        )
 
     # ── Auto-Gotcha Learning ──
 
@@ -1163,6 +1169,20 @@ class NativeFormFiller:
             except Exception as exc:
                 logger.debug("Strategy pre_fill failed: %s", exc)
 
+        self._container_selector: str | None = None
+        self._fe_db = None
+        try:
+            from jobpulse.form_experience_db import FormExperienceDB
+            self._fe_db = FormExperienceDB()
+            from jobpulse.form_engine.field_scanner import resolve_form_container
+            self._container_selector = await resolve_form_container(
+                self._page, self._strategy, self._fe_db,
+            )
+            if self._container_selector:
+                logger.info("Form container resolved: %s", self._container_selector)
+        except Exception as exc:
+            logger.debug("Container resolution failed: %s", exc)
+
         self._load_platform_strategy(platform)
         await self._resolve_page_context()
 
@@ -1212,6 +1232,13 @@ class NativeFormFiller:
                 "failed_labels": total_fill_failures,
                 "llm_fallback_count": self._llm_fallback_count,
             }
+            if base.get("success") and self._container_selector and self._fe_db:
+                try:
+                    page_url = getattr(self._page, "url", "") or ""
+                    if page_url:
+                        self._fe_db.store_container(page_url, self._container_selector)
+                except Exception:
+                    pass
             return base
 
         page_url = getattr(self._page, 'url', '') or ''
