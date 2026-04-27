@@ -73,8 +73,8 @@ def post_apply_hook(
                 payload={"error": result.get("error", ""), "pages_reached": result.get("pages_filled", 0)},
                 session_id=f"fe_fail_{company}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("post_apply_hook: optimization signal failed: %s", exc)
         return
 
     notion_page_id = job_context.get("notion_page_id")

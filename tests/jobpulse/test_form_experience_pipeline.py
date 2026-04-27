@@ -155,7 +155,7 @@ class TestFailureRecording:
         assert stats["no_field"] == 2
         assert stats["blocked"] == 1
 
-    def test_negative_fill_technique_does_not_overwrite_success(self, seeded_exp_db):
+    def test_negative_fill_technique_overwrites_via_on_conflict(self, seeded_exp_db):
         """T2: Failed technique recorded — ON CONFLICT replaces the row (success=0).
         get_fill_techniques filters WHERE success=1, so Country is hidden after failure.
         """

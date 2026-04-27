@@ -656,10 +656,9 @@ class NativeFormFiller:
 
         if verified:
             try:
-                from jobpulse.form_experience_db import FormExperienceDB
                 page_url = getattr(self._page, "url", "") or ""
-                if page_url:
-                    FormExperienceDB().record_fill_technique(
+                if page_url and self._fe_db:
+                    self._fe_db.record_fill_technique(
                         domain_or_url=page_url,
                         field_label=label,
                         field_type=f"{tag}:{input_type or role}",
@@ -1214,10 +1213,9 @@ class NativeFormFiller:
 
         self._stored_exp = None
         try:
-            from jobpulse.form_experience_db import FormExperienceDB
             url = getattr(self._page, 'url', '') or ''
-            if url:
-                self._stored_exp = FormExperienceDB().lookup(url)
+            if url and self._fe_db:
+                self._stored_exp = self._fe_db.lookup(url)
         except Exception:
             pass
 
@@ -1323,6 +1321,7 @@ class NativeFormFiller:
                 seen_field_types.append(ft)
 
             if page_num == 1 and self._stored_exp and self._stored_exp.get("success") and self._fe_db:
+                from jobpulse.form_experience_db import FormExperienceDB as _FE
                 validation = self._fe_db.validate_against_live(
                     page_url, seen_field_types, live_page_count=None,
                 )
@@ -1330,7 +1329,7 @@ class NativeFormFiller:
                     self._known_domain = True
                     logger.info(
                         "FAST PATH: domain %s validated (%.0f%% match, %d prior applies)",
-                        FormExperienceDB.normalize_domain(page_url),
+                        _FE.normalize_domain(page_url),
                         validation["match_ratio"] * 100,
                         self._stored_exp.get("apply_count", 0),
                     )
@@ -1338,7 +1337,7 @@ class NativeFormFiller:
                     self._known_domain = False
                     logger.warning(
                         "DRIFT DETECTED on %s — match %.0f%%, diverged: %s. Using full LLM path.",
-                        FormExperienceDB.normalize_domain(page_url),
+                        _FE.normalize_domain(page_url),
                         validation["match_ratio"] * 100,
                         validation["diverged_fields"][:5],
                     )
@@ -1576,15 +1575,13 @@ class NativeFormFiller:
                 fill_failures.extend(final_failed_labels)
                 total_fill_failures.extend(final_failed_labels)
 
-            # 8. Anti-detection timing + timing measurement
-            page_fill_ms = int((time.monotonic() - t_hydration) * 1000)
+            # 8. Timing measurement + anti-detection delay
+            page_fill_ms = int((time.monotonic() - t_hydration) * 1000) - hydration_ms
+            page_timings_list.append((hydration_ms, page_fill_ms, 0))
 
             page_delay = _get_adaptive_page_delay(platform, self._timing_data)
             if page_delay > 0:
                 await asyncio.sleep(page_delay * random.uniform(0.8, 1.2))
-
-            transition_ms = int((time.monotonic() - t_hydration) * 1000) - page_fill_ms if page_num > 1 else 0
-            page_timings_list.append((hydration_ms, page_fill_ms, transition_ms))
 
             # 9. Pre-submit review — SKIP for known domains
             if await self._is_submit_page():
