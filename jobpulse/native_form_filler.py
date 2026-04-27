@@ -665,6 +665,20 @@ class NativeFormFiller:
                     )
             except Exception:
                 pass
+        else:
+            try:
+                page_url = getattr(self._page, "url", "") or ""
+                if page_url and fill_technique and self._fe_db:
+                    existing = self._fe_db.get_fill_techniques(page_url)
+                    if label not in existing:
+                        self._fe_db.record_fill_technique(
+                            domain_or_url=page_url, field_label=label,
+                            field_type=f"{tag}:{input_type or role}",
+                            technique=fill_technique, value_used=fill_value,
+                            success=False,
+                        )
+            except Exception:
+                pass
 
         return {
             "success": True,
