@@ -1269,6 +1269,15 @@ class NativeFormFiller:
                         logger.info("Cognitive unstuck succeeded — continuing fill")
                         _stuck_count = 0
                         continue
+                    if self._fe_db:
+                        try:
+                            self._fe_db.record_failure_reason(
+                                domain=page_url, platform=self._platform,
+                                failure_type="stuck_page", field_label="",
+                                details=f"Identical page fingerprint on page {page_num}",
+                            )
+                        except Exception:
+                            pass
                     return _result({"success": False, "error": f"Stuck on identical page (page {page_num})"})
                 logger.info(
                     "Page %d fingerprint matches previous — possible stuck (count=%d)", page_num, _stuck_count,
@@ -1482,6 +1491,19 @@ class NativeFormFiller:
                             continue
                     still_failing.append(item)
 
+                for item in still_failing:
+                    if self._fe_db:
+                        try:
+                            self._fe_db.record_failure_reason(
+                                domain=page_url, platform=self._platform,
+                                failure_type=_classify_fill_failure(item["result"]),
+                                field_label=item["field"]["label"],
+                                selector=item["field"].get("selector", ""),
+                                details=item["result"].get("error", ""),
+                            )
+                        except Exception:
+                            pass
+
                 # 7c. Vision recovery — SKIP for known domains
                 if still_failing and not self._known_domain:
                     vision_recovered, vr_calls = await recover_failed_fields_with_vision(
@@ -1505,6 +1527,17 @@ class NativeFormFiller:
                                 )
                                 continue
                         final_failed_labels.append(label)
+                        if self._fe_db:
+                            try:
+                                self._fe_db.record_failure_reason(
+                                    domain=page_url, platform=self._platform,
+                                    failure_type=_classify_fill_failure(item["result"]),
+                                    field_label=label,
+                                    selector=item["field"].get("selector", ""),
+                                    details=item["result"].get("error", ""),
+                                )
+                            except Exception:
+                                pass
                 else:
                     final_failed_labels = []
 
