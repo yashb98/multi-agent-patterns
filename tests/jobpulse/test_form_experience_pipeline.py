@@ -374,3 +374,28 @@ class TestSuccessNeverOverwrittenByFailure:
         exp_after = seeded_exp_db.lookup("linkedin.com")
         assert exp_after["success"] == 1
         assert exp_after["apply_count"] == old_count + 1
+
+
+class TestPlatformAggregate:
+    def test_greenhouse_aggregate_across_domains(self, seeded_exp_db):
+        """T10: get_platform_aggregate aggregates across job-boards.greenhouse.io
+        and job-boards.eu.greenhouse.io."""
+        agg = seeded_exp_db.get_platform_aggregate("greenhouse")
+        assert agg is not None
+        assert agg["observation_count"] == 2
+        assert agg["avg_pages"] == (2 + 1) / 2
+        assert agg["avg_time_seconds"] == round((94.0 + 32.2) / 2, 1)
+        assert "text:first_name" in agg["common_field_types"]
+        assert "combobox:country" in agg["common_field_types"]
+
+    def test_workday_aggregate_shows_high_variance(self, seeded_exp_db):
+        """T10b: Workday shows extreme time variance (Snowflake 20s vs Expedia 600s)."""
+        agg = seeded_exp_db.get_platform_aggregate("workday")
+        assert agg is not None
+        assert agg["observation_count"] == 2
+        assert agg["avg_time_seconds"] == round((20.0 + 600.0) / 2, 1)
+        assert agg["avg_pages"] == (1 + 5) / 2
+
+    def test_nonexistent_platform_returns_none(self, seeded_exp_db):
+        """T10c: Unknown platform returns None."""
+        assert seeded_exp_db.get_platform_aggregate("unknown_platform") is None
