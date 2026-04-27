@@ -45,8 +45,45 @@ def test_base_strategy_defaults():
         assert s.min_page_time == 5.0
         assert s.max_form_pages == 20
         assert s.extra_label_mappings() == {}
-        assert s.next_button_selectors() == []
+        assert s.next_page_selectors() == []
+        assert s.apply_button_selectors() == []
+        assert s.submit_selectors() == []
         assert s.screening_defaults() == {}
         assert s.field_fill_overrides() == {}
     finally:
         _STRATEGY_REGISTRY.pop("_test_defaults", None)
+
+
+def test_base_strategy_form_container_hint_returns_none():
+    strategy = get_strategy("generic")
+    assert strategy.form_container_hint() is None
+
+
+def test_base_strategy_expected_field_range_default():
+    strategy = get_strategy("generic")
+    assert strategy.expected_field_range() == (1, 30)
+
+
+def test_linkedin_strategy_form_container_hint():
+    strategy = get_strategy("linkedin")
+    assert strategy.form_container_hint() == ".jobs-easy-apply-modal"
+
+
+def test_linkedin_strategy_expected_field_range():
+    strategy = get_strategy("linkedin")
+    assert strategy.expected_field_range() == (3, 10)
+
+
+def test_workday_strategy_expected_field_range():
+    strategy = get_strategy("workday")
+    assert strategy.expected_field_range() == (3, 20)
+
+
+def test_greenhouse_strategy_form_container_hint():
+    strategy = get_strategy("greenhouse")
+    assert strategy.form_container_hint() == "#application"
+
+
+def test_greenhouse_strategy_expected_field_range():
+    strategy = get_strategy("greenhouse")
+    assert strategy.expected_field_range() == (3, 15)
