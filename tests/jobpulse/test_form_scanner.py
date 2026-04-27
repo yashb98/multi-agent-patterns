@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jobpulse.form_engine.field_scanner import validate_field_scan
 from jobpulse.form_scanner import (
     FormField,
     FormScanResult,
@@ -454,3 +455,46 @@ async def test_resolve_container_returns_none_when_all_fail(tmp_path):
     strategy = get_strategy("generic")
     result = await resolve_form_container(mock_page, strategy, db)
     assert result is None
+
+
+# ── validate_field_scan ──
+
+
+def test_validate_scan_too_many_fields():
+    fields = [{"label": f"field_{i}", "type": "text"} for i in range(35)]
+    from jobpulse.ats_adapters.strategy import get_strategy
+    strategy = get_strategy("linkedin")
+    result = validate_field_scan(fields, strategy)
+    assert not result["valid"]
+    assert result["reason"] == "too_many_fields"
+
+
+def test_validate_scan_zero_fields():
+    from jobpulse.ats_adapters.strategy import get_strategy
+    strategy = get_strategy("generic")
+    result = validate_field_scan([], strategy)
+    assert not result["valid"]
+    assert result["reason"] == "zero_fields"
+
+
+def test_validate_scan_excessive_duplicates():
+    fields = [{"label": "Name", "type": "text"}] * 5
+    from jobpulse.ats_adapters.strategy import get_strategy
+    strategy = get_strategy("generic")
+    result = validate_field_scan(fields, strategy)
+    assert not result["valid"]
+    assert result["reason"] == "duplicate_labels"
+
+
+def test_validate_scan_passes_normal_form():
+    fields = [
+        {"label": "First Name", "type": "text"},
+        {"label": "Last Name", "type": "text"},
+        {"label": "Email", "type": "text"},
+        {"label": "Phone", "type": "text"},
+        {"label": "Resume", "type": "file"},
+    ]
+    from jobpulse.ats_adapters.strategy import get_strategy
+    strategy = get_strategy("greenhouse")
+    result = validate_field_scan(fields, strategy)
+    assert result["valid"]

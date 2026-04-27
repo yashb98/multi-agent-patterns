@@ -128,6 +128,33 @@ async def _detect_form_container(page: "Page") -> str | None:
         return None
 
 
+def validate_field_scan(
+    fields: list[dict],
+    strategy,
+    form_experience: dict | None = None,
+) -> dict:
+    """Validate a field scan result for obvious problems."""
+    from collections import Counter
+
+    expected_min, expected_max = strategy.expected_field_range()
+
+    if form_experience and form_experience.get("field_count"):
+        expected_max = int(form_experience["field_count"] * 1.5)
+
+    if len(fields) == 0:
+        return {"valid": False, "reason": "zero_fields", "count": 0}
+
+    if len(fields) > expected_max:
+        return {"valid": False, "reason": "too_many_fields", "count": len(fields)}
+
+    label_counts = Counter(f.get("label", "") for f in fields)
+    max_dup = max(label_counts.values()) if label_counts else 0
+    if max_dup > 3:
+        return {"valid": False, "reason": "duplicate_labels", "count": max_dup}
+
+    return {"valid": True, "reason": "", "count": len(fields)}
+
+
 async def scan_fields(
     page: "Page",
     *,
