@@ -1194,15 +1194,12 @@ class NativeFormFiller:
         self._platform = platform
         await self._resolve_page_context()
 
+        self._stored_exp = None
         try:
             from jobpulse.form_experience_db import FormExperienceDB
             url = getattr(self._page, 'url', '') or ''
             if url:
-                exp = FormExperienceDB().lookup(url)
-                if exp and exp.get("success"):
-                    self._known_domain = True
-                    logger.info("FAST PATH: domain %s known (%d prior applies), skipping LLM/vision",
-                                FormExperienceDB.normalize_domain(url), exp.get("apply_count", 0))
+                self._stored_exp = FormExperienceDB().lookup(url)
         except Exception:
             pass
 
@@ -1283,6 +1280,28 @@ class NativeFormFiller:
             for f in fields:
                 ft = f"{f['type']}:{f['label'].lower().replace(' ', '_')[:40]}"
                 seen_field_types.append(ft)
+
+            if page_num == 1 and self._stored_exp and self._stored_exp.get("success") and self._fe_db:
+                validation = self._fe_db.validate_against_live(
+                    page_url, seen_field_types, live_page_count=None,
+                )
+                if validation["trusted"]:
+                    self._known_domain = True
+                    logger.info(
+                        "FAST PATH: domain %s validated (%.0f%% match, %d prior applies)",
+                        FormExperienceDB.normalize_domain(page_url),
+                        validation["match_ratio"] * 100,
+                        self._stored_exp.get("apply_count", 0),
+                    )
+                else:
+                    self._known_domain = False
+                    logger.warning(
+                        "DRIFT DETECTED on %s — match %.0f%%, diverged: %s. Using full LLM path.",
+                        FormExperienceDB.normalize_domain(page_url),
+                        validation["match_ratio"] * 100,
+                        validation["diverged_fields"][:5],
+                    )
+
             fields_by_label = {f["label"]: f for f in fields}
 
             try:
