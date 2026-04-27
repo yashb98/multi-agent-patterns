@@ -131,6 +131,7 @@ class NativeFormFiller:
         self._strategy: Any = None
         self._fe_db: Any = None
         self._container_selector: str | None = None
+        self._platform: str = ""
 
     # ── Platform Strategy + Domain Knowledge ──
 
@@ -539,11 +540,17 @@ class NativeFormFiller:
             fill_value = _canonicalize_country_value(label, fill_value, store=self._profile_store)
             stored_technique = None
             try:
-                from jobpulse.form_experience_db import FormExperienceDB
                 page_url = getattr(self._page, "url", "") or ""
-                if page_url:
-                    techniques = FormExperienceDB().get_fill_techniques(page_url)
+                if page_url and self._fe_db:
+                    techniques = self._fe_db.get_fill_techniques(page_url)
                     stored_technique = techniques.get(label, {}).get("technique")
+                    if not stored_technique and self._platform:
+                        platform_techniques = self._fe_db.get_platform_fill_techniques(self._platform)
+                        field_type_prefix = f"{tag}:{input_type or role}"
+                        for pt in platform_techniques:
+                            if pt["field_type"] == field_type_prefix and pt["success"]:
+                                stored_technique = pt["technique"]
+                                break
             except Exception:
                 pass
             from jobpulse.form_scanner import (
@@ -1184,6 +1191,7 @@ class NativeFormFiller:
             logger.debug("Container resolution failed: %s", exc)
 
         self._load_platform_strategy(platform)
+        self._platform = platform
         await self._resolve_page_context()
 
         try:
