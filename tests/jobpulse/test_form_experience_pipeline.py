@@ -186,3 +186,57 @@ class TestFailureRecording:
         # ON CONFLICT replaces, so the latest write (failure) overwrites.
         # But get_fill_techniques filters success=1 — the key behavior is the filter.
         assert len(rows) >= 1
+
+
+class TestPostApplyHookFailurePath:
+    def test_failure_records_partial_experience(self, tmp_path, monkeypatch):
+        """T3: post_apply_hook records form experience even on failure."""
+        db_path = str(tmp_path / "fe.db")
+
+        # Monkeypatch external calls that would fail without credentials
+        monkeypatch.setattr("jobpulse.post_apply_hook.upload_cv", lambda *a, **kw: None)
+        monkeypatch.setattr("jobpulse.post_apply_hook.upload_cover_letter", lambda *a, **kw: None)
+        monkeypatch.setattr("jobpulse.post_apply_hook.find_application_page", lambda *a, **kw: None)
+        monkeypatch.setattr("jobpulse.post_apply_hook.update_application_page", lambda *a, **kw: None)
+
+        from jobpulse.post_apply_hook import post_apply_hook
+
+        result = {
+            "success": False,
+            "pages_filled": 1,
+            "field_types": ["text:first_name", "combobox:country"],
+            "screening_questions": ["Do you hold the right to work in the UK?:Graduate Visa"],
+            "time_seconds": 45.2,
+            "error": "Stuck on identical page (page 2)",
+            "agent_fill_stats": {
+                "fields_attempted": 5,
+                "fields_filled": 3,
+                "fields_failed": 2,
+                "failed_labels": ["Sponsorship status", "Disability"],
+                "llm_fallback_count": 1,
+            },
+        }
+        job_context = {
+            "job_id": "",
+            "company": "Sony Interactive",
+            "title": "Data Analyst",
+            "url": "https://job-boards.greenhouse.io/sonyinteractive/jobs/12345",
+            "platform": "greenhouse",
+            "ats_platform": "greenhouse",
+            "notion_page_id": None,
+            "cv_path": None,
+            "cover_letter_path": None,
+        }
+
+        post_apply_hook(result, job_context, form_exp_db_path=db_path)
+
+        db = FormExperienceDB(db_path)
+        exp = db.lookup("job-boards.greenhouse.io")
+        assert exp is not None
+        assert exp["success"] == 0
+        assert exp["pages_filled"] == 1
+
+        failures = db.get_failure_reasons("job-boards.greenhouse.io")
+        assert len(failures) == 2
+        labels = {f["field_label"] for f in failures}
+        assert labels == {"Sponsorship status", "Disability"}
