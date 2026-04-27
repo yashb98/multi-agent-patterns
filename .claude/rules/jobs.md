@@ -9,8 +9,12 @@
 
 ## Application Engine
 - Playwright CDP — connects to real Chrome instance via Chrome DevTools Protocol
-- `PlaywrightAdapter` is the default for all platforms except SmartRecruiters (which has its own CDP adapter)
+- `PlaywrightAdapter` is the default for ALL platforms (SmartRecruiters included — collapsed to thin strategy)
 - `_call_fill_and_submit()` in applicator.py handles sync/async bridging (adapter is async)
+- Platform strategies (`ats_adapters/strategy.py`) define container hints, field ranges, screening defaults
+- Container-scoped scanning via `Accessibility.getPartialAXTree` — prevents scanning navbar/footer elements
+- `FormExperienceDB` stores container selectors, page timings, field types per domain
+- `FAST_FILL=true` env var skips all page delays (for Claude Code assisted sessions)
 
 ## Anti-Detection
 - Playwright: headed mode + --disable-blink-features=AutomationControlled
@@ -129,10 +133,40 @@ Only Notion Skill Tracker needs live sync (user may have approved new skills sin
 - Navigation learning in SQLite (`data/navigation_learning.db`), replays per domain
 - Cookie dismisser runs before EVERY page detection — prevents misclassification
 - Multi-page: `find_next_button()` priority: Submit > Review > Save & Continue > Continue > Next > Proceed
-- Stuck detection: chars 200-700 comparison, abort after 2 identical pages
+- Stuck detection: field fingerprint comparison, abort after 2 identical pages
 - Max 10 navigation steps, max 20 form pages
-- Screening questions: pattern-based (work auth, salary, availability, experience years) → LLM fallback → SQLite cache
-- All 6 ATS adapters wire screening via `answer_screening_questions()` in the form-fill loop
+- Screening questions: ScreeningPipeline (semantic cache + intent classification + option alignment) → LLM batch fallback → SQLite cache
+- All platforms route through NativeFormFiller; platform-specific behavior via `get_strategy(platform)`
+
+## Adaptive Form Scoping (field_scanner.py)
+- 3-tier container resolution: Learned (FormExperienceDB) → Auto-detect (common ancestor JS) → Strategy hint
+- Auto-detect finds smallest common ancestor of all visible form elements that contains a submit-like button
+- `validate_field_scan()` rejects noise: zero fields, >1.5x expected_max, any label appearing >3 times
+- Container selectors stored on successful fill via `FormExperienceDB.store_container(domain, selector)`
+- Self-healing: stale stored selectors (0 matches) are auto-deleted, triggers re-detection
+- Scoped CDP scanning via `Accessibility.getPartialAXTree(backendNodeId)` — falls back to `getFullAXTree`
+
+## Semantic Option Matching (semantic_matcher.py)
+- `semantic_option_match(desired, options, field_label, aliases, numeric_value)` — returns best option or None
+- 5-tier cascade: exact → canonical aliases → numeric range → token overlap → substring
+- `CANONICAL_ALIASES` covers: gender (male↔Man), boolean (yes↔true), ethnicity, visa, notice period, experience years
+- `checkbox_intent(label, required)` — consent/accuracy/terms→True (check), marketing/newsletter→False (skip)
+- `seed_mapping()` routes dropdown/radio values through `_resolve_with_options()` before LLM step
+
+## Adaptive Timing
+- `FormExperienceDB.store_timing(domain, hydration_ms, fill_ms, transition_ms)` — running averages
+- `_get_adaptive_page_delay(platform, timing_data)` — delay = max(measured * 1.1, 3.0)
+- Platform defaults when no data: workday=8s, linkedin=3s, greenhouse/lever=5s, indeed=8s
+- `FAST_FILL=true` → zero delays (Claude Code assisted sessions)
+- Page 1 fill time measured and stored automatically for future runs
+
+## Fill Failure Classification
+- `_classify_fill_failure(result)` → no_field | blocked | wrong_value | readonly | unknown
+- no_field: skip, field doesn't exist on this page variant
+- blocked: element intercepted by overlay/popup, retry with scroll workaround
+- wrong_value: LLM recovery suggests alternate value via `recover_failed_fields_with_llm()`
+- readonly: skip, pre-filled by ATS (e.g., profile data auto-populated)
+- unknown: vision fallback via `recover_failed_fields_with_vision()`
 
 ## Platform-Specific Quirks (Dry Run Learnings)
 - Reed Easy Apply: modal overlay with pre-filled CV from profile + "Submit application" button

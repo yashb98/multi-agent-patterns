@@ -47,7 +47,13 @@
 - interview_prep.py — STAR+Reflection interview prep: skill-to-project mapping, story templates
 
 ## Cognitive Engine Integration
-Agents using CognitiveEngine: gmail_agent (email classification), job_autopilot (form strategy).
+Agents using CognitiveEngine:
+- `gmail_agent.py` — email classification (domain: `email_classification`)
+- `screening_answers.py` — screening question answers (domain: `screening_answers`)
+- `form_engine/field_mapper.py` — recovery fallback for failed field fills (domain: `form_recovery`)
+- `native_form_filler.py` — stuck-page navigation recovery (domain: `form_navigation`)
+- `shared/optimization/_policy.py` — low-confidence optimization decisions (domain: `optimization`)
+
 Cron runs create engine → think per sub-task → flush() at end. Templates persist across runs.
 Kill switch: `COGNITIVE_ENABLED=false`
 
@@ -83,6 +89,48 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 Cookie dismiss → hybrid page detect → SSO → account create → Gmail verify → multi-page fill → submit
 Navigation learning replays per domain (SQLite). Max 10 nav steps, 20 form pages.
 
+## Adaptive Form Pipeline (form_engine/)
+The form-filling pipeline uses 3 layers of adaptive intelligence:
+
+**Container Scoping** — 3-tier resolution prevents scanning full-page noise:
+1. Learned: `FormExperienceDB.get_container(domain)` — stored selector from prior fills
+2. Auto-detect: JS common-ancestor of form elements with submit button check
+3. Strategy hint: `strategy.form_container_hint()` — platform-specific CSS selector
+- Scoped scan uses `Accessibility.getPartialAXTree` (CDP) — scans only the container subtree
+- Self-healing: if stored selector returns 0 fields, deletes and re-detects
+- `validate_field_scan()` rejects noise: zero fields, too many fields (>1.5x expected), duplicate labels
+
+**Semantic Option Matching** — `semantic_option_match()` in `form_engine/semantic_matcher.py`:
+1. Exact case-insensitive match
+2. Canonical aliases (male→Man, female→Woman, yes→true, UK→United Kingdom, etc.)
+3. Numeric range matching (3→"2-5 years")
+4. Token overlap scoring (highest-overlap wins, threshold 0.3)
+5. Substring containment
+- `checkbox_intent(label)` returns True (consent→check), False (marketing→skip), or None (unknown)
+- `seed_mapping()` routes dropdown/radio values through `_resolve_with_options()` automatically
+
+**Adaptive Timing** — measured delays replace hardcoded values:
+- `FormExperienceDB.store_timing()` records running averages (hydration, fill, transition ms)
+- `_get_adaptive_page_delay(platform, timing_data)` derives delays from measurements
+- `FAST_FILL=true` env var = zero delays for Claude Code sessions
+- Strategy defaults when no data: workday=8s, linkedin=3s, greenhouse=5s
+- Minimum 3s floor even with fast measured timing
+
+**Fill Failure Classification** — `_classify_fill_failure()`:
+- `no_field` → skip (field doesn't exist on page)
+- `blocked` → retry with scroll/click workaround
+- `wrong_value` → LLM recovery suggests alternate value
+- `readonly` → skip (pre-filled by ATS)
+- `unknown` → vision fallback
+
+**Platform Strategies** (`ats_adapters/strategy.py`):
+- `BasePlatformStrategy` ABC with: `form_container_hint()`, `expected_field_range()`, `screening_defaults()`, `normalize_label()`, `extra_label_mappings()`
+- `get_strategy(platform)` returns the registered strategy or GenericStrategy fallback
+- LinkedIn: container `.jobs-easy-apply-modal`, range 3-10
+- Greenhouse: container `#application`, range 3-15
+- Workday: range 3-20, hydration 10s
+- Strategies store successful containers via `FormExperienceDB.store_container()` after fill
+
 ## Dry Run & Platform Learning
 - Always dry-run new platforms first: `apply_job(url, dry_run=True)`
 - NativeFormFiller handles modal-based CV uploads (Reed pattern: detect CV mismatch → Update → file chooser)
@@ -93,9 +141,39 @@ Navigation learning replays per domain (SQLite). Max 10 nav steps, 20 form pages
 Agents opt into `shared/cognitive/CognitiveEngine` for self-improving reasoning:
 - `gmail_agent.py` — email classification (domain: `email_classification`, medium stakes)
 - `screening_answers.py` — LLM fallback for screening questions (domain: `screening_answers`, medium stakes)
+- `form_engine/field_mapper.py` — cognitive fallback when direct LLM recovery fails (domain: `form_recovery`)
+- `native_form_filler.py` — cognitive unstuck when form pages loop (domain: `form_navigation`)
 - Kill switch: `COGNITIVE_ENABLED=false` disables everywhere, falls back to direct LLM
-- Both agents use lazy singleton init — zero overhead if cognitive engine isn't needed
+- Agents use lazy singleton init — zero overhead if cognitive engine isn't needed
 - Engine calls `flush_sync()` is the caller's responsibility at end of batch/cron run
+
+## AI Assist Learning Pipeline
+When Kimi, Claude, Codex, or any external AI fixes form fields directly in the browser:
+
+```python
+from jobpulse.ai_assist_logger import get_ai_assist_logger
+
+logger = get_ai_assist_logger()
+session = logger.start_session("kimi", domain="greenhouse.io", platform="greenhouse")
+logger.record_fix(session.session_id, "Salary", "", "80000", reasoning="JD midpoint")
+logger.record_strategy(session.session_id, "greenhouse.io", "fill_technique",
+                       description="Click label first", selector_pattern="[data-qa='salary']")
+logger.finalize_session(session.session_id, push_to_learning=True)
+```
+
+Fixes automatically flow to:
+- `CorrectionCapture` (`field_corrections.db`) — same table as human corrections
+- `GotchasDB` (`form_gotchas.db`) — AI-discovered platform quirks
+- `OptimizationEngine` — `correction` + `adaptation` signals
+- `AgentPerformanceDB` — `ai_agent_name`, `ai_fixes_count`, `ai_reasoning_summary`
+
+CLI: `python -m jobpulse.runner ai-assist-summary [agent] [days]`
+
+## Memory Layer Integration
+All old API calls (`learn_fact`, `record_episode`, `learn_procedure`) now automatically
+feed the 3-engine memory stack (SQLite + Qdrant + Neo4j). No caller code changes required.
+
+Forgetting sweep runs automatically every hour via the daemon optimization tick.
 
 ## Commands
 ```
