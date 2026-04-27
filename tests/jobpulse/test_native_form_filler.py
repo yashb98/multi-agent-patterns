@@ -1699,3 +1699,43 @@ def test_adaptive_delay_defaults_by_platform():
     assert _get_adaptive_page_delay("unknown", None) == 5.0
 
 
+# ── Fill failure classification (Task 9) ──
+
+
+def test_classify_no_field():
+    from jobpulse.native_form_filler import _classify_fill_failure
+    assert _classify_fill_failure({"success": False, "error": "No field for 'Name'"}) == "no_field"
+
+
+def test_classify_blocked():
+    from jobpulse.native_form_filler import _classify_fill_failure
+    assert _classify_fill_failure({"success": False, "error": "Element is intercepted"}) == "blocked"
+
+
+def test_classify_wrong_value():
+    from jobpulse.native_form_filler import _classify_fill_failure
+    assert _classify_fill_failure({"success": False, "value_mismatch": True}) == "wrong_value"
+
+
+def test_classify_readonly():
+    from jobpulse.native_form_filler import _classify_fill_failure
+    assert _classify_fill_failure({"success": False, "error": "Element is readonly"}) == "readonly"
+
+
+def test_classify_unknown():
+    from jobpulse.native_form_filler import _classify_fill_failure
+    assert _classify_fill_failure({"success": False, "error": "timeout"}) == "unknown"
+
+
+# ── Strategy screening defaults (Task 10) ──
+
+
+def test_strategy_screening_defaults_used():
+    """Strategy screening_defaults() should be consulted for unresolved screening questions."""
+    from jobpulse.ats_adapters.strategy import get_strategy
+    strategy = get_strategy("linkedin")
+    defaults = strategy.screening_defaults()
+    assert "are you legally authorized to work" in defaults
+    assert defaults["are you legally authorized to work"] == "yes"
+
+

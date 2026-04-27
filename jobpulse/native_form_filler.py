@@ -100,6 +100,20 @@ def _get_adaptive_page_delay(platform: str, timing_data: dict | None) -> float:
     return _STRATEGY_DEFAULTS.get(platform, 5.0)
 
 
+def _classify_fill_failure(result: dict) -> str:
+    """Classify why a field fill failed to route to correct recovery."""
+    error = (result.get("error") or "").lower()
+    if "no field" in error or "not found" in error or "no fillable" in error:
+        return "no_field"
+    if "intercept" in error or "pointer" in error or "click" in error:
+        return "blocked"
+    if result.get("value_mismatch"):
+        return "wrong_value"
+    if "readonly" in error or "disabled" in error:
+        return "readonly"
+    return "unknown"
+
+
 class NativeFormFiller:
     """Playwright-native form filler using locators and LLM calls."""
 
