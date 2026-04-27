@@ -23,10 +23,88 @@ _DEFAULT_DB = str(DATA_DIR / "form_experience.db")
 class FormExperienceDB:
     def __init__(self, db_path: str | None = None):
         self._db_path = db_path or _DEFAULT_DB
-        self._init_db()
+        self._init_db_heal()
+
+    def _schema_sql(self) -> str:
+        return """
+            CREATE TABLE IF NOT EXISTS form_experience (
+                domain TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                adapter TEXT NOT NULL,
+                pages_filled INTEGER NOT NULL,
+                field_types TEXT NOT NULL,
+                screening_questions TEXT NOT NULL,
+                time_seconds REAL NOT NULL,
+                success INTEGER NOT NULL,
+                apply_count INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_form_experience_platform
+            ON form_experience (platform);
+            CREATE TABLE IF NOT EXISTS field_label_mappings (
+                domain TEXT,
+                field_label TEXT,
+                profile_key TEXT,
+                confidence REAL DEFAULT 1.0,
+                PRIMARY KEY (domain, field_label)
+            );
+            CREATE TABLE IF NOT EXISTS fill_techniques (
+                domain TEXT NOT NULL,
+                field_label TEXT NOT NULL,
+                field_type TEXT NOT NULL,
+                technique TEXT NOT NULL,
+                value_used TEXT,
+                success INTEGER NOT NULL DEFAULT 1,
+                apply_count INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (domain, field_label)
+            );
+            CREATE TABLE IF NOT EXISTS form_failure_reasons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                failure_type TEXT NOT NULL,
+                field_label TEXT,
+                selector TEXT,
+                details TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_failures_domain
+            ON form_failure_reasons (domain);
+            CREATE INDEX IF NOT EXISTS idx_failures_platform
+            ON form_failure_reasons (platform);
+            CREATE TABLE IF NOT EXISTS container_selectors (
+                domain TEXT PRIMARY KEY,
+                selector TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS page_timings (
+                domain TEXT PRIMARY KEY,
+                avg_hydration_ms INTEGER NOT NULL,
+                avg_fill_ms INTEGER NOT NULL,
+                avg_transition_ms INTEGER NOT NULL,
+                sample_count INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            );
+        """
+
+    def _init_db_heal(self):
+        """Initialise DB with self-healing fallback on corruption."""
+        try:
+            self._init_db()
+        except sqlite3.DatabaseError:
+            from shared.self_healing import heal_db_if_needed
+            report = heal_db_if_needed(self._db_path, fallback_schema=self._schema_sql())
+            if report.healthy:
+                logger.info("FormExperienceDB healed and reinitialised")
+            else:
+                logger.error("FormExperienceDB could not be healed: %s", report.errors)
+                raise
 
     def _init_db(self):
         with sqlite3.connect(self._db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS form_experience (
                     domain TEXT PRIMARY KEY,
@@ -43,12 +121,66 @@ class FormExperienceDB:
                 )
             """)
             conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_form_experience_platform
+                ON form_experience (platform)
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS field_label_mappings (
                     domain TEXT,
                     field_label TEXT,
                     profile_key TEXT,
                     confidence REAL DEFAULT 1.0,
                     PRIMARY KEY (domain, field_label)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fill_techniques (
+                    domain TEXT NOT NULL,
+                    field_label TEXT NOT NULL,
+                    field_type TEXT NOT NULL,
+                    technique TEXT NOT NULL,
+                    value_used TEXT,
+                    success INTEGER NOT NULL DEFAULT 1,
+                    apply_count INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (domain, field_label)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS form_failure_reasons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    failure_type TEXT NOT NULL,
+                    field_label TEXT,
+                    selector TEXT,
+                    details TEXT,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_failures_domain
+                ON form_failure_reasons (domain)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_failures_platform
+                ON form_failure_reasons (platform)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS container_selectors (
+                    domain TEXT PRIMARY KEY,
+                    selector TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS page_timings (
+                    domain TEXT PRIMARY KEY,
+                    avg_hydration_ms INTEGER NOT NULL,
+                    avg_fill_ms INTEGER NOT NULL,
+                    avg_transition_ms INTEGER NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
                 )
             """)
 
@@ -193,61 +325,63 @@ class FormExperienceDB:
                 "stored": stored, "diverged_fields": diverged}
 
     def get_platform_aggregate(self, platform: str) -> dict | None:
-        """Aggregate form experience across ALL domains for a platform."""
+        """Aggregate form experience across ALL domains for a platform.
+
+        Uses streaming aggregation instead of GROUP_CONCAT to avoid memory spikes.
+        """
         from collections import Counter
 
         with sqlite3.connect(self._db_path) as conn:
-            row = conn.execute(
-                """SELECT COUNT(*), AVG(pages_filled), AVG(time_seconds),
-                          GROUP_CONCAT(field_types, '|||'),
-                          GROUP_CONCAT(screening_questions, '|||')
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT pages_filled, time_seconds, field_types, screening_questions
                    FROM form_experience
                    WHERE platform = ? AND success = 1""",
                 (platform,),
-            ).fetchone()
+            ).fetchall()
 
-        if not row or row[0] == 0:
+        if not rows:
             return None
 
-        observation_count, avg_pages_raw, avg_time_raw, ft_concat, sq_concat = row
-
-        # Parse field_types JSON blobs and build frequency counts
+        observation_count = len(rows)
+        total_pages = 0.0
+        total_time = 0.0
         field_type_counter: Counter = Counter()
         total_field_count = 0
-        if ft_concat:
-            for blob in ft_concat.split("|||"):
+        sq_counter: Counter = Counter()
+
+        for row in rows:
+            total_pages += row["pages_filled"] or 0
+            total_time += row["time_seconds"] or 0
+
+            ft_blob = row["field_types"]
+            if ft_blob:
                 try:
-                    fields = json.loads(blob)
+                    fields = json.loads(ft_blob) if isinstance(ft_blob, str) else ft_blob
                 except (ValueError, TypeError):
                     fields = []
                 field_type_counter.update(fields)
                 total_field_count += len(fields)
 
-        avg_field_count = round(total_field_count / observation_count, 1) if observation_count else 0.0
-        field_type_frequencies = dict(field_type_counter)
-        common_field_types = [ft for ft, _ in field_type_counter.most_common()]
-
-        # Parse screening_questions JSON blobs and build frequency counts
-        sq_counter: Counter = Counter()
-        if sq_concat:
-            for blob in sq_concat.split("|||"):
+            sq_blob = row["screening_questions"]
+            if sq_blob:
                 try:
-                    questions = json.loads(blob)
+                    questions = json.loads(sq_blob) if isinstance(sq_blob, str) else sq_blob
                 except (ValueError, TypeError):
                     questions = []
                 sq_counter.update(questions)
 
-        common_screening_questions = sq_counter.most_common()
+        avg_field_count = round(total_field_count / observation_count, 1) if observation_count else 0.0
 
         return {
             "platform": platform,
             "observation_count": observation_count,
-            "avg_pages": round(avg_pages_raw, 1),
+            "avg_pages": round(total_pages / observation_count, 1),
             "avg_field_count": avg_field_count,
-            "avg_time_seconds": round(avg_time_raw, 1),
-            "common_field_types": common_field_types,
-            "field_type_frequencies": field_type_frequencies,
-            "common_screening_questions": common_screening_questions,
+            "avg_time_seconds": round(total_time / observation_count, 1),
+            "common_field_types": [ft for ft, _ in field_type_counter.most_common()],
+            "field_type_frequencies": dict(field_type_counter),
+            "common_screening_questions": sq_counter.most_common(),
         }
 
     def get_stats(self) -> dict:
@@ -256,7 +390,63 @@ class FormExperienceDB:
             successful = conn.execute(
                 "SELECT COUNT(*) FROM form_experience WHERE success = 1"
             ).fetchone()[0]
-        return {"total_domains": total, "successful_domains": successful}
+            failures = conn.execute(
+                "SELECT COUNT(*) FROM form_failure_reasons"
+            ).fetchone()[0]
+        return {"total_domains": total, "successful_domains": successful, "recorded_failures": failures}
+
+    def record_failure_reason(
+        self,
+        domain: str,
+        platform: str,
+        failure_type: str,
+        field_label: str = "",
+        selector: str = "",
+        details: str = "",
+    ) -> None:
+        """Record why a form fill failed for a domain."""
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO form_failure_reasons
+                (domain, platform, failure_type, field_label, selector, details, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (self.normalize_domain(domain), platform, failure_type, field_label, selector, details, now),
+            )
+
+    def get_failure_reasons(self, domain_or_url: str, limit: int = 10) -> list[dict]:
+        """Return recent failure reasons for a domain."""
+        domain = self.normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM form_failure_reasons
+                WHERE domain = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (domain, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_platform_failure_stats(self, platform: str) -> dict:
+        """Return aggregated failure statistics for a platform."""
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT failure_type, COUNT(*) as cnt
+                FROM form_failure_reasons
+                WHERE platform = ?
+                GROUP BY failure_type
+                ORDER BY cnt DESC
+                """,
+                (platform,),
+            ).fetchall()
+        return {r["failure_type"]: r["cnt"] for r in rows}
 
     def get_field_mappings(self, domain_or_url: str) -> dict[str, str]:
         """Return {field_label: profile_key} for a domain."""
@@ -267,6 +457,57 @@ class FormExperienceDB:
                 (domain,),
             ).fetchall()
         return {label: key for label, key in rows}
+
+    def record_fill_technique(
+        self,
+        domain_or_url: str,
+        field_label: str,
+        field_type: str,
+        technique: str,
+        value_used: str | None = None,
+        success: bool = True,
+    ) -> None:
+        """Record how a field was filled (type-to-search, select-exact, etc.)."""
+        domain = self.normalize_domain(domain_or_url)
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO fill_techniques
+                   (domain, field_label, field_type, technique, value_used, success, apply_count, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                   ON CONFLICT(domain, field_label) DO UPDATE SET
+                       technique = excluded.technique,
+                       value_used = excluded.value_used,
+                       field_type = excluded.field_type,
+                       success = excluded.success,
+                       apply_count = apply_count + 1,
+                       updated_at = excluded.updated_at""",
+                (domain, field_label, field_type, technique, value_used, int(success), now),
+            )
+
+    def get_fill_techniques(self, domain_or_url: str) -> dict[str, dict]:
+        """Return {field_label: {technique, value_used, field_type}} for a domain."""
+        domain = self.normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM fill_techniques WHERE domain = ? AND success = 1",
+                (domain,),
+            ).fetchall()
+        return {r["field_label"]: dict(r) for r in rows}
+
+    def get_platform_fill_techniques(self, platform: str) -> list[dict]:
+        """Return all successful fill techniques for a platform (cross-domain learning)."""
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT ft.* FROM fill_techniques ft
+                   JOIN form_experience fe ON ft.domain = fe.domain
+                   WHERE fe.platform = ? AND ft.success = 1
+                   ORDER BY ft.apply_count DESC""",
+                (platform,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def save_field_mappings(self, domain_or_url: str, mappings: dict[str, str]) -> None:
         """Persist {field_label: profile_key} for a domain."""
@@ -281,3 +522,70 @@ class FormExperienceDB:
                     (domain, field_label, profile_key),
                 )
         logger.info("Saved %d field mappings for %s", len(mappings), domain)
+
+    def store_container(self, domain_or_url: str, selector: str) -> None:
+        domain = self.normalize_domain(domain_or_url)
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO container_selectors (domain, selector, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(domain) DO UPDATE SET
+                       selector = excluded.selector,
+                       updated_at = excluded.updated_at""",
+                (domain, selector, now),
+            )
+
+    def get_container(self, domain_or_url: str) -> str | None:
+        domain = self.normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT selector FROM container_selectors WHERE domain = ?",
+                (domain,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def delete_container(self, domain_or_url: str) -> None:
+        domain = self.normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "DELETE FROM container_selectors WHERE domain = ?", (domain,),
+            )
+
+    def store_timing(self, domain_or_url: str, hydration_ms: int, fill_ms: int, transition_ms: int) -> None:
+        domain = self.normalize_domain(domain_or_url)
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            existing = conn.execute(
+                "SELECT avg_hydration_ms, avg_fill_ms, avg_transition_ms, sample_count "
+                "FROM page_timings WHERE domain = ?",
+                (domain,),
+            ).fetchone()
+            if existing:
+                n = existing[3]
+                new_hydration = (existing[0] * n + hydration_ms) // (n + 1)
+                new_fill = (existing[1] * n + fill_ms) // (n + 1)
+                new_transition = (existing[2] * n + transition_ms) // (n + 1)
+                conn.execute(
+                    """UPDATE page_timings SET
+                       avg_hydration_ms = ?, avg_fill_ms = ?, avg_transition_ms = ?,
+                       sample_count = sample_count + 1, updated_at = ?
+                       WHERE domain = ?""",
+                    (new_hydration, new_fill, new_transition, now, domain),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO page_timings
+                       (domain, avg_hydration_ms, avg_fill_ms, avg_transition_ms, sample_count, updated_at)
+                       VALUES (?, ?, ?, ?, 1, ?)""",
+                    (domain, hydration_ms, fill_ms, transition_ms, now),
+                )
+
+    def get_timing(self, domain_or_url: str) -> dict | None:
+        domain = self.normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM page_timings WHERE domain = ?", (domain,),
+            ).fetchone()
+        return dict(row) if row else None

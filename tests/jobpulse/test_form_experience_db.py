@@ -143,3 +143,52 @@ class TestValidateAgainstLive:
             match_threshold=0.5,
         )
         assert result["trusted"] is True
+
+
+def test_store_and_get_container(tmp_path):
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    db.store_container("greenhouse.io", ".application-form")
+    assert db.get_container("greenhouse.io") == ".application-form"
+
+
+def test_get_container_returns_none_when_missing(tmp_path):
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    assert db.get_container("unknown.com") is None
+
+
+def test_delete_container(tmp_path):
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    db.store_container("greenhouse.io", "#app-form")
+    db.delete_container("greenhouse.io")
+    assert db.get_container("greenhouse.io") is None
+
+
+def test_store_container_overwrites(tmp_path):
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    db.store_container("greenhouse.io", "#old-form")
+    db.store_container("greenhouse.io", "#new-form")
+    assert db.get_container("greenhouse.io") == "#new-form"
+
+
+def test_store_and_get_timing(tmp_path):
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    db.store_timing("workday.com", hydration_ms=8000, fill_ms=12000, transition_ms=3000)
+    timing = db.get_timing("workday.com")
+    assert timing["avg_hydration_ms"] == 8000
+    assert timing["avg_fill_ms"] == 12000
+    assert timing["avg_transition_ms"] == 3000
+
+
+def test_get_timing_returns_none_when_missing(tmp_path):
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    assert db.get_timing("unknown.com") is None
+
+
+def test_store_timing_averages_on_update(tmp_path):
+    db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+    db.store_timing("workday.com", hydration_ms=8000, fill_ms=12000, transition_ms=3000)
+    db.store_timing("workday.com", hydration_ms=10000, fill_ms=14000, transition_ms=5000)
+    timing = db.get_timing("workday.com")
+    assert timing["avg_hydration_ms"] == 9000
+    assert timing["avg_fill_ms"] == 13000
+    assert timing["avg_transition_ms"] == 4000
