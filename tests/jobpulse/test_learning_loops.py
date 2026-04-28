@@ -244,3 +244,61 @@ def test_heuristic_extraction_from_trajectories(tmp_path):
     assert len(corrected_trajs) == 2
 
     _reset_shared_store()
+
+
+def test_agent_rules_legacy_schema_migration(tmp_path):
+    """AgentRulesDB migrates legacy schema to current schema."""
+    import sqlite3
+    db_path = str(tmp_path / "rules.db")
+
+    # Create a DB with the legacy schema
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE agent_rules (
+                rule_id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                trigger_pattern TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                action_value TEXT NOT NULL,
+                platform TEXT,
+                domain TEXT,
+                source TEXT,
+                confidence REAL DEFAULT 1.0,
+                times_applied INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT INTO agent_rules VALUES
+            ('screening:test1', 'screening', 'city.*town', 'set_value', 'Dundee',
+             NULL, NULL, 'user_correction', 1.0, 0, '2026-04-20T00:00:00', '2026-04-20T00:00:00')
+        """)
+        conn.execute("""
+            INSERT INTO agent_rules VALUES
+            ('field_mapping:test2', 'field_mapping', 'email.*address', 'set_value', 'test@example.com',
+             NULL, NULL, 'user_feedback', 1.0, 0, '2026-04-20T00:00:00', '2026-04-20T00:00:00')
+        """)
+
+    # Now instantiate AgentRulesDB — should trigger migration
+    from jobpulse.agent_rules import AgentRulesDB
+    db = AgentRulesDB(db_path=db_path)
+
+    # Verify the migration worked — get_active_rules should NOT crash
+    rules = db.get_active_rules()
+    assert len(rules) == 2
+
+    screening_rules = [r for r in rules if r["category"] == "screening"]
+    assert len(screening_rules) == 1
+    assert screening_rules[0]["action"] == "set_value"
+    assert screening_rules[0]["value"] == "Dundee"
+    assert screening_rules[0]["pattern"] == "city.*town"
+    assert screening_rules[0]["rule_type"] == "screening_override"
+
+    field_rules = [r for r in rules if r["category"] == "field_mapping"]
+    assert len(field_rules) == 1
+    assert field_rules[0]["rule_type"] == "field_mapping_override"
+
+    # Verify get_field_overrides also works (no crash)
+    overrides = db.get_field_overrides()
+    assert isinstance(overrides, dict)

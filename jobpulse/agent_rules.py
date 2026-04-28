@@ -39,11 +39,65 @@ class AgentRulesDB:
                     confidence REAL NOT NULL DEFAULT 0.0,
                     sample_count INTEGER NOT NULL DEFAULT 0,
                     active INTEGER NOT NULL DEFAULT 1,
+                    times_applied INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL
                 )
             """)
-            # Migration: add times_applied for tracking rule consumption
+            # Detect legacy schema (trigger_pattern column) and migrate
+            try:
+                cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_rules)").fetchall()}
+                if "trigger_pattern" in cols and "rule_type" not in cols:
+                    logger.info("agent_rules: migrating legacy schema to current schema")
+                    old_rows = conn.execute("SELECT * FROM agent_rules").fetchall()
+                    conn.execute("DROP TABLE agent_rules")
+                    conn.execute("""
+                        CREATE TABLE agent_rules (
+                            rule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            rule_type TEXT NOT NULL,
+                            source TEXT NOT NULL,
+                            category TEXT NOT NULL,
+                            pattern TEXT NOT NULL,
+                            action TEXT NOT NULL,
+                            value TEXT NOT NULL,
+                            confidence REAL NOT NULL DEFAULT 0.0,
+                            sample_count INTEGER NOT NULL DEFAULT 0,
+                            active INTEGER NOT NULL DEFAULT 1,
+                            times_applied INTEGER NOT NULL DEFAULT 0,
+                            created_at TEXT NOT NULL,
+                            expires_at TEXT NOT NULL
+                        )
+                    """)
+                    for row in old_rows:
+                        # conn has no row_factory — use positional indexing
+                        # Legacy columns: 0=rule_id, 1=category, 2=trigger_pattern,
+                        # 3=action_type, 4=action_value, 5=platform, 6=domain,
+                        # 7=source, 8=confidence, 9=times_applied, 10=created_at, 11=updated_at
+                        category = row[1]
+                        rule_type = "screening_override" if category == "screening" else "field_mapping_override"
+                        source = row[7] or "legacy_migration"
+                        conn.execute(
+                            """INSERT INTO agent_rules
+                               (rule_type, source, category, pattern, action, value,
+                                confidence, sample_count, active, times_applied, created_at, expires_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)""",
+                            (
+                                rule_type,
+                                source,
+                                category,
+                                row[2],   # trigger_pattern
+                                row[3],   # action_type
+                                row[4],   # action_value
+                                row[8] if row[8] is not None else 1.0,  # confidence
+                                row[9] if row[9] is not None else 0,    # times_applied
+                                row[10] or datetime.now(UTC).isoformat(),  # created_at
+                                (datetime.now(UTC) + timedelta(days=_RULE_TTL_DAYS)).isoformat(),
+                            ),
+                        )
+                    logger.info("agent_rules: migrated %d legacy rules", len(old_rows))
+            except Exception as exc:
+                logger.warning("agent_rules: schema migration check failed: %s", exc)
+            # Migration: add times_applied for older new-schema DBs missing it
             try:
                 conn.execute(
                     "ALTER TABLE agent_rules ADD COLUMN times_applied INTEGER NOT NULL DEFAULT 0"
