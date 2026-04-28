@@ -42,7 +42,7 @@ class ScreeningOutcomeRecorder:
         answer: str,
         field_options: list[str] | None,
         field_type: str,
-        intent: str,
+        intent: str = "unknown",
     ) -> None:
         """Called by form filler after each screening field is filled.
 
