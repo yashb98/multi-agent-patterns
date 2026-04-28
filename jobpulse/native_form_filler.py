@@ -1552,7 +1552,7 @@ class NativeFormFiller:
                             job_id=_job_id, domain=_page_domain,
                             field_label=label, field_type=fields_by_label.get(label, {}).get("type", "text"),
                             strategy="pattern_match", value=value_text,
-                            confidence=0.9, time_ms=0, page_index=live_page_count,
+                            confidence=0.9, time_ms=0, page_index=page_num,
                         )
                     else:
                         pending_retries.append({
@@ -1619,7 +1619,7 @@ class NativeFormFiller:
                                 job_id=_job_id, domain=_page_domain,
                                 field_label=label, field_type=item["field"].get("type", "text"),
                                 strategy="llm_recovery", value=retry_value,
-                                confidence=0.7, time_ms=0, page_index=live_page_count,
+                                confidence=0.7, time_ms=0, page_index=page_num,
                             )
                             mapping[label] = retry_value
                             all_agent_mappings[label] = retry_value
@@ -1671,7 +1671,7 @@ class NativeFormFiller:
                                     job_id=_job_id, domain=_page_domain,
                                     field_label=label, field_type=item["field"].get("type", "text"),
                                     strategy="vision_recovery", value=v_value,
-                                    confidence=0.6, time_ms=0, page_index=live_page_count,
+                                    confidence=0.6, time_ms=0, page_index=page_num,
                                 )
                                 mapping[label] = v_value
                                 all_agent_mappings[label] = v_value
