@@ -74,8 +74,13 @@ class SignalAggregator:
     def check_realtime(self) -> list[AggregatedInsight]:
         insights: list[AggregatedInsight] = []
         recent = self._filter_paused(self._bus.recent())
+        # Fallback to SQLite if deque is empty (daemon restart)
+        if not recent:
+            recent = self._filter_paused(self._bus.recent_from_db(minutes=15))
         insights.extend(self._detect_systemic_failures(recent))
         insights.extend(self._detect_platform_change(recent))
+        insights.extend(self._detect_success_patterns(recent))
+        insights.extend(self._detect_adaptation_effectiveness(recent))
         return insights
 
     def check_regressions(self) -> list[AggregatedInsight]:
@@ -116,6 +121,8 @@ class SignalAggregator:
         insights.extend(self._detect_persona_drift(signals))
         insights.extend(self._detect_redundant(signals))
         insights.extend(self._detect_repeated_failures(signals))
+        insights.extend(self._detect_success_patterns(signals))
+        insights.extend(self._detect_adaptation_effectiveness(signals))
         return insights
 
     def _detect_systemic_failures(
@@ -266,6 +273,87 @@ class SignalAggregator:
                     recommended_action="investigate_domain",
                     evidence=f"{len(sigs)} failures on {domain} across {len(sessions)} sessions",
                 ))
+        return insights
+
+    def _detect_success_patterns(
+        self, signals: list[LearningSignal],
+    ) -> list[AggregatedInsight]:
+        """Detect domains with repeated successes — positive reinforcement signal."""
+        successes = [s for s in signals if s.signal_type == "success"]
+        by_domain: dict[str, list[LearningSignal]] = defaultdict(list)
+        for s in successes:
+            by_domain[s.domain].append(s)
+
+        insights = []
+        for domain, sigs in by_domain.items():
+            sessions = {s.session_id for s in sigs}
+            if len(sigs) >= 3 and len(sessions) >= 2:
+                # Check if preceded by adaptation — stronger signal
+                adaptations = [
+                    a for a in signals
+                    if a.signal_type == "adaptation" and a.domain == domain
+                ]
+                confidence = 0.7
+                recommended = "promote_strategy"
+                if adaptations:
+                    confidence = 0.85
+                    recommended = "validate_adaptation"
+                insights.append(AggregatedInsight(
+                    pattern_type="success_streak",
+                    confidence=confidence,
+                    contributing_signals=[s.signal_id for s in sigs],
+                    domain=domain,
+                    recommended_action=recommended,
+                    evidence=(
+                        f"{len(sigs)} successes on {domain} across "
+                        f"{len(sessions)} sessions"
+                        + (f" (with {len(adaptations)} adaptations)" if adaptations else "")
+                    ),
+                ))
+        return insights
+
+    def _detect_adaptation_effectiveness(
+        self, signals: list[LearningSignal],
+    ) -> list[AggregatedInsight]:
+        """Detect adaptations that correlate with subsequent success."""
+        adaptations = [s for s in signals if s.signal_type == "adaptation"]
+        if not adaptations:
+            return []
+
+        # Build a timeline of signals per domain
+        by_domain = defaultdict(list)
+        for s in signals:
+            by_domain[s.domain].append(s)
+
+        insights = []
+        for domain, domain_signals in by_domain.items():
+            ordered = sorted(domain_signals, key=lambda s: s.timestamp)
+            for i, adapt in enumerate(ordered):
+                if adapt.signal_type != "adaptation":
+                    continue
+                # Look forward for success signals within next 5 entries
+                successes_after = [
+                    s for s in ordered[i + 1 : i + 6]
+                    if s.signal_type == "success"
+                ]
+                if successes_after:
+                    param = adapt.payload.get("param", "unknown")
+                    old_val = adapt.payload.get("old_value", "")
+                    new_val = adapt.payload.get("new_value", "")
+                    insights.append(AggregatedInsight(
+                        pattern_type="adaptation_worked",
+                        confidence=0.75,
+                        contributing_signals=[adapt.signal_id] + [s.signal_id for s in successes_after],
+                        domain=domain,
+                        recommended_action="reinforce_adaptation",
+                        evidence=(
+                            f"Adaptation '{param}' on {domain} "
+                            f"({old_val} → {new_val}) "
+                            f"followed by {len(successes_after)} success(es)"
+                        ),
+                    ))
+                    # Only report the first effective adaptation per domain per sweep
+                    break
         return insights
 
     def _dedup_with_memory(self, domain: str, field_key: str) -> bool:

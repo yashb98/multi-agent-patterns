@@ -158,6 +158,12 @@ class SignalBus:
     def recent(self) -> list[LearningSignal]:
         return list(self._recent)
 
+    def recent_from_db(self, minutes: int = 15, limit: int = 1000) -> list[LearningSignal]:
+        """Query SQLite for signals from the last N minutes. Survives restarts."""
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+        return self.query(since=since, limit=limit)
+
     def prune(self, max_age_days: int = 90):
         from datetime import timedelta
         cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
