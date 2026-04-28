@@ -18,6 +18,7 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/drive.file",
 ]
 
@@ -111,10 +112,15 @@ APPLICANT_GITHUB = os.getenv("APPLICANT_GITHUB", "")
 APPLICANT_PORTFOLIO = os.getenv("APPLICANT_PORTFOLIO", "")
 APPLICANT_LOCATION = os.getenv("APPLICANT_LOCATION", "")
 APPLICANT_EDUCATION = os.getenv("APPLICANT_EDUCATION", "")
+APPLICANT_ADDRESS = os.getenv("APPLICANT_ADDRESS", "")
+APPLICANT_POSTCODE = os.getenv("APPLICANT_POSTCODE", "")
+APPLICANT_COUNTRY = os.getenv("APPLICANT_COUNTRY", "")
+APPLICANT_TITLE = os.getenv("APPLICANT_TITLE", "Mr")
 
 APPLICANT_PROFILE: dict[str, str] = {
     "first_name": APPLICANT_FIRST_NAME,
     "last_name": APPLICANT_LAST_NAME,
+    "title": APPLICANT_TITLE,
     "email": APPLICANT_EMAIL,
     "phone": APPLICANT_PHONE,
     "linkedin": APPLICANT_LINKEDIN,
@@ -122,6 +128,37 @@ APPLICANT_PROFILE: dict[str, str] = {
     "portfolio": APPLICANT_PORTFOLIO,
     "education": APPLICANT_EDUCATION,
     "location": APPLICANT_LOCATION,
+    "address": APPLICANT_ADDRESS,
+    "postcode": APPLICANT_POSTCODE,
+    "country": APPLICANT_COUNTRY,
+}
+
+EXPERIENCE_DESCRIPTIONS: dict[str, str] = {
+    "Team Leader": (
+        "Led a team of 8, coordinating data-driven shift operations and "
+        "collaborative decision-making under time pressure. "
+        "Developed forecasting processes for stock replenishment, "
+        "reducing stockout incidents by 20% through data-driven decisions "
+        "and adaptability to demand shifts. "
+        "Automated analysis of sales trends and merchandising KPIs, "
+        "demonstrating creativity in identifying patterns that "
+        "drive operational impact. "
+        "Delivered actionable insights to area management, "
+        "bridging data analysis with commercial execution through "
+        "strong stakeholder communication."
+    ),
+    "Market Research Analyst": (
+        "Built Power BI dashboards with DAX enabling real-time insights "
+        "into sales performance, supplier ROI, and trend analysis. "
+        "Automated SQL and Excel ETL workflows using Python and openpyxl, "
+        "cutting monthly report prep time by 35%. "
+        "Collaborated across cross-functional teams, translating "
+        "complex analytical findings into clear recommendations "
+        "through effective teamwork and presentation skills. "
+        "Applied critical thinking to identify correlations within "
+        "large, messy supplier and market datasets, driving strategic "
+        "decision-making for business growth."
+    ),
 }
 
 WORK_AUTH: dict[str, object] = {

@@ -342,6 +342,8 @@ class LabelMappingStore:
 _SEED_LABELS: dict[str, str] = {
     "first name": "first_name",
     "last name": "last_name",
+    "surname": "last_name",
+    "family name": "last_name",
     "email": "email",
     "email address": "email",
     "confirm your email": "email",
@@ -361,6 +363,9 @@ _SEED_LABELS: dict[str, str] = {
     "location": "location",
     "headline": "headline",
     "current title": "headline",
+    "title": "title",
+    "salutation": "title",
+    "prefix": "title",
     "address": "address",
     "street address": "address",
     "postcode": "postcode",
