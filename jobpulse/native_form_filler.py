@@ -118,6 +118,16 @@ def _log_field_trajectory(
         logger.debug("trajectory log_field failed: %s", exc)
 
 
+def _load_field_overrides(domain: str) -> dict[str, dict]:
+    """Load agent rule overrides for this domain. Non-blocking."""
+    try:
+        from jobpulse.agent_rules import AgentRulesDB
+        return AgentRulesDB().get_field_overrides(domain=domain)
+    except Exception as exc:
+        logger.debug("agent_rules override load failed: %s", exc)
+        return {}
+
+
 def _classify_fill_failure(result: dict) -> str:
     """Classify why a field fill failed to route to correct recovery."""
     error = (result.get("error") or "").lower()
@@ -1253,6 +1263,10 @@ class NativeFormFiller:
         _job_id = _job_ctx.get("job_id", "")
         _page_domain = getattr(self._page, 'url', '') or ''
 
+        _field_overrides = _load_field_overrides(_page_domain)
+        if _field_overrides:
+            logger.info("Loaded %d field overrides from agent rules", len(_field_overrides))
+
         seen_field_types: list[str] = []
         seen_screening: list[dict[str, Any]] = []
         _outcome_recorder = None
@@ -1506,6 +1520,11 @@ class NativeFormFiller:
                 value_text = str(value).strip()
                 if not value_text:
                     continue
+                # Apply agent rule overrides from correction history
+                override = _field_overrides.get(label.lower().strip())
+                if override and override["action"] == "override_answer":
+                    value_text = override["value"]
+                    logger.info("Agent rule override: '%s' -> '%s'", label, value_text)
                 total_fields_attempted += 1
                 try:
                     result = await self._fill_by_label(label, value_text)

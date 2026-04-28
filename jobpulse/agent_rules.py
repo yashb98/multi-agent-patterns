@@ -43,6 +43,13 @@ class AgentRulesDB:
                     expires_at TEXT NOT NULL
                 )
             """)
+            # Migration: add times_applied for tracking rule consumption
+            try:
+                conn.execute(
+                    "ALTER TABLE agent_rules ADD COLUMN times_applied INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -237,3 +244,38 @@ class AgentRulesDB:
         """Return field labels that should skip auto-fill due to repeated corrections."""
         rules = self.get_active_rules("correction_override")
         return [r["category"] for r in rules if r["action"] == "escalate"]
+
+    def get_field_overrides(self, domain: str = "", platform: str = "") -> dict[str, dict]:
+        """Return {field_label: {value, action, confidence, rule_id}} for form-fill consumption.
+
+        Queries correction_override rules matching domain or platform.
+        Increments times_applied for each returned rule.
+        """
+        rules = self.get_active_rules("correction_override")
+        overrides: dict[str, dict] = {}
+        rule_ids_used: list[int] = []
+
+        for r in rules:
+            if domain and r.get("pattern") and r["pattern"] != domain:
+                continue
+            field = r["category"]
+            if field in overrides:
+                if r["confidence"] <= overrides[field]["confidence"]:
+                    continue
+            overrides[field] = {
+                "value": r["value"],
+                "action": r["action"],
+                "confidence": r["confidence"],
+                "rule_id": r["rule_id"],
+            }
+            rule_ids_used.append(r["rule_id"])
+
+        if rule_ids_used:
+            with self._connect() as conn:
+                for rid in rule_ids_used:
+                    conn.execute(
+                        "UPDATE agent_rules SET times_applied = times_applied + 1 WHERE rule_id = ?",
+                        (rid,),
+                    )
+
+        return overrides

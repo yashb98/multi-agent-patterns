@@ -47,3 +47,42 @@ def test_log_field_trajectory_helper(trajectory_store, monkeypatch):
     results = trajectory_store.get_trajectories("job_002")
     assert len(results) == 1
     assert results[0].field_label == "Email"
+
+
+def test_agent_rules_field_overrides(tmp_path):
+    """AgentRulesDB returns field overrides for form filler consumption."""
+    from jobpulse.agent_rules import AgentRulesDB
+    db = AgentRulesDB(db_path=str(tmp_path / "rules.db"))
+
+    db.auto_generate_from_correction(
+        field_label="city",
+        agent_value="London",
+        user_value="Dundee",
+        domain="greenhouse.io",
+        platform="greenhouse",
+    )
+
+    overrides = db.get_field_overrides(domain="greenhouse.io")
+    assert "city" in overrides
+    assert overrides["city"]["value"] == "Dundee"
+
+
+def test_field_override_consumed_during_fill(tmp_path):
+    """When an override exists, times_applied is incremented."""
+    from jobpulse.agent_rules import AgentRulesDB
+    db = AgentRulesDB(db_path=str(tmp_path / "rules.db"))
+
+    db.auto_generate_from_correction(
+        field_label="city",
+        agent_value="London",
+        user_value="Dundee",
+        domain="greenhouse.io",
+        platform="greenhouse",
+    )
+
+    overrides = db.get_field_overrides(domain="greenhouse.io")
+    assert overrides["city"]["value"] == "Dundee"
+
+    rules = db.get_active_rules("correction_override")
+    city_rules = [r for r in rules if r["category"] == "city"]
+    assert city_rules[0]["times_applied"] == 1
