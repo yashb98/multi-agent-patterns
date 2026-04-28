@@ -83,6 +83,22 @@ def post_apply_hook(
 
     start = time.monotonic()
 
+    # --- 0. Before-measurement for optimization engine ---
+    opt_action_id = ""
+    try:
+        from shared.optimization import get_optimization_engine
+        _engine = get_optimization_engine()
+        _before = {
+            "fields_filled": len(result.get("field_types", [])),
+            "pages_filled": result.get("pages_filled", 0),
+            "time_seconds": result.get("time_seconds", 0.0),
+        }
+        opt_action_id = _engine.before_learning_action(
+            "post_apply", domain=url, metrics=_before,
+        )
+    except Exception as exc:
+        logger.debug("post_apply_hook: before_learning_action failed: %s", exc)
+
     # --- 1. Record form experience ---
     try:
         exp_db = FormExperienceDB(db_path=form_exp_db_path)
@@ -244,3 +260,17 @@ def post_apply_hook(
         "yes" if notion_page_id else "skip",
         "yes" if nav_saved else "skip",
     )
+
+    # --- 6. After-measurement for optimization engine ---
+    if opt_action_id:
+        try:
+            from shared.optimization import get_optimization_engine
+            _engine = get_optimization_engine()
+            _after = {
+                "fields_filled": len(result.get("field_types", [])),
+                "pages_filled": result.get("pages_filled", 0),
+                "time_seconds": result.get("time_seconds", 0.0),
+            }
+            _engine.after_learning_action(opt_action_id, metrics=_after)
+        except Exception as exc:
+            logger.debug("post_apply_hook: after_learning_action failed: %s", exc)
