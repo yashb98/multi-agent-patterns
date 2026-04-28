@@ -165,6 +165,35 @@ def test_update_application_status(db: JobDB) -> None:
     assert ev["new_value"] == "Interview"
 
 
+def test_get_ready_or_pending_found_on_filters_by_listing_day(db: JobDB) -> None:
+    """get_ready_or_pending_found_on matches listing found_at calendar date."""
+    d_today = datetime(2026, 4, 23, 15, 0, 0, tzinfo=timezone.utc)
+    d_old = datetime(2026, 4, 22, 15, 0, 0, tzinfo=timezone.utc)
+    db.save_listing(_make_listing(job_id="j-today", found_at=d_today))
+    db.save_listing(_make_listing(job_id="j-old", found_at=d_old))
+    db.save_application("j-today", status="Ready")
+    db.save_application("j-old", status="Ready")
+    rows = db.get_ready_or_pending_found_on(date(2026, 4, 23))
+    assert [r["job_id"] for r in rows] == ["j-today"]
+
+
+def test_mark_applied_sets_status_and_timestamp(db: JobDB) -> None:
+    """mark_applied sets Applied, applied_at, and logs a status_change event."""
+    db.save_listing(_make_listing())
+    db.save_application("abc123", status="Pending Approval")
+
+    db.mark_applied("abc123")
+
+    row = db.get_application("abc123")
+    assert row is not None
+    assert row["status"] == "Applied"
+    assert row["applied_at"]
+    status_events = [
+        e for e in db.get_events("abc123") if e["event_type"] == "status_change"
+    ]
+    assert any(e["new_value"] == "Applied" for e in status_events)
+
+
 # ---------------------------------------------------------------------------
 # 6. log_event
 # ---------------------------------------------------------------------------
@@ -322,3 +351,179 @@ def test_today_stats(db: JobDB) -> None:
     assert stats["found"] >= 1
     assert stats["skipped"] >= 1
     assert stats["avg_ats"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# 13. application_outcomes
+# ---------------------------------------------------------------------------
+
+def test_save_and_get_outcome(db: JobDB) -> None:
+    """save_outcome stores downstream hiring results; get_outcome retrieves them."""
+    db.save_listing(_make_listing(job_id="job1"))
+    db.save_application("job1", status="Applied")
+
+    db.save_outcome(
+        job_id="job1",
+        outcome="offer_accepted",
+        stage_reached="final_round",
+        feedback="Great fit",
+        days_to_response=14,
+    )
+
+    outcome = db.get_outcome("job1")
+    assert outcome is not None
+    assert outcome["outcome"] == "offer_accepted"
+    assert outcome["stage_reached"] == "final_round"
+    assert outcome["feedback"] == "Great fit"
+    assert outcome["days_to_response"] == 14
+
+
+def test_outcome_stats(db: JobDB) -> None:
+    """get_outcome_stats computes interview_rate and offer_rate."""
+    db.save_listing(_make_listing(job_id="j1"))
+    db.save_listing(_make_listing(job_id="j2"))
+    db.save_listing(_make_listing(job_id="j3"))
+
+    db.save_application("j1", status="Applied")
+    db.save_application("j2", status="Applied")
+    db.save_application("j3", status="Applied")
+
+    db.save_outcome("j1", outcome="rejected_no_interview")
+    db.save_outcome("j2", outcome="offer_accepted", days_to_response=10)
+    db.save_outcome("j3", outcome="interview", stage_reached="technical")
+
+    stats = db.get_outcome_stats()
+    assert stats["total_outcomes"] == 3
+    assert stats["interview_rate"] == pytest.approx(2 / 3)
+    assert stats["offer_rate"] == pytest.approx(1 / 3)
+    assert stats["avg_days_to_response"] == pytest.approx(10.0)
+
+
+# ---------------------------------------------------------------------------
+# 14. gate_effectiveness
+# ---------------------------------------------------------------------------
+
+def test_record_and_get_gate_effectiveness(db: JobDB) -> None:
+    """gate decisions are aggregated by outcome."""
+    db.record_gate_decision("gate4_cv_scrutiny", "passed", "interview")
+    db.record_gate_decision("gate4_cv_scrutiny", "passed", "interview")
+    db.record_gate_decision("gate4_cv_scrutiny", "passed", "rejected_no_interview")
+    db.record_gate_decision("gate4_cv_scrutiny", "blocked", "rejected_no_interview")
+
+    eff = db.get_gate_effectiveness("gate4_cv_scrutiny")
+    assert len(eff) == 3
+    counts = {(e["decision"], e["final_outcome"]): e["count"] for e in eff}
+    assert counts[("passed", "interview")] == 2
+    assert counts[("passed", "rejected_no_interview")] == 1
+    assert counts[("blocked", "rejected_no_interview")] == 1
+
+    all_gates = db.get_all_gate_effectiveness()
+    assert "gate4_cv_scrutiny" in all_gates
+
+
+# ---------------------------------------------------------------------------
+# 15. ats_answer_cache quality
+# ---------------------------------------------------------------------------
+
+def test_answer_quality_tracking(db: JobDB) -> None:
+    """record_answer_verification updates success/correction counters."""
+    db.cache_answer("Work auth?", "Yes")
+    db.record_answer_verification("Work auth?", success=True)
+    db.record_answer_verification("Work auth?", success=True)
+    db.record_answer_verification("Work auth?", success=False)
+
+    quality = db.get_answer_quality("Work auth?")
+    assert quality is not None
+    assert quality["times_used"] == 1
+    assert quality["success_count"] == 2
+    assert quality["correction_count"] == 1
+    assert quality["success_rate"] == pytest.approx(2 / 3)
+    assert quality["last_verified_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# 16. company_reliability
+# ---------------------------------------------------------------------------
+
+def test_company_reliability_updates(db: JobDB) -> None:
+    """update_company_reliability aggregates stats per company."""
+    db.update_company_reliability("Acme Ltd", outcome="interview", days_to_response=7)
+    db.update_company_reliability("Acme Ltd", outcome="interview", days_to_response=14)
+    db.update_company_reliability("Acme Ltd", outcome="ghost")
+
+    rel = db.get_company_reliability("Acme Ltd")
+    assert rel is not None
+    assert rel["total_applied"] == 3
+    assert rel["total_interview"] == 2
+    assert rel["total_ghosted"] == 1
+    assert rel["avg_days_to_response"] == pytest.approx((7 + 14) / 2)
+
+
+def test_unreliable_companies(db: JobDB) -> None:
+    """get_unreliable_companies filters by ghost threshold."""
+    db.update_company_reliability("Ghost Corp", outcome="ghost")
+    db.update_company_reliability("Ghost Corp", outcome="ghost")
+    db.update_company_reliability("Ghost Corp", outcome="interview")
+
+    bad = db.get_unreliable_companies(min_applied=1, ghost_threshold=0.5)
+    assert len(bad) == 1
+    assert bad[0]["company"] == "Ghost Corp"
+    assert bad[0]["ghost_rate"] == pytest.approx(2 / 3)
+
+
+# ---------------------------------------------------------------------------
+# 17. cv_version + generation_strategy round-trip
+# ---------------------------------------------------------------------------
+
+def test_save_application_with_cv_version(db: JobDB) -> None:
+    """save_application accepts cv_version and generation_strategy."""
+    db.save_listing(_make_listing(job_id="v1"))
+    db.save_application(
+        job_id="v1",
+        status="Applied",
+        cv_version="v2.1-skill-match",
+        generation_strategy="archetype_focus",
+    )
+    row = db.get_application("v1")
+    assert row["cv_version"] == "v2.1-skill-match"
+    assert row["generation_strategy"] == "archetype_focus"
+
+
+# ---------------------------------------------------------------------------
+# 18. V1 ats_answer_cache schema migration
+# ---------------------------------------------------------------------------
+
+def test_ats_answer_cache_migration_adds_missing_columns(tmp_path):
+    """V1 schema migration adds success_count, correction_count, last_verified_at."""
+    import sqlite3
+    db_path = tmp_path / "test_apps.db"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("""
+            CREATE TABLE ats_answer_cache (
+                question_hash TEXT PRIMARY KEY,
+                question_text TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                times_used INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT INTO ats_answer_cache VALUES ('hash1', 'Test Q?', 'Yes', 5, '2026-01-01')"
+        )
+
+    db = JobDB(db_path=db_path)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(ats_answer_cache)").fetchall()}
+        assert "success_count" in cols
+        assert "correction_count" in cols
+        assert "last_verified_at" in cols
+
+        row = conn.execute("SELECT * FROM ats_answer_cache WHERE question_hash = 'hash1'").fetchone()
+        assert row["times_used"] == 5
+        assert row["success_count"] == 0
+        assert row["answer"] == "Yes"
+
+    db.close()
