@@ -86,3 +86,27 @@ def test_field_override_consumed_during_fill(tmp_path):
     rules = db.get_active_rules("correction_override")
     city_rules = [r for r in rules if r["category"] == "city"]
     assert city_rules[0]["times_applied"] == 1
+
+
+def test_heuristics_loaded_before_fill(trajectory_store):
+    """Heuristics from prior applications are loaded before a new fill."""
+    from jobpulse.trajectory_store import Heuristic
+
+    trajectory_store.save_heuristics([
+        Heuristic(
+            trigger="field 'city' on smartrecruiters",
+            action="type text then ArrowDown+Enter",
+            confidence=0.85,
+            source_domain="jobs.smartrecruiters.com",
+            platform="smartrecruiters",
+        ),
+    ])
+
+    from jobpulse.trajectory_store import load_heuristics_for_application
+    result = load_heuristics_for_application(
+        "jobs.smartrecruiters.com",
+        platform="smartrecruiters",
+        store=trajectory_store,
+    )
+    assert len(result["domain_heuristics"]) >= 1
+    assert "ArrowDown" in result["prompt_context"]

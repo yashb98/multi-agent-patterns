@@ -128,6 +128,22 @@ def _load_field_overrides(domain: str) -> dict[str, dict]:
         return {}
 
 
+def _load_heuristics(domain: str, platform: str) -> str:
+    """Load heuristics context for LLM prompts. Non-blocking."""
+    try:
+        from jobpulse.trajectory_store import load_heuristics_for_application
+        result = load_heuristics_for_application(domain, platform=platform)
+        context = result.get("prompt_context", "")
+        if context:
+            logger.info("Loaded %d domain + %d platform heuristics for %s",
+                        len(result["domain_heuristics"]),
+                        len(result["platform_heuristics"]), domain)
+        return context
+    except Exception as exc:
+        logger.debug("heuristic loading failed: %s", exc)
+        return ""
+
+
 def _classify_fill_failure(result: dict) -> str:
     """Classify why a field fill failed to route to correct recovery."""
     error = (result.get("error") or "").lower()
@@ -1266,6 +1282,8 @@ class NativeFormFiller:
         _field_overrides = _load_field_overrides(_page_domain)
         if _field_overrides:
             logger.info("Loaded %d field overrides from agent rules", len(_field_overrides))
+
+        self._heuristics_context = _load_heuristics(_page_domain, platform)
 
         seen_field_types: list[str] = []
         seen_screening: list[dict[str, Any]] = []
