@@ -465,6 +465,7 @@ async def recover_failed_fields_with_llm(
     profile: dict[str, Any],
     custom_answers: dict[str, Any],
     platform: str,
+    heuristics_context: str = "",
 ) -> tuple[dict[str, str], int]:
     """Ask the LLM for alternate values after a DOM fill did not verify. Returns (recovered, llm_calls)."""
     if not failed_fields:
@@ -502,6 +503,8 @@ async def recover_failed_fields_with_llm(
         "- Prefer a different value from the failed attempt when that will help the widget stick.\n"
         "- Omit fields where the failure is browser/widget behavior rather than the value itself.\n"
     )
+    if heuristics_context:
+        prompt += f"\nLearned heuristics from prior applications:\n{heuristics_context}\n"
     assert_prompt_has_wrapped_pii(prompt, profile_full, "applicant.profile")
 
     recovered: dict[str, str] = {}

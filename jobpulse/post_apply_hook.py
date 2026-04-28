@@ -270,6 +270,11 @@ def post_apply_hook(
                 "fields_filled": len(result.get("field_types", [])),
                 "pages_filled": result.get("pages_filled", 0),
                 "time_seconds": result.get("time_seconds", 0.0),
+                "drive_cv_uploaded": bool(cv_drive_link),
+                "drive_cl_uploaded": bool(cl_drive_link),
+                "notion_updated": bool(notion_page_id),
+                "nav_learned": nav_saved,
+                "elapsed_seconds": round(time.monotonic() - start, 1),
             }
             _engine.after_learning_action(opt_action_id, metrics=_after)
         except Exception as exc:

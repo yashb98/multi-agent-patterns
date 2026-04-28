@@ -1511,9 +1511,12 @@ class NativeFormFiller:
                         still_unresolved.append(f)
 
                 if still_unresolved:
+                    _enriched_warning = self._correction_warning
+                    if getattr(self, '_heuristics_context', ''):
+                        _enriched_warning += f"\n\nLearned heuristics:\n{self._heuristics_context}"
                     screening, s_calls = await screen_questions(
                         still_unresolved, custom_answers.get("_job_context"),
-                        self._profile_store, self._correction_warning,
+                        self._profile_store, _enriched_warning,
                     )
                     self._llm_fallback_count += s_calls
                     screening = clean_mapping(screening)
@@ -1601,6 +1604,7 @@ class NativeFormFiller:
                 ]
                 recovered, r_calls = await recover_failed_fields_with_llm(
                     page_url, retry_candidates, profile, custom_answers, platform,
+                    heuristics_context=getattr(self, '_heuristics_context', ''),
                 )
                 self._llm_fallback_count += r_calls
                 if recovered:
