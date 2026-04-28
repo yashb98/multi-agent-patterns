@@ -52,6 +52,7 @@ def select_adapter(ats_platform: str | None) -> BaseATSAdapter:
 def _record_agent_performance(
     result: dict, ctx: dict, url: str, platform: str,
     dry_run: bool, claude_fields: int = 0,
+    ai_meta: dict[str, Any] | None = None,
 ) -> None:
     """Record agent vs Claude fill stats to agent_performance.db."""
     try:
@@ -61,6 +62,7 @@ def _record_agent_performance(
             return
         llm_fallback = stats.get("llm_fallback_count", 0)
         notes = f"LLM fallback calls: {llm_fallback}" if llm_fallback else None
+        ai_meta = ai_meta or {}
         db = AgentPerformanceDB()
         db.record_session(
             company=ctx.get("company", "Unknown"),
@@ -69,6 +71,10 @@ def _record_agent_performance(
             url=url,
             agent_stats=stats,
             claude_fields_filled=claude_fields,
+            ai_agent_name=ai_meta.get("ai_agent_name", ""),
+            ai_fixes_count=ai_meta.get("ai_fixes_count", 0),
+            ai_strategies_count=ai_meta.get("ai_strategies_count", 0),
+            ai_reasoning_summary=ai_meta.get("ai_reasoning_summary", ""),
             fill_time_seconds=result.get("time_seconds"),
             dry_run=dry_run,
             success=result.get("success", False),
@@ -109,6 +115,10 @@ def _infer_platform_from_url(url: str) -> str | None:
         return "workday"
     if "smartrecruiters.com" in url:
         return "smartrecruiters"
+    if "ashbyhq.com" in url:
+        return "ashby"
+    if "icims.com" in url:
+        return "icims"
     return None
 
 
@@ -128,7 +138,8 @@ def prepare_application_inputs(
       - resolve templated "?" values via screening_answers
       - infer ats_platform from URL if not provided
       - attach gotchas, form_prefetch hints, Telegram stream
-      - lazy cover-letter generation for Greenhouse/Lever
+      - stash ``cl_generator`` on ``merged_answers["_cl_generator"]`` for mid-form
+        lazy cover letter (NativeFormFiller); never called here up-front.
 
     Returns a dict: {
         "ats_platform": str | None,
@@ -148,6 +159,8 @@ def prepare_application_inputs(
         merged_answers.update(custom_answers)
 
     _screening_job_context = (custom_answers or {}).get("_job_context") or job_context
+    if _screening_job_context and "_job_context" not in merged_answers:
+        merged_answers["_job_context"] = _screening_job_context
 
     for key, value in list(merged_answers.items()):
         if isinstance(value, str) and value.endswith("?"):
@@ -158,14 +171,8 @@ def prepare_application_inputs(
             if answer:
                 merged_answers[key] = answer
 
-    if cover_letter_path is None and cl_generator is not None:
-        if ats_platform and ats_platform.lower() in ("greenhouse", "lever"):
-            try:
-                cover_letter_path = cl_generator()
-                if cover_letter_path:
-                    logger.info("applicator: generated cover letter on demand for %s", ats_platform)
-            except Exception as exc:
-                logger.warning("applicator: on-demand CL generation failed: %s", exc)
+    if cl_generator is not None:
+        merged_answers["_cl_generator"] = cl_generator
 
     try:
         from urllib.parse import urlparse
@@ -320,13 +327,16 @@ def apply_job(
 
     # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
     # external ATS URL. Detect the ATS platform and re-apply via the correct adapter.
-    if result.get("external_redirect") and result.get("external_url"):
+    # Supports multi-hop: LinkedIn → careers portal → ATS (up to 2 hops).
+    for _hop in range(2):
+        if not (result.get("external_redirect") and result.get("external_url")):
+            break
         external_url = result["external_url"]
-        logger.info("External redirect detected: %s → %s", url, external_url)
+        logger.info("External redirect hop %d: %s → %s", _hop + 1, url, external_url)
 
         from jobpulse.jd_analyzer import detect_ats_platform
 
-        ext_platform = detect_ats_platform(external_url)
+        ext_platform = detect_ats_platform(external_url) or _infer_platform_from_url(external_url)
         ext_adapter = select_adapter(ext_platform)
         logger.info(
             "External ATS detected: %s — using %s adapter",
@@ -334,33 +344,16 @@ def apply_job(
             ext_adapter.name,
         )
 
-        # Lazy CL generation for external platforms that typically have CL fields
-        ext_cl_path = cover_letter_path
-        if ext_cl_path is None and cl_generator is not None:
-            if ext_platform and ext_platform.lower() in ("greenhouse", "lever"):
-                try:
-                    ext_cl_path = cl_generator()
-                    if ext_cl_path:
-                        logger.info(
-                            "applicator: generated cover letter on demand for external %s",
-                            ext_platform,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "applicator: on-demand CL generation for external failed: %s", exc
-                    )
-
         result = _call_fill_and_submit(
             ext_adapter,
             url=external_url,
             cv_path=cv_path,
-            cover_letter_path=ext_cl_path,
+            cover_letter_path=cover_letter_path,
             profile=PROFILE,
             custom_answers=merged_answers,
             overrides=overrides,
             dry_run=dry_run,
         )
-        # Tag the result so downstream knows this was an external redirect
         result["external_redirect"] = True
         result["external_url"] = external_url
         result["external_platform"] = ext_platform or "generic"
@@ -404,6 +397,10 @@ def apply_job(
                     "match_tier": ctx.get("match_tier"),
                     "ats_score": ctx.get("ats_score"),
                     "matched_projects": ctx.get("matched_projects"),
+                    "salary": ctx.get("salary"),
+                    "seniority": ctx.get("seniority"),
+                    "remote": ctx.get("remote"),
+                    "manually_applied": ctx.get("manually_applied", False),
                 },
             )
         except Exception as exc:
@@ -415,6 +412,21 @@ def apply_job(
     )
 
     if not dry_run:
+        # Clean Chrome caches from disk during the anti-detection wait
+        try:
+            from jobpulse.browser_cleanup import (
+                cleanup_chrome_profile_caches,
+                should_restart_chrome,
+                restart_chrome,
+            )
+            if should_restart_chrome():
+                logger.info("Periodic Chrome restart to reclaim memory")
+                restart_chrome()
+            else:
+                cleanup_chrome_profile_caches()
+        except Exception as exc:
+            logger.debug("browser_cleanup during delay: %s", exc)
+
         # Anti-detection: random delay between submissions (20-45s with jitter)
         delay = random.uniform(20, 45)
         logger.info("Anti-detection delay: %.0fs before next application", delay)
@@ -433,6 +445,7 @@ def confirm_application(
     ats_platform: str | None = None,
     agent_mapping: dict[str, str] | None = None,
     final_mapping: dict[str, str] | None = None,
+    ai_meta: dict[str, Any] | None = None,
 ) -> dict:
     """Finalize a dry-run application after manual user submission.
 
@@ -458,6 +471,9 @@ def confirm_application(
     result = dict(dry_run_result)
     result["success"] = True
     result.pop("dry_run", None)
+
+    if not agent_mapping:
+        agent_mapping = dry_run_result.get("agent_mapping")
 
     # Capture user corrections as reinforcement signals
     if agent_mapping and final_mapping:
@@ -493,6 +509,20 @@ def confirm_application(
         except Exception as exc:
             logger.warning("confirm_application: correction capture: %s", exc)
 
+    # Record screening outcomes via the unified recorder
+    try:
+        screening_results = dry_run_result.get("screening_results", [])
+        if screening_results:
+            from jobpulse.screening_outcome_recorder import get_screening_outcome_recorder
+            recorder = get_screening_outcome_recorder()
+            outcome = recorder.record_confirmation(
+                screening_results=screening_results,
+                corrections=result.get("corrections"),
+            )
+            result["screening_outcome"] = outcome
+    except Exception as exc:
+        logger.debug("confirm_application: screening outcome recording: %s", exc)
+
     try:
         from jobpulse.post_apply_hook import post_apply_hook
 
@@ -511,15 +541,34 @@ def confirm_application(
                 "match_tier": ctx.get("match_tier"),
                 "ats_score": ctx.get("ats_score"),
                 "matched_projects": ctx.get("matched_projects"),
+                "salary": ctx.get("salary"),
+                "seniority": ctx.get("seniority"),
+                "remote": ctx.get("remote"),
+                "manually_applied": ctx.get("manually_applied", True),
             },
         )
     except Exception as exc:
         logger.warning("confirm_application: post_apply_hook failed: %s", exc)
 
+    # Clean Chrome caches after manual approval (same path as auto-submit)
+    try:
+        from jobpulse.browser_cleanup import (
+            cleanup_chrome_profile_caches,
+            should_restart_chrome,
+            restart_chrome,
+        )
+        if should_restart_chrome():
+            restart_chrome()
+        else:
+            cleanup_chrome_profile_caches()
+    except Exception as exc:
+        logger.debug("confirm_application: browser_cleanup: %s", exc)
+
     # Count Claude corrections from the correction result
     claude_count = len(result.get("corrections", {}).get("corrections", []))
     _record_agent_performance(
         result, ctx, url, platform_key, dry_run=False, claude_fields=claude_count,
+        ai_meta=ai_meta,
     )
 
     return result

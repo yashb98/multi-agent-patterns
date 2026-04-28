@@ -119,7 +119,8 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # WORK AUTHORIZATION & VISA (6 patterns) — specific before general
     # ===================================================================
     r"please.*select.*right.*work.*status|right.*work.*status": "SENSITIVE:visa_status_full",
-    r"right.*work.*type|work.*type|work.*permit|work.*authorization.*type|visa.*type|type.*visa.*hold|eligibility.*based|what.*eligibility": "SENSITIVE:visa_type",
+    r"right.*work.*type|work.{0,20}type.{0,10}(?:visa|permit|authorization)|work.*permit|work.*authorization.*type|visa.*type|type.*visa.*hold|eligibility.*based|what.*eligibility": "SENSITIVE:visa_type",
+    r"(?:any|are there).*restriction.*(?:right.*work|work.*uk)|restriction.*(?:your|on).*right": "No",
     r"authorized.*work|right to work|legally.*work|eligible.*work|unrestricted.*right": "Yes",
     r"require.*sponsor|visa.*sponsor|sponsorship|need.*sponsor": "No",
     r"visa.*status|immigration.*status|current.*visa|visa.*expire": "SENSITIVE:visa_status",
@@ -136,7 +137,7 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # NOTICE PERIOD & EMPLOYMENT (5 patterns)
     # ===================================================================
-    r"notice.*period|when.*start|available.*start|start.*date|earliest.*start|how.*soon.*start|immediate.*start": "Immediately",
+    r"notice.*period|when.*start|available.*start|start.*date|earliest.*start|how.*soon.*start|immediate.*start": "SCREENING:notice_period",
     r"currently.*employ|current.*employment|employment.*status|are.*you.*employ": "Yes",
     r"current.*job.*title|current.*role|current.*position|present.*role": "SCREENING:current_job_title",
     r"current.*employer|who.*work.*for|present.*employer|company.*work.*for": "SCREENING:current_employer",
@@ -157,10 +158,12 @@ COMMON_ANSWERS: dict[str, str | None] = {
     r"hybrid.*work|hybrid.*arrange|days.*per.*week.*on.?site|days.*in.*office|comfortable.*hybrid": "Yes",
 
     # ===================================================================
-    # EXPERIENCE (2 patterns)
+    # EXPERIENCE (4 patterns)
     # ===================================================================
     r"years.*experience|experience.*years|how.*many.*years|total.*years.*experience": "SKILL_EXPERIENCE",
-    r"experience.*with|proficient.*in|familiar.*with|hands.?on.*experience|worked.*with": "SKILL_EXPERIENCE",
+    r"experience.*with|proficient.*in|familiar.*with|worked.*with": "SKILL_EXPERIENCE",
+    r"have.*you.*worked.*in.*(?:data science|machine learning|analy|ai |ml |engineer)|worked.*(?:data science|ml|ai).*role": "Yes",
+    r"happy.*(?:hands.?on|engineering|building|iterating)|significant.*part.*(?:hands.?on|engineering|building)": "Yes",
 
     # ===================================================================
     # EDUCATION (4 patterns) — specific before general
@@ -260,6 +263,11 @@ COMMON_ANSWERS: dict[str, str | None] = {
     r"hold.*certification|professional.*cert|relevant.*cert|aws.*cert|certified": None,
 
     # ===================================================================
+    # HIRING MESSAGE / INTEREST (1 pattern) — dynamic per company
+    # ===================================================================
+    r"company.*know.*interest|interest.*working.*there|message.*hiring.*team|message.*recruiter": "HIRING_MESSAGE",
+
+    # ===================================================================
     # OPEN-ENDED / LLM (3 patterns)
     # ===================================================================
     r"why.*apply|why.*interest|why.*company|motivation|what.*excites": None,
@@ -351,6 +359,58 @@ def _check_previously_applied(
     return "Yes" if count > 0 else "No"
 
 
+def _generate_hiring_message(job_context: dict | None) -> str:
+    """Generate a tailored hiring message using LLM with the user's core projects."""
+    ctx = job_context or {}
+    company = ctx.get("company", "the company")
+    role = ctx.get("title", "this role")
+
+    _CORE_PROJECTS = (
+        "- Built a production multi-agent AI system (github.com/yashb98/multi-agent-patterns) "
+        "with 10+ autonomous agents using LangGraph, 4 orchestration topologies, and a "
+        "3-engine memory layer (SQLite + Qdrant + Neo4j) with self-improving reinforcement learning.\n"
+        "- Evaluates GenAI vs simpler approaches: rule-based filters first (zero cost), "
+        "semantic embeddings second, LLM fallback only when needed — saving 70-85% of API costs.\n"
+        "- Designs experiments with measurable outcomes: A/B-tested thresholds, conversion "
+        "funnels, statistical correlation engines with clear success metrics.\n"
+        "- Builds responsibly: structured error handling, cost tracking on every LLM call, "
+        "prompt injection defence, dry-run-first safety workflows."
+    )
+
+    prompt = (
+        f"Write a short message (150-200 words, plain text, NO greeting/sign-off/subject) "
+        f"for a job application form text box at {company} for the role: {role}.\n\n"
+        f"The candidate's core projects and strengths:\n{_CORE_PROJECTS}\n\n"
+        f"Rules:\n"
+        f"- First person, conversational but confident. Not a formal letter.\n"
+        f"- Open with ONE sentence about the most relevant project for THIS company/role.\n"
+        f"- Then 2-3 sentences showing concrete alignment with the role.\n"
+        f"- Close with one forward-looking sentence about the company's mission.\n"
+        f"- No bullet points, no headers, no greetings, no sign-offs, no placeholders.\n"
+        f"- Do NOT use em-dashes. Use commas or periods instead.\n"
+        f"- Make a recruiter want to schedule an interview after reading this."
+    )
+
+    try:
+        from shared.agents import get_llm, smart_llm_call
+        from langchain_core.messages import HumanMessage
+        llm = get_llm(temperature=0.7)
+        result = smart_llm_call(llm, [HumanMessage(content=prompt)])
+        text = result.content if hasattr(result, "content") else str(result)
+        if text and len(text.strip()) > 50:
+            return text.strip()
+    except Exception as exc:
+        logger.debug("Hiring message LLM generation failed: %s", exc)
+
+    return (
+        f"I have spent the past year building a production multi-agent AI system that "
+        f"orchestrates 10+ autonomous agents using LangGraph, with a 3-engine memory layer "
+        f"and self-improving reinforcement learning. I evaluate GenAI vs simpler approaches "
+        f"daily, saving 70-85% of API costs through a rule-based-first architecture. "
+        f"I would love to bring this hands-on GenAI engineering experience to {company}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Placeholder resolver
 # ---------------------------------------------------------------------------
@@ -414,6 +474,9 @@ def _resolve_placeholder(
         except Exception:
             pass
         return ""
+
+    if answer == "HIRING_MESSAGE":
+        return _generate_hiring_message(job_context)
 
     if answer == "CURRENT_SALARY":
         try:
@@ -483,43 +546,45 @@ def get_answer(
                 return with_tone_filter(resolved, normalised, None)
             # Matched but needs LLM (answer is None) — cache result for reuse
             logger.debug("Pattern match (LLM-required) for '%s'", normalised[:60])
-            _db_tier1 = db or JobDB()
             llm_answer = _generate_answer(normalised, job_context)
-            _db_tier1.cache_answer(normalised, llm_answer)
-            logger.info("Generated + cached Tier 1 answer for '%s'", normalised[:60])
+            logger.info("Generated Tier 1 LLM answer for '%s'", normalised[:60])
             _strategy_local.last = AnswerResult(llm_answer, "llm_tier3", 0.6)
             return with_tone_filter(llm_answer, normalised, None)
 
     # --- Tier 1.5: agent rules (learned from corrections) -----------------
     try:
         from jobpulse.agent_rules import AgentRulesDB
+        import re as _re
         _rules_db = AgentRulesDB()
-        _matching = _rules_db.get_rules(
-            category="screening", field_label=normalised, platform=platform,
-        )
-        if _matching:
-            _rule = _matching[0]
-            _rule_val = _rules_db.apply_rule(_rule, "", None)
-            if _rule_val is not None:
-                logger.debug("Agent rule match for '%s' -> '%s'", normalised[:60], _rule_val[:80])
-                _strategy_local.last = AnswerResult(_rule_val, "agent_rule", 0.85)
-                return with_tone_filter(_rule_val, normalised, None)
+        _all_rules = _rules_db.get_active_rules("correction_override")
+        for _rule in _all_rules:
+            if _rule.get("category") == "screening" and _re.search(_rule.get("pattern", ""), normalised):
+                _rule_val = _rule.get("value", "")
+                if _rule_val:
+                    logger.debug("Agent rule match for '%s' -> '%s'", normalised[:60], _rule_val[:80])
+                    _strategy_local.last = AnswerResult(_rule_val, "agent_rule", 0.85)
+                    return with_tone_filter(_rule_val, normalised, None)
     except Exception:
         pass
 
-    # --- Tier 2: cache lookup --------------------------------------------
-    _db = db or JobDB()
-    cached = _db.get_cached_answer(normalised)
-    if cached is not None:
-        logger.debug("Cache hit for '%s'", normalised[:60])
-        _strategy_local.last = AnswerResult(cached, "cache_hit", 0.8)
-        return with_tone_filter(cached, normalised, None)
+    # --- Tier 1.6: V2 pipeline (semantic cache → intent → regex → rules → LLM)
+    v2_answer = try_screening_v2(normalised, job_context)
+    if v2_answer:
+        logger.debug("Screening V2 answer for '%s' -> '%s'", normalised[:60], v2_answer[:80])
+        _strategy_local.last = AnswerResult(v2_answer, "screening_v2", 0.75)
+        return with_tone_filter(v2_answer, normalised, None)
 
-    # --- Tier 3: LLM generation ------------------------------------------
+    # --- Tier 4: LLM generation → cache in V2 ----------------------------
     answer = _generate_answer(normalised, job_context)
-    _db.cache_answer(normalised, answer)
-    logger.info("Generated + cached answer for '%s'", normalised[:60])
-    _strategy_local.last = AnswerResult(answer, "llm_tier3", 0.6)
+    try:
+        from jobpulse.screening_semantic_cache import get_screening_semantic_cache
+        get_screening_semantic_cache().cache(
+            question=normalised, intent="unknown", answer=answer, confidence=0.55,
+        )
+    except Exception:
+        pass
+    logger.info("Generated + cached (V2) answer for '%s'", normalised[:60])
+    _strategy_local.last = AnswerResult(answer, "llm_tier4", 0.6)
     return with_tone_filter(answer, normalised, None)
 
 
@@ -582,6 +647,78 @@ def try_instant_answer(
         return cached
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Screening V2 Pipeline Integration
+# ---------------------------------------------------------------------------
+
+# Module-level singleton for the V2 pipeline (lazy init)
+_v2_pipeline = None
+
+
+def _get_v2_pipeline():
+    """Lazy-init the ScreeningPipeline with applicant profile."""
+    global _v2_pipeline
+    if _v2_pipeline is not None:
+        return _v2_pipeline
+    try:
+        from jobpulse.screening_pipeline import ScreeningPipeline
+        _v2_pipeline = ScreeningPipeline(profile=PROFILE)
+        logger.debug("Screening V2 pipeline initialised")
+        return _v2_pipeline
+    except Exception as exc:
+        logger.debug("Screening V2 pipeline unavailable: %s", exc)
+        return None
+
+
+def try_screening_v2(
+    question: str,
+    job_context: dict | None = None,
+    *,
+    field: dict | None = None,
+    min_confidence: float = 0.55,
+) -> str | None:
+    """Try the V2 screening pipeline (semantic cache → intent → regex → rules → LLM).
+
+    Returns the answer string if confidence >= min_confidence, else None.
+    This is a non-blocking, best-effort call — failures are swallowed silently.
+
+    Skipped in test mode to preserve deterministic test behaviour for the
+    legacy resolution tiers.
+    """
+    import os
+    if os.getenv("JOBPULSE_TEST_MODE") == "1":
+        return None
+
+    if not question or not question.strip():
+        return None
+
+    pipeline = _get_v2_pipeline()
+    if pipeline is None:
+        return None
+
+    try:
+        result = pipeline.answer(question.strip(), field=field, job_context=job_context)
+        answer = result.get("answer", "")
+        confidence = result.get("confidence", 0.0)
+        source = result.get("source", "unknown")
+
+        if answer and confidence >= min_confidence:
+            logger.debug(
+                "Screening V2 (%s, conf=%.2f) for '%s' -> '%s'",
+                source, confidence, question[:60], answer[:80],
+            )
+            return answer
+
+        logger.debug(
+            "Screening V2 (%s) confidence too low (%.2f < %.2f) for '%s'",
+            source, confidence, min_confidence, question[:60],
+        )
+        return None
+    except Exception as exc:
+        logger.debug("Screening V2 failed for '%s': %s", question[:60], exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

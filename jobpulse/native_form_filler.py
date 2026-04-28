@@ -1232,7 +1232,8 @@ class NativeFormFiller:
         await self._dismiss_stale_dialogs()
 
         seen_field_types: list[str] = []
-        seen_screening: list[str] = []
+        seen_screening: list[dict[str, Any]] = []
+        _outcome_recorder = None
         all_agent_mappings: dict[str, str] = {}
         total_fields_attempted = 0
         total_fields_filled = 0
@@ -1244,7 +1245,7 @@ class NativeFormFiller:
 
         def _result(base: dict) -> dict:
             base.setdefault("field_types", seen_field_types)
-            base.setdefault("screening_questions", seen_screening)
+            base.setdefault("screening_results", seen_screening)
             base.setdefault("time_seconds", round(time.monotonic() - t0, 1))
             base.setdefault("agent_mapping", all_agent_mappings)
             base["agent_fill_stats"] = {
@@ -1392,6 +1393,8 @@ class NativeFormFiller:
             ]
             if unresolved:
                 from jobpulse.screening_answers import try_instant_answer, try_screening_v2
+                from jobpulse.screening_outcome_recorder import get_screening_outcome_recorder
+                _outcome_recorder = get_screening_outcome_recorder()
                 _job_ctx_raw = custom_answers.get("_job_context")
                 _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
                 still_unresolved = []
@@ -1399,7 +1402,15 @@ class NativeFormFiller:
                     db_answer = self._cached_screening.get(f["label"].lower().strip())
                     if db_answer:
                         mapping[f["label"]] = db_answer
-                        seen_screening.append(f"{f['label']}:{db_answer}")
+                        seen_screening.append({
+                            "question": f["label"], "answer": db_answer,
+                            "field_type": f.get("type", "text"), "field_options": f.get("options"),
+                            "intent": "unknown", "strategy": "db_cache",
+                        })
+                        _outcome_recorder.record_fill(
+                            question=f["label"], answer=db_answer,
+                            field_options=f.get("options"), field_type=f.get("type", "text"),
+                        )
                         continue
                     cached = try_instant_answer(
                         f["label"], _job_ctx,
@@ -1409,7 +1420,15 @@ class NativeFormFiller:
                         cached_text = str(cached).strip()
                         if cached_text:
                             mapping[f["label"]] = cached_text
-                            seen_screening.append(f"{f['label']}:{cached_text}")
+                            seen_screening.append({
+                                "question": f["label"], "answer": cached_text,
+                                "field_type": f.get("type", "text"), "field_options": f.get("options"),
+                                "intent": "unknown", "strategy": "pattern_match",
+                            })
+                            _outcome_recorder.record_fill(
+                                question=f["label"], answer=cached_text,
+                                field_options=f.get("options"), field_type=f.get("type", "text"),
+                            )
                         else:
                             still_unresolved.append(f)
                         continue
@@ -1423,7 +1442,15 @@ class NativeFormFiller:
                         v2_text = str(v2_answer).strip()
                         if v2_text:
                             mapping[f["label"]] = v2_text
-                            seen_screening.append(f"{f['label']}:{v2_text}")
+                            seen_screening.append({
+                                "question": f["label"], "answer": v2_text,
+                                "field_type": f.get("type", "text"), "field_options": f.get("options"),
+                                "intent": "unknown", "strategy": "screening_v2",
+                            })
+                            _outcome_recorder.record_fill(
+                                question=f["label"], answer=v2_text,
+                                field_options=f.get("options"), field_type=f.get("type", "text"),
+                            )
                         else:
                             still_unresolved.append(f)
                     else:
@@ -1438,7 +1465,15 @@ class NativeFormFiller:
                     screening = clean_mapping(screening)
                     mapping.update(screening)
                     for q, a in screening.items():
-                        seen_screening.append(f"{q}:{a}")
+                        seen_screening.append({
+                            "question": q, "answer": str(a),
+                            "field_type": "text", "field_options": None,
+                            "intent": "unknown", "strategy": "llm_fallback",
+                        })
+                        _outcome_recorder.record_fill(
+                            question=q, answer=str(a),
+                            field_options=None, field_type="text",
+                        )
 
             all_agent_mappings.update({k: str(v) for k, v in mapping.items()})
 
@@ -1518,7 +1553,18 @@ class NativeFormFiller:
                             mapping[label] = retry_value
                             all_agent_mappings[label] = retry_value
                             if is_screening_like_field(item["field"]):
-                                seen_screening.append(f"{label}:{retry_value}")
+                                seen_screening.append({
+                                    "question": label, "answer": retry_value,
+                                    "field_type": item["field"].get("type", "text"),
+                                    "field_options": item["field"].get("options"),
+                                    "intent": "unknown", "strategy": "llm_recovery",
+                                })
+                                if _outcome_recorder is not None:
+                                    _outcome_recorder.record_fill(
+                                        question=label, answer=retry_value,
+                                        field_options=item["field"].get("options"),
+                                        field_type=item["field"].get("type", "text"),
+                                    )
                             continue
                     still_failing.append(item)
 

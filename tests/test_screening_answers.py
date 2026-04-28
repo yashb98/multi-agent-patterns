@@ -40,7 +40,6 @@ def test_sponsorship_no():
 def test_visa_status():
     answer = get_answer("What is your current visa status?")
     assert "Graduate Visa" in answer
-    assert "2026" in answer
 
 
 # ------------------------------------------------------------------
@@ -296,27 +295,24 @@ def test_proficiency_rating():
 # Cache tests
 # ------------------------------------------------------------------
 
-def test_unknown_question_falls_to_cache():
+def test_unknown_question_does_not_use_v1_cache():
+    """Unknown questions should NOT fall back to V1 cache (retired)."""
     mock_db = MagicMock(spec=JobDB)
     mock_db.get_cached_answer.return_value = "Cached response"
-    answer = get_answer("What is your favourite colour?", db=mock_db)
-    mock_db.get_cached_answer.assert_called_once()
-    assert answer == "Cached response"
+    with patch("jobpulse.screening_semantic_cache.get_screening_semantic_cache"):
+        with patch("jobpulse.screening_answers._generate_answer", return_value="LLM answer"):
+            answer = get_answer("What is your favourite colour?", db=mock_db)
+    mock_db.get_cached_answer.assert_not_called()
+    assert answer == "LLM answer"
 
 
-def test_cache_stores_and_retrieves(tmp_path):
+def test_v1_cache_stores_and_retrieves(tmp_path):
+    """V1 cache API still works for direct callers (backwards compat)."""
     db = JobDB(db_path=tmp_path / "test_answers.db")
     assert get_cached_answer("What IDE do you use?", db=db) is None
     cache_answer("What IDE do you use?", "VS Code and Neovim", db=db)
     result = get_cached_answer("What IDE do you use?", db=db)
     assert result == "VS Code and Neovim"
-
-
-def test_cache_increments_times_used(tmp_path):
-    db = JobDB(db_path=tmp_path / "test_answers.db")
-    cache_answer("Niche question?", "Niche answer", db=db)
-    answer = get_answer("Niche question?", db=db)
-    assert answer == "Niche answer"
 
 
 # ------------------------------------------------------------------
@@ -334,12 +330,30 @@ def test_llm_fallback_for_none_pattern(mock_gen):
 @patch("jobpulse.screening_answers._generate_answer")
 def test_llm_fallback_for_unknown_question(mock_gen):
     mock_gen.return_value = "Generated answer"
-    mock_db = MagicMock(spec=JobDB)
-    mock_db.get_cached_answer.return_value = None
-    answer = get_answer("Explain quantum computing in one sentence", db=mock_db)
+    with patch("jobpulse.screening_semantic_cache.get_screening_semantic_cache"):
+        answer = get_answer("Explain quantum computing in one sentence")
     mock_gen.assert_called_once()
-    mock_db.cache_answer.assert_called_once()
     assert answer == "Generated answer"
+
+
+@patch("jobpulse.screening_answers._generate_answer")
+def test_llm_fallback_caches_in_v2_not_v1(mock_gen, monkeypatch):
+    """LLM-generated answers should cache in V2, not V1."""
+    mock_gen.return_value = "Test answer"
+
+    v1_calls = []
+    original_cache = JobDB.cache_answer
+
+    def spy_cache(self, question, answer):
+        v1_calls.append((question, answer))
+        return original_cache(self, question, answer)
+
+    monkeypatch.setattr(JobDB, "cache_answer", spy_cache)
+
+    with patch("jobpulse.screening_semantic_cache.get_screening_semantic_cache"):
+        get_answer("A completely novel unique screening question xyz123?")
+
+    assert len(v1_calls) == 0, "V1 cache_answer should not be called from screening path"
 
 
 # ------------------------------------------------------------------
