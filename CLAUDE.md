@@ -68,13 +68,13 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 
 **Visibility:** Browser always headed — human watches live. No screenshots needed (human sees it). Logs to stdout; cron streams to Telegram. On ambiguity: STOP, tell human.
 
-**Observe each step on real data:**
-1. **Pre-Screen** — Gates 0-4 on real JD (`recruiter_screen` → `skill_graph_store` → `gate4_quality`)
-2. **CV/CL** — `sync_verified_to_profile()` → `generate_cv_pdf()` → lazy CL only when field detected
-3. **Form Fill** — CDP a11y scan → container resolution → `field_mapper` → `semantic_matcher` → `screening_answers`
-4. **Dry Run** — Human reviews filled form live, mismatches become correction signals
+**Observe each step — let the system pick the best approach dynamically, capture everything for learning:**
+1. **Pre-Screen** — Gates 0-4 on real JD. Log which gate passed/killed and why. Capture skill match data.
+2. **CV/CL** — Dynamic profile sync + generation. Log matched skills, projects, role profile selection.
+3. **Form Fill** — System dynamically resolves: field discovery method, container scoping, option matching strategy, timing, screening answers. Log every decision + outcome per field (what was tried, what worked, what failed) so agents learn which approach works best per domain/platform.
+4. **Dry Run** — Human reviews live. Every mismatch = correction signal with before/after values.
 5. **Submit** — Rate limiter + mutex + `confirm_application()` (mandatory)
-6. **Learning** — Verify ALL fire: `post_apply_hook` → `CorrectionCapture` → `AgentRulesDB` → `strategy_reflector` → `OptimizationEngine` signals → `AgentPerformanceDB`
+6. **Learning** — Verify ALL fire and capture maximum data: `post_apply_hook` → `CorrectionCapture` → `AgentRulesDB` → `strategy_reflector` → `OptimizationEngine` signals → `AgentPerformanceDB`. Each system stores what worked AND what didn't — failures are learning data too.
 
 **On error — Diagnose → Fix → Test → Teach → Verify:**
 - Trace via MCP (`find_symbol`, `callers_of`). Fix surgically. Re-run same real data.

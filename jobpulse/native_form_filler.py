@@ -1560,11 +1560,12 @@ class NativeFormFiller:
                             fields_by_label[lbl] = {"label": lbl, "type": "text"}
 
             # 4. Screening: DB cache → pattern → V2 pipeline → LLM
-            #    Skip fields already pre-filled (by direct ID fill or form defaults)
+            #    Skip text/select fields already pre-filled (by direct ID fill or form defaults)
+            #    Radio fields always have a non-empty HTML value attr — don't skip those
             unresolved = [
                 f for f in fields
                 if f["label"] not in mapping and f["type"] != "file"
-                and not f.get("value")
+                and (f["type"] == "radio" or not f.get("value"))
             ]
             if unresolved:
                 from jobpulse.screening_answers import try_instant_answer, try_screening_v2
