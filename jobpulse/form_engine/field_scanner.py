@@ -273,15 +273,21 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                     entry.options = Array.from(radios).map(r => labelFor(r));
                     entry.label = label || name;
                     entry.name = name;
-                    // Walk up to find the question text for this radio group
-                    let questionEl = el.closest('[data-testid], fieldset, .question, [class*="question"]');
-                    if (!questionEl) questionEl = el.parentElement?.parentElement;
-                    if (questionEl) {
-                        const qLabel = questionEl.querySelector('label, legend, h3, h4, p');
-                        if (qLabel) {
-                            const qt = qLabel.textContent.trim();
-                            if (qt.length > 5 && qt.length < 500) entry.question = qt;
+                    // Walk up to find the question text — skip option labels
+                    const optTexts = new Set(entry.options.map(o => o.toLowerCase()));
+                    let node = el;
+                    for (let depth = 0; node && depth < 6; depth++) {
+                        node = node.parentElement;
+                        if (!node) break;
+                        const qCandidates = node.querySelectorAll(':scope > label, :scope > legend, :scope > h3, :scope > h4, :scope > p, :scope > span[class*="label"]');
+                        for (const c of qCandidates) {
+                            const qt = c.textContent.trim();
+                            if (qt.length > 10 && qt.length < 500 && !optTexts.has(qt.toLowerCase())) {
+                                entry.question = qt;
+                                break;
+                            }
                         }
+                        if (entry.question) break;
                     }
                 }
                 if (el.tagName === 'DIV' || el.tagName === 'SPAN') {

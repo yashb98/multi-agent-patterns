@@ -62,105 +62,30 @@ Every feature, function, and file MUST satisfy all 8 principles. Full checklist:
 7. **Product Thinking** — Dry-run-first, confirm_application(), OS-aware paths, user-actionable errors
 8. **Dynamic Over Hardcoded** — All pipeline values resolved at runtime, never hardcoded for specific forms/platforms
 
-## Live Pipeline Observation Protocol (MANDATORY for every application)
+## Live Pipeline Observation (MANDATORY)
 
-Every job application — whether triggered by Claude, AI agents, or cron — MUST run through the actual live pipeline with full step-by-step observation. No mocks, no shortcuts, no simulated data.
+All applications run the real live pipeline. No mocks, no headless, no silent runs.
 
-### The Observation Loop
+**Visibility:** Browser always headed — human watches live. No screenshots needed (human sees it). Logs to stdout; cron streams to Telegram. On ambiguity: STOP, tell human.
 
-When applying to a job, Claude MUST observe every step of the live pipeline in real time:
+**Observe each step on real data:**
+1. **Pre-Screen** — Gates 0-4 on real JD (`recruiter_screen` → `skill_graph_store` → `gate4_quality`)
+2. **CV/CL** — `sync_verified_to_profile()` → `generate_cv_pdf()` → lazy CL only when field detected
+3. **Form Fill** — CDP a11y scan → container resolution → `field_mapper` → `semantic_matcher` → `screening_answers`
+4. **Dry Run** — Human reviews filled form live, mismatches become correction signals
+5. **Submit** — Rate limiter + mutex + `confirm_application()` (mandatory)
+6. **Learning** — Verify ALL fire: `post_apply_hook` → `CorrectionCapture` → `AgentRulesDB` → `strategy_reflector` → `OptimizationEngine` signals → `AgentPerformanceDB`
 
-```
-1. Pre-Screen  →  2. CV/CL Generation  ���  3. Form Fill  →  4. Dry Run Review  →  5. Submit  →  6. Post-Apply Learning
-     ↑                                                                                              |
-     └──────────────────────── Fix issues, update rules, improve agents ←───────────────────────────┘
-```
+**On error — Diagnose → Fix → Test → Teach → Verify:**
+- Trace via MCP (`find_symbol`, `callers_of`). Fix surgically. Re-run same real data.
+- Route fix to correct DB: fill issue → `CorrectionCapture` + `AgentRulesDB` | quirk → `GotchasDB` | answer → screening cache | nav → `NavigationLearner`
+- Always emit `adaptation` signal + log trajectory step via `OptimizationEngine`
+- Verify learning persisted (query DB)
 
-### Step-by-Step Observation Checklist
-
-**Step 1: Pre-Screen Pipeline** — Observe Gates 0-3 + Gate 4 running on the real JD
-- Verify `recruiter_screen.py` (Gate 0) title/keyword filter against real JD text
-- Verify `skill_graph_store.py` (Gates 1-3) skill extraction and scoring with real profile
-- Verify `gate4_quality.py` (Gate 4) JD quality + company blocklist + CV scrutiny
-- Check: are real skills being matched? Are scores accurate? Are kill signals correct?
-
-**Step 2: CV/CL Generation** — Observe generation with real company data
-- Verify `sync_verified_to_profile()` pulls latest verified skills from Notion
-- Verify `generate_cv_pdf()` produces correct content (projects, metrics, skills match JD)
-- Verify cover letter lazy generation triggers only when CL field detected
-- Check: does the CV match the JD? Are metrics real? Is the 2-page limit respected?
-
-**Step 3: Form Fill** — Observe every field fill on the real ATS form
-- Watch `NativeFormFiller` scan fields via CDP `Accessibility.getFullAXTree`
-- Watch `field_scanner.py` container resolution (Learned → Auto-detect → Strategy)
-- Watch `field_mapper.py` map profile values to form fields (seed_mapping + LLM fallback)
-- Watch `semantic_matcher.py` match dropdown/radio options (5-tier cascade)
-- Watch `screening_answers.py` generate answers from JD+CV context
-- Check: every field filled correctly? Options matched? Screening answers accurate?
-
-**Step 4: Dry Run Review** — Human-in-the-loop verification
-- Screenshot the filled form, compare agent values against expected values
-- Identify any mismatches, wrong options, missing fields, misaligned data
-- Record what the agent got wrong (these become correction signals)
-
-**Step 5: Submit** — Observe the submission path
-- Watch `applicator.py` rate limiter, mutex, and quota reservation
-- Watch adapter `fill_and_submit()` execute (async bridging, external redirects)
-- Verify `confirm_application()` runs after user approval (MANDATORY)
-- Check: did the submission succeed? Any errors? Any external redirects handled?
-
-**Step 6: Post-Apply Learning** — Observe all learning systems fire
-- Watch `post_apply_hook()` record form experience to `FormExperienceDB`
-- Watch `correction_capture.py` diff agent_mapping vs final_mapping
-- Watch `agent_rules.py` auto-generate rules from corrections
-- Watch `strategy_reflector.py` extract heuristics (deterministic + LLM)
-- Watch `AgentPerformanceDB` record fill stats
-- Watch `OptimizationEngine` emit signals (correction, success, adaptation)
-- Watch `screening_outcome_recorder` store screening results
-- Check: are all learning databases updated? Are signals emitted? Are rules generated?
-
-### When Something Breaks — Fix and Teach
-
-When Claude or an AI agent encounters an error during any pipeline step:
-
-1. **Diagnose** — Read the error, trace it to the exact function and line using MCP tools (`find_symbol`, `callers_of`, `callees_of`)
-2. **Fix** — Apply the surgical fix to the failing code (match existing style, minimal change)
-3. **Test** — Re-run the same pipeline step with the same real data to verify the fix works
-4. **Teach** — Feed the fix into the learning systems so AI agents improve:
-   - Emit an `adaptation` signal via `OptimizationEngine` with before/after metrics
-   - If it's a form fill issue: store the correction in `CorrectionCapture` + `AgentRulesDB`
-   - If it's a platform quirk: store in `GotchasDB` + update `.claude/rules/jobs.md`
-   - If it's a screening answer: cache the correct answer in `screening_answers.py` SQLite
-   - If it's a navigation issue: update `NavigationLearner` with the working sequence
-   - Log the trajectory step via `OptimizationEngine.log_step()` for JSONL export
-5. **Verify Learning** — Confirm the learning was persisted (query the DB, check the signal bus)
-
-### Meta-Cognitive Self-Adaptation
-
-The pipeline uses three layers of self-improvement that Claude must observe and verify:
-
-**Layer 1: Correction → Rule → Consumption Loop**
-- `CorrectionCapture` records field-level diffs → `AgentRulesDB` generates rules → `NativeFormFiller` consumes rules on next fill
-- Claude verifies: corrections are being captured, rules are being generated, rules are being applied
-
-**Layer 2: Strategy Reflection**
-- `strategy_reflector.py` runs after every application: deterministic heuristic extraction + LLM reflection
-- Heuristics feed `TrajectoryStore` + `ExperienceMemory` for cross-domain learning
-- Claude verifies: heuristics are being extracted, experience scores are accurate
-
-**Layer 3: Cognitive Engine Escalation**
-- `CognitiveEngine` escalates reasoning when needed: L0 Memory → L1 Single Shot → L2 Reflexion → L3 Tree of Thought
-- `OptimizationEngine` tracks domain stats → feeds `EscalationClassifier` with success rates
-- Claude verifies: escalation is happening at the right level, strategy templates are being stored
-
-### What Claude Must Do Differently
-
-- **Never skip observation** — Even if a step "looks fine", verify it ran and produced correct output
-- **Never use mock data** — All URLs, profiles, JDs, and form data must be real and live
-- **Always trace errors to root cause** — Don't just retry; understand WHY it failed
-- **Always close the learning loop** — Every fix must flow back into the learning databases
-- **Always check downstream impact** — Use `callers_of` and `impact_analysis` before changing any function
-- **Report what you observed** — After each application, summarize: what worked, what broke, what was learned
+**Verify 3 self-adaptation layers after every application:**
+1. **Correction → Rule → Consumption** — `CorrectionCapture` → `AgentRulesDB` → `NativeFormFiller` consumes
+2. **Strategy Reflection** — `strategy_reflector` → `TrajectoryStore` + `ExperienceMemory`
+3. **Cognitive Escalation** — `CognitiveEngine` (L0→L3) + `OptimizationEngine` → `EscalationClassifier`
 
 ## Critical Rules
 - Update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
