@@ -477,6 +477,279 @@ def test_validate_scan_zero_fields():
     assert result["reason"] == "zero_fields"
 
 
+# ── Multi-strategy scanner ──
+
+
+class TestMultiStrategyScanner:
+    """Tests for the multi-strategy scan_fields orchestrator."""
+
+    @pytest.mark.asyncio
+    async def test_a11y_wins_when_most_fields(self):
+        """a11y_tree strategy wins when it finds the most fillable fields."""
+        from jobpulse.form_engine.field_scanner import scan_fields, _merge_fields
+
+        a11y_fields = [
+            {"label": "Name", "type": "text", "value": ""},
+            {"label": "Email", "type": "text", "value": ""},
+            {"label": "Phone", "type": "text", "value": ""},
+        ]
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://example.com/apply"
+        mock_page.context = AsyncMock()
+        mock_page.get_by_role = MagicMock(return_value=AsyncMock())
+        mock_page.get_by_label = MagicMock(return_value=AsyncMock())
+        mock_page.locator = MagicMock(return_value=AsyncMock())
+
+        with patch("jobpulse.form_engine.field_scanner._scan_a11y_tree", return_value=a11y_fields), \
+             patch("jobpulse.form_engine.field_scanner._scan_dom_query", return_value=[{"label": "Name", "type": "text"}]), \
+             patch("jobpulse.form_engine.field_scanner.scan_fields_locator_fallback", return_value=[]):
+            fields = await scan_fields(mock_page)
+        assert len(fields) >= 3
+
+    @pytest.mark.asyncio
+    async def test_dom_query_wins_when_a11y_empty(self):
+        """dom_query strategy wins when a11y_tree returns nothing."""
+        from jobpulse.form_engine.field_scanner import scan_fields
+
+        dom_fields = [
+            {"label": "First Name", "type": "text", "value": ""},
+            {"label": "Last Name", "type": "text", "value": ""},
+        ]
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://example.com/apply"
+        mock_page.context = AsyncMock()
+
+        with patch("jobpulse.form_engine.field_scanner._scan_a11y_tree", return_value=[]), \
+             patch("jobpulse.form_engine.field_scanner._scan_dom_query", return_value=dom_fields), \
+             patch("jobpulse.form_engine.field_scanner.scan_fields_locator_fallback", return_value=[]):
+            fields = await scan_fields(mock_page)
+        assert len(fields) == 2
+        assert fields[0]["label"] == "First Name"
+
+    @pytest.mark.asyncio
+    async def test_merge_unique_fields_from_runners_up(self):
+        """Fields unique to runner-up strategies are merged into the winner."""
+        from jobpulse.form_engine.field_scanner import scan_fields
+
+        a11y_fields = [
+            {"label": "Name", "type": "text", "value": ""},
+            {"label": "Email", "type": "text", "value": ""},
+        ]
+        dom_fields = [
+            {"label": "Name", "type": "text", "value": ""},
+            {"label": "Phone", "type": "text", "value": ""},
+            {"label": "Resume", "type": "file"},
+        ]
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://example.com/apply"
+        mock_page.context = AsyncMock()
+
+        with patch("jobpulse.form_engine.field_scanner._scan_a11y_tree", return_value=a11y_fields), \
+             patch("jobpulse.form_engine.field_scanner._scan_dom_query", return_value=dom_fields), \
+             patch("jobpulse.form_engine.field_scanner.scan_fields_locator_fallback", return_value=[]):
+            fields = await scan_fields(mock_page)
+
+        labels = {f["label"] for f in fields}
+        assert "Name" in labels
+        assert "Email" in labels
+        assert "Phone" in labels
+        assert "Resume" in labels
+
+    @pytest.mark.asyncio
+    async def test_hydration_retry_on_zero_fields(self):
+        """When all strategies return 0 initially, retries after hydration wait."""
+        from jobpulse.form_engine.field_scanner import scan_fields
+
+        call_count = {"a11y": 0}
+        retry_fields = [{"label": "Name", "type": "text", "value": ""}]
+
+        async def a11y_side_effect(page, container_node_id=None):
+            call_count["a11y"] += 1
+            if call_count["a11y"] <= 1:
+                return []
+            return retry_fields
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://example.com/apply"
+        mock_page.context = AsyncMock()
+
+        with patch("jobpulse.form_engine.field_scanner._scan_a11y_tree", side_effect=a11y_side_effect), \
+             patch("jobpulse.form_engine.field_scanner._scan_dom_query", return_value=[]), \
+             patch("jobpulse.form_engine.field_scanner.scan_fields_locator_fallback", return_value=[]), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+            fields = await scan_fields(mock_page)
+        assert len(fields) == 1
+        assert call_count["a11y"] > 1
+
+    @pytest.mark.asyncio
+    async def test_preferred_strategy_used_first(self, tmp_path):
+        """When a domain has a preferred strategy stored, it's tried first."""
+        from jobpulse.form_experience_db import FormExperienceDB
+        from jobpulse.form_engine.field_scanner import scan_fields
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        db.store_scan_strategy("example.com", "dom_query", 5)
+
+        dom_fields = [{"label": f"f{i}", "type": "text", "value": ""} for i in range(5)]
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://example.com/apply"
+        mock_page.context = AsyncMock()
+
+        with patch("jobpulse.form_engine.field_scanner._scan_a11y_tree", return_value=[]) as a11y_mock, \
+             patch("jobpulse.form_engine.field_scanner._scan_dom_query", return_value=dom_fields), \
+             patch("jobpulse.form_engine.field_scanner.scan_fields_locator_fallback", return_value=[]):
+            fields = await scan_fields(mock_page, form_experience_db=db)
+
+        assert len(fields) == 5
+
+    @pytest.mark.asyncio
+    async def test_stores_winning_strategy(self, tmp_path):
+        """Winning strategy is stored in FormExperienceDB for future use."""
+        from jobpulse.form_experience_db import FormExperienceDB
+        from jobpulse.form_engine.field_scanner import scan_fields
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+
+        a11y_fields = [{"label": f"f{i}", "type": "text", "value": ""} for i in range(8)]
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://newsite.com/apply"
+        mock_page.context = AsyncMock()
+
+        with patch("jobpulse.form_engine.field_scanner._scan_a11y_tree", return_value=a11y_fields), \
+             patch("jobpulse.form_engine.field_scanner._scan_dom_query", return_value=[{"label": "x", "type": "text"}]), \
+             patch("jobpulse.form_engine.field_scanner.scan_fields_locator_fallback", return_value=[]):
+            await scan_fields(mock_page, form_experience_db=db)
+
+        pref = db.get_scan_strategy("newsite.com")
+        assert pref is not None
+        assert pref["preferred_strategy"] == "a11y_tree"
+        assert pref["field_count"] >= 8
+
+    @pytest.mark.asyncio
+    async def test_all_fail_returns_empty(self):
+        """Returns empty list when all strategies fail after retries."""
+        from jobpulse.form_engine.field_scanner import scan_fields
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://broken.com/apply"
+        mock_page.context = AsyncMock()
+
+        with patch("jobpulse.form_engine.field_scanner._scan_a11y_tree", return_value=[]), \
+             patch("jobpulse.form_engine.field_scanner._scan_dom_query", return_value=[]), \
+             patch("jobpulse.form_engine.field_scanner.scan_fields_locator_fallback", return_value=[]), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+            fields = await scan_fields(mock_page)
+        assert fields == []
+
+
+class TestMergeFields:
+    """Tests for _merge_fields deduplication."""
+
+    def test_dedup_by_label_and_type(self):
+        from jobpulse.form_engine.field_scanner import _merge_fields
+
+        primary = [
+            {"label": "Name", "type": "text", "value": "Yash"},
+            {"label": "Email", "type": "text", "value": ""},
+        ]
+        secondary = [
+            {"label": "Name", "type": "text", "value": ""},
+            {"label": "Phone", "type": "text", "value": ""},
+        ]
+        merged = _merge_fields(primary, secondary)
+        assert len(merged) == 3
+        labels = [f["label"] for f in merged]
+        assert labels.count("Name") == 1
+        assert merged[0]["value"] == "Yash"
+
+    def test_case_insensitive_dedup(self):
+        from jobpulse.form_engine.field_scanner import _merge_fields
+
+        primary = [{"label": "First Name", "type": "text"}]
+        secondary = [{"label": "first name", "type": "text"}]
+        merged = _merge_fields(primary, secondary)
+        assert len(merged) == 1
+
+    def test_different_types_not_deduped(self):
+        from jobpulse.form_engine.field_scanner import _merge_fields
+
+        primary = [{"label": "Resume", "type": "text"}]
+        secondary = [{"label": "Resume", "type": "file"}]
+        merged = _merge_fields(primary, secondary)
+        assert len(merged) == 2
+
+
+class TestFillableCount:
+
+    def test_excludes_buttons(self):
+        from jobpulse.form_engine.field_scanner import _fillable_count
+
+        fields = [
+            {"label": "Name", "type": "text"},
+            {"label": "Submit", "type": "button"},
+            {"label": "Email", "type": "text"},
+        ]
+        assert _fillable_count(fields) == 2
+
+    def test_all_fillable(self):
+        from jobpulse.form_engine.field_scanner import _fillable_count
+
+        fields = [
+            {"label": "A", "type": "text"},
+            {"label": "B", "type": "checkbox"},
+            {"label": "C", "type": "radio"},
+        ]
+        assert _fillable_count(fields) == 3
+
+
+class TestScanStrategyStorage:
+
+    def test_store_and_retrieve(self, tmp_path):
+        from jobpulse.form_experience_db import FormExperienceDB
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        db.store_scan_strategy("example.com", "dom_query", 12)
+
+        pref = db.get_scan_strategy("example.com")
+        assert pref is not None
+        assert pref["preferred_strategy"] == "dom_query"
+        assert pref["field_count"] == 12
+        assert pref["sample_count"] == 1
+
+    def test_update_increments_sample_count(self, tmp_path):
+        from jobpulse.form_experience_db import FormExperienceDB
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        db.store_scan_strategy("example.com", "a11y_tree", 8)
+        db.store_scan_strategy("example.com", "a11y_tree", 10)
+
+        pref = db.get_scan_strategy("example.com")
+        assert pref["sample_count"] == 2
+        assert pref["field_count"] == 10
+
+    def test_strategy_switch_overwrites(self, tmp_path):
+        from jobpulse.form_experience_db import FormExperienceDB
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        db.store_scan_strategy("example.com", "a11y_tree", 5)
+        db.store_scan_strategy("example.com", "dom_query", 15)
+
+        pref = db.get_scan_strategy("example.com")
+        assert pref["preferred_strategy"] == "dom_query"
+        assert pref["field_count"] == 15
+
+    def test_returns_none_for_unknown_domain(self, tmp_path):
+        from jobpulse.form_experience_db import FormExperienceDB
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        assert db.get_scan_strategy("unknown.com") is None
+
+
 def test_validate_scan_excessive_duplicates():
     fields = [{"label": "Name", "type": "text"}] * 5
     from jobpulse.ats_adapters.strategy import get_strategy
@@ -498,3 +771,91 @@ def test_validate_scan_passes_normal_form():
     strategy = get_strategy("greenhouse")
     result = validate_field_scan(fields, strategy)
     assert result["valid"]
+
+
+class TestCookieButtonFilter:
+    """Verify cookie-related buttons are filtered from a11y tree scan results."""
+
+    def test_cookie_button_pattern_matches(self):
+        from jobpulse.form_scanner import _COOKIE_BUTTON_PATTERNS
+        for text in ("Manage Cookies", "Reject All", "Allow All",
+                     "Accept All Cookies", "Cookie Settings", "Customize Cookies",
+                     "Alle akzeptieren", "Tout accepter", "Tout refuser"):
+            assert _COOKIE_BUTTON_PATTERNS.search(text), f"Expected match for: {text}"
+
+    def test_form_buttons_not_matched(self):
+        from jobpulse.form_scanner import _COOKIE_BUTTON_PATTERNS
+        for text in ("Submit Application", "Next", "Continue",
+                     "Save & Continue", "Review Application", "Apply"):
+            assert not _COOKIE_BUTTON_PATTERNS.search(text), f"False match for: {text}"
+
+
+class TestDomQueryRadioNameAttribute:
+    """Verify _scan_dom_query passes radio name attribute through for scoped fills."""
+
+    @pytest.mark.asyncio
+    async def test_radio_name_included_in_field_dict(self):
+        from jobpulse.form_engine.field_scanner import _scan_dom_query
+
+        mock_page = AsyncMock()
+        mock_page.evaluate = AsyncMock(return_value=[
+            {
+                "label": "custom_question_1236",
+                "type": "radio",
+                "value": "",
+                "name": "custom_question_1236",
+                "question": "Do you require visa sponsorship?",
+                "options": ["Yes", "No"],
+            },
+            {
+                "label": "First Name",
+                "type": "text",
+                "value": "Yash",
+            },
+        ])
+        mock_page.get_by_label = MagicMock(return_value=AsyncMock(first=AsyncMock()))
+
+        fields = await _scan_dom_query(mock_page)
+
+        radio_fields = [f for f in fields if f["type"] == "radio"]
+        assert len(radio_fields) == 1
+        assert radio_fields[0]["name"] == "custom_question_1236"
+        assert radio_fields[0]["label"] == "Do you require visa sponsorship?"
+        assert radio_fields[0]["options"] == ["Yes", "No"]
+
+    @pytest.mark.asyncio
+    async def test_radio_without_question_keeps_name_as_label(self):
+        from jobpulse.form_engine.field_scanner import _scan_dom_query
+
+        mock_page = AsyncMock()
+        mock_page.evaluate = AsyncMock(return_value=[
+            {
+                "label": "disability_status",
+                "type": "radio",
+                "value": "",
+                "name": "disability_status",
+                "options": ["Yes", "No", "Prefer not to say"],
+            },
+        ])
+        mock_page.get_by_label = MagicMock(return_value=AsyncMock(first=AsyncMock()))
+
+        fields = await _scan_dom_query(mock_page)
+
+        assert len(fields) == 1
+        assert fields[0]["name"] == "disability_status"
+        assert fields[0]["label"] == "disability_status"
+
+    @pytest.mark.asyncio
+    async def test_text_field_has_no_name_key(self):
+        from jobpulse.form_engine.field_scanner import _scan_dom_query
+
+        mock_page = AsyncMock()
+        mock_page.evaluate = AsyncMock(return_value=[
+            {"label": "Email", "type": "text", "value": ""},
+        ])
+        mock_page.get_by_label = MagicMock(return_value=AsyncMock(first=AsyncMock()))
+
+        fields = await _scan_dom_query(mock_page)
+
+        assert len(fields) == 1
+        assert "name" not in fields[0]

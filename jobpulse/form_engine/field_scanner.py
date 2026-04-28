@@ -1,7 +1,18 @@
-"""Field scanner — discovers interactive form fields via a11y tree and Playwright locators."""
+"""Field scanner — multi-strategy form field discovery with per-domain learning.
+
+Three scan strategies run competitively:
+  1. a11y_tree — CDP Accessibility tree (pierces shadow DOM, rich metadata)
+  2. dom_query — querySelectorAll on standard form elements (hydration-resilient)
+  3. playwright_locators — Playwright get_by_role (pierces shadow DOM, clean API)
+
+The scanner picks the strategy that returns the most valid fields, stores the
+winner per domain in FormExperienceDB, and uses the preferred strategy first
+on subsequent visits.
+"""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, TYPE_CHECKING
 
 from shared.logging_config import get_logger
@@ -11,13 +22,14 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+STRATEGIES = ("a11y_tree", "dom_query", "playwright_locators")
+
+_HYDRATION_RETRY_MS = 2000
+_MAX_HYDRATION_RETRIES = 2
+
 
 async def get_accessible_name(locator: Any) -> str:
-    """Extract the label a screen reader would announce for this element.
-
-    Excludes aria-hidden children (e.g. required-field asterisks) so
-    the returned text matches what Playwright's get_by_label() sees.
-    """
+    """Extract the label a screen reader would announce for this element."""
     return await locator.evaluate(
         "el => {"
         "  const lbl = el.labels?.[0];"
@@ -85,7 +97,12 @@ async def resolve_form_container(
 
 
 async def _detect_form_container(page: "Page") -> str | None:
-    """Auto-detect form container via common ancestor of visible form elements."""
+    """Auto-detect form container via common ancestor of visible form elements.
+
+    After finding the common ancestor, walks up to the nearest <form> ancestor
+    if one exists and contains a submit-like button — prevents picking a narrow
+    <div> child when a proper <form> tag wraps the fields.
+    """
     try:
         selector = await page.evaluate("""() => {
             function selectorFor(el) {
@@ -98,6 +115,14 @@ async def _detect_form_container(page: "Page") -> str | None:
                 if (siblings.length === 1) return selectorFor(parent) + ' > ' + tag;
                 const idx = siblings.indexOf(el) + 1;
                 return selectorFor(parent) + ' > ' + tag + ':nth-of-type(' + idx + ')';
+            }
+
+            function hasSubmitButton(el) {
+                const buttons = el.querySelectorAll('button, [role="button"], input[type="submit"]');
+                return Array.from(buttons).some(b => {
+                    const text = (b.textContent || b.value || b.getAttribute('aria-label') || '').toLowerCase();
+                    return ['submit', 'apply', 'next', 'continue', 'review', 'save', 'proceed'].some(s => text.includes(s));
+                });
             }
 
             const formEls = Array.from(document.querySelectorAll(
@@ -114,12 +139,20 @@ async def _detect_form_container(page: "Page") -> str | None:
             if (!commonAncestor || commonAncestor === document.body || commonAncestor === document.documentElement) {
                 return null;
             }
-            const buttons = commonAncestor.querySelectorAll('button, [role="button"], input[type="submit"]');
-            const hasSubmit = Array.from(buttons).some(b => {
-                const text = (b.textContent || b.value || b.getAttribute('aria-label') || '').toLowerCase();
-                return ['submit', 'apply', 'next', 'continue', 'review', 'save', 'proceed'].some(s => text.includes(s));
-            });
-            if (!hasSubmit) return null;
+
+            // Prefer a <form> ancestor over a narrow <div> child
+            if (commonAncestor.tagName !== 'FORM') {
+                let walk = commonAncestor.parentElement;
+                while (walk && walk !== document.body && walk !== document.documentElement) {
+                    if (walk.tagName === 'FORM' && hasSubmitButton(walk)) {
+                        commonAncestor = walk;
+                        break;
+                    }
+                    walk = walk.parentElement;
+                }
+            }
+
+            if (!hasSubmitButton(commonAncestor)) return null;
             return selectorFor(commonAncestor);
         }""")
         return selector
@@ -155,80 +188,144 @@ def validate_field_scan(
     return {"valid": True, "reason": "", "count": len(fields)}
 
 
-async def scan_fields(
-    page: "Page",
-    *,
-    strategy=None,
-    form_experience_db=None,
+# ---------------------------------------------------------------------------
+# Individual scan strategies
+# ---------------------------------------------------------------------------
+
+
+async def _scan_a11y_tree(
+    page: "Page", container_node_id: str | None = None,
 ) -> list[dict]:
-    """Scan visible form fields — container-scoped a11y tree first, fallback second."""
+    """Strategy 1: CDP Accessibility tree scan."""
     from jobpulse.form_scanner import scan_form
 
-    container_selector = None
-    container_node_id = None
-
-    if strategy or form_experience_db:
-        from jobpulse.ats_adapters.generic import GenericStrategy
-        _strategy = strategy or GenericStrategy()
-        container_selector = await resolve_form_container(
-            page, _strategy, form_experience_db,
-        )
-
-    if container_selector:
-        try:
-            cdp = await page.context.new_cdp_session(page)
-            try:
-                dom_result = await cdp.send("DOM.getDocument")
-                query_result = await cdp.send(
-                    "DOM.querySelector",
-                    {"nodeId": dom_result["root"]["nodeId"], "selector": container_selector},
-                )
-                if query_result.get("nodeId"):
-                    describe = await cdp.send(
-                        "DOM.describeNode", {"nodeId": query_result["nodeId"]},
-                    )
-                    container_node_id = str(describe["node"]["backendNodeId"])
-            finally:
-                await cdp.detach()
-        except Exception as exc:
-            logger.debug("Container node ID resolution failed: %s", exc)
-
     scan = await scan_form(page, container_backend_node_id=container_node_id)
-    if scan.fields:
-        return ax_scan_to_field_dicts(page, scan)
-
-    fields = await scan_fields_locator_fallback(page)
-    return fields
+    if not scan.fields:
+        return []
+    return ax_scan_to_field_dicts(page, scan)
 
 
-def ax_scan_to_field_dicts(page: "Page", scan) -> list[dict]:
-    """Convert FormScanResult to the legacy field-dict format."""
-    _ROLE_TO_TYPE = {
-        "textbox": "text", "combobox": "combobox", "spinbutton": "text",
-        "radio": "radio", "radiogroup": "radio", "checkbox": "checkbox",
-        "button": "button",
-    }
+async def _scan_dom_query(page: "Page") -> list[dict]:
+    """Strategy 2: DOM querySelectorAll for standard form elements.
+
+    Resilient to incomplete hydration — finds raw HTML elements even before
+    React/Angular frameworks have finished rendering.
+    """
+    try:
+        raw = await page.evaluate("""() => {
+            const fields = [];
+            const seen = new Set();
+
+            function labelFor(el) {
+                if (el.id) {
+                    const lbl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+                    if (lbl) return lbl.textContent.trim();
+                }
+                const parent = el.closest('label');
+                if (parent) return parent.textContent.trim();
+                return el.getAttribute('aria-label') || el.placeholder || el.name || '';
+            }
+
+            function fieldType(el) {
+                const tag = el.tagName.toLowerCase();
+                if (tag === 'select') return 'select';
+                if (tag === 'textarea') return 'textarea';
+                const type = (el.getAttribute('type') || 'text').toLowerCase();
+                if (type === 'file') return 'file';
+                if (type === 'checkbox') return 'checkbox';
+                if (type === 'radio') return 'radio';
+                const role = el.getAttribute('role');
+                if (role === 'combobox') return 'combobox';
+                return 'text';
+            }
+
+            const selector = [
+                'input:not([type="hidden"]):not([type="submit"]):not([type="button"])',
+                'select', 'textarea',
+                '[role="combobox"]', '[role="textbox"]',
+                '[role="radiogroup"]', '[role="checkbox"]',
+            ].join(', ');
+
+            for (const el of document.querySelectorAll(selector)) {
+                if (el.offsetParent === null && !el.closest('[role="radiogroup"]')) continue;
+                const key = el.id || el.name || (el.getAttribute('aria-label') || '') + fieldType(el);
+                if (seen.has(key) && key) continue;
+                if (key) seen.add(key);
+
+                const label = labelFor(el);
+                const ft = fieldType(el);
+                const entry = {label: label, type: ft, value: el.value || ''};
+
+                if (el.hasAttribute('required') || el.getAttribute('aria-required') === 'true') {
+                    entry.required = true;
+                }
+                if (ft === 'select') {
+                    entry.options = Array.from(el.options).map(o => o.textContent.trim());
+                }
+                if (ft === 'checkbox') {
+                    entry.checked = el.checked;
+                }
+                if (ft === 'radio') {
+                    const name = el.name;
+                    if (seen.has('radio:' + name)) continue;
+                    seen.add('radio:' + name);
+                    const radios = document.querySelectorAll('input[name="' + CSS.escape(name) + '"]');
+                    entry.options = Array.from(radios).map(r => labelFor(r));
+                    entry.label = label || name;
+                    entry.name = name;
+                    // Walk up to find the question text for this radio group
+                    let questionEl = el.closest('[data-testid], fieldset, .question, [class*="question"]');
+                    if (!questionEl) questionEl = el.parentElement?.parentElement;
+                    if (questionEl) {
+                        const qLabel = questionEl.querySelector('label, legend, h3, h4, p');
+                        if (qLabel) {
+                            const qt = qLabel.textContent.trim();
+                            if (qt.length > 5 && qt.length < 500) entry.question = qt;
+                        }
+                    }
+                }
+                if (el.tagName === 'DIV' || el.tagName === 'SPAN') {
+                    const role = el.getAttribute('role');
+                    if (role === 'radiogroup') {
+                        const radios = el.querySelectorAll('[role="radio"]');
+                        entry.options = Array.from(radios).map(r => r.textContent.trim());
+                        entry.type = 'radio';
+                    }
+                }
+                fields.push(entry);
+            }
+            return fields;
+        }""")
+    except Exception as exc:
+        logger.debug("DOM query scan failed: %s", exc)
+        return []
+
     fields: list[dict] = []
-    for ff in scan.fields:
-        ftype = _ROLE_TO_TYPE.get(ff.role, ff.role)
-        locator = page.get_by_role(ff.role, name=ff.label)
-        entry: dict = {
-            "label": ff.label,
-            "type": ftype,
-            "locator": locator,
-            "value": ff.value,
-            "required": ff.required,
-        }
-        if ff.role == "checkbox":
-            entry["checked"] = ff.value == "checked" or ff.value == "true"
-        if ff.options:
-            entry["options"] = ff.options
+    for item in (raw or []):
+        label = item.get("label", "")
+        ftype = item.get("type", "text")
+        if label:
+            locator = page.get_by_label(label, exact=False).first
+        else:
+            locator = None
+        entry: dict = {"label": label, "type": ftype, "locator": locator, "value": item.get("value", "")}
+        if item.get("required"):
+            entry["required"] = True
+        if item.get("options"):
+            entry["options"] = item["options"]
+        if "checked" in item:
+            entry["checked"] = item["checked"]
+        if item.get("name"):
+            entry["name"] = item["name"]
+        if item.get("question"):
+            entry["label"] = item["question"]
+            entry["name"] = item.get("name", "")
         fields.append(entry)
     return fields
 
 
 async def scan_fields_locator_fallback(page: "Page") -> list[dict]:
-    """Legacy scanner using Playwright role locators (no shadow DOM)."""
+    """Strategy 3: Playwright role locators (pierces shadow DOM)."""
     fields: list[dict] = []
 
     for loc in await page.get_by_role("textbox").all():
@@ -281,4 +378,247 @@ async def scan_fields_locator_fallback(page: "Page") -> list[dict]:
         label = await get_accessible_name(loc)
         fields.append({"label": label, "type": "file", "locator": loc})
 
+    return fields
+
+
+# ---------------------------------------------------------------------------
+# Multi-strategy orchestrator
+# ---------------------------------------------------------------------------
+
+
+def _merge_fields(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    """Merge secondary fields into primary, adding fields not already present."""
+    seen = set()
+    for f in primary:
+        key = (f.get("label", "").lower().strip(), f.get("type", ""))
+        if key[0]:
+            seen.add(key)
+
+    merged = list(primary)
+    for f in secondary:
+        key = (f.get("label", "").lower().strip(), f.get("type", ""))
+        if key[0] and key not in seen:
+            seen.add(key)
+            merged.append(f)
+    return merged
+
+
+def _fillable_count(fields: list[dict]) -> int:
+    """Count fields that are actually fillable (exclude buttons)."""
+    return sum(1 for f in fields if f.get("type") not in ("button",))
+
+
+async def _resolve_container_node_id(
+    page: "Page", container_selector: str | None,
+) -> str | None:
+    if not container_selector:
+        return None
+    try:
+        cdp = await page.context.new_cdp_session(page)
+        try:
+            dom_result = await cdp.send("DOM.getDocument")
+            query_result = await cdp.send(
+                "DOM.querySelector",
+                {"nodeId": dom_result["root"]["nodeId"], "selector": container_selector},
+            )
+            if query_result.get("nodeId"):
+                describe = await cdp.send(
+                    "DOM.describeNode", {"nodeId": query_result["nodeId"]},
+                )
+                return str(describe["node"]["backendNodeId"])
+        finally:
+            await cdp.detach()
+    except Exception as exc:
+        logger.debug("Container node ID resolution failed: %s", exc)
+    return None
+
+
+async def _run_all_strategies_parallel(
+    page: "Page",
+    container_node_id: str | None,
+    domain: str,
+    preferred: str | None,
+) -> dict[str, list[dict]]:
+    """Run all scan strategies concurrently via asyncio.gather.
+
+    On a known domain with a preferred strategy, runs it alongside the others
+    so we still validate the preference without extra latency.  On a new domain,
+    all 3 race and the best result wins.  Hydration retries also run in parallel.
+    """
+    results: dict[str, list[dict]] = {}
+
+    # All 3 strategies run concurrently — zero sequential overhead
+    gathered = await asyncio.gather(
+        *[_run_strategy(page, s, container_node_id) for s in STRATEGIES],
+        return_exceptions=True,
+    )
+    for strat, fields in zip(STRATEGIES, gathered):
+        if isinstance(fields, BaseException):
+            logger.debug("Scan strategy %s raised: %s", strat, fields)
+            continue
+        fc = _fillable_count(fields)
+        if fc > 0:
+            results[strat] = fields
+            tag = " (preferred)" if strat == preferred else ""
+            logger.info("Scan strategy %s%s found %d fields for %s", strat, tag, fc, domain)
+
+    # Hydration retry: if all returned 0, wait and retry in parallel
+    if not results:
+        for retry in range(_MAX_HYDRATION_RETRIES):
+            logger.info(
+                "All strategies returned 0 fields — hydration retry %d/%d (waiting %dms)",
+                retry + 1, _MAX_HYDRATION_RETRIES, _HYDRATION_RETRY_MS,
+            )
+            await asyncio.sleep(_HYDRATION_RETRY_MS / 1000)
+            gathered = await asyncio.gather(
+                *[_run_strategy(page, s, container_node_id) for s in STRATEGIES],
+                return_exceptions=True,
+            )
+            for strat, fields in zip(STRATEGIES, gathered):
+                if isinstance(fields, BaseException):
+                    continue
+                fc = _fillable_count(fields)
+                if fc > 0:
+                    results[strat] = fields
+                    logger.info("Scan strategy %s found %d fields after hydration retry", strat, fc)
+            if results:
+                break
+
+    return results
+
+
+async def scan_fields(
+    page: "Page",
+    *,
+    strategy=None,
+    form_experience_db=None,
+    container_selector: str | None = None,
+) -> list[dict]:
+    """Multi-strategy field scanner with per-domain learning.
+
+    Tries up to 3 scan strategies, picks the one with the most fillable fields,
+    merges unique fields from runners-up, and stores the winning strategy for
+    future visits.
+
+    When *container_selector* is provided it is reused directly — avoids
+    re-resolving the container on every page scan.
+    """
+    from urllib.parse import urlparse
+
+    url = getattr(page, "url", "") or ""
+    domain = urlparse(url).netloc.lower().removeprefix("www.") if isinstance(url, str) and url else ""
+
+    # Resolve container if needed
+    if container_selector is None and (strategy or form_experience_db):
+        from jobpulse.ats_adapters.generic import GenericStrategy
+        _strategy = strategy or GenericStrategy()
+        container_selector = await resolve_form_container(
+            page, _strategy, form_experience_db,
+        )
+
+    container_node_id = await _resolve_container_node_id(page, container_selector)
+
+    # Check for preferred strategy from prior successful scans
+    preferred: str | None = None
+    if form_experience_db and domain:
+        pref = form_experience_db.get_scan_strategy(domain)
+        if pref:
+            preferred = pref["preferred_strategy"]
+
+    results = await _run_all_strategies_parallel(
+        page, container_node_id, domain, preferred,
+    )
+
+    if not results:
+        logger.warning("All scan strategies returned 0 fields for %s", domain)
+        _emit_scan_signal(domain, "failure", winner="none", field_count=0)
+        return []
+
+    # Pick the winner: strategy with most fillable fields
+    winner = max(results, key=lambda s: _fillable_count(results[s]))
+    best_fields = results[winner]
+
+    # Merge unique fields from other strategies
+    for strat, fields in results.items():
+        if strat != winner:
+            best_fields = _merge_fields(best_fields, fields)
+
+    final_count = _fillable_count(best_fields)
+    logger.info(
+        "Scan winner: %s with %d fields (%d after merge) for %s",
+        winner, _fillable_count(results[winner]), final_count, domain,
+    )
+
+    # Store winning strategy for future visits
+    if form_experience_db and domain:
+        try:
+            form_experience_db.store_scan_strategy(domain, winner, final_count)
+        except Exception as exc:
+            logger.debug("Failed to store scan strategy: %s", exc)
+
+    _emit_scan_signal(domain, "success", winner=winner, field_count=final_count)
+    return best_fields
+
+
+async def _run_strategy(
+    page: "Page", strategy_name: str, container_node_id: str | None,
+) -> list[dict]:
+    """Run a single scan strategy, returning [] on failure."""
+    try:
+        if strategy_name == "a11y_tree":
+            return await _scan_a11y_tree(page, container_node_id)
+        elif strategy_name == "dom_query":
+            return await _scan_dom_query(page)
+        elif strategy_name == "playwright_locators":
+            return await scan_fields_locator_fallback(page)
+    except Exception as exc:
+        logger.debug("Scan strategy %s failed: %s", strategy_name, exc)
+    return []
+
+
+def _emit_scan_signal(
+    domain: str, outcome: str, winner: str, field_count: int,
+) -> None:
+    try:
+        from shared.optimization import get_optimization_engine
+        get_optimization_engine().emit(
+            signal_type=outcome,
+            source_loop="field_scanner",
+            domain=domain,
+            agent_name="field_scanner",
+            payload={"action": "multi_strategy_scan", "winner": winner, "field_count": field_count},
+            session_id=f"scan_{domain}",
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def ax_scan_to_field_dicts(page: "Page", scan) -> list[dict]:
+    """Convert FormScanResult to the legacy field-dict format."""
+    _ROLE_TO_TYPE = {
+        "textbox": "text", "combobox": "combobox", "spinbutton": "text",
+        "radio": "radio", "radiogroup": "radio", "checkbox": "checkbox",
+        "button": "button",
+    }
+    fields: list[dict] = []
+    for ff in scan.fields:
+        ftype = _ROLE_TO_TYPE.get(ff.role, ff.role)
+        locator = page.get_by_role(ff.role, name=ff.label)
+        entry: dict = {
+            "label": ff.label,
+            "type": ftype,
+            "locator": locator,
+            "value": ff.value,
+            "required": ff.required,
+        }
+        if ff.role == "checkbox":
+            entry["checked"] = ff.value == "checked" or ff.value == "true"
+        if ff.options:
+            entry["options"] = ff.options
+        fields.append(entry)
     return fields

@@ -315,6 +315,7 @@ class NativeFormFiller:
             self._page,
             strategy=self._strategy,
             form_experience_db=self._fe_db,
+            container_selector=self._container_selector,
         )
 
     # ── Auto-Gotcha Learning ──
@@ -578,7 +579,33 @@ class NativeFormFiller:
             else:
                 await el.uncheck()
         elif input_type == "radio":
-            await page.get_by_label(fill_value).check()
+            name_attr = await el.get_attribute("name") or ""
+            if name_attr:
+                group = await page.query_selector_all(f'input[name="{name_attr}"]')
+                matched = False
+                for radio_el in group:
+                    lbl = await radio_el.evaluate("""el => {
+                        if (el.id) {
+                            const lbl = document.querySelector('label[for="' + el.id + '"]');
+                            if (lbl) return lbl.textContent.trim();
+                        }
+                        return el.getAttribute('aria-label')
+                            || (el.parentElement ? el.parentElement.textContent.trim() : '')
+                            || el.value || '';
+                    }""")
+                    if lbl.strip().lower() == fill_value.strip().lower():
+                        await radio_el.scroll_into_view_if_needed()
+                        await radio_el.click()
+                        matched = True
+                        break
+                if not matched:
+                    logger.warning("No radio in group '%s' matches '%s'", name_attr, fill_value)
+            else:
+                radio = page.get_by_role("radio", name=fill_value, exact=True)
+                if await radio.count() == 1:
+                    await radio.first.check()
+                else:
+                    logger.warning("Radio '%s' matched %d elements — skipping unscoped click", fill_value, await radio.count())
         elif await el.get_attribute("role") == "combobox":
             strategy = getattr(self, "_strategy", None)
             if strategy and hasattr(strategy, "fill_combobox"):
@@ -1011,12 +1038,13 @@ class NativeFormFiller:
         self, radio_fields: list[dict], mapping: dict[str, str],
         custom_answers: dict[str, Any] | None,
     ) -> int:
-        """Fill radiogroup fields that have labels+options from CDP scan."""
+        """Fill radiogroup fields scoped by name attribute or parent container."""
         page = self._page
         filled = 0
         for field in radio_fields:
             question = field["label"]
             options = field.get("options", [])
+            name_attr = field.get("name", "")
             if not question or len(question) < 5 or not options:
                 continue
 
@@ -1054,17 +1082,84 @@ class NativeFormFiller:
                 continue
 
             try:
-                radio = page.get_by_role("radio", name=target, exact=True)
-                if await radio.count():
-                    await self._smart_scroll(radio.first)
-                    await radio.first.check(force=True)
+                clicked = False
+                if name_attr:
+                    group = await page.query_selector_all(f'input[name="{name_attr}"]')
+                    for radio_el in group:
+                        lbl = await radio_el.evaluate("""el => {
+                            if (el.id) {
+                                const lbl = document.querySelector('label[for="' + el.id + '"]');
+                                if (lbl) return lbl.textContent.trim();
+                            }
+                            return el.getAttribute('aria-label')
+                                || (el.parentElement ? el.parentElement.textContent.trim() : '')
+                                || el.value || '';
+                        }""")
+                        if lbl.strip().lower() == target.strip().lower():
+                            await radio_el.scroll_into_view_if_needed()
+                            await radio_el.click()
+                            clicked = True
+                            break
+                if not clicked:
+                    radio = page.get_by_role("radio", name=target, exact=True)
+                    if await radio.count() == 1:
+                        await self._smart_scroll(radio.first)
+                        await radio.first.check(force=True)
+                        clicked = True
+                if clicked:
                     filled += 1
-                    logger.info("Radio group: '%s' → '%s'", question[:80], target)
+                    logger.info("Radio group [%s]: '%s' → '%s'", name_attr or "role", question[:80], target)
             except Exception as exc:
                 logger.warning("Radio group fill failed for '%s': %s", question[:80], exc)
         return filled
 
     # ── Page Detection ──
+
+    async def _recover_if_navigated(self, expected_url: str) -> bool:
+        """Detect and recover from unexpected SPA navigation.
+
+        Some SPAs navigate away from the form when JS change events fire
+        (e.g. direct ID fill triggering client-side routing).  If the
+        current URL no longer matches, navigate back and re-resolve the
+        container.
+        """
+        if not expected_url or not isinstance(expected_url, str):
+            return False
+        current_url = getattr(self._page, "url", "") or ""
+        if not current_url or not isinstance(current_url, str):
+            return False
+
+        from urllib.parse import urlparse
+        expected_parsed = urlparse(expected_url)
+        current_parsed = urlparse(current_url)
+
+        same_path = (
+            expected_parsed.netloc == current_parsed.netloc
+            and expected_parsed.path == current_parsed.path
+        )
+        if same_path:
+            return False
+
+        logger.warning(
+            "SPA navigation detected: expected %s, got %s — navigating back",
+            expected_url[:120], current_url[:120],
+        )
+        try:
+            await self._page.goto(expected_url, wait_until="domcontentloaded", timeout=15000)
+            try:
+                await self._page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            # Re-resolve container after navigation recovery
+            from jobpulse.form_engine.field_scanner import resolve_form_container
+            self._container_selector = await resolve_form_container(
+                self._page, self._strategy, self._fe_db,
+            )
+            logger.info("SPA recovery: navigated back, container=%s", self._container_selector)
+            return True
+        except Exception as exc:
+            logger.error("SPA recovery failed: %s", exc)
+            return False
 
     async def _is_confirmation_page(self) -> bool:
         body = await self._page.locator("body").text_content()
@@ -1266,10 +1361,14 @@ class NativeFormFiller:
         self._load_domain_field_mappings()
         self._load_cached_screening_answers()
 
+        _raw_url = getattr(self._page, 'url', '') or ''
+        _expected_url = _raw_url if isinstance(_raw_url, str) else ''
+
         if self._domain_field_mappings:
             direct_filled = await self._fill_by_element_ids(profile, custom_answers)
             if direct_filled:
                 logger.info("DIRECT ID FILL: pre-filled %d fields before page loop", len(direct_filled))
+            await self._recover_if_navigated(_expected_url)
 
         await handle_modal_cv_upload(self._page, cv_path)
 
@@ -1332,11 +1431,31 @@ class NativeFormFiller:
         page_url = getattr(self._page, 'url', '') or ''
 
         for page_num in range(1, MAX_FORM_PAGES + 1):
+            # 0. Detect unexpected SPA navigation (e.g. change events routing away)
+            if page_num == 1:
+                await self._recover_if_navigated(_expected_url)
+
             await self._dismiss_stale_dialogs()
 
-            # 1. Scan fields (measure hydration time)
+            # 0.5. Dismiss cookie banners before scanning (defense-in-depth)
+            try:
+                from jobpulse.cookie_dismisser import dismiss_cookie_banner_playwright
+                await dismiss_cookie_banner_playwright(self._page, timeout_ms=2000)
+            except Exception:
+                pass
+
+            # 1. Scan fields (measure hydration time, with hydration wait for empty scans)
             t_hydration = time.monotonic()
             fields = await self._scan_fields()
+            if not fields and page_num == 1:
+                logger.info("Page 1: 0 fields — waiting for SPA hydration (up to 8s)")
+                for _poll in range(4):
+                    await asyncio.sleep(2.0)
+                    fields = await self._scan_fields()
+                    if fields:
+                        logger.info("SPA hydration complete: %d fields after %.1fs",
+                                    len(fields), (time.monotonic() - t_hydration))
+                        break
             hydration_ms = int((time.monotonic() - t_hydration) * 1000)
 
             _cur_fingerprint = self._fingerprint_fields(fields)
@@ -1534,12 +1653,14 @@ class NativeFormFiller:
 
             all_agent_mappings.update({k: str(v) for k, v in mapping.items()})
 
-            # 5. Fill each field by label
+            # 5. Fill each field by label (skip radio — handled by _fill_radio_groups)
             fill_failures = []
             pending_retries: list[dict[str, Any]] = []
             for label, value in mapping.items():
                 value_text = str(value).strip()
                 if not value_text:
+                    continue
+                if fields_by_label.get(label, {}).get("type") == "radio":
                     continue
                 # Apply agent rule overrides from correction history
                 override = _field_overrides.get(label.lower().strip())
