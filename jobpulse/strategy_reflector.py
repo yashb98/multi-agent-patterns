@@ -276,6 +276,25 @@ def reflect_on_application(
     if typed:
         store.save_heuristics(typed)
 
+    # Emit optimization signal so the engine sees heuristic extraction
+    try:
+        from shared.optimization import get_optimization_engine
+        engine = get_optimization_engine()
+        engine.emit(
+            signal_type="success" if strategy.success else "failure",
+            source_loop="strategy_reflector",
+            domain=strategy.domain,
+            agent_name="strategy_reflector",
+            payload={
+                "heuristics_extracted": len(all_heuristics),
+                "fields_total": strategy.fields_total,
+                "fields_corrected": strategy.fields_corrected,
+            },
+            session_id=f"sr_{strategy.domain}_{job_id[:8] if job_id else 'unknown'}",
+        )
+    except Exception as exc:
+        logger.debug("strategy_reflector: optimization signal failed: %s", exc)
+
     # Feed to ExperienceMemory (GRPO) for cross-domain learning
     _feed_experience_memory(strategy, all_heuristics)
 
