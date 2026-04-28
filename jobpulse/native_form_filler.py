@@ -100,6 +100,24 @@ def _get_adaptive_page_delay(platform: str, timing_data: dict | None) -> float:
     return _STRATEGY_DEFAULTS.get(platform, 5.0)
 
 
+def _log_field_trajectory(
+    job_id: str, domain: str, field_label: str, field_type: str,
+    strategy: str, value: str, confidence: float, time_ms: int,
+    page_index: int = 0,
+) -> None:
+    """Log a field fill to the TrajectoryStore. Non-blocking."""
+    try:
+        from jobpulse.trajectory_store import get_trajectory_store
+        get_trajectory_store().log_field(
+            job_id=job_id, domain=domain, field_label=field_label,
+            strategy=strategy, value_filled=value,
+            field_type=field_type, confidence=confidence,
+            time_ms=time_ms, page_index=page_index,
+        )
+    except Exception as exc:
+        logger.debug("trajectory log_field failed: %s", exc)
+
+
 def _classify_fill_failure(result: dict) -> str:
     """Classify why a field fill failed to route to correct recovery."""
     error = (result.get("error") or "").lower()
@@ -1231,6 +1249,10 @@ class NativeFormFiller:
 
         await self._dismiss_stale_dialogs()
 
+        _job_ctx = custom_answers.get("_job_context") or {}
+        _job_id = _job_ctx.get("job_id", "")
+        _page_domain = getattr(self._page, 'url', '') or ''
+
         seen_field_types: list[str] = []
         seen_screening: list[dict[str, Any]] = []
         _outcome_recorder = None
@@ -1489,6 +1511,12 @@ class NativeFormFiller:
                     result = await self._fill_by_label(label, value_text)
                     if result.get("success") and result.get("value_verified", True):
                         total_fields_filled += 1
+                        _log_field_trajectory(
+                            job_id=_job_id, domain=_page_domain,
+                            field_label=label, field_type=fields_by_label.get(label, {}).get("type", "text"),
+                            strategy="pattern_match", value=value_text,
+                            confidence=0.9, time_ms=0, page_index=live_page_count,
+                        )
                     else:
                         pending_retries.append({
                             "field": fields_by_label.get(label, {"label": label, "type": "text"}),
@@ -1550,6 +1578,12 @@ class NativeFormFiller:
                         retry_result = await self._fill_by_label(label, retry_value)
                         if retry_result.get("success") and retry_result.get("value_verified", True):
                             total_fields_filled += 1
+                            _log_field_trajectory(
+                                job_id=_job_id, domain=_page_domain,
+                                field_label=label, field_type=item["field"].get("type", "text"),
+                                strategy="llm_recovery", value=retry_value,
+                                confidence=0.7, time_ms=0, page_index=live_page_count,
+                            )
                             mapping[label] = retry_value
                             all_agent_mappings[label] = retry_value
                             if is_screening_like_field(item["field"]):
@@ -1596,6 +1630,12 @@ class NativeFormFiller:
                             v_result = await self._fill_by_label(label, v_value)
                             if v_result.get("success") and v_result.get("value_verified", True):
                                 total_fields_filled += 1
+                                _log_field_trajectory(
+                                    job_id=_job_id, domain=_page_domain,
+                                    field_label=label, field_type=item["field"].get("type", "text"),
+                                    strategy="vision_recovery", value=v_value,
+                                    confidence=0.6, time_ms=0, page_index=live_page_count,
+                                )
                                 mapping[label] = v_value
                                 all_agent_mappings[label] = v_value
                                 self._save_gotcha(
