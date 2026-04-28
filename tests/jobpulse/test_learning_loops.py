@@ -110,3 +110,61 @@ def test_heuristics_loaded_before_fill(trajectory_store):
     )
     assert len(result["domain_heuristics"]) >= 1
     assert "ArrowDown" in result["prompt_context"]
+
+
+def test_correction_links_to_trajectory(tmp_path):
+    """Corrections from confirm_application link to field trajectories."""
+    from jobpulse.trajectory_store import TrajectoryStore, StrategyTier, _reset_shared_store
+    from jobpulse.correction_capture import CorrectionCapture
+
+    _reset_shared_store()
+    traj_store = TrajectoryStore(db_path=str(tmp_path / "traj.db"))
+    cc = CorrectionCapture(db_path=str(tmp_path / "corrections.db"))
+
+    traj_store.log_field(
+        job_id="job_100", domain="greenhouse.io",
+        field_label="City", strategy=StrategyTier.PATTERN_MATCH,
+        value_filled="London", field_type="text",
+    )
+
+    result = cc.record_corrections(
+        domain="greenhouse.io",
+        platform="greenhouse",
+        agent_mapping={"City": "London"},
+        final_mapping={"City": "Dundee"},
+        job_id="job_100",
+    )
+
+    assert len(result["corrections"]) == 1
+    _reset_shared_store()
+
+
+def test_post_apply_records_learning_action(tmp_path, monkeypatch):
+    """post_apply_hook wraps with before/after learning measurement."""
+    import sqlite3
+
+    db_path = str(tmp_path / "optimization.db")
+
+    from shared.optimization._engine import OptimizationEngine
+    engine = OptimizationEngine(db_path=db_path)
+    monkeypatch.setattr(
+        "shared.optimization._engine._shared_engine", engine,
+    )
+
+    action_id = engine.before_learning_action(
+        "post_apply", domain="greenhouse.io",
+        metrics={"fields_filled": 10, "pages_filled": 2},
+    )
+    assert action_id
+
+    result = engine.after_learning_action(
+        action_id,
+        metrics={"fields_filled": 12, "pages_filled": 2},
+    )
+    assert result["improved"] is True
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM learning_actions").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["after_metrics"] is not None

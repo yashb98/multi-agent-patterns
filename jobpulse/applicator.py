@@ -488,6 +488,7 @@ def confirm_application(
                 platform=platform_key,
                 agent_mapping=agent_mapping,
                 final_mapping=final_mapping,
+                job_id=ctx.get("job_id", ""),
             )
             result["corrections"] = correction_result
 
