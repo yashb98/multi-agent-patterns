@@ -24,17 +24,14 @@ from shared.logging_config import get_logger
 # Module-level imports so each name can be patched in tests.
 from jobpulse.applicator import apply_job, classify_action
 from jobpulse.company_blocklist import BlocklistCache, detect_spam_company, flag_company_in_notion
-from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
 from jobpulse.cv_templates.generate_cv import (
     BASE_SKILLS,
     COMMUNITY,
     EDUCATION,
     EXPERIENCE,
     build_extra_skills,
-    generate_cv_pdf,
     get_role_profile,
 )
-from jobpulse.drive_uploader import upload_cover_letter, upload_cv
 from jobpulse.gate4_quality import (
     check_company_background,
     check_jd_quality,
@@ -99,6 +96,35 @@ def _queue_for_review(listing: Any, ats_score: float, batch: list[dict]) -> None
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_screening_context(listing) -> dict[str, Any]:
+    """Build enriched job context for the screening answer pipeline.
+
+    Includes JD-derived fields so screening answers are contextualized
+    to the specific role (salary range, required skills, seniority, etc.)
+    """
+    ctx: dict[str, Any] = {
+        "job_title": listing.title,
+        "company": listing.company,
+        "location": listing.location,
+    }
+    if listing.salary_min is not None or listing.salary_max is not None:
+        ctx["salary_range"] = {
+            "min": listing.salary_min,
+            "max": listing.salary_max,
+        }
+    if listing.remote:
+        ctx["work_mode"] = "remote"
+    if listing.seniority:
+        ctx["seniority"] = listing.seniority
+    if listing.required_skills:
+        ctx["required_skills"] = listing.required_skills[:10]  # top 10
+    if listing.preferred_skills:
+        ctx["preferred_skills"] = listing.preferred_skills[:5]
+    if getattr(listing, "description", None):
+        ctx["description_raw"] = listing.description[:2000]
+    return ctx
 
 
 def _reorder_projects(
@@ -419,6 +445,27 @@ def prescreen_listings(
                 db.save_application(job_id=listing.job_id, status="Blocked", match_tier="skip")
                 continue
 
+        # A2b: Company reliability auto-skip
+        try:
+            reliability = db.get_company_reliability(listing.company)
+            if reliability and reliability.get("total_applied", 0) >= 10:
+                interview_rate = reliability.get("interview_rate", 0.0)
+                offer_rate = reliability.get("offer_rate", 0.0)
+                if interview_rate < 0.05 and offer_rate == 0.0:
+                    gate4_blocked += 1
+                    logger.info(
+                        "scan_pipeline: Gate 4 BLOCKED (company reliability) %s @ %s — "
+                        "0%% interview rate after %d applications",
+                        listing.title, listing.company, reliability["total_applied"],
+                    )
+                    db.save_listing(listing)
+                    db.save_application(
+                        job_id=listing.job_id, status="Blocked", match_tier="skip"
+                    )
+                    continue
+        except Exception as exc:
+            logger.debug("scan_pipeline: company reliability check failed: %s", exc)
+
         # A1: JD quality check
         jd_quality = check_jd_quality(
             listing.description_raw or "",
@@ -467,7 +514,11 @@ def generate_materials(
     repos: list[dict],
     notion_failures: list[str],
 ) -> MaterialsBundle:
-    """Generate CV, cover letter, ATS score, and run Gate 4B scrutiny for one job.
+    """Score + Gate 4B from synthetic CV text; defer PDF CV/CL until apply time.
+
+    Notion + SQLite are updated with ATS tier and matched projects. Tailored CV
+    and cover letter PDFs are created when the user/agent starts an application
+    (see ``application_materials`` + native form lazy CL upload).
 
     Args:
         listing: JobListing object.
@@ -479,8 +530,6 @@ def generate_materials(
     Returns:
         MaterialsBundle with paths, scores, Notion page ID, and gate4b notes.
     """
-    from jobpulse.config import DATA_DIR
-
     bundle = MaterialsBundle()
 
     # Save listing and create initial DB record
@@ -517,7 +566,7 @@ def generate_materials(
         matched_project_names = [r.get("name", "") for r in matched_repos]
     bundle.matched_project_names = matched_project_names
 
-    # Generate CV PDF
+    # Synthetic CV text for ATS + Gate 4B (no PDF until apply time)
     cv_path = None
     cv_text = ""
     ats_score = 0.0
@@ -553,15 +602,22 @@ def generate_materials(
             tagline = role_profile.get("tagline")
             summary = role_profile.get("summary")
 
-        cv_path = generate_cv_pdf(
-            company=listing.company,
-            location=listing.location or "United Kingdom",
-            tagline=tagline,
-            summary=summary,
-            projects=matched_projects,
-            extra_skills=extra_skills if extra_skills else None,
-            output_dir=str(DATA_DIR / "applications" / listing.job_id),
-        )
+        # Tailor CV sections via parallel LLM calls (overrides template values)
+        try:
+            from jobpulse.cv_tailor import tailor_all_sections
+            from shared.profile_store import get_profile_store
+
+            experience_entries = get_profile_store().experience()
+            tailored = tailor_all_sections(listing, matched_projects, experience_entries)
+
+            if tailored.tagline:
+                tagline = tailored.tagline
+            if tailored.summary:
+                summary = tailored.summary
+            if tailored.projects:
+                matched_projects = tailored.projects
+        except Exception as exc:
+            logger.debug("scan_pipeline: CV tailoring failed, using templates: %s", exc)
 
         # ATS scoring — include all CV sections so soft skills in
         # Experience/Community are counted toward keyword matches
@@ -591,40 +647,19 @@ def generate_materials(
         ats_score_obj = score_ats(jd_skills, cv_text)
         ats_score = ats_score_obj.total
     except Exception as exc:
-        logger.warning("scan_pipeline: generate_cv_pdf failed for %s: %s", listing.job_id[:8], exc)
+        logger.warning("scan_pipeline: synthetic CV / ATS failed for %s: %s", listing.job_id[:8], exc)
 
     bundle.cv_path = cv_path
     bundle.cv_text = cv_text
     bundle.ats_score = ats_score
     bundle.matched_projects = matched_projects
 
-    # Cover letter: generate upfront alongside CV
-    cl_path = None
-    cl_drive_link_val = None
-    if cv_path:
-        try:
-            cl_path = generate_cover_letter_pdf(
-                company=listing.company,
-                role=listing.title,
-                location=listing.location or "United Kingdom",
-                matched_projects=matched_projects,
-                required_skills=listing.required_skills + listing.preferred_skills,
-                output_dir=str(DATA_DIR / "applications" / listing.job_id),
-            )
-            if cl_path:
-                try:
-                    cl_drive_link_val = upload_cover_letter(cl_path, listing.company)
-                except Exception as e:
-                    logger.warning("scan_pipeline: CL upload failed for %s: %s", listing.company, e)
-        except Exception as exc:
-            logger.warning("scan_pipeline: generate_cover_letter_pdf failed for %s: %s", listing.job_id[:8], exc)
-
-    bundle.cover_letter_path = str(cl_path) if cl_path else None
-    bundle.cl_drive_link = cl_drive_link_val
+    bundle.cover_letter_path = None
+    bundle.cl_drive_link = None
 
     # Gate 4 Phase B: CV quality scrutiny
     gate4b_notes = ""
-    if cv_path and cv_text:
+    if cv_text:
         b1_result = scrutinize_cv_deterministic(cv_text)
         if b1_result.warnings:
             gate4b_notes = "B1: " + "; ".join(b1_result.warnings)
@@ -643,19 +678,25 @@ def generate_materials(
                         "scan_pipeline: Gate 4B LLM score %d/10 for %s — %s",
                         b2_result.score, listing.company, weakness_str,
                     )
+
+                # Record for calibration learning
+                try:
+                    from jobpulse.cv_templates.scrutiny_calibrator import ScrutinyCalibrator
+                    calibrator = ScrutinyCalibrator()
+                    calibrator.calibrate(
+                        llm_score=b2_result.score,
+                        b1_warnings=b1_result.warnings,
+                        job_id=listing.job_id,
+                    )
+                except Exception as exc:
+                    logger.debug("scan_pipeline: scrutiny calibration record failed: %s", exc)
             except Exception as exc:
                 logger.warning("scan_pipeline: Gate 4B LLM failed: %s", exc)
 
     bundle.gate4b_notes = gate4b_notes
     bundle.notion_status = "Needs Review" if (gate4b_notes and "B2:" in gate4b_notes) else "Ready"
 
-    # Upload CV to Drive
     cv_drive_link = None
-    if cv_path:
-        try:
-            cv_drive_link = upload_cv(cv_path, listing.company)
-        except Exception as exc:
-            logger.warning("scan_pipeline: Drive CV upload failed: %s", exc)
     bundle.cv_drive_link = cv_drive_link
 
     # Update DB with full analysis results
@@ -758,11 +799,7 @@ def route_and_apply(
                 cover_letter_path=bundle.cover_letter_path,
                 cl_generator=None,
                 custom_answers={
-                    "_job_context": {
-                        "job_title": listing.title,
-                        "company": listing.company,
-                        "location": listing.location,
-                    },
+                    "_job_context": _build_screening_context(listing),
                 },
                 job_context={
                     "job_id": listing.job_id,
