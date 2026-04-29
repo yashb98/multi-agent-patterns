@@ -222,6 +222,22 @@ def post_apply_hook(
         except Exception as exc:
             logger.warning("post_apply_hook: JobDB mark_applied failed: %s", exc)
 
+    # --- 3b. Record application outcome + company reliability ---
+    if job_id:
+        try:
+            jdb = JobDB()
+            jdb.save_outcome(
+                job_id=job_id,
+                outcome="applied",
+                stage_reached="applied",
+            )
+            jdb.update_company_reliability(
+                company=company,
+                outcome="applied",
+            )
+        except Exception as exc:
+            logger.warning("post_apply_hook: outcome/reliability recording failed: %s", exc)
+
     # --- 4. Strategy reflection + heuristic extraction ---
     if job_id:
         try:

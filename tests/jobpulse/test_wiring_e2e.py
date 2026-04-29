@@ -10,6 +10,7 @@ All DB writes verified via direct SQLite queries on tmp_path databases.
 """
 
 import sqlite3
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,6 +25,7 @@ def wiring_dbs(tmp_path):
         "form_experience": str(tmp_path / "form_experience.db"),
         "optimization": str(tmp_path / "optimization.db"),
         "navigation": str(tmp_path / "navigation_learning.db"),
+        "applications": str(tmp_path / "applications.db"),
     }
 
 
@@ -75,6 +77,43 @@ def _patch_externals():
         patch("jobpulse.post_apply_hook.find_application_page", return_value=None),
         patch("jobpulse.post_apply_hook.update_application_page"),
         patch("jobpulse.post_apply_hook.JobDB", return_value=MagicMock()),
+        patch("jobpulse.strategy_reflector.reflect_on_application", return_value=MagicMock(
+            heuristics="[]", fields_total=5, fields_pattern=3,
+            fields_llm=1, fields_corrected=1,
+        )),
+    ]
+
+
+def _seed_job_data(jdb, job_id="test_job_001"):
+    """Insert prerequisite job_listing + application rows so FK constraints pass."""
+    from datetime import datetime, timezone
+
+    from jobpulse.models.application_models import JobListing
+
+    listing = JobListing(
+        job_id=job_id,
+        title="Data Analyst",
+        company="TestCorp",
+        platform="generic",
+        url="https://boards.greenhouse.io/testcorp/jobs/123",
+        location="London",
+        required_skills=["python"],
+        preferred_skills=[],
+        description_raw="Test JD",
+        found_at=datetime(2026, 4, 30, tzinfo=timezone.utc),
+    )
+    jdb.save_listing(listing)
+    jdb.save_application(job_id=job_id, status="Found")
+
+
+def _patch_externals_with_jdb(jdb):
+    """Like _patch_externals but uses a real JobDB instance instead of MagicMock."""
+    return [
+        patch("jobpulse.post_apply_hook.upload_cv", return_value=None),
+        patch("jobpulse.post_apply_hook.upload_cover_letter", return_value=None),
+        patch("jobpulse.post_apply_hook.find_application_page", return_value=None),
+        patch("jobpulse.post_apply_hook.update_application_page"),
+        patch("jobpulse.post_apply_hook.JobDB", return_value=jdb),
         patch("jobpulse.strategy_reflector.reflect_on_application", return_value=MagicMock(
             heuristics="[]", fields_total=5, fields_pattern=3,
             fields_llm=1, fields_corrected=1,
@@ -174,3 +213,71 @@ class TestPostApplyHookWiring:
         rows = conn.execute("SELECT COUNT(*) as cnt FROM sequences").fetchone()["cnt"]
         conn.close()
         assert rows >= 1, "post_apply_hook must save at least 1 navigation sequence"
+
+    def test_records_outcome(self, wiring_dbs):
+        """post_apply_hook must call save_outcome() to record application_outcomes."""
+        from jobpulse.post_apply_hook import post_apply_hook
+        from jobpulse.job_db import JobDB
+
+        jdb = JobDB(db_path=Path(wiring_dbs["applications"]))
+        _seed_job_data(jdb)
+        opt_engine = OptimizationEngine(db_path=wiring_dbs["optimization"])
+
+        patches = _patch_externals_with_jdb(jdb) + [
+            patch("shared.optimization.get_optimization_engine", return_value=opt_engine),
+            patch("shared.optimization._engine.get_optimization_engine", return_value=opt_engine),
+            patch("shared.optimization._engine._shared_engine", opt_engine),
+        ]
+
+        for p in patches:
+            p.start()
+        try:
+            post_apply_hook(
+                result=_make_result(),
+                job_context=_make_job_context(),
+                form_exp_db_path=wiring_dbs["form_experience"],
+            )
+        finally:
+            for p in patches:
+                p.stop()
+
+        outcome = jdb.get_outcome("test_job_001")
+        assert outcome is not None, "post_apply_hook must call save_outcome()"
+        assert outcome["outcome"] == "applied"
+        assert outcome["stage_reached"] == "applied"
+
+    def test_updates_company_reliability(self, wiring_dbs):
+        """post_apply_hook must call update_company_reliability()."""
+        from jobpulse.post_apply_hook import post_apply_hook
+        from jobpulse.job_db import JobDB
+
+        jdb = JobDB(db_path=Path(wiring_dbs["applications"]))
+        _seed_job_data(jdb)
+        opt_engine = OptimizationEngine(db_path=wiring_dbs["optimization"])
+
+        patches = _patch_externals_with_jdb(jdb) + [
+            patch("shared.optimization.get_optimization_engine", return_value=opt_engine),
+            patch("shared.optimization._engine.get_optimization_engine", return_value=opt_engine),
+            patch("shared.optimization._engine._shared_engine", opt_engine),
+        ]
+
+        for p in patches:
+            p.start()
+        try:
+            post_apply_hook(
+                result=_make_result(),
+                job_context=_make_job_context(),
+                form_exp_db_path=wiring_dbs["form_experience"],
+            )
+        finally:
+            for p in patches:
+                p.stop()
+
+        conn = sqlite3.connect(wiring_dbs["applications"])
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM company_reliability WHERE company = 'TestCorp'"
+        ).fetchall()
+        conn.close()
+        assert len(rows) >= 1, "post_apply_hook must call update_company_reliability()"
+        assert rows[0]["total_applied"] >= 1
