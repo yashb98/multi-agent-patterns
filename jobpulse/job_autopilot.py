@@ -5,15 +5,17 @@ Ties together all Job Autopilot pipeline tasks:
   L2: Analyze JDs     (jd_analyzer)
   L3: Deduplicate     (job_deduplicator)
   L4: Match projects  (github_matcher)
-  L5: Generate CV PDF (cv_templates.generate_cv — ReportLab)
-  L6: Cover letter PDF(cv_templates.generate_cover_letter — ReportLab)
+  L5: CV PDF deferred until apply (application_materials.ensure_tailored_cv_for_job)
+  L6: Cover letter lazy during form fill (NativeFormFiller + _cl_generator)
   L7: Score & tier    (determine_match_tier — inline)
   L8: Apply / queue   (applicator)
   L9: Notify          (telegram_bots)
 
 External entry points (called by dispatcher.py):
   run_scan_window(platforms)   — full pipeline for one scheduled window
+  run_linkedin_scan_with_notion_cleanup() — trash non-terminal Job Tracker Notion rows + LinkedIn scan
   approve_jobs(args)           — approve pending review jobs from Telegram
+  apply_pending_job_from_cli() — live pipeline from CLI (job-apply-next, job-apply-found-today)
   reject_job(args)             — reject/skip a job from Telegram
   get_job_detail(args)         — full details for job number N
   update_search_config(args)   — mutate search config from Telegram
@@ -36,7 +38,11 @@ from jobpulse.applicator import apply_job
 from jobpulse.config import DATA_DIR, JOB_AUTOPILOT_ENABLED, JOB_AUTOPILOT_AUTO_SUBMIT, JOB_AUTOPILOT_MAX_DAILY
 from jobpulse.cv_templates.generate_cv import build_extra_skills, get_role_profile
 from jobpulse.job_db import JobDB
-from jobpulse.job_notion_sync import update_application_page
+from jobpulse.job_notion_sync import (
+    fetch_found_jobs_from_notion,
+    get_notion_page_status,
+    update_application_page,
+)
 from jobpulse.job_scanner import load_search_config, save_search_config
 from jobpulse.process_logger import ProcessTrail
 from jobpulse.telegram_bots import send_jobs
@@ -116,6 +122,109 @@ def _append_pending(new_jobs: list[dict[str, Any]]) -> None:
         data.extend(new_jobs)
 
 
+def _pending_jobs_dicts_from_db_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Shape DB join rows into the pending-review JSON entries."""
+
+    def _sort_key(row: dict[str, Any]) -> tuple[str, str]:
+        return (str(row.get("updated_at") or ""), str(row.get("created_at") or ""))
+
+    return [
+        {
+            "job_id": row["job_id"],
+            "title": row.get("title", ""),
+            "company": row.get("company", ""),
+            "platform": row.get("platform", "generic"),
+            "location": row.get("location", ""),
+            "ats_score": round(float(row.get("ats_score") or 0), 1),
+        }
+        for row in sorted(rows, key=_sort_key, reverse=True)
+    ]
+
+
+def _rebuild_pending_from_notion(*, found_on: date | None = None) -> list[dict[str, Any]]:
+    """Fetch actionable jobs from the Notion Job Tracker (Status = 'Found').
+
+    This is the primary source of truth for which jobs are available to apply.
+    Falls back to SQLite if the Notion query fails or returns empty.
+    """
+    try:
+        rows = fetch_found_jobs_from_notion(found_on=found_on)
+    except Exception as exc:
+        logger.warning("job_autopilot: Notion fetch failed, falling back to SQLite: %s", exc)
+        rows = []
+
+    if rows:
+        pending = [
+            {
+                "notion_page_id": row["notion_page_id"],
+                "title": row["title"],
+                "company": row["company"],
+                "platform": row["platform"],
+                "location": row.get("location", ""),
+                "url": row.get("url", ""),
+                "ats_score": round(row.get("ats_score", 0), 1),
+                "ats_platform": row.get("ats_platform"),
+                "found_date": row.get("found_date", ""),
+                "salary": row.get("salary", ""),
+                "matched_projects": row.get("matched_projects", []),
+            }
+            for row in rows
+        ]
+        _save_pending(pending)
+        logger.info("job_autopilot: rebuilt pending from Notion Job Tracker (%d jobs)", len(pending))
+        return pending
+
+    return _rebuild_pending_from_db_fallback()
+
+
+def _rebuild_pending_from_db_fallback() -> list[dict[str, Any]]:
+    """Fallback: rehydrate from SQLite when Notion is unavailable."""
+    db = JobDB()
+    rows = db.get_applications_by_status("Pending Approval") + db.get_applications_by_status("Ready")
+    if not rows:
+        return []
+
+    rebuilt = _pending_jobs_dicts_from_db_rows(rows)
+    _save_pending(rebuilt)
+    logger.info("job_autopilot: rebuilt pending from SQLite fallback (%d jobs)", len(rebuilt))
+    return rebuilt
+
+
+def parse_job_apply_next_cli(argv: list[str]) -> tuple[str, date | None]:
+    """Parse CLI argv for ``job-apply-next [index] [YYYY-MM-DD]``.
+
+    Examples: ``job-apply-next``, ``job-apply-next 2``, ``job-apply-next 2026-04-23``,
+    ``job-apply-next 2 2026-04-23``.
+    """
+    parts = argv[2:] if len(argv) > 2 else []
+    idx = "1"
+    found_on: date | None = None
+    for p in parts:
+        if len(p) >= 10 and p[4] == "-" and p[7] == "-":
+            try:
+                found_on = date.fromisoformat(p[:10])
+            except ValueError:
+                continue
+        elif p.strip().isdigit():
+            idx = str(int(p.strip()))
+    return idx, found_on
+
+
+def _load_actionable_pending() -> list[dict[str, Any]]:
+    """Return pending-review entries from the local cache, rebuilding from Notion if empty.
+
+    The file-backed queue preserves the user-visible ordering between
+    ``show jobs`` and ``apply N``. When the cache is missing or empty,
+    it is rebuilt from the Notion Job Tracker (Status = 'Found').
+    Individual Notion status validation happens in ``approve_jobs()``
+    before any application is started.
+    """
+    pending = _load_pending()
+    if not pending:
+        pending = _rebuild_pending_from_notion()
+    return pending
+
+
 # ---------------------------------------------------------------------------
 # Daily cap check
 # ---------------------------------------------------------------------------
@@ -143,6 +252,18 @@ def _get_event_store():
 _scan_lock = system_lock("jobpulse_scan_window")
 
 
+def run_linkedin_scan_with_notion_cleanup() -> str:
+    """Trash non-terminal Job Tracker Notion rows, then run LinkedIn-only scan."""
+    from jobpulse.job_notion_sync import delete_job_tracker_non_terminal_pages
+
+    n = delete_job_tracker_non_terminal_pages()
+    logger.info(
+        "job_autopilot: deleted (trashed) %d non-terminal Job Tracker Notion page(s) before scan",
+        n,
+    )
+    return run_scan_window(["linkedin"])
+
+
 def run_scan_window(platforms: list[str] | None = None) -> str:
     """Execute one scan window — the full pipeline.
 
@@ -153,7 +274,7 @@ def run_scan_window(platforms: list[str] | None = None) -> str:
     2. Scan platforms
     3. Analyze JDs → JobListing objects
     4. Deduplicate
-    5. For each new job: save, Notion, match projects, tailor CV, cover letter, score
+    5. For each new job: save, Notion, match projects, ATS score (CV/CL PDFs at apply time)
     6. Apply by tier:
        - auto (90%+): submit via applicator, update to Applied
        - review (82-89%): save to pending, send Telegram batch
@@ -179,7 +300,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
       1. fetch_and_filter_jobs  — scan + liveness + Gate 0
       2. analyze_and_deduplicate — JD analysis + dedup
       3. prescreen_listings     — Gates 1-3 + Gate 4A
-      4. generate_materials     — CV/CL + ATS + Gate 4B  (per job)
+      4. generate_materials     — ATS + Gate 4B from synthetic CV text (per job); PDFs at apply
     """
     from jobpulse.scan_pipeline import (
         fetch_and_filter_jobs,
@@ -217,6 +338,12 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         trail.log_step("decision", "Gate: daily cap", step_output=msg, status="skipped")
         logger.info("job_autopilot: %s", msg)
         return msg
+
+    try:
+        from jobpulse.browser_cleanup import reset_app_counter
+        reset_app_counter()
+    except Exception:
+        pass
 
     _evt = _get_event_store()
     _stream_id = f"scan:{datetime.now(UTC).strftime('%Y-%m-%dT%H:%M')}" if _evt else ""
@@ -296,7 +423,7 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
         f"New: {len(new_listings)} | Pre-screen: {gate_rejected} rejected, {gate_skipped} skipped",
         f"Gate 4: {gate4_blocked} blocked, {len(gate4_filtered)} passed",
         f"Processed: {len(gate4_filtered)}",
-        f"Ready for review: {len(review_batch)} (draft-only mode)",
+        f"Ready for review: {len(review_batch)} (one live application at a time)",
     ]
     if errors:
         summary_lines.append(f"Errors: {errors}")
@@ -382,7 +509,7 @@ def _queue_for_review(listing: Any, ats_score: float, batch: list[dict[str, Any]
 
 def _send_review_batch(jobs: list[dict[str, Any]]) -> None:
     """Format and send the review batch to the Jobs Telegram bot."""
-    lines = [f"📋 {len(jobs)} job{'s' if len(jobs) != 1 else ''} ready for review (82-89% ATS):"]
+    lines = [f"📋 {len(jobs)} job{'s' if len(jobs) != 1 else ''} ready for live review:"]
     lines.append("")
 
     for i, job in enumerate(jobs, start=1):
@@ -391,7 +518,7 @@ def _send_review_batch(jobs: list[dict[str, Any]]) -> None:
         lines.append(f"   ATS: {ats_display} | {job['location']}")
         lines.append("")
 
-    lines.append('Reply: "apply 1,3,5" or "apply all" or "reject 2"')
+    lines.append('Reply: "apply 1" to open one live application, or "reject 2" to skip one.')
     send_jobs("\n".join(lines))
 
 
@@ -400,111 +527,177 @@ def _send_review_batch(jobs: list[dict[str, Any]]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def approve_jobs(args: str) -> str:
+def apply_pending_job_from_cli(args: str = "1", *, found_on: date | None = None) -> str:
+    """Start the live application pipeline for a queued job (CLI / runner).
+
+    Retrieves the job queue from the Notion Job Tracker (Status = 'Found').
+    When ``found_on`` is set, only jobs whose Found Date matches are shown.
+    Refuses to start if another live review session is active.
+    """
+    pending_rows: list[dict[str, Any]] | None = None
+    queue_size: int
+    if found_on is not None:
+        pending_rows = _rebuild_pending_from_notion(found_on=found_on)
+        if not pending_rows:
+            return (
+                f"No jobs with status 'Found' in Notion dated "
+                f"{found_on.isoformat()}. Run a scan that day first."
+            )
+        queue_size = len(pending_rows)
+    else:
+        pending = _rebuild_pending_from_notion()
+        if not pending:
+            return (
+                "No jobs with status 'Found' in the Notion Job Tracker. "
+                "Run a job scan first."
+            )
+        queue_size = len(pending)
+
+    logger.info(
+        "apply_pending_job_from_cli: found_on=%s queue_size=%d index=%s",
+        found_on.isoformat() if found_on else "any",
+        queue_size,
+        (args or "1").strip(),
+    )
+
+    try:
+        from jobpulse.live_review_applicator import get_active_review
+
+        active = get_active_review()
+        if active:
+            return (
+                "A live review is already in progress: "
+                f"{active.get('title', '?')} @ {active.get('company', '?')}. "
+                "Finish it in Telegram (yes/no on submit), then run:\n"
+                "  python -m jobpulse.runner job-apply-next"
+            )
+    except Exception as exc:
+        logger.debug("job_autopilot: apply_pending_job_from_cli active check: %s", exc)
+
+    return approve_jobs(args, pending_rows=pending_rows)
+
+
+def approve_jobs(args: str, *, pending_rows: list[dict[str, Any]] | None = None) -> str:
     """Approve pending review jobs.
 
     Args:
-        args: "1,3,5" or "all" — 1-based indices into the pending review list.
+        args: "1" — 1-based index into the pending review list.
+        pending_rows: Optional in-memory queue (e.g. filtered by listing ``found_at``).
 
     Returns:
         Summary message to send back to user.
     """
-    pending = _load_pending()
-    if not pending:
-        return "No jobs pending review. Run a scan first."
-
-    parts = args.strip().split()
-
-    # Parse args
-    args = args.strip().lower()
-    if args == "all":
-        indices = list(range(len(pending)))
+    if pending_rows is not None:
+        pending = pending_rows
     else:
-        indices = []
-        for part in args.replace(" ", "").split(","):
-            try:
-                n = int(part) - 1  # convert 1-based to 0-based
-                if 0 <= n < len(pending):
-                    indices.append(n)
-            except ValueError:
-                pass
+        pending = _load_actionable_pending()
+    if not pending:
+        return "No jobs with status 'Found' in the Notion Job Tracker. Run a scan first."
 
-    if not indices:
-        return "Could not parse job numbers. Use: apply 1,3,5 or apply all"
+    args = args.strip().lower()
+    if not args:
+        return "Use: apply 1"
+    if args == "all" or "," in args or " " in args:
+        return "One live application at a time. Use a single index, for example: apply 1"
+    try:
+        idx = int(args) - 1
+    except ValueError:
+        return f"Could not parse job number: '{args}'. Use e.g. apply 1"
+    if idx < 0 or idx >= len(pending):
+        return f"Job #{args} not found. There are {len(pending)} pending jobs."
 
+    job = pending[idx]
+    notion_page_id = job.get("notion_page_id", "")
+
+    # ── Notion status gate ─────────────────────────────────────
+    if notion_page_id:
+        notion_status = get_notion_page_status(notion_page_id)
+        if notion_status and notion_status != "Found":
+            logger.info(
+                "job_autopilot: skipping %s @ %s — Notion status is '%s', not 'Found'",
+                job["title"], job["company"], notion_status,
+            )
+            return (
+                f"⏭️ Skipped: {job['title']} — {job['company']}\n"
+                f"Notion status is \"{notion_status}\" (expected \"Found\").\n"
+                f"Only jobs with status \"Found\" in the Notion Job Tracker are picked up."
+            )
+        if notion_status is None:
+            logger.warning(
+                "job_autopilot: could not read Notion status for %s (page %s) — proceeding with caution",
+                job["title"], notion_page_id,
+            )
+    else:
+        logger.warning(
+            "job_autopilot: no notion_page_id for %s @ %s — skipping Notion gate",
+            job["title"], job["company"],
+        )
+
+    # ── URL from Notion ───────────────────────────────────────
+    url = job.get("url", "")
+    if not url:
+        return f"Job #{args} ({job['title']} — {job['company']}) is missing its JD URL in Notion."
+
+    # ── Cross-reference SQLite for local data (CV path, job_id) ─
     db = JobDB()
-    applied_titles: list[str] = []
-    failed_titles: list[str] = []
+    app: dict[str, Any] = {}
+    job_id = job.get("job_id", "")
+    if notion_page_id:
+        app = db.get_application_by_notion_page_id(notion_page_id) or {}
+        job_id = app.get("job_id", job_id)
 
-    # Build job payloads for the draft applicator
-    draft_jobs: list[dict[str, Any]] = []
-    for idx in indices:
-        job = pending[idx]
-        job_id = job["job_id"]
+    if job_id:
+        try:
+            from jobpulse.application_materials import ensure_tailored_cv_for_job
 
-        app = db.get_application(job_id)
-        if not app:
-            logger.warning("job_autopilot: approve_jobs — no application record for %s", job_id)
-            continue
+            ensure_tailored_cv_for_job(job_id)
+            app = db.get_application(job_id) or app
+        except Exception as exc:
+            logger.warning("job_autopilot: ensure CV before live review failed: %s", exc)
 
-        listing_row = db.get_listing(job_id)
-        cv_path_str = app.get("cv_path")
-        cover_letter_path_str = app.get("cover_letter_path")
-
-        draft_jobs.append({
-            "job_id": job_id,
-            "title": job["title"],
-            "company": job["company"],
-            "url": listing_row.get("url", "") if listing_row else job_id,
-            "platform": job.get("platform", "generic"),
-            "ats_platform": listing_row.get("ats_platform") if listing_row else None,
-            "ats_score": job.get("ats_score", 0),
-            "cv_path": cv_path_str,
-            "cover_letter_path": cover_letter_path_str,
-            "custom_answers": {
-                "_job_context": {
-                    "job_title": job.get("title", ""),
-                    "company": job.get("company", ""),
-                    "location": (listing_row or {}).get("location", ""),
-                },
+    payload = {
+        "job_id": job_id,
+        "title": job["title"],
+        "company": job["company"],
+        "url": url,
+        "platform": job.get("platform", "generic"),
+        "ats_platform": job.get("ats_platform"),
+        "ats_score": job.get("ats_score", 0),
+        "cv_path": app.get("cv_path"),
+        "cover_letter_path": app.get("cover_letter_path"),
+        "custom_answers": {
+            "_job_context": {
+                "job_title": job.get("title", ""),
+                "company": job.get("company", ""),
+                "location": job.get("location", ""),
             },
-            "notion_page_id": app.get("notion_page_id"),
-        })
+        },
+        "notion_page_id": notion_page_id,
+        "match_tier": app.get("match_tier"),
+        "matched_projects": app.get("matched_projects") or job.get("matched_projects"),
+    }
 
-    if not draft_jobs:
-        return "No valid jobs found to draft."
+    from jobpulse.live_review_applicator import start_live_review
 
-    # Enqueue drafts into the sequential worker. Chrome is ONE browser, so we
-    # fill one job at a time — never in parallel threads. The worker also keeps
-    # each Playwright session alive between fill and submit so the Submit click
-    # happens on the exact same page the user reviewed.
-    from jobpulse.draft_applicator import queue_drafts
-    queue_drafts(draft_jobs)
+    launch = start_live_review(payload)
+    if not launch.get("started"):
+        return launch.get("message", "A live review session is already active.")
 
-    # Remove drafted jobs from pending list immediately
-    approved_set = set(indices)
-    remaining = [j for i, j in enumerate(pending) if i not in approved_set]
-    _save_pending(remaining)
-
-    titles = [f"{j['title']} @ {j['company']}" for j in draft_jobs]
-    lines = [
-        f"📝 Queued {len(titles)} application(s) — filling one at a time...",
-        "",
-        "Each form is filled in dry-run (never submitted) — you'll get a",
-        "Telegram message per job, then reply `submit <id>` or `skip <id>`.",
-        "",
-        "Jobs:",
-    ]
-    for t in titles:
-        lines.append(f"  • {t}")
-    if remaining:
-        lines.append(f"\n{len(remaining)} job(s) still pending.")
-
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            f"🧭 Starting live review for {job['title']} @ {job['company']}.",
+            "",
+            "I'm opening the application, filling it one job at a time, and stopping",
+            "right before submit. When it is ready, review it in Chrome and reply",
+            "`yes` to submit or `no` to keep it pending.",
+        ]
+    )
 
 
 def reject_job(args: str) -> str:
     """Reject/skip a pending review job.
+
+    Updates Notion (primary) and SQLite (secondary) to 'Skipped'.
 
     Args:
         args: "2" — 1-based index of the job in the pending review list.
@@ -512,7 +705,7 @@ def reject_job(args: str) -> str:
     Returns:
         Confirmation message.
     """
-    pending = _load_pending()
+    pending = _load_actionable_pending()
     if not pending:
         return "No jobs pending review."
 
@@ -526,18 +719,24 @@ def reject_job(args: str) -> str:
         return f"Job #{args} not found. There are {len(pending)} pending jobs."
 
     job = pending[idx]
-    job_id = job["job_id"]
+    notion_page_id = job.get("notion_page_id", "")
 
-    db = JobDB()
-    db.update_status(job_id, "Skipped")
-
-    # Update Notion if we have a page ID
-    app = db.get_application(job_id)
-    if app and app.get("notion_page_id"):
+    # Update Notion first (primary source of truth)
+    if notion_page_id:
         try:
-            update_application_page(app["notion_page_id"], status="Skipped")
+            update_application_page(notion_page_id, status="Skipped")
         except Exception as exc:
             logger.warning("job_autopilot: reject Notion update failed: %s", exc)
+
+    # Update SQLite if cross-reference exists (secondary)
+    db = JobDB()
+    job_id = job.get("job_id", "")
+    if not job_id and notion_page_id:
+        app = db.get_application_by_notion_page_id(notion_page_id)
+        if app:
+            job_id = app["job_id"]
+    if job_id:
+        db.update_status(job_id, "Skipped")
 
     # Remove from pending list
     remaining = [j for i, j in enumerate(pending) if i != idx]
@@ -552,8 +751,50 @@ def reject_job(args: str) -> str:
     return msg
 
 
+def show_pending_jobs() -> str:
+    """Return the pending-review list from Notion Job Tracker, aligned with ``apply N`` numbering.
+
+    Always refreshes from Notion to show the latest state.
+    """
+    pending = _rebuild_pending_from_notion()
+
+    active_review: dict[str, Any] | None = None
+    try:
+        from jobpulse.live_review_applicator import get_active_review
+
+        active_review = get_active_review()
+    except Exception as exc:
+        logger.debug("job_autopilot: active review lookup failed: %s", exc)
+
+    if not pending and not active_review:
+        return "No jobs with status 'Found' in the Notion Job Tracker. Try 'job stats' for today's numbers."
+
+    lines: list[str] = []
+    if active_review:
+        lines.extend(
+            [
+                "🟡 Currently reviewing:",
+                f"{active_review['title']} — {active_review['company']} ({active_review['platform']})",
+                "Reply `yes` to submit or `no` to keep it pending.",
+                "",
+            ]
+        )
+
+    if pending:
+        lines.append(f"📋 {len(pending)} jobs found in Notion Job Tracker:\n")
+        for i, job in enumerate(pending[:15], 1):
+            lines.append(f"{i}. {job['title']} — {job['company']} ({job['platform']})")
+            lines.append(f"   ATS: {job.get('ats_score', 0)}% | {job.get('location', 'UK')}")
+        lines.append("")
+        lines.append('Reply: "apply 1" to open one live application, or "reject 2" to skip one.')
+
+    return "\n".join(lines).strip()
+
+
 def get_job_detail(args: str) -> str:
     """Return full details for a pending review job.
+
+    All data sourced from the Notion Job Tracker (cached in pending list).
 
     Args:
         args: "3" — 1-based index of the job in the pending review list.
@@ -562,7 +803,7 @@ def get_job_detail(args: str) -> str:
         Formatted string with title, company, platform, location, salary, ATS score,
         matched projects, and URL.
     """
-    pending = _load_pending()
+    pending = _load_actionable_pending()
     if not pending:
         return "No jobs pending review."
 
@@ -576,11 +817,6 @@ def get_job_detail(args: str) -> str:
         return f"Job #{args} not found. There are {len(pending)} pending jobs."
 
     job = pending[idx]
-    job_id = job["job_id"]
-
-    db = JobDB()
-    listing = db.get_listing(job_id)
-    app = db.get_application(job_id)
 
     lines: list[str] = [f"💼 Job #{args}: {job['title']}"]
     lines.append(f"Company:  {job['company']}")
@@ -588,23 +824,17 @@ def get_job_detail(args: str) -> str:
     lines.append(f"Location: {job.get('location', 'N/A')}")
     lines.append(f"ATS Score: {job.get('ats_score', 0):.1f}%")
 
-    if listing:
-        salary_min = listing.get("salary_min")
-        salary_max = listing.get("salary_max")
-        if salary_min is not None and salary_max is not None:
-            lines.append(f"Salary:   £{int(salary_min):,} – £{int(salary_max):,}")
-        elif salary_min is not None:
-            lines.append(f"Salary:   £{int(salary_min):,}+")
-        lines.append(f"URL:      {listing.get('url', 'N/A')}")
+    salary = job.get("salary", "")
+    if salary:
+        lines.append(f"Salary:   {salary}")
 
-    if app:
-        matched_raw = app.get("matched_projects") or "[]"
-        try:
-            projects: list[str] = json.loads(matched_raw)
-        except (json.JSONDecodeError, TypeError):
-            projects = []
-        if projects:
-            lines.append(f"Matched:  {', '.join(projects[:3])}")
+    url = job.get("url", "")
+    if url:
+        lines.append(f"URL:      {url}")
+
+    matched_projects = job.get("matched_projects", [])
+    if matched_projects:
+        lines.append(f"Matched:  {', '.join(matched_projects[:3])}")
 
     return "\n".join(lines)
 
