@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from typing import TypedDict
 
 from shared.logging_config import get_logger
-from shared.optimization import get_optimization_engine
 
 from jobpulse.config import DATA_DIR
 
@@ -387,6 +386,7 @@ class PlatformTransferEngine:
         logger.info("transfer: recorded %s outcome %s→%s (%s)", signal_type, donor_domain, target_domain, "success" if success else "failure")
 
         try:
+            from shared.optimization import get_optimization_engine
             get_optimization_engine().emit(
                 signal_type="transfer", source_loop="platform_transfer", domain=target_domain, agent_name="transfer_engine",
                 payload={"donor_domain": donor_domain, "signal": signal_type, "success": success},
