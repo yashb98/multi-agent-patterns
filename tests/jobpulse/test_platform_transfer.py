@@ -426,3 +426,71 @@ class TestPostApplyHookIntegration:
         rows = conn.execute("SELECT COUNT(*) FROM platform_similarity").fetchone()
         conn.close()
         assert rows[0] > 0
+
+
+class TestEndToEnd:
+    def test_full_transfer_cycle(self, tmp_path):
+        """Seed domain A → recompute → query transfer for B → record outcome → verify Beta update."""
+        db = str(tmp_path / "form_experience.db")
+
+        # Step 1: Seed domain A with full data
+        exp_db = FormExperienceDB(db_path=db)
+        exp_db.record(
+            domain="boards.greenhouse.io/alpha",
+            platform="greenhouse", adapter="native",
+            pages_filled=4, field_types=["text", "email", "tel", "file", "select"],
+            screening_questions=[], time_seconds=60.0, success=True,
+        )
+        exp_db.store_timing("boards.greenhouse.io/alpha", 700, 1800, 450)
+        exp_db.store_container("boards.greenhouse.io/alpha", "#application")
+        exp_db.record_fill_technique("boards.greenhouse.io/alpha", "email", "email", "type_text")
+        exp_db.save_field_mappings("boards.greenhouse.io/alpha", {"email": "email", "name": "first_name"})
+
+        # Step 2: Seed domain B (similar Greenhouse)
+        exp_db.record(
+            domain="boards.greenhouse.io/beta",
+            platform="greenhouse", adapter="native",
+            pages_filled=4, field_types=["text", "email", "tel", "file"],
+            screening_questions=[], time_seconds=55.0, success=True,
+        )
+        exp_db.store_timing("boards.greenhouse.io/beta", 750, 1900, 500)
+        exp_db.store_container("boards.greenhouse.io/beta", "#application .form-body")
+        exp_db.record_fill_technique("boards.greenhouse.io/beta", "email", "email", "type_text")
+
+        # Step 3: Recompute similarity matrix for alpha
+        engine = PlatformTransferEngine(db_path=db)
+        written = engine.recompute_similarity_matrix("boards.greenhouse.io/alpha")
+        assert written > 0
+
+        # Step 4: Add gamma (no timing data) and recompute
+        exp_db.record(
+            domain="boards.greenhouse.io/gamma",
+            platform="greenhouse", adapter="native",
+            pages_filled=3, field_types=["text", "email"],
+            screening_questions=[], time_seconds=30.0, success=True,
+        )
+        engine.recompute_similarity_matrix("boards.greenhouse.io/gamma")
+
+        # Step 5: Query timing for gamma via FormExperienceDB fallback
+        timing = exp_db.get_timing("boards.greenhouse.io/gamma")
+        if timing and timing.get("_transfer"):
+            assert timing["_donor"] in ("boards.greenhouse.io/alpha", "boards.greenhouse.io/beta")
+
+        # Step 6: Record outcome
+        engine.record_outcome(
+            "boards.greenhouse.io/gamma",
+            "boards.greenhouse.io/alpha",
+            "timing_profile",
+            success=True,
+        )
+
+        # Step 7: Verify Beta distribution updated
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT alpha, beta_param FROM transfer_outcomes "
+            "WHERE target_domain = 'boards.greenhouse.io/gamma'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 2.0  # α = 1 + 1 success
+        assert row[1] == 1.0  # β = 1 (no failure)
