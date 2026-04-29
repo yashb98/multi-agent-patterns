@@ -36,20 +36,6 @@ _LENS_WEIGHTS: dict[str, dict[str, float]] = {
 }
 
 
-def _get_openai_client():  # pragma: no cover
-    """Return an OpenAI client, or None if the key is not configured."""
-    try:
-        from jobpulse.config import OPENAI_API_KEY
-
-        if not OPENAI_API_KEY:
-            return None
-        from openai import OpenAI
-
-        return OpenAI(api_key=OPENAI_API_KEY)
-    except Exception:
-        return None
-
-
 def fast_score(paper: Paper) -> float:
     """Deterministic score for a paper. Maximum possible value is 10.0.
 
@@ -166,11 +152,6 @@ def llm_rank(
             for p in top
         ]
 
-    client = _get_openai_client()
-    if client is None:
-        logger.warning("llm_rank: no OpenAI client — using fast_score fallback")
-        return _fallback()
-
     weights = _LENS_WEIGHTS.get(lens, _LENS_WEIGHTS["daily"])
     weight_desc = ", ".join(f"{k} {v:.0%}" for k, v in weights.items())
 
@@ -191,12 +172,15 @@ def llm_rank(
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-5-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+        # Route through CognitiveEngine (default-on) for multi-criteria ranking
+        from shared.agents import cognitive_llm_call
+        raw = cognitive_llm_call(
+            task=prompt,
+            domain="paper_ranking",
+            stakes="medium",
         )
-        raw = response.choices[0].message.content or ""
+        if raw is None:
+            return _fallback()
         rankings = _extract_json_array(raw)
         if not rankings:
             logger.warning("llm_rank: empty/invalid JSON from LLM — using fallback")
@@ -240,10 +224,6 @@ def extract_themes(papers: list[Paper]) -> list[str]:
     if not papers:
         return []
 
-    client = _get_openai_client()
-    if client is None:
-        return []
-
     titles_and_cats = "\n".join(
         f"- {p.title} [{', '.join(p.categories)}]" for p in papers[:20]
     )
@@ -255,12 +235,15 @@ def extract_themes(papers: list[Paper]) -> list[str]:
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-5-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+        # Route through CognitiveEngine (default-on) for theme extraction
+        from shared.agents import cognitive_llm_call
+        raw = cognitive_llm_call(
+            task=prompt,
+            domain="paper_themes",
+            stakes="low",
         )
-        raw = response.choices[0].message.content or ""
+        if raw is None:
+            return []
         themes = _extract_json_array(raw)
         return [str(t) for t in themes if isinstance(t, str)]
     except Exception as exc:
@@ -273,19 +256,20 @@ def extract_themes(papers: list[Paper]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _summarize_paper(paper: Paper, client) -> str:  # type: ignore[no-untyped-def]
+def _summarize_paper(paper: Paper, _client=None) -> str:  # type: ignore[no-untyped-def]  # noqa: ARG001
     """Return a one-paragraph summary of the paper.  Empty string on error."""
     prompt = (
         f"Summarize this research paper in 2-3 sentences for a technical audience.\n"
         f"Title: {paper.title}\nAbstract: {paper.abstract[:800]}"
     )
     try:
-        response = client.chat.completions.create(
-            model="gpt-5-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
-        return (response.choices[0].message.content or "").strip()
+        # Route through CognitiveEngine (default-on) for summarization
+        from shared.agents import cognitive_llm_call
+        return (cognitive_llm_call(
+            task=prompt,
+            domain="paper_summary",
+            stakes="low",
+        ) or "").strip()
     except Exception as exc:
         logger.warning("_summarize_paper: failed for %s (%s)", paper.arxiv_id, exc)
         return ""
@@ -344,13 +328,12 @@ def _verify_paper(paper: Paper, summary: str) -> FactCheckResult:
 def summarize_and_verify(papers: list[Paper]) -> list[RankedPaper]:
     """For each paper: generate a summary and run fact-checking.
 
-    Returns RankedPaper objects.  Uses the OpenAI client for summarization.
+    Returns RankedPaper objects. Uses CognitiveEngine for summarization.
     """
-    client = _get_openai_client()
     results: list[RankedPaper] = []
 
     for paper in papers:
-        summary = _summarize_paper(paper, client) if client else ""
+        summary = _summarize_paper(paper)
         fact_check = _verify_paper(paper, summary) if summary else FactCheckResult()
         data = paper.model_dump()
         data.update(fast_score=fast_score(paper), summary=summary, fact_check=fact_check)

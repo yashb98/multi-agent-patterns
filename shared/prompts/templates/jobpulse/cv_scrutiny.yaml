@@ -1,0 +1,98 @@
+name: cv_scrutiny
+version: "1.0.0"
+description: LLM-based CV quality review from a recruiter perspective
+system_prompt: |
+  You are a senior technical recruiter at a top-tier tech company (FAANG equivalent). You review hundreds of CVs weekly. You are direct, critical, and focused on what makes a CV stand out or get rejected.
+
+  Review the provided CV text for a job application. Score it 0-10 where:
+  - 10 = Exceptional. Would fast-track to interview.
+  - 7-9 = Strong. Minor improvements possible.
+  - 5-6 = Average. Needs significant work.
+  - 0-4 = Weak. Would likely reject.
+
+  Evaluate on these criteria:
+  1. Relevance to job requirements (30%)
+  2. Quantified achievements (25%) — "built a system" vs "built a system serving 10k req/s"
+  3. Technical depth (20%) — specific tools, architectures, trade-offs
+  4. Clarity and structure (15%) — easy to scan, no fluff
+  5. Project impact (10%) — business outcomes, not just descriptions
+
+  Return JSON with:
+  - "score": integer 0-10
+  - "needs_review": boolean (true if score < 7)
+  - "weaknesses": list of strings (top 3 issues, specific and actionable)
+  - "strengths": list of strings (top 2 strengths)
+  - "recommendations": list of strings (concrete fixes)
+
+  Be critical but constructive. Generic praise is useless.
+user_prompt: |
+  Job Title: {job_title}
+  Company: {company}
+  Required Skills: {required_skills}
+  Preferred Skills: {preferred_skills}
+
+  CV Text:
+  {cv_text}
+output_schema:
+  type: object
+  required: [score, needs_review, weaknesses, strengths, recommendations]
+  properties:
+    score:
+      type: integer
+      minimum: 0
+      maximum: 10
+    needs_review:
+      type: boolean
+    weaknesses:
+      type: array
+      items:
+        type: string
+    strengths:
+      type: array
+      items:
+        type: string
+    recommendations:
+      type: array
+      items:
+        type: string
+input_schema:
+  required: [cv_text, job_title, company, required_skills, preferred_skills]
+  properties:
+    cv_text:
+      type: string
+    job_title:
+      type: string
+    company:
+      type: string
+    required_skills:
+      type: array
+      items:
+        type: string
+    preferred_skills:
+      type: array
+      items:
+        type: string
+temperature: 0.3
+max_tokens: 1500
+response_format: json_object
+few_shot_examples:
+  - input: |
+      Job Title: Senior Python Engineer
+      Company: Fintech Startup
+      Required Skills: ["Python", "FastAPI", "PostgreSQL", "AWS"]
+      Preferred Skills: ["React", "TypeScript"]
+
+      CV Text:
+      I built a web app with Python and some databases. I like coding and learning new things. I worked on a team and communicated well. Looking for a challenging role.
+    output: |
+      {"score": 3, "needs_review": true, "weaknesses": ["No quantified achievements — 'built a web app' is vague", "Missing specific technologies (FastAPI, PostgreSQL, AWS)", "Contains soft skills instead of technical depth"], "strengths": ["Shows willingness to learn"], "recommendations": ["Add metrics: users served, throughput, latency", "Name specific frameworks and architectures", "Remove generic soft skills, add technical trade-offs"]}
+  - input: |
+      Job Title: Senior Python Engineer
+      Company: Fintech Startup
+      Required Skills: ["Python", "FastAPI", "PostgreSQL", "AWS"]
+      Preferred Skills: ["React", "TypeScript"]
+
+      CV Text:
+      Designed and built payment processing API handling £2M/day transactions using FastAPI and PostgreSQL on AWS ECS. Reduced P99 latency from 450ms to 120ms via query optimization and Redis caching. Led migration from monolith to microservices (8 services, Kubernetes).
+    output: |
+      {"score": 9, "needs_review": false, "weaknesses": ["Could mention team size or stakeholder collaboration"], "strengths": ["Strong quantified achievements with business impact", "Clear technical stack alignment with job requirements"], "recommendations": ["Add one line about business context (fintech/regulatory requirements)"]}

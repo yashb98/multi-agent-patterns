@@ -125,6 +125,32 @@ def build_weekly_report() -> str:
         logger.debug("Weekly report jobs: %s", e)
         sections["jobs"] = "  Data unavailable"
 
+    # 6. LLM cost trend
+    try:
+        from shared.cost_tracker import get_daily_llm_summary
+        cost_data = get_daily_llm_summary(days=7)
+        if cost_data["total_calls"] > 0:
+            avg_daily = cost_data["total_cost"] / max(len(cost_data["by_day"]), 1)
+            top_agents = sorted(
+                cost_data["by_agent"].items(),
+                key=lambda x: x[1]["cost"],
+                reverse=True,
+            )[:3]
+            agent_lines = "\n".join(
+                f"  {name}: ${data['cost']:.3f} ({data['calls']} calls)"
+                for name, data in top_agents
+            )
+            sections["cost"] = (
+                f"  Total: ${cost_data['total_cost']:.3f} ({cost_data['total_calls']} calls)\n"
+                f"  Daily avg: ${avg_daily:.3f}\n"
+                f"  Top agents:\n{agent_lines}"
+            )
+        else:
+            sections["cost"] = "  No LLM calls recorded"
+    except Exception as e:
+        logger.debug("Weekly report cost: %s", e)
+        sections["cost"] = "  Data unavailable"
+
     # Build message
     report = (
         f"\U0001f4ca PERIOD REPORT ({start.strftime('%b %d')} \u2014 {end.strftime('%b %d, %Y')})\n"
@@ -153,6 +179,11 @@ def build_weekly_report() -> str:
         f"\n"
         f"\U0001f4bc JOB APPLICATIONS:\n"
         f"{sections['jobs']}\n"
+        f"\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"\n"
+        f"\U0001f4b0 LLM COST:\n"
+        f"{sections['cost']}\n"
         f"\n"
         f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
         f"\n"

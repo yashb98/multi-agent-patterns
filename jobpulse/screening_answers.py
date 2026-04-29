@@ -394,7 +394,7 @@ def _generate_hiring_message(job_context: dict | None) -> str:
     try:
         from shared.agents import get_llm, smart_llm_call
         from langchain_core.messages import HumanMessage
-        llm = get_llm(temperature=0.7)
+        llm = get_llm(temperature=0.7, agent_name="screening_answers")
         result = smart_llm_call(llm, [HumanMessage(content=prompt)])
         text = result.content if hasattr(result, "content") else str(result)
         if text and len(text.strip()) > 50:
@@ -658,13 +658,19 @@ _v2_pipeline = None
 
 
 def _get_v2_pipeline():
-    """Lazy-init the ScreeningPipeline with applicant profile."""
+    """Lazy-init the ScreeningPipeline with applicant profile + work auth."""
     global _v2_pipeline
     if _v2_pipeline is not None:
         return _v2_pipeline
     try:
         from jobpulse.screening_pipeline import ScreeningPipeline
-        _v2_pipeline = ScreeningPipeline(profile=PROFILE)
+        merged = dict(PROFILE)
+        merged["visa_status"] = str(WORK_AUTH.get("visa_status", ""))
+        merged["visa_sponsorship_required"] = "No" if not WORK_AUTH.get("requires_sponsorship") else "Yes"
+        merged["right_to_work"] = "Yes" if WORK_AUTH.get("right_to_work_uk") else "No"
+        merged["notice_period"] = str(WORK_AUTH.get("notice_period", ""))
+        merged["salary_expectation"] = str(WORK_AUTH.get("salary_expectation", ""))
+        _v2_pipeline = ScreeningPipeline(profile=merged)
         logger.debug("Screening V2 pipeline initialised")
         return _v2_pipeline
     except Exception as exc:
@@ -805,12 +811,20 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
 
     try:
         client = get_openai_client()
+        model = get_model_name()
+        from shared.agents import _token_limit_kwargs
         response = client.chat.completions.create(
-            model=get_model_name(),
+            model=model,
             messages=[{"role": "user", "content": task}],
-            max_tokens=600 if is_local_llm() else 200,
             temperature=0.4,
+            **_token_limit_kwargs(model, 600 if is_local_llm() else 200),
         )
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="screening_answers", model_hint=get_model_name())
+        except Exception:
+            pass
+
         answer = response.choices[0].message.content.strip()
         logger.debug("LLM generated answer: %s", answer[:80])
         return answer

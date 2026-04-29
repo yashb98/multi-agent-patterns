@@ -13,7 +13,7 @@ class TestEvalRunner:
         from shared.adversarial._eval_runner import EvalRunner
         runner = EvalRunner(baseline_db_path=baseline_db_path)
         report = runner.run(quick=False)
-        assert report.total >= 30
+        assert report.total >= 50
         assert report.failed == 0
 
     def test_report_has_duration(self, baseline_db_path):
@@ -31,3 +31,15 @@ class TestEvalRunner:
         trend = tracker.get_trend("adversarial", "pass_rate", n=1)
         assert len(trend) == 1
         assert trend[0] == 1.0
+
+    def test_nightly_run_uses_dedicated_baseline(self, baseline_db_path):
+        from shared.adversarial._baseline_tracker import BaselineTracker
+        from shared.adversarial._eval_runner import EvalRunner
+
+        runner = EvalRunner(baseline_db_path=baseline_db_path)
+        report = runner.run_nightly()
+
+        assert report.total >= 50
+        tracker = BaselineTracker(db_path=baseline_db_path)
+        trend = tracker.get_trend("adversarial_nightly", "pass_rate", n=1)
+        assert trend == [1.0]

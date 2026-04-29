@@ -78,6 +78,58 @@ __all__ = [
 
 MAX_FORM_PAGES = 20
 
+_SKIP_FILL_LABELS = frozenset({"middle name"})
+
+_SELECT_PLACEHOLDER_RE = re.compile(
+    r"^(|—.*—|please select.*|select\b.*|choose\b.*|-999|not applicable)$",
+    re.IGNORECASE,
+)
+
+
+def _is_select_placeholder(value: str) -> bool:
+    return bool(_SELECT_PLACEHOLDER_RE.match(value.strip()))
+
+
+def _resolve_dropdown_from_profile(question: str, options: list[str]) -> str | None:
+    """Resolve dropdown option using applicant profile context (WORK_AUTH).
+
+    Handles work-auth dropdowns where options describe visa/sponsorship status
+    rather than simple Yes/No.
+    """
+    q_lower = question.lower()
+    opts_lower = [o.lower() for o in options]
+    has_sponsorship_opts = any("sponsorship" in o or "visa" in o for o in opts_lower)
+    if not has_sponsorship_opts:
+        return None
+    if not ("work" in q_lower or "right" in q_lower or "visa" in q_lower or "sponsor" in q_lower):
+        return None
+    try:
+        from jobpulse.config import WORK_AUTH
+        needs_sponsorship = bool(WORK_AUTH.get("requires_sponsorship"))
+        visa_status = str(WORK_AUTH.get("visa_status", "")).lower()
+
+        for opt, opt_lower in zip(options, opts_lower):
+            if needs_sponsorship and "require sponsorship" in opt_lower and "not" not in opt_lower:
+                return opt
+            if not needs_sponsorship and "not requiring sponsorship" in opt_lower:
+                return opt
+            if not needs_sponsorship and "without sponsorship" in opt_lower:
+                return opt
+
+        if not needs_sponsorship:
+            for opt, opt_lower in zip(options, opts_lower):
+                if "visa" in opt_lower and "not requiring" in opt_lower:
+                    return opt
+                if "obtain" in opt_lower and "visa" in opt_lower:
+                    return opt
+        if "permanent" in visa_status or "citizen" in visa_status or "settled" in visa_status:
+            for opt, opt_lower in zip(options, opts_lower):
+                if "permanent" in opt_lower:
+                    return opt
+    except Exception:
+        pass
+    return None
+
 
 def _get_adaptive_page_delay(platform: str, timing_data: dict | None) -> float:
     """Return adaptive page delay based on measured timing data.
@@ -691,6 +743,13 @@ class NativeFormFiller:
         else:
             if input_type == "tel":
                 fill_value = await self._normalize_phone_value(label, fill_value)
+            elif input_type == "date":
+                import re as _re
+                if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", fill_value):
+                    store = getattr(self, "_profile_store", None)
+                    dob = store.sensitive("date_of_birth") if store else ""
+                    if dob and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob):
+                        fill_value = dob
             await el.fill(fill_value)
 
         # Post-fill verification
@@ -1079,6 +1138,34 @@ class NativeFormFiller:
                 elif answer_lower in ("no", "false", "0"):
                     target = next((o for o in options if o.lower() == "no"), None)
             if not target:
+                # Consent-to-provide questions: pick "agree" if user has the data
+                q_lower = question.lower()
+                if any(k in q_lower for k in ("date of birth", "dob", "provide your")):
+                    agree_opt = next(
+                        (o for o in options if "agree" in o.lower()),
+                        None,
+                    )
+                    if agree_opt:
+                        target = agree_opt
+            if not target:
+                target = _best_option_match(question, answer, options, store=self._profile_store)
+            if not target:
+                from jobpulse.screening_answers import try_screening_v2
+                _job_ctx_raw = (custom_answers or {}).get("_job_context")
+                _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+                retry_answer = try_screening_v2(
+                    question, _job_ctx,
+                    field={"type": "radio", "options": options},
+                )
+                if retry_answer:
+                    retry_str = str(retry_answer).strip()
+                    for opt in options:
+                        if opt.lower() == retry_str.lower():
+                            target = opt
+                            break
+                    if not target:
+                        target = _best_option_match(question, retry_str, options, store=self._profile_store)
+            if not target:
                 continue
 
             try:
@@ -1112,6 +1199,243 @@ class NativeFormFiller:
             except Exception as exc:
                 logger.warning("Radio group fill failed for '%s': %s", question[:80], exc)
         return filled
+
+    # ── Custom React Dropdowns ──
+
+    async def _fill_custom_dropdowns(
+        self, mapping: dict[str, str], custom_answers: dict[str, Any] | None,
+        fields: list[dict] | None = None,
+    ) -> int:
+        """Fill custom React dropdowns (data-testid="dropdown-basic" pattern)."""
+        custom_fields = [
+            f for f in (fields or [])
+            if f.get("type") == "custom_dropdown"
+        ]
+        if not custom_fields:
+            return 0
+
+        filled = 0
+        for field in custom_fields:
+            question = field["label"]
+            test_id = field.get("testId", "")
+
+            if any(kw in test_id.lower() for kw in ("privacy", "consent", "agree")):
+                continue
+
+            answer: str | None = mapping.get(question)
+            if not answer:
+                q_norm = _normalize_match_text(question)
+                for label, value in mapping.items():
+                    l_norm = _normalize_match_text(label)
+                    if l_norm and q_norm and (l_norm in q_norm or q_norm in l_norm):
+                        answer = str(value).strip()
+                        break
+
+            if not answer:
+                from jobpulse.screening_answers import try_instant_answer
+                _job_ctx_raw = (custom_answers or {}).get("_job_context")
+                _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+                cached = try_instant_answer(question, _job_ctx)
+                if cached:
+                    answer = str(cached).strip()
+
+            if not answer:
+                logger.debug("Custom dropdown unanswered: '%s'", question[:80])
+                continue
+
+            try:
+                dd_index = field.get("ddIndex", -1)
+                result = await self._click_custom_dropdown_option(question, answer, dd_index)
+                if result is True:
+                    filled += 1
+                    logger.info("Custom dropdown [%s]: '%s' → '%s'", test_id or dd_index, question[:80], answer)
+                elif isinstance(result, list) and result:
+                    picked = _resolve_dropdown_from_profile(question, result)
+                    if not picked:
+                        from jobpulse.screening_answers import try_screening_v2
+                        _job_ctx_raw = (custom_answers or {}).get("_job_context")
+                        _job_ctx = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+                        retry_answer = try_screening_v2(
+                            question, _job_ctx,
+                            field={"type": "select", "options": result},
+                        )
+                        if retry_answer:
+                            retry_answer = str(retry_answer).strip()
+                            picked = _best_option_match(question, retry_answer, result, store=self._profile_store)
+                    if not picked:
+                        picked = _best_option_match(question, answer, result, store=self._profile_store)
+                    if picked:
+                        re_clicked = await self._click_custom_dropdown_option(question, picked, dd_index)
+                        if re_clicked is True:
+                            filled += 1
+                            logger.info("Custom dropdown [%s]: '%s' → '%s' (retry matched)", test_id or dd_index, question[:80], picked)
+                        else:
+                            logger.warning("Custom dropdown [%s]: click failed for matched option '%s'", test_id or dd_index, picked[:60])
+                    else:
+                        logger.warning("Custom dropdown [%s]: no option match for '%s' among %d options", test_id or dd_index, question[:60], len(result))
+            except Exception as exc:
+                logger.warning("Custom dropdown fill failed for '%s': %s", question[:80], exc)
+
+        return filled
+
+    async def _click_custom_dropdown_option(
+        self, question: str, answer: str, dd_index: int = -1,
+    ) -> bool:
+        """Find a custom dropdown by question text and select the matching option."""
+        page = self._page
+        q_norm = _normalize_match_text(question)
+
+        dd_selector = '[data-testid="dropdown-basic"], [data-testid="agree-data-privacy-dropdown"]'
+        containers = await page.locator(dd_selector).all()
+        if not containers:
+            return False
+
+        target = None
+        if 0 <= dd_index < len(containers):
+            target = containers[dd_index]
+        else:
+            for c in containers:
+                try:
+                    ctx = await c.evaluate("""el => {
+                        const title = el.querySelector('[data-testid="dropdown-title"]');
+                        if (title) return title.textContent.trim();
+                        let node = el;
+                        for (let i = 0; node && i < 6; i++) {
+                            node = node.parentElement;
+                            if (!node) break;
+                            for (const sel of [':scope > label', ':scope > legend', ':scope > h3', ':scope > h4', ':scope > p']) {
+                                const found = node.querySelector(sel);
+                                if (found) {
+                                    const t = found.textContent.trim();
+                                    if (t.length > 5 && t.length < 500) return t;
+                                }
+                            }
+                        }
+                        return '';
+                    }""")
+                    if ctx and _normalize_match_text(ctx) == q_norm:
+                        target = c
+                        break
+                except Exception:
+                    continue
+
+        if not target:
+            return False
+
+        btn = target.locator('[data-testid="dropdown-button"], button').first
+        if not await btn.count():
+            return False
+
+        current = (await btn.text_content() or "").strip()
+        if current and _normalize_match_text(current) == _normalize_match_text(answer):
+            return True
+
+        # Dismiss any stale dropdown overlay before opening
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.15)
+
+        await btn.scroll_into_view_if_needed()
+        try:
+            await btn.click(timeout=5000)
+        except Exception:
+            await btn.evaluate("el => el.click()")
+        await asyncio.sleep(0.5)
+
+        # Verify dropdown actually opened; retry click if toggle state was stale
+        has_visible = await page.evaluate("""() => {
+            const candidates = [
+                ...document.querySelectorAll('[role="listbox"] [role="option"]'),
+                ...document.querySelectorAll('[role="listbox"] li'),
+                ...document.querySelectorAll('ul[class*="dropdown"] li'),
+                ...document.querySelectorAll('[data-testid*="dropdown-option"]'),
+            ];
+            return [...new Set(candidates)].some(c => c.offsetParent !== null && c.textContent.trim());
+        }""")
+        if not has_visible:
+            try:
+                await btn.click(timeout=5000)
+            except Exception:
+                await btn.evaluate("el => el.click()")
+            await asyncio.sleep(0.5)
+
+        # Read all visible options and try direct JS match first
+        option_data = await page.evaluate("""(answer) => {
+            const norm = answer.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+            const isShort = norm.length <= 4;
+            const candidates = [
+                ...document.querySelectorAll('[role="listbox"] [role="option"]'),
+                ...document.querySelectorAll('[role="listbox"] li'),
+                ...document.querySelectorAll('ul[class*="dropdown"] li'),
+                ...document.querySelectorAll('[data-testid*="dropdown-option"]'),
+            ];
+            const unique = [...new Set(candidates)];
+            const texts = [];
+            const visible = [];
+            for (const c of unique) {
+                if (c.offsetParent === null) continue;
+                const text = c.textContent.trim();
+                if (!text) continue;
+                texts.push(text);
+                visible.push(c);
+            }
+            // Pass 1: exact match (always safe)
+            for (let i = 0; i < visible.length; i++) {
+                const textNorm = texts[i].toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                if (textNorm === norm) {
+                    visible[i].click();
+                    return {matched: texts[i], options: texts};
+                }
+            }
+            // Pass 2: substring match (skip for short answers to avoid "No" matching "not")
+            if (!isShort) {
+                for (let i = 0; i < visible.length; i++) {
+                    const textNorm = texts[i].toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                    if (textNorm.includes(norm) || norm.includes(textNorm)) {
+                        visible[i].click();
+                        return {matched: texts[i], options: texts};
+                    }
+                }
+            }
+            return {matched: null, options: texts};
+        }""", answer)
+
+        if option_data.get("matched"):
+            return True
+
+        # Fuzzy match: use _best_option_match against visible options
+        visible_options = option_data.get("options", [])
+        if visible_options:
+            fuzzy = _best_option_match(question, answer, visible_options, store=self._profile_store)
+            if fuzzy:
+                # Click the fuzzy-matched option via JS
+                clicked = await page.evaluate("""(target) => {
+                    const candidates = [
+                        ...document.querySelectorAll('[role="listbox"] [role="option"]'),
+                        ...document.querySelectorAll('[role="listbox"] li'),
+                        ...document.querySelectorAll('ul[class*="dropdown"] li'),
+                        ...document.querySelectorAll('[data-testid*="dropdown-option"]'),
+                    ];
+                    for (const c of [...new Set(candidates)]) {
+                        if (c.offsetParent === null) continue;
+                        if (c.textContent.trim() === target) {
+                            c.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""", fuzzy)
+                if clicked:
+                    logger.info("Custom dropdown fuzzy matched: '%s' → '%s'", answer[:40], fuzzy)
+                    return True
+
+        await page.keyboard.press("Escape")
+        if visible_options:
+            logger.info(
+                "Custom dropdown no match: question='%s' answer='%s' options=%s",
+                question[:60], answer[:40], visible_options[:5],
+            )
+            return visible_options
+        return False
 
     # ── Page Detection ──
 
@@ -1561,11 +1885,17 @@ class NativeFormFiller:
 
             # 4. Screening: DB cache → pattern → V2 pipeline → LLM
             #    Skip text/select fields already pre-filled (by direct ID fill or form defaults)
-            #    Radio fields always have a non-empty HTML value attr — don't skip those
+            #    Radio/select fields always have a non-empty HTML value — include them
+            #    unless the select has a genuinely pre-filled (non-placeholder) value
             unresolved = [
                 f for f in fields
                 if f["label"] not in mapping and f["type"] != "file"
-                and (f["type"] == "radio" or not f.get("value"))
+                and (
+                    f["type"] in ("radio", "custom_dropdown")
+                    or not f.get("value")
+                    or (f["type"] == "select" and _is_select_placeholder(f.get("value", "")))
+                )
+                and not any(s in _normalize_match_text(f["label"]) for s in _SKIP_FILL_LABELS)
             ]
             if unresolved:
                 from jobpulse.screening_answers import try_instant_answer, try_screening_v2
@@ -1654,6 +1984,20 @@ class NativeFormFiller:
                             field_options=None, field_type="text",
                         )
 
+            # Merge caller-provided custom_answers into mapping (overrides screening)
+            _known_labels = {f["label"] for f in fields}
+            _known_norms = {_normalize_match_text(l): l for l in _known_labels}
+            for k, v in custom_answers.items():
+                if k.startswith("_") or not isinstance(v, str):
+                    continue
+                if k in _known_labels:
+                    mapping[k] = v
+                else:
+                    k_norm = _normalize_match_text(k)
+                    matched_label = _known_norms.get(k_norm)
+                    if matched_label:
+                        mapping[matched_label] = v
+
             all_agent_mappings.update({k: str(v) for k, v in mapping.items()})
 
             # 5. Fill each field by label (skip radio — handled by _fill_radio_groups)
@@ -1663,7 +2007,7 @@ class NativeFormFiller:
                 value_text = str(value).strip()
                 if not value_text:
                     continue
-                if fields_by_label.get(label, {}).get("type") == "radio":
+                if fields_by_label.get(label, {}).get("type") in ("radio", "custom_dropdown"):
                     continue
                 # Apply agent rule overrides from correction history
                 override = _field_overrides.get(label.lower().strip())
@@ -1714,6 +2058,10 @@ class NativeFormFiller:
             radio_filled = await self._fill_radio_groups(mapping, custom_answers, fields)
             total_fields_filled += radio_filled
 
+            # 5d. Custom React dropdowns (data-testid pattern)
+            custom_dd_filled = await self._fill_custom_dropdowns(mapping, custom_answers, fields)
+            total_fields_filled += custom_dd_filled
+
             # 6. File uploads
             await upload_files(self._page, cv_path, cl_path, custom_answers, self._get_accessible_name)
 
@@ -1740,7 +2088,12 @@ class NativeFormFiller:
                     retry_value = str(recovered.get(label, "")).strip() if recovered else ""
                     if retry_value and retry_value != item["attempted_value"]:
                         total_fields_attempted += 1
-                        retry_result = await self._fill_by_label(label, retry_value)
+                        try:
+                            retry_result = await self._fill_by_label(label, retry_value)
+                        except Exception as exc:
+                            logger.warning("LLM recovery fill failed for '%s': %s", label, exc)
+                            still_failing.append(item)
+                            continue
                         if retry_result.get("success") and retry_result.get("value_verified", True):
                             total_fields_filled += 1
                             _log_field_trajectory(
@@ -1825,6 +2178,64 @@ class NativeFormFiller:
 
                 fill_failures.extend(final_failed_labels)
                 total_fill_failures.extend(final_failed_labels)
+
+            # 7d. Post-fill rescan — catch conditionally-revealed fields
+            await asyncio.sleep(0.5)
+            rescan_fields = await self._scan_fields()
+            original_labels = {f["label"] for f in fields}
+            new_fields = [f for f in rescan_fields if f["label"] not in original_labels]
+            if new_fields:
+                logger.info(
+                    "Post-fill rescan found %d new field(s): %s",
+                    len(new_fields), [f["label"] for f in new_fields],
+                )
+                new_mapping: dict[str, str] = {}
+                for nf in new_fields:
+                    lbl = nf["label"]
+                    # Check custom_answers first
+                    ca_val = custom_answers.get(lbl)
+                    if not ca_val:
+                        ca_norm = _normalize_match_text(lbl)
+                        for k, v in custom_answers.items():
+                            if k.startswith("_") or not isinstance(v, str):
+                                continue
+                            if _normalize_match_text(k) == ca_norm:
+                                ca_val = v
+                                break
+                    if ca_val and isinstance(ca_val, str):
+                        new_mapping[lbl] = ca_val
+                        continue
+                    # Profile store sensitive fields (e.g. date_of_birth)
+                    if nf.get("type") == "text":
+                        el_type = nf.get("input_type", "")
+                        lbl_lower = lbl.lower()
+                        store = getattr(self, "_profile_store", None)
+                        if store and (el_type == "date" or "date of birth" in lbl_lower or "dob" in lbl_lower):
+                            dob = store.sensitive("date_of_birth")
+                            if dob and re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob):
+                                new_mapping[lbl] = dob
+                                continue
+                    # Screening pipeline fallback
+                    from jobpulse.screening_answers import try_screening_v2
+                    v2_answer = try_screening_v2(
+                        lbl, _job_ctx,
+                        field={"type": nf.get("type"), "options": nf.get("options")},
+                    )
+                    if v2_answer:
+                        new_mapping[lbl] = str(v2_answer).strip()
+
+                for lbl, val in new_mapping.items():
+                    if not val:
+                        continue
+                    try:
+                        res = await self._fill_by_label(lbl, val)
+                        if res.get("success") and res.get("value_verified", True):
+                            total_fields_filled += 1
+                            mapping[lbl] = val
+                            all_agent_mappings[lbl] = val
+                            logger.info("Post-fill rescan filled: '%s' → '%s'", lbl, val)
+                    except Exception as exc:
+                        logger.warning("Post-fill rescan fill failed for '%s': %s", lbl, exc)
 
             # 8. Timing measurement + anti-detection delay
             page_fill_ms = int((time.monotonic() - t_hydration) * 1000) - hydration_ms

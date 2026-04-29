@@ -15,22 +15,33 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+def _multi_agent_entry() -> dict:
+    """Build multi-agent-patterns portfolio entry with current project stats."""
+    from jobpulse.cv_templates import get_project_stats
+    s = get_project_stats()
+    loc = s.get("loc_display", "142,500+")
+    tests = s.get("tests_display", "3,350+")
+    files = s.get("python_files", 680)
+    dbs = s.get("databases", 57)
+    return {
+        "title": "Multi-Agent Orchestration System | Python | LangGraph | OpenAI",
+        "url": "https://github.com/yashb98/multi-agent-patterns",
+        "priority": 1,
+        "bullets": [
+            f'Built a <b>{loc} LOC</b> production AI system with <b>{tests} tests</b>, <b>{files} files</b>, and <b>{dbs} databases</b>, shipping <b>10+ autonomous agents</b> (Gmail, Calendar, GitHub, Notion, Budget) running <b>24/7</b> via Telegram with <b>99.9%</b> uptime.',
+            'Designed <b>4 LangGraph</b> orchestration patterns with GRPO experiential learning, persona evolution, and <b>A/B testing</b>, reducing LLM costs by <b>96%</b> ($5.63 - $0.23/month) through hybrid rule-based + ML classification.',
+            'Engineered <b>5-gate pre-screen pipeline</b> with statistical correlation engine, adaptive rate limiting, and <b>17-signal verification wall learning</b>, processing <b>200+ JDs/day</b> with <b>92%+</b> skill match threshold.',
+            'Built multi-source <b>fact-checking</b> pipeline using Semantic Scholar API with <b>9.5/10</b> accuracy gate, SQLite caching, and automated <b>Google Drive</b> integration for document management.',
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Portfolio — repo name → CV-ready entry
 # ---------------------------------------------------------------------------
 
 PORTFOLIO: dict[str, dict] = {
-    "yashb98/multi-agent-patterns": {
-        "title": "Multi-Agent Orchestration System | Python | LangGraph | OpenAI",
-        "url": "https://github.com/yashb98/multi-agent-patterns",
-        "priority": 1,  # Always first if it matches — strongest project
-        "bullets": [
-            'Built a <b>88,500+ LOC</b> production AI system with <b>2,350 tests</b>, <b>412 files</b>, and <b>21 databases</b>, shipping <b>10+ autonomous agents</b> (Gmail, Calendar, GitHub, Notion, Budget) running <b>24/7</b> via Telegram with <b>99.9%</b> uptime.',
-            'Designed <b>4 LangGraph</b> orchestration patterns with GRPO experiential learning, persona evolution, and <b>A/B testing</b>, reducingLLM costs by <b>96%</b> ($5.63 → $0.23/month) through hybrid rule-based + ML classification.',
-            'Engineered <b>5-gate pre-screen pipeline</b> with statistical correlation engine, adaptive rate limiting, and <b>17-signal verification wall learning</b>, processing<b>200+ JDs/day</b> with <b>92%+</b> skill match threshold.',
-            'Built multi-source <b>fact-checking</b> pipeline using Semantic Scholar API with <b>9.5/10</b> accuracy gate, SQLite caching, and automated <b>Google Drive</b> integration for document management.',
-        ],
-    },
+    "yashb98/multi-agent-patterns": _multi_agent_entry(),
     "yashb98/Velox_AI": {
         "title": "Velox AI - Enterprise AI Voice Agent Platform | Python | FastAPI | Docker | GCP",
         "url": "https://github.com/yashb98/Velox_AI",

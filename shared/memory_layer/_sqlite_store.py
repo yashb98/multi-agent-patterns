@@ -177,6 +177,15 @@ class SQLiteStore:
             )
             conn.commit()
 
+    def count_by_lifecycle(self, lifecycle: Lifecycle) -> int:
+        with self._write_lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE lifecycle = ? AND is_tombstoned = 0",
+                (lifecycle.value,),
+            ).fetchone()
+            return row[0] if row else 0
+
     def update_decay(self, memory_id: str, decay_score: float) -> None:
         with self._write_lock:
             conn = self._get_conn()
@@ -236,6 +245,19 @@ class SQLiteStore:
             return None
         self._record_read([memory_id], "get_by_id")
         return self._row_to_entry(row)
+
+    def get_by_ids(self, memory_ids: list[str]) -> list[MemoryEntry]:
+        """Batch retrieve memories by ID — eliminates N+1 queries."""
+        if not memory_ids:
+            return []
+        conn = self._get_conn()
+        placeholders = ",".join("?" * len(memory_ids))
+        rows = conn.execute(
+            f"SELECT * FROM memories WHERE memory_id IN ({placeholders}) AND is_tombstoned = 0",
+            memory_ids,
+        ).fetchall()
+        self._record_read([r["memory_id"] for r in rows], "get_by_ids")
+        return [self._row_to_entry(r) for r in rows]
 
     def query_by_tier(self, tier: MemoryTier, limit: int = 100) -> list[MemoryEntry]:
         conn = self._get_conn()

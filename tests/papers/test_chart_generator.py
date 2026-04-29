@@ -48,25 +48,13 @@ def _make_mock_response(content: str) -> MagicMock:
 class TestDataExtraction:
     def test_extracts_benchmark_data(self, tmp_path):
         """LLM returns a valid chart spec → _extract_chart_data returns it."""
-        spec = [
-            {
-                "chart_type": "bar_comparison",
-                "title": "GLUE Benchmark",
-                "description": "Comparison of models on GLUE.",
-                "data": {"models": ["Ours", "GPT-4", "Baseline"], "scores": [92, 88, 75]},
-            }
-        ]
-        mock_resp = _make_mock_response(
+        mock_json = (
             '[{"chart_type":"bar_comparison","title":"GLUE Benchmark",'
             '"description":"Comparison of models on GLUE.",'
             '"data":{"models":["Ours","GPT-4","Baseline"],"scores":[92,88,75]}}]'
         )
         gen = ChartGenerator()
-        with patch("jobpulse.papers.chart_generator._get_openai_client") as mock_client_fn:
-            client = MagicMock()
-            client.chat.completions.create.return_value = mock_resp
-            mock_client_fn.return_value = client
-
+        with patch("shared.agents.cognitive_llm_call", return_value=mock_json):
             result = gen._extract_chart_data(_make_paper(), "Some notes about speedup.")
 
         assert len(result) == 1
@@ -75,13 +63,8 @@ class TestDataExtraction:
 
     def test_returns_empty_for_theoretical_paper(self):
         """LLM returns [] for a paper with no quantitative results."""
-        mock_resp = _make_mock_response("[]")
         gen = ChartGenerator()
-        with patch("jobpulse.papers.chart_generator._get_openai_client") as mock_client_fn:
-            client = MagicMock()
-            client.chat.completions.create.return_value = mock_resp
-            mock_client_fn.return_value = client
-
+        with patch("shared.agents.cognitive_llm_call", return_value="[]"):
             paper = _make_paper(abstract="We discuss philosophical foundations of attention.")
             result = gen._extract_chart_data(paper, "Purely theoretical.")
 
@@ -90,11 +73,7 @@ class TestDataExtraction:
     def test_handles_llm_error(self):
         """When the LLM call raises an exception, returns []."""
         gen = ChartGenerator()
-        with patch("jobpulse.papers.chart_generator._get_openai_client") as mock_client_fn:
-            client = MagicMock()
-            client.chat.completions.create.side_effect = RuntimeError("API down")
-            mock_client_fn.return_value = client
-
+        with patch("shared.agents.cognitive_llm_call", side_effect=RuntimeError("API down")):
             result = gen._extract_chart_data(_make_paper(), "notes")
 
         assert result == []
@@ -207,14 +186,9 @@ class TestGenerateFullPipeline:
                 "data": {"models": ["Ours", "Baseline"], "scores": [91, 82]},
             },
         ]
-        mock_resp = _make_mock_response(json.dumps(specs))
         gen = ChartGenerator()
 
-        with patch("jobpulse.papers.chart_generator._get_openai_client") as mock_client_fn:
-            client = MagicMock()
-            client.chat.completions.create.return_value = mock_resp
-            mock_client_fn.return_value = client
-
+        with patch("shared.agents.cognitive_llm_call", return_value=json.dumps(specs)):
             charts = gen.generate(_make_paper(), "Great benchmark results.", output_dir=str(tmp_path))
 
         assert len(charts) == 1
@@ -223,14 +197,9 @@ class TestGenerateFullPipeline:
 
     def test_generate_empty_when_no_data(self, tmp_path):
         """generate() returns [] when LLM reports no chartable data."""
-        mock_resp = _make_mock_response("[]")
         gen = ChartGenerator()
 
-        with patch("jobpulse.papers.chart_generator._get_openai_client") as mock_client_fn:
-            client = MagicMock()
-            client.chat.completions.create.return_value = mock_resp
-            mock_client_fn.return_value = client
-
+        with patch("shared.agents.cognitive_llm_call", return_value="[]"):
             charts = gen.generate(_make_paper(), "Pure theory paper.", output_dir=str(tmp_path))
 
         assert charts == []
@@ -247,14 +216,9 @@ class TestGenerateFullPipeline:
             }
             for i in range(1, 6)
         ]
-        mock_resp = _make_mock_response(json.dumps(specs))
         gen = ChartGenerator()
 
-        with patch("jobpulse.papers.chart_generator._get_openai_client") as mock_client_fn:
-            client = MagicMock()
-            client.chat.completions.create.return_value = mock_resp
-            mock_client_fn.return_value = client
-
+        with patch("shared.agents.cognitive_llm_call", return_value=json.dumps(specs)):
             charts = gen.generate(_make_paper(), "lots of benchmarks", output_dir=str(tmp_path))
 
         assert len(charts) <= 3
@@ -278,14 +242,9 @@ class TestGenerateFullPipeline:
                 "data": {"models": ["A", "B"], "scores": [80, 70]},
             },
         ]
-        mock_resp = _make_mock_response(json.dumps(specs))
         gen = ChartGenerator()
 
-        with patch("jobpulse.papers.chart_generator._get_openai_client") as mock_client_fn:
-            client = MagicMock()
-            client.chat.completions.create.return_value = mock_resp
-            mock_client_fn.return_value = client
-
+        with patch("shared.agents.cognitive_llm_call", return_value=json.dumps(specs)):
             charts = gen.generate(_make_paper(), "notes", output_dir=str(tmp_path))
 
         # Only the good spec should render successfully

@@ -27,6 +27,9 @@ REQUIRED_CONSENT_LABELS = [
     "I am at least 18 years old",
     "I confirm the information provided is accurate",
     "I confirm the information is true and correct",
+    "By checking this box, I consent to Graphcore collecting, storing, and processing my responses to the demographic data surveys above.",
+    "I accept",
+    "I  accept",
 ]
 
 

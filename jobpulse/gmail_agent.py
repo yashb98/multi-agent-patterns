@@ -136,7 +136,7 @@ def _classify_email(subject: str, body_snippet: str) -> str:
         except Exception:
             pass
         prompt = f"{extra_context}{task}" if extra_context else task
-        llm = get_llm(temperature=0, max_tokens=80 if is_local_llm() else 20)
+        llm = get_llm(temperature=0, max_tokens=80 if is_local_llm() else 20, agent_name="email_classifier")
         response = smart_llm_call(llm, [HumanMessage(content=prompt)])
         return _normalize_category(response.content)
     except Exception as e:

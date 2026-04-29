@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Software Engineer - Test Company</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 700px; margin: 40px auto; padding: 20px; }
+        h1 { color: #1a1a1a; font-size: 24px; }
+        h2 { color: #333; font-size: 18px; margin-top: 30px; border-bottom: 1px solid #ddd; padding-bottom: 8px; }
+        .field { margin: 20px 0; }
+        label { display: block; font-weight: 600; margin-bottom: 6px; color: #333; font-size: 14px; }
+        .required label::after { content: " *"; color: #c00; }
+        input[type="text"], input[type="email"], input[type="tel"], input[type="url"],
+        select, textarea { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; box-sizing: border-box; }
+        textarea { min-height: 100px; resize: vertical; }
+        select { height: 40px; }
+        .radio-group, .checkbox-group { display: flex; flex-direction: column; gap: 8px; }
+        .radio-group label, .checkbox-group label { font-weight: normal; display: flex; align-items: center; gap: 8px; }
+        .radio-group input, .checkbox-group input { width: auto; }
+        .hint { font-size: 12px; color: #666; margin-top: 4px; }
+        .error { color: #c00; font-size: 12px; margin-top: 4px; display: none; }
+        .actions { margin-top: 40px; display: flex; gap: 12px; }
+        button { padding: 12px 24px; font-size: 14px; border-radius: 4px; cursor: pointer; border: none; }
+        .btn-primary { background: #0a66c2; color: white; }
+        .btn-secondary { background: #f3f2ef; color: #333; border: 1px solid #ccc; }
+        .progress { color: #666; font-size: 13px; margin-bottom: 20px; }
+        .page { display: none; }
+        .page.active { display: block; }
+    </style>
+</head>
+<body>
+    <h1>Software Engineer</h1>
+    <p class="progress">Test Company · San Francisco, CA · Page <span id="page-num">1</span> of 3</p>
+
+    <form id="application-form" method="POST" action="/submit">
+        <div class="page active" data-page="1">
+            <h2>Personal Information</h2>
+            <div class="field required">
+                <label for="first_name">First Name</label>
+                <input type="text" id="first_name" name="first_name" required>
+            </div>
+            <div class="field required">
+                <label for="last_name">Last Name</label>
+                <input type="text" id="last_name" name="last_name" required>
+            </div>
+            <div class="field required">
+                <label for="email">Email</label>
+                <input type="email" id="email" name="email" required>
+            </div>
+            <div class="field required">
+                <label for="phone">Phone</label>
+                <input type="tel" id="phone" name="phone" required>
+            </div>
+            <div class="field">
+                <label for="location">Location (City, State)</label>
+                <input type="text" id="location" name="location">
+            </div>
+            <div class="field">
+                <label for="linkedin">LinkedIn Profile</label>
+                <input type="url" id="linkedin" name="linkedin">
+            </div>
+            <div class="field">
+                <label for="portfolio">Portfolio / Website</label>
+                <input type="url" id="portfolio" name="portfolio">
+            </div>
+            <div class="field">
+                <label for="github">GitHub Profile</label>
+                <input type="url" id="github" name="github">
+            </div>
+            <div class="actions">
+                <button type="button" class="btn-primary" id="btn-next-1">Continue →</button>
+            </div>
+        </div>
+
+        <div class="page" data-page="2">
+            <h2>Diversity & Work Authorization</h2>
+            <div class="field">
+                <label>Gender</label>
+                <div class="radio-group">
+                    <label><input type="radio" name="gender" value="male"> Male</label>
+                    <label><input type="radio" name="gender" value="female"> Female</label>
+                    <label><input type="radio" name="gender" value="non_binary"> Non-binary</label>
+                    <label><input type="radio" name="gender" value="prefer_not"> Prefer not to say</label>
+                </div>
+            </div>
+            <div class="field">
+                <label for="ethnicity">Ethnicity</label>
+                <select id="ethnicity" name="ethnicity">
+                    <option value="">-- Select --</option>
+                    <option value="asian">Asian</option>
+                    <option value="black">Black or African American</option>
+                    <option value="hispanic">Hispanic or Latino</option>
+                    <option value="white">White</option>
+                    <option value="native">Native American</option>
+                    <option value="pacific">Pacific Islander</option>
+                    <option value="two_or_more">Two or More Races</option>
+                    <option value="prefer_not">Prefer not to say</option>
+                </select>
+            </div>
+            <div class="field required">
+                <label for="work_auth">Are you authorized to work in the United States?</label>
+                <select id="work_auth" name="work_auth" required>
+                    <option value="">-- Select --</option>
+                    <option value="yes">Yes, I am authorized</option>
+                    <option value="no">No, I require sponsorship</option>
+                </select>
+            </div>
+            <div class="field required">
+                <label for="visa_sponsor">Will you now or in the future require sponsorship?</label>
+                <select id="visa_sponsor" name="visa_sponsor" required>
+                    <option value="">-- Select --</option>
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>Disability Status</label>
+                <div class="radio-group">
+                    <label><input type="radio" name="disability" value="yes"> Yes, I have a disability</label>
+                    <label><input type="radio" name="disability" value="no"> No, I don't have a disability</label>
+                    <label><input type="radio" name="disability" value="prefer_not"> Prefer not to say</label>
+                </div>
+            </div>
+            <div class="field">
+                <label for="veteran">Veteran Status</label>
+                <select id="veteran" name="veteran">
+                    <option value="">-- Select --</option>
+                    <option value="protected">I am a protected veteran</option>
+                    <option value="not_protected">I am not a protected veteran</option>
+                    <option value="prefer_not">Prefer not to say</option>
+                </select>
+            </div>
+            <div class="actions">
+                <button type="button" class="btn-secondary" id="btn-prev-2">← Back</button>
+                <button type="button" class="btn-primary" id="btn-next-2">Continue →</button>
+            </div>
+        </div>
+
+        <div class="page" data-page="3">
+            <h2>Resume & Cover Letter</h2>
+            <div class="field required">
+                <label for="resume">Resume (PDF, DOC, DOCX)</label>
+                <input type="file" id="resume" name="resume" accept=".pdf,.doc,.docx" required>
+            </div>
+            <div class="field">
+                <label for="cover_letter">Cover Letter</label>
+                <textarea id="cover_letter" name="cover_letter"></textarea>
+            </div>
+            <div class="field">
+                <label><input type="checkbox" name="referral" value="yes"> I was referred by a current employee</label>
+            </div>
+            <div class="field">
+                <label for="referrer_name">Referrer Name</label>
+                <input type="text" id="referrer_name" name="referrer_name">
+            </div>
+            <div class="field required">
+                <label><input type="checkbox" name="terms" value="accepted" required> I agree to the privacy policy and terms of service</label>
+            </div>
+            <div class="actions">
+                <button type="button" class="btn-secondary" id="btn-prev-3">← Back</button>
+                <button type="submit" class="btn-primary" id="btn-submit">Submit Application</button>
+            </div>
+        </div>
+    </form>
+
+    <script>
+        let currentPage = 1;
+        function showPage(n) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelector(`.page[data-page="${n}"]`).classList.add('active');
+            document.getElementById('page-num').textContent = n;
+            currentPage = n;
+        }
+        document.getElementById('btn-next-1').addEventListener('click', () => showPage(2));
+        document.getElementById('btn-prev-2').addEventListener('click', () => showPage(1));
+        document.getElementById('btn-next-2').addEventListener('click', () => showPage(3));
+        document.getElementById('btn-prev-3').addEventListener('click', () => showPage(2));
+        document.getElementById('application-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('btn-submit');
+            btn.textContent = 'Submitting...';
+            btn.disabled = true;
+            setTimeout(() => {
+                document.body.innerHTML = '<h1>✅ Application Submitted!</h1><p>Thank you for applying.</p>';
+            }, 1500);
+        });
+    </script>
+</body>
+</html>

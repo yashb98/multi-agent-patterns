@@ -16,7 +16,7 @@ def test_input_type_enum_has_all_types():
     from jobpulse.form_engine.models import InputType
 
     expected = {
-        "text", "textarea", "select_native", "select_custom",
+        "text", "textarea", "select_native", "select_custom", "combobox",
         "radio", "checkbox", "date_native", "date_custom",
         "search_autocomplete", "file_upload", "multi_select",
         "tag_input", "toggle_switch", "rich_text_editor",

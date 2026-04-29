@@ -79,6 +79,11 @@ def notion_api(method: str, endpoint: str, data: dict | None = None) -> dict:
                     time.sleep(wait)
                     continue
 
+                # Validation / schema errors: return body so callers (e.g. Job Tracker
+                # sync) can drop unknown properties and retry. Success checks use .get("id").
+                if status == 400:
+                    return parsed
+
                 logger.error("Notion API error %d: %s (endpoint: %s)", status, msg, endpoint)
                 return {}
 

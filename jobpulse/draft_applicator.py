@@ -251,12 +251,30 @@ class DraftSession:
                 title=job.get("title", ""),
             )
 
+        jid = str(job.get("job_id") or "")
+        cv_candidate: Path | None = (
+            Path(job["cv_path"]) if job.get("cv_path") else None
+        )
+        if cv_candidate is None or not cv_candidate.is_file():
+            if jid:
+                from jobpulse.application_materials import ensure_tailored_cv_for_job
+
+                gen_cv = ensure_tailored_cv_for_job(jid)
+                if gen_cv:
+                    cv_candidate = gen_cv
+
+        cl_gen = None
+        if jid:
+            from jobpulse.application_materials import build_lazy_cover_letter_generator
+
+            cl_gen = build_lazy_cover_letter_generator(jid)
+
         prep = prepare_application_inputs(
             url=self.url,
             ats_platform=job.get("ats_platform") or job.get("platform"),
             custom_answers=job.get("custom_answers"),
             job_context={
-                "job_id": job.get("job_id", ""),
+                "job_id": jid,
                 "title": job.get("title", ""),
                 "company": job.get("company", ""),
                 "url": self.url,
@@ -264,14 +282,13 @@ class DraftSession:
             cover_letter_path=(
                 Path(job["cover_letter_path"]) if job.get("cover_letter_path") else None
             ),
+            cl_generator=cl_gen,
         )
         self.ats_platform: str | None = prep["ats_platform"]
         self.platform_key: str = prep["platform_key"]
         self.merged_answers: dict = prep["merged_answers"]
         self.cover_letter_path: Path | None = prep["cover_letter_path"]
-        self.cv_path: Path | None = (
-            Path(job["cv_path"]) if job.get("cv_path") else None
-        )
+        self.cv_path: Path | None = cv_candidate
 
         self._driver: Any | None = None
         self._page: Any | None = None

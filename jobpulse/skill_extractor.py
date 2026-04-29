@@ -339,34 +339,62 @@ def extract_skills_hybrid(jd_text: str) -> dict:
 def _extract_skills_llm(jd_text: str) -> dict:
     """LLM fallback using GPT-4o-mini for vague JDs.
 
+    Uses the centralized prompt registry when available. Falls back to
+    inline prompt for backward compatibility.
+
     Truncates JD to 4000 chars. Temperature 0.0. JSON response format.
     """
-    from shared.agents import get_openai_client, get_model_name
-
-    client = get_openai_client()
+    from shared.agents import cognitive_llm_call, get_model_name
 
     truncated = jd_text[:4000]
+    task = ""
+    fallback_messages = None
 
-    system_prompt = (
-        "You are a job description parser. Extract skills from the following JD. "
-        "Return a JSON object with these keys:\n"
-        '- "required_skills": list of strings (hard skills explicitly required)\n'
-        '- "preferred_skills": list of strings (nice-to-have skills)\n'
-        '- "industry": string (e.g. fintech, healthtech, gaming, general)\n'
-        '- "sub_context": string (brief context about the role)\n'
-        "Be thorough. Include both technical and soft skills mentioned."
+    # Try centralized prompt registry first
+    try:
+        from shared.prompts import get_prompt
+        prompt = get_prompt("jobpulse", "skill_extraction")
+        call_params = prompt.render(jd_text=truncated)
+        # Build a single task string for cognitive engine
+        task = "\n".join(
+            f"{m['role'].upper()}: {m['content']}"
+            for m in call_params["messages"]
+        )
+        fallback_messages = call_params["messages"]
+    except Exception:
+        # Fallback to inline prompt (backward compatibility)
+        system_prompt = (
+            "You are a job description parser. Extract ONLY technical and hard skills from the JD. "
+            "Ignore all soft skills (e.g., communication, teamwork, leadership, problem solving). "
+            "Return a JSON object with these keys:\n"
+            '- "required_skills": list of strings (hard skills explicitly required)\n'
+            '- "preferred_skills": list of strings (nice-to-have skills)\n'
+            '- "industry": string (e.g. fintech, healthtech, gaming, general)\n'
+            '- "sub_context": string (brief context about the role)\n'
+            "Be thorough with technical skills. Include programming languages, frameworks, "
+            "tools, platforms, databases, cloud services, and methodologies."
+        )
+        task = f"SYSTEM: {system_prompt}\nUSER: {truncated}"
+        fallback_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": truncated},
+        ]
+
+    # Route through CognitiveEngine (default-on) for structured extraction
+    response_text = cognitive_llm_call(
+        task=task,
+        domain="skill_extraction",
+        stakes="medium",
+        fallback_messages=fallback_messages,
     )
 
+    # Wrap the response in a choices-like structure for downstream parsing
+    class _FakeChoice:
+        def __init__(self, text):
+            self.message = type("Msg", (), {"content": text})()
+    response = type("Resp", (), {"choices": [_FakeChoice(response_text)]})()
+
     try:
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": truncated},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.0,
-        )
         content = response.choices[0].message.content or "{}"
         parsed = json.loads(content)
 

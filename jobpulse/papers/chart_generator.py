@@ -12,9 +12,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from openai import OpenAI
-
-from jobpulse.config import OPENAI_API_KEY
 from jobpulse.papers.models import Chart, Paper
 from shared.logging_config import get_logger
 
@@ -26,11 +23,6 @@ TEXT_COLOR = "#cdd6f4"
 ACCENT_COLOR = "#1a5276"
 GRID_COLOR = "#313244"
 DPI = 150
-
-
-def _get_openai_client() -> OpenAI:
-    """Return an OpenAI client. Isolated for easy mocking in tests."""
-    return OpenAI(api_key=OPENAI_API_KEY)
 
 
 class ChartGenerator:
@@ -85,13 +77,13 @@ class ChartGenerator:
         )
 
         try:
-            client = _get_openai_client()
-            response = client.chat.completions.create(
-                model="gpt-5-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
-            raw = response.choices[0].message.content or "[]"
+            # Route through CognitiveEngine (default-on) for structured extraction
+            from shared.agents import cognitive_llm_call
+            raw = cognitive_llm_call(
+                task=prompt,
+                domain="chart_extraction",
+                stakes="low",
+            ) or "[]"
             # Strip any accidental markdown fences
             raw = re.sub(r"```[a-z]*\n?", "", raw).strip().rstrip("`").strip()
             specs = json.loads(raw)

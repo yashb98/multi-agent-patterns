@@ -326,9 +326,17 @@ def _handle_remove_task(cmd: ParsedCommand) -> str:
 
 
 def _handle_create_event(cmd: ParsedCommand) -> str:
-    return ("📅 Calendar event creation coming soon!\n\n"
-            f"You said: \"{cmd.args}\"\n\n"
-            "For now, add events directly in Google Calendar.")
+    from jobpulse.calendar_agent import create_event_from_text
+
+    request = cmd.args.strip() or cmd.raw.strip()
+    result = create_event_from_text(request)
+    if not result.get("ok"):
+        return f"📅 {result['error']}"
+    start = result["start"].strftime("%Y-%m-%d %I:%M %p")
+    end = result["end"].strftime("%I:%M %p")
+    link = result.get("html_link", "")
+    suffix = f"\n{link}" if link else ""
+    return f"📅 Added: {result['summary']}\n{start} - {end}{suffix}"
 
 
 def _handle_log_spend(cmd: ParsedCommand) -> str:
@@ -707,19 +715,9 @@ def _handle_scan_jobs(cmd: ParsedCommand) -> str:
 
 
 def _handle_show_jobs(cmd: ParsedCommand) -> str:
-    from jobpulse.job_db import JobDB
-    db = JobDB()
-    pending = db.get_applications_by_status("Pending Approval")
-    ready = db.get_applications_by_status("Ready")
-    jobs = pending + ready
-    if not jobs:
-        return "No jobs pending review. Try 'job stats' for today's numbers."
-    lines = [f"📋 {len(jobs)} jobs ready for review:\n"]
-    for i, j in enumerate(jobs[:15], 1):
-        lines.append(f"{i}. {j['title']} — {j['company']} ({j['platform']})")
-        lines.append(f"   ATS: {j.get('ats_score', 0)}% | {j.get('location', 'UK')}")
-    lines.append(f"\nReply: \"apply 1,3,5\" or \"apply all\" or \"reject 2\"")
-    return "\n".join(lines)
+    from jobpulse.job_autopilot import show_pending_jobs
+
+    return show_pending_jobs()
 
 
 def _handle_approve_jobs(cmd: ParsedCommand) -> str:
@@ -733,30 +731,15 @@ def _handle_reject_job(cmd: ParsedCommand) -> str:
 
 
 def _handle_submit_draft(cmd: ParsedCommand) -> str:
-    """Submit a draft application that was filled in Chrome."""
-    draft_id = cmd.args.strip()
-    if not draft_id:
-        return "Usage: submit <draft_id>"
-    from jobpulse.draft_applicator import submit_draft
-    result = submit_draft(draft_id)
-    if result.get("success"):
-        return f"✅ Draft {draft_id} submitted successfully!\nFinal URL: {result.get('final_url', 'N/A')}"
-    return f"❌ Draft {draft_id} submission failed:\n{result.get('error', 'Unknown error')}"
+    return "Draft submit commands are disabled. Use `apply <n>` and then reply `yes` when the live form is ready."
 
 
 def _handle_skip_draft(cmd: ParsedCommand) -> str:
-    """Skip/reject a draft application."""
-    draft_id = cmd.args.strip()
-    if not draft_id:
-        return "Usage: skip <draft_id>"
-    from jobpulse.draft_applicator import reject_draft
-    return reject_draft(draft_id)
+    return "Draft skip commands are disabled. Use `apply <n>` and then reply `no` to keep the job pending."
 
 
 def _handle_show_drafts(cmd: ParsedCommand) -> str:
-    """Show pending draft applications."""
-    from jobpulse.draft_applicator import show_drafts
-    return show_drafts()
+    return "Draft review is disabled. Use `show jobs` to see pending jobs and `apply <n>` to open one live application."
 
 
 def _handle_job_stats(cmd: ParsedCommand) -> str:

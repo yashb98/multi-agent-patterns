@@ -387,3 +387,37 @@ class TestProfileStats:
         assert stats["total_skills"] == 0
         assert stats["total_projects"] == 0
         assert stats["total_demonstrates"] == 0
+
+
+class TestAdaptiveThresholds:
+    def test_default_thresholds(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "jobpulse.job_analytics.get_conversion_funnel",
+            lambda days=7, db_path=None: {"applied": 0, "rejected": 0, "applied_to_interview": 0},
+        )
+        strong, apply_ = store._get_adaptive_thresholds()
+        assert strong == 75
+        assert apply_ == 55
+
+    def test_raises_thresholds_on_high_rejection(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "jobpulse.job_analytics.get_conversion_funnel",
+            lambda days=7, db_path=None: {"applied": 20, "rejected": 12, "applied_to_interview": 5.0},
+        )
+        strong, apply_ = store._get_adaptive_thresholds()
+        assert strong == 80
+        assert apply_ == 60
+
+    def test_lowers_thresholds_on_high_interview(self, store, monkeypatch):
+        monkeypatch.setattr(
+            "jobpulse.job_analytics.get_conversion_funnel",
+            lambda days=7, db_path=None: {"applied": 20, "rejected": 2, "applied_to_interview": 25.0},
+        )
+        strong, apply_ = store._get_adaptive_thresholds()
+        assert strong == 70
+        assert apply_ == 50
+
+    def test_fallback_on_import_error(self, store):
+        strong, apply_ = store._get_adaptive_thresholds()
+        assert strong == 75
+        assert apply_ == 55

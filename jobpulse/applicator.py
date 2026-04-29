@@ -262,7 +262,13 @@ def apply_job(
             # Record BEFORE submitting — prevents silent bypass if record fails after submission
             # If submission fails later, we "waste" one quota slot. That's safer than double-submitting.
             try:
-                limiter.record_application(platform_key)
+                ctx = job_context or {}
+                limiter.record_application(
+                    platform_key,
+                    job_id=ctx.get("job_id", ""),
+                    company=ctx.get("company", ""),
+                    url=url,
+                )
             except Exception as exc:
                 logger.error(
                     "Failed to record application for %s: %s — aborting to prevent untracked submission",
@@ -464,7 +470,12 @@ def confirm_application(
         try:
             from jobpulse.rate_limiter import RateLimiter
             limiter = RateLimiter()
-            limiter.record_application(platform_key)
+            limiter.record_application(
+                platform_key,
+                job_id=ctx.get("job_id", ""),
+                company=ctx.get("company", ""),
+                url=url,
+            )
         except Exception as exc:
             logger.warning("confirm_application: rate limiter: %s", exc)
 

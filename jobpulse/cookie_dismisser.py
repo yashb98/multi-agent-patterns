@@ -39,6 +39,7 @@ _CLOSE_PATTERN = re.compile(r"^(close|dismiss|\u00d7|\u2715|x)$", re.IGNORECASE)
 _ANTI_PATTERNS = re.compile(
     r"(reject|decline|manage|customize|preferences|settings|policy|learn\s*more"
     r"|user\s*agreement|terms|copyright"
+    r"|data\s*privacy\s*statement|read\s*and\s*understood|confirm\s*that\s*you"
     r"|ablehnen|verwalten|einstellungen|rechazar|gestionar|refuser|param[eè]tres)",
     re.IGNORECASE,
 )
@@ -50,6 +51,16 @@ class CookieBannerDismisser:
     def __init__(self, bridge: Any):
         self.bridge = bridge
 
+    @staticmethod
+    def _has_cookie_sibling_buttons(buttons: list[dict]) -> bool:
+        """Detect cookie banner by sibling buttons (Reject All, Manage Cookies, etc.)."""
+        texts = [b.get("text", "").lower() for b in buttons if b.get("text")]
+        cookie_siblings = (
+            "reject all", "manage cookies", "cookie settings",
+            "cookie preferences", "customize cookies",
+        )
+        return any(sib in t for t in texts for sib in cookie_siblings)
+
     async def dismiss(self, snapshot: Any) -> bool:
         """Try to dismiss a cookie banner. Returns True if a banner was found and clicked."""
         if hasattr(snapshot, "model_dump"):
@@ -57,6 +68,10 @@ class CookieBannerDismisser:
         buttons = snapshot.get("buttons", [])
         page_text = snapshot.get("page_text_preview", "")
         has_cookie_context = bool(_COOKIE_CONTEXT.search(page_text))
+
+        # Also detect cookie banners by sibling buttons (e.g. "Reject All" next to "Allow All")
+        if not has_cookie_context:
+            has_cookie_context = self._has_cookie_sibling_buttons(buttons)
 
         # Try accept/agree buttons first
         for btn in buttons:
@@ -90,18 +105,24 @@ async def dismiss_cookie_banner_playwright(page: Any, timeout_ms: int = 3000) ->
 
     Use when the extension bridge isn't available (e.g. direct CDP sessions).
     Checks visibility before clicking to avoid timeouts on invisible elements.
+
+    IMPORTANT: Generic selectors like "I agree" / "Got it" are scoped to
+    known cookie-banner containers to avoid clicking form consent elements
+    (e.g. data privacy acknowledgements inside application forms).
     """
-    selectors = [
+    # Highly specific — safe to match page-wide
+    specific_selectors = [
         "#onetrust-accept-btn-handler",
+        '[data-test-global-toast] button:has-text("Accept")',
+        'section.artdeco-toast-item button:has-text("Accept")',
         "button:has-text('Accept All')",
         "button:has-text('Accept Cookies')",
-        "button:has-text('I agree')",
-        "button:has-text('Got it')",
         "button:has-text('Allow All')",
+        "button:has-text('Allow all cookies')",
         "[data-testid='cookie-accept']",
         ".cookie-accept",
     ]
-    for sel in selectors:
+    for sel in specific_selectors:
         try:
             loc = page.locator(sel).first
             if await loc.is_visible(timeout=timeout_ms):
@@ -110,4 +131,27 @@ async def dismiss_cookie_banner_playwright(page: Any, timeout_ms: int = 3000) ->
                 return True
         except Exception:
             continue
+
+    # Generic "I agree" / "Got it" — only inside cookie banner containers
+    _BANNER_SCOPES = [
+        "#onetrust-banner-sdk",
+        "[class*='cookie']",
+        "[id*='cookie']",
+        "[class*='consent-banner']",
+        "[id*='consent']",
+        "[role='dialog'][aria-label*='cookie' i]",
+        "[role='dialog'][aria-label*='consent' i]",
+    ]
+    for scope in _BANNER_SCOPES:
+        for btn_text in ("I agree", "Got it"):
+            sel = f"{scope} button:has-text('{btn_text}')"
+            try:
+                loc = page.locator(sel).first
+                if await loc.is_visible(timeout=500):
+                    await loc.click(timeout=timeout_ms)
+                    logger.info("cookie_dismisser: clicked scoped %s", sel)
+                    return True
+            except Exception:
+                continue
+
     return False

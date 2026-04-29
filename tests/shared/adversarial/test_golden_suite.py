@@ -5,7 +5,7 @@ class TestGoldenSuite:
     def test_loads_all_cases(self):
         from shared.adversarial._golden_suite import load_golden_suite
         cases = load_golden_suite()
-        assert len(cases) >= 30
+        assert len(cases) >= 50
 
     def test_all_categories_present(self):
         from shared.adversarial._golden_suite import load_golden_suite

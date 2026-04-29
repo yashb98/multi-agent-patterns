@@ -1,0 +1,319 @@
+{
+  "timestamp": "2026-04-27T10:45:00Z",
+  "mode": "local",
+  "total_tests": 6,
+  "passed": 5,
+  "failed": 1,
+  "components": [
+    {
+      "name": "platform_detection",
+      "passed": true,
+      "duration_ms": 0.5903750425204635,
+      "details": {
+        "cases_tested": 14,
+        "cases": [
+          {
+            "platform": "greenhouse",
+            "url": "https://boards.greenhouse.io/twilio/jobs/7652892",
+            "expected": "greenhouse",
+            "passed": true
+          },
+          {
+            "platform": "greenhouse",
+            "url": "https://job-boards.greenhouse.io/company/jobs/123",
+            "expected": "greenhouse",
+            "passed": true
+          },
+          {
+            "platform": "lever",
+            "url": "https://jobs.lever.co/anthropic/abc123",
+            "expected": "lever",
+            "passed": true
+          },
+          {
+            "platform": "lever",
+            "url": "https://lever.co/company/12345",
+            "expected": "lever",
+            "passed": true
+          },
+          {
+            "platform": "workday",
+            "url": "https://company.myworkdayjobs.com/en-US/jobs/12345",
+            "expected": "workday",
+            "passed": true
+          },
+          {
+            "platform": "workday",
+            "url": "https://amd.wd5.myworkdayjobs.com/en-US/External/details",
+            "expected": "workday",
+            "passed": true
+          },
+          {
+            "platform": "smartrecruiters",
+            "url": "https://jobs.smartrecruiters.com/Company/123",
+            "expected": "smartrecruiters",
+            "passed": true
+          },
+          {
+            "platform": "indeed",
+            "url": "https://uk.indeed.com/viewjob?jk=12345",
+            "expected": "indeed",
+            "passed": true
+          },
+          {
+            "platform": "indeed",
+            "url": "https://indeed.com/jobs?q=engineer",
+            "expected": "indeed",
+            "passed": true
+          },
+          {
+            "platform": "ashby",
+            "url": "https://jobs.ashbyhq.com/company/123",
+            "expected": "ashby",
+            "passed": true
+          },
+          {
+            "platform": "icims",
+            "url": "https://company-icims.com/jobs/123",
+            "expected": "icims",
+            "passed": true
+          },
+          {
+            "platform": "linkedin",
+            "url": "https://www.linkedin.com/jobs/view/12345",
+            "expected": "linkedin",
+            "passed": true
+          },
+          {
+            "platform": "generic",
+            "url": "https://example.com/careers/apply",
+            "expected": "generic",
+            "passed": true
+          },
+          {
+            "platform": "generic",
+            "url": "https://unknown-ats.com/jobs/123",
+            "expected": "generic",
+            "passed": true
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "platform_strategies",
+      "passed": true,
+      "duration_ms": 0.008750008419156075,
+      "details": {
+        "strategies_tested": 9,
+        "results": [
+          {
+            "platform": "greenhouse",
+            "strategy_name": "greenhouse",
+            "min_page_time": 4.0,
+            "passed": true
+          },
+          {
+            "platform": "lever",
+            "strategy_name": "lever",
+            "min_page_time": 4.0,
+            "passed": true
+          },
+          {
+            "platform": "workday",
+            "strategy_name": "workday",
+            "min_page_time": 8.0,
+            "passed": true
+          },
+          {
+            "platform": "linkedin",
+            "strategy_name": "linkedin",
+            "min_page_time": 3.0,
+            "passed": true
+          },
+          {
+            "platform": "indeed",
+            "strategy_name": "indeed",
+            "min_page_time": 4.0,
+            "passed": true
+          },
+          {
+            "platform": "ashby",
+            "strategy_name": "ashby",
+            "min_page_time": 4.0,
+            "passed": true
+          },
+          {
+            "platform": "icims",
+            "strategy_name": "icims",
+            "min_page_time": 6.0,
+            "passed": true
+          },
+          {
+            "platform": "smartrecruiters",
+            "strategy_name": "smartrecruiters",
+            "min_page_time": 5.0,
+            "passed": true
+          },
+          {
+            "platform": "generic",
+            "strategy_name": "generic",
+            "min_page_time": 5.0,
+            "passed": true
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "page_analysis",
+      "passed": true,
+      "duration_ms": 0.15937502030283213,
+      "details": {
+        "cases_tested": 6,
+        "cases": [
+          {
+            "case": "job_description",
+            "detected": "job_description",
+            "expected": "job_description",
+            "confidence": 0.8635070869663709,
+            "passed": true
+          },
+          {
+            "case": "login_form",
+            "detected": "login_form",
+            "expected": "login_form",
+            "confidence": 0.9725136649404585,
+            "passed": true
+          },
+          {
+            "case": "application_form",
+            "detected": "application_form",
+            "expected": "application_form",
+            "confidence": 0.6721302488127194,
+            "passed": true
+          },
+          {
+            "case": "confirmation",
+            "detected": "confirmation",
+            "expected": "confirmation",
+            "confidence": 0.9347497199849428,
+            "passed": true
+          },
+          {
+            "case": "session_expired",
+            "detected": "session_expired",
+            "expected": "session_expired",
+            "confidence": 0.9995298781817341,
+            "passed": true
+          },
+          {
+            "case": "consent_gate",
+            "detected": "consent_gate",
+            "expected": "consent_gate",
+            "confidence": 0.8932876983097126,
+            "passed": true
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "screening_pipeline",
+      "passed": false,
+      "duration_ms": 22019.829166994896,
+      "details": {
+        "cases_tested": 4,
+        "cases": [
+          {
+            "question": "Are you authorized to work in the United States?",
+            "answer": "Yes",
+            "expected": "Yes",
+            "passed": true,
+            "source": "llm_fallback_aligned"
+          },
+          {
+            "question": "Will you now or in the future require sponsorship?",
+            "answer": "No",
+            "expected": "No",
+            "passed": true,
+            "source": "llm_fallback_aligned"
+          },
+          {
+            "question": "How did you hear about this job?",
+            "answer": "LinkedIn",
+            "expected": "LinkedIn",
+            "passed": true,
+            "source": "llm_fallback_aligned"
+          },
+          {
+            "question": "What is your gender?",
+            "answer": "Male",
+            "expected": "Prefer not to say",
+            "passed": false,
+            "source": "llm_fallback_aligned"
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "navigation_learner",
+      "passed": true,
+      "duration_ms": 14.611415972467512,
+      "details": {
+        "tests": [
+          {
+            "test": "save_retrieve",
+            "passed": true
+          },
+          {
+            "test": "platform_fallback",
+            "passed": true
+          },
+          {
+            "test": "ttl_expiry",
+            "passed": true
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "local_form_e2e",
+      "passed": true,
+      "duration_ms": 9286.552083969582,
+      "details": {
+        "scans": [
+          {
+            "page_num": 1,
+            "fields_found": 8,
+            "field_names": [
+              "First Name",
+              "Last Name",
+              "Email",
+              "Phone",
+              "Location (City, State)",
+              "LinkedIn Profile",
+              "Portfolio / Website",
+              "GitHub Profile"
+            ],
+            "passed": true
+          }
+        ],
+        "fills": [
+          {
+            "page_num": 1,
+            "fields_filled": 15,
+            "fields_failed": [],
+            "passed": true
+          }
+        ]
+      },
+      "error": null
+    }
+  ],
+  "platform_detection": [],
+  "field_scans": [],
+  "fill_results": []
+}

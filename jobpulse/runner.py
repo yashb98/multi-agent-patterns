@@ -1,10 +1,12 @@
 """CLI runner — invoke any agent from command line or cron."""
 
+import atexit
 import os
 import sys
 import uuid
 
 from shared.logging_config import get_logger, set_run_id
+from shared.locks import system_lock
 
 logger = get_logger(__name__)
 
@@ -15,21 +17,27 @@ def main():
     if len(sys.argv) < 2:
         logger.info("Usage: python -m jobpulse.runner <command>")
         logger.info(
-            "Commands: stop, restart, briefing, gmail, calendar, calendar-remind, github, tasks, budget, weekly-report, export, listen, daemon, multi-bot, webhook, slack, discord, multi, health, skill-gaps, skill-gap-export, profile-sync, skill-verify, skill-pending, optimize, learning-report, learning-maintenance, ext-bridge, chrome-pw, test"
+            "Commands: stop, restart, briefing, … job-scan, job-scan-linkedin, job-apply-next, job-stats, …"
         )
         logger.info("  python -m jobpulse.runner chrome-pw     # Launch Chrome with CDP for Playwright engine")
+        logger.info(
+            "  python -m jobpulse.runner job-apply-next [N] [YYYY-MM-DD]   # Live review; optional listing found-date"
+        )
+        logger.info("  python -m jobpulse.runner job-apply-found-today [N]   # Same, filtered to today's found_at")
+        logger.info("  python -m jobpulse.runner job-process-url <URL> [platform]   # Run full pipeline on any URL")
+        logger.info("  python -m jobpulse.runner ai-assist-summary [agent] [days]   # AI assist aggregate stats")
+        logger.info("  python -m jobpulse.runner ai-assist-fields <label> [domain]   # AI fixes for a field")
         sys.exit(1)
 
     command = sys.argv[1]
+    daemon_lock = None
 
-    if command in {"listen", "daemon", "multi-bot", "multi", "webhook"}:
-        try:
-            from jobpulse.draft_applicator import start_draft_daemon
-            resumed = start_draft_daemon(resume_on_startup=True)
-            if resumed:
-                logger.info("Resumed %d pending draft(s) from SQLite queue", resumed)
-        except Exception as exc:
-            logger.warning("Draft daemon startup resume failed: %s", exc)
+    if command in {"listen", "daemon", "multi-bot", "multi", "slack", "discord"}:
+        daemon_lock = system_lock(f"jobpulse_runner_{command}")
+        if not daemon_lock.acquire(blocking=False):
+            logger.warning("Another '%s' process is already running — exiting duplicate launcher", command)
+            sys.exit(0)
+        atexit.register(daemon_lock.release)
 
     if command == "stop":
         import subprocess
@@ -109,12 +117,6 @@ def main():
 
         data = get_yesterday_commits()
         logger.info(format_commits(data))
-
-    elif command == "tasks":
-        from jobpulse.notion_agent import format_tasks, get_today_tasks
-
-        tasks = get_today_tasks()
-        logger.info(format_tasks(tasks))
 
     elif command == "budget":
         from jobpulse.budget_agent import format_week_summary, get_week_summary
@@ -217,10 +219,42 @@ def main():
 
         run_scan_window(["linkedin", "indeed", "reed"])
 
-    elif command == "job-scan-slow":
-        from jobpulse.job_autopilot import run_scan_window
+    elif command == "job-scan-linkedin":
+        from jobpulse.job_autopilot import run_linkedin_scan_with_notion_cleanup
 
-        run_scan_window(["glassdoor", "totaljobs"])
+        summary = run_linkedin_scan_with_notion_cleanup()
+        logger.info("%s", summary)
+
+    elif command == "job-process-url":
+        from jobpulse.scan_pipeline import process_single_url
+
+        if len(sys.argv) < 3:
+            print("Usage: python -m jobpulse.runner job-process-url <URL> [platform]")
+            sys.exit(1)
+        job_url = sys.argv[2]
+        platform = sys.argv[3] if len(sys.argv) > 3 else "generic"
+        result = process_single_url(job_url, platform=platform, dry_run=True)
+        import json
+        clean = {k: v for k, v in result.items() if not isinstance(v, (type, type(None))) or k in ("cv_path", "message", "status")}
+        print(json.dumps({k: str(v) for k, v in result.items()}, indent=2, default=str))
+
+    elif command == "job-apply-next":
+        from jobpulse.job_autopilot import apply_pending_job_from_cli, parse_job_apply_next_cli
+
+        idx, found_on = parse_job_apply_next_cli(sys.argv)
+        msg = apply_pending_job_from_cli(idx, found_on=found_on)
+        print(msg)
+        logger.info("%s", msg)
+
+    elif command == "job-apply-found-today":
+        from datetime import date
+
+        from jobpulse.job_autopilot import apply_pending_job_from_cli
+
+        idx = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2].strip().isdigit() else "1"
+        msg = apply_pending_job_from_cli(idx, found_on=date.today())
+        print(msg)
+        logger.info("%s", msg)
 
     elif command == "job-follow-ups":
         from jobpulse.job_autopilot import check_follow_ups
@@ -356,6 +390,33 @@ def main():
             stderr=subprocess.DEVNULL,
         )
         print(f"Chrome launched. Playwright can connect at http://localhost:{port}")
+
+    elif command == "ai-assist-summary":
+        from jobpulse.ai_assist_logger import get_ai_assist_logger
+
+        agent = sys.argv[2] if len(sys.argv) > 2 else ""
+        days = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 30
+        summary = get_ai_assist_logger().get_summary(agent_name=agent, days=days)
+        print(f"\nAI Assist Summary (last {summary['period_days']} days)")
+        print(f"  Agent filter: {summary['agent_filter']}")
+        print(f"  Sessions:     {summary['sessions']}")
+        print(f"  Fixes:        {summary['fixes']}")
+        print(f"  Strategies:   {summary['strategies']}")
+
+    elif command == "ai-assist-fields":
+        from jobpulse.ai_assist_logger import get_ai_assist_logger
+
+        if len(sys.argv) < 3:
+            print("Usage: python -m jobpulse.runner ai-assist-fields <field_label> [domain]")
+            sys.exit(1)
+        field = sys.argv[2]
+        domain = sys.argv[3] if len(sys.argv) > 3 else ""
+        fixes = get_ai_assist_logger().get_fixes_for_field(field, domain=domain)
+        print(f"\nAI fixes for '{field}':")
+        for f in fixes:
+            print(f"  {f['field_label']}: {f['old_value']!r} -> {f['new_value']!r}")
+            if f.get("reasoning"):
+                print(f"    Reason: {f['reasoning']}")
 
     else:
         logger.error("Unknown command: %s", command)

@@ -6,6 +6,7 @@ import os
 import tempfile
 import httpx
 from shared.logging_config import get_logger
+from shared.safe_fetch import safe_fetch_bytes
 from shared.telegram_client import telegram_url
 from jobpulse.config import OPENAI_API_KEY, TELEGRAM_BOT_TOKEN
 
@@ -85,10 +86,7 @@ def transcribe_voice_url(url: str) -> str:
         return ""
 
     try:
-        audio_resp = httpx.get(url, timeout=30, follow_redirects=True)
-        if audio_resp.status_code != 200:
-            logger.warning("Failed to download audio from URL: %d", audio_resp.status_code)
-            return ""
+        audio_bytes = safe_fetch_bytes(url, timeout=30, follow_redirects=True, max_bytes=25_000_000)
 
         # Determine suffix from URL or default to .ogg
         suffix = ".ogg"
@@ -98,7 +96,7 @@ def transcribe_voice_url(url: str) -> str:
                 break
 
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(audio_resp.content)
+            tmp.write(audio_bytes)
             tmp_path = tmp.name
 
         try:

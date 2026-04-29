@@ -1,0 +1,46 @@
+name: Agent Readiness
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 2 * * *"
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run readiness regression suite
+        run: >
+          pytest
+          tests/shared/optimization/test_replay.py
+          tests/shared/evals/test_agent_eval.py
+          tests/shared/adversarial/test_golden_suite.py
+          tests/shared/adversarial/test_eval_runner.py
+          tests/shared/test_safe_fetch.py
+          tests/shared/test_pii.py
+          tests/shared/test_web_search.py
+          tests/shared/test_web_search_tool.py
+          tests/jobpulse/test_prompt_pii_audit.py
+          tests/jobpulse/test_calendar_agent.py
+          tests/jobpulse/test_job_scanner_platforms.py
+          tests/jobpulse/test_voice_handler.py
+          tests/lint/test_no_raw_requests_get.py
+          tests/lint/test_no_blocking_sleep.py
+          tests/lint/test_profile_prompt_wrapping.py
+
+      - name: Run nightly adversarial profile
+        if: github.event_name == 'schedule'
+        run: python -m shared.adversarial --nightly

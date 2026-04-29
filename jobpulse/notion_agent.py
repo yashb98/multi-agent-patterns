@@ -304,30 +304,23 @@ def check_duplicate(new_title: str) -> str | None:
 
 def suggest_subtasks(big_task: str) -> list[str]:
     """Use LLM to suggest subtasks for a large task."""
-    import os
     try:
-        from shared.agents import get_openai_client, get_model_name, is_local_llm
-        client = get_openai_client()
-
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[{
-                "role": "user",
-                "content": f"""Break this task into 2-5 small, actionable subtasks.
+        from shared.agents import cognitive_llm_call
+        raw = cognitive_llm_call(
+            task=f"""Break this task into 2-5 small, actionable subtasks.
 Each subtask should be completable in under 30 minutes.
 
 Task: {big_task}
 
-Return ONLY the subtasks, one per line, no numbering or bullets. Keep each under 8 words."""
-            }],
-            max_tokens=400 if is_local_llm() else 150,
-            temperature=0.3,
+Return ONLY the subtasks, one per line, no numbering or bullets. Keep each under 8 words.""",
+            domain="task_decomposition",
+            stakes="low",
         )
-
-        lines = response.choices[0].message.content.strip().split("\n")
-        return [line.strip() for line in lines if line.strip() and len(line.strip()) > 3]
-    except Exception as e:
-        logger.warning("Subtask suggestion failed: %s", e)
+        if not raw:
+            return []
+        return [line.strip() for line in raw.strip().split("\n") if line.strip()][:5]
+    except Exception as exc:
+        logger.error("Subtask generation failed: %s", exc)
         return []
 
 

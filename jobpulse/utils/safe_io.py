@@ -45,6 +45,18 @@ def safe_openai_call(
         if not model.startswith("gpt-5"):
             call_kwargs["temperature"] = temperature
         response = client.chat.completions.create(**call_kwargs)
+
+        # Record cost (best-effort — never block the caller)
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(
+                response,
+                agent_name=caller or "safe_openai_call",
+                model_hint=model,
+            )
+        except Exception:
+            pass
+
         if not response.choices:
             logger.warning("safe_openai_call(%s): empty choices list", caller)
             return None

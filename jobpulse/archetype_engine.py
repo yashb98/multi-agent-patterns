@@ -119,50 +119,63 @@ def get_archetype_profile(archetype: str) -> dict:
     return result
 
 
-_ARCHETYPE_SUMMARIES: dict[str, str] = {
-    "agentic": (
-        '<b>AI Engineer</b> who built a <b>88,500+ LOC</b> production multi-agent system with '
-        '<b>4 LangGraph orchestration patterns</b>, <b>GRPO experiential learning</b>, and '
-        '<b>2,350 tests</b>. Shipped <b>10+ autonomous agents</b> with human-in-the-loop flows, '
-        'fact-checking, and Swarm-based routing. Specialises in <b>agentic architectures</b>, '
-        '<b>tool-use</b>, and <b>production agent deployment</b>.'
-    ),
-    "data_platform": (
-        '<b>ML Engineer</b> who built a <b>88,500+ LOC</b> production AI system with '
-        '<b>2,350 tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
-        '<b>experiential learning</b> and <b>model evaluation</b>. Deployed '
-        '<b>10+ autonomous agents</b> running 24/7 with rate-limited automation '
-        'and <b>Docker</b>-based sandboxing.'
-    ),
-    "data_analyst": (
-        '<b>Data Analyst</b> with experience building dashboards, automating ETL workflows, '
-        'and delivering actionable insights. Built <b>Power BI</b> dashboards with <b>DAX</b> '
-        'for real-time sales and supplier analysis. Automated <b>SQL</b> and <b>Python</b> '
-        'data pipelines, cutting report prep time by <b>35%</b>. Specialises in '
-        '<b>statistical testing</b>, <b>forecasting</b>, and <b>data-driven decision making</b>.'
-    ),
-    "data_scientist": (
-        '<b>Data Scientist</b> with hands-on experience building production ML systems, '
-        'statistical models, and data pipelines. Built a <b>88,500+ LOC</b> autonomous system '
-        'with <b>2,350 tests</b> integrating ML-based classification, NLP pipelines, and '
-        'experiential learning (GRPO). Specialises in <b>Python</b>, <b>SQL</b>, '
-        '<b>machine learning</b>, and translating complex data into <b>actionable business insights</b>.'
-    ),
-    "ai_ml": (
-        '<b>AI/ML Engineer</b> who built a <b>88,500+ LOC</b> production AI system with '
-        '<b>2,350 tests</b>, custom encoder-decoders in <b>PyTorch</b>, and NLP pipelines. '
-        'Designed multi-agent orchestration with <b>experiential learning</b> and '
-        '<b>model evaluation</b>. Specialises in <b>deep learning</b>, <b>model deployment</b>, '
-        'and <b>full-stack ML infrastructure</b>.'
-    ),
-    "data_engineer": (
-        '<b>Data Engineer</b> with hands-on experience building data pipelines, ETL workflows, '
-        'and database systems. Built a <b>88,500+ LOC</b> autonomous system with '
-        '<b>21 SQLite databases</b>, automated data ingestion, and scheduled processing. '
-        'Specialises in <b>Python</b>, <b>SQL</b>, <b>pipeline orchestration</b>, '
-        'and <b>scalable data infrastructure</b>.'
-    ),
-}
+_archetype_summaries_cache: dict[str, str] | None = None
+
+
+def _build_archetype_summaries() -> dict[str, str]:
+    global _archetype_summaries_cache
+    if _archetype_summaries_cache is not None:
+        return _archetype_summaries_cache
+    from jobpulse.cv_templates import get_project_stats
+    s = get_project_stats()
+    loc = s.get("loc_display", "142,500+")
+    tests = s.get("tests_display", "3,350+")
+    dbs = s.get("databases", 57)
+    _archetype_summaries_cache = {
+        "agentic": (
+            f'<b>AI Engineer</b> who built a <b>{loc} LOC</b> production multi-agent system with '
+            f'<b>4 LangGraph orchestration patterns</b>, <b>GRPO experiential learning</b>, and '
+            f'<b>{tests} tests</b>. Shipped <b>10+ autonomous agents</b> with human-in-the-loop flows, '
+            f'fact-checking, and Swarm-based routing. Specialises in <b>agentic architectures</b>, '
+            f'<b>tool-use</b>, and <b>production agent deployment</b>.'
+        ),
+        "data_platform": (
+            f'<b>ML Engineer</b> who built a <b>{loc} LOC</b> production AI system with '
+            f'<b>{tests} tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
+            f'<b>experiential learning</b> and <b>model evaluation</b>. Deployed '
+            f'<b>10+ autonomous agents</b> running 24/7 with rate-limited automation '
+            f'and <b>Docker</b>-based sandboxing.'
+        ),
+        "data_analyst": (
+            '<b>Data Analyst</b> with experience building dashboards, automating ETL workflows, '
+            'and delivering actionable insights. Built <b>Power BI</b> dashboards with <b>DAX</b> '
+            'for real-time sales and supplier analysis. Automated <b>SQL</b> and <b>Python</b> '
+            'data pipelines, cutting report prep time by <b>35%</b>. Specialises in '
+            '<b>statistical testing</b>, <b>forecasting</b>, and <b>data-driven decision making</b>.'
+        ),
+        "data_scientist": (
+            f'<b>Data Scientist</b> with hands-on experience building production ML systems, '
+            f'statistical models, and data pipelines. Built a <b>{loc} LOC</b> autonomous system '
+            f'with <b>{tests} tests</b> integrating ML-based classification, NLP pipelines, and '
+            f'experiential learning (GRPO). Specialises in <b>Python</b>, <b>SQL</b>, '
+            f'<b>machine learning</b>, and translating complex data into <b>actionable business insights</b>.'
+        ),
+        "ai_ml": (
+            f'<b>AI/ML Engineer</b> who built a <b>{loc} LOC</b> production AI system with '
+            f'<b>{tests} tests</b>, custom encoder-decoders in <b>PyTorch</b>, and NLP pipelines. '
+            f'Designed multi-agent orchestration with <b>experiential learning</b> and '
+            f'<b>model evaluation</b>. Specialises in <b>deep learning</b>, <b>model deployment</b>, '
+            f'and <b>full-stack ML infrastructure</b>.'
+        ),
+        "data_engineer": (
+            f'<b>Data Engineer</b> with hands-on experience building data pipelines, ETL workflows, '
+            f'and database systems. Built a <b>{loc} LOC</b> autonomous system with '
+            f'<b>{dbs} SQLite databases</b>, automated data ingestion, and scheduled processing. '
+            f'Specialises in <b>Python</b>, <b>SQL</b>, <b>pipeline orchestration</b>, '
+            f'and <b>scalable data infrastructure</b>.'
+        ),
+    }
+    return _archetype_summaries_cache
 
 
 def get_archetype_framing(
@@ -175,7 +188,8 @@ def get_archetype_framing(
     Falls back to generic profile if archetype is unknown.
     """
     profile = get_archetype_profile(archetype)
-    summary = _ARCHETYPE_SUMMARIES.get(archetype, _ARCHETYPE_SUMMARIES.get("data_scientist", ""))
+    summaries = _build_archetype_summaries()
+    summary = summaries.get(archetype, summaries.get("data_scientist", ""))
     return {
         "tagline": profile.get("tagline", _DEFAULT_PROFILE["tagline"]),
         "summary": summary,

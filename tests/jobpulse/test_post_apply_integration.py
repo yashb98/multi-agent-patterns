@@ -14,10 +14,18 @@ def exp_db(tmp_path):
 
 
 @patch("jobpulse.applicator._call_fill_and_submit")
+@patch("jobpulse.post_apply_hook.JobDB")
 @patch("jobpulse.post_apply_hook.upload_cv", return_value="https://drive.google.com/cv")
 @patch("jobpulse.post_apply_hook.upload_cover_letter", return_value="https://drive.google.com/cl")
 @patch("jobpulse.post_apply_hook.update_application_page", return_value=True)
-def test_apply_job_triggers_hook(mock_notion, mock_cl_up, mock_cv_up, mock_fill, tmp_path):
+def test_apply_job_triggers_hook(
+    mock_notion,
+    mock_cl_up,
+    mock_cv_up,
+    mock_job_db,
+    mock_fill,
+    tmp_path,
+):
     """apply_job with job_context triggers the full post-apply chain."""
     mock_fill.return_value = {
         "success": True,
@@ -61,6 +69,8 @@ def test_apply_job_triggers_hook(mock_notion, mock_cl_up, mock_cv_up, mock_fill,
                 )
 
     assert result["success"] is True
+
+    mock_job_db.return_value.mark_applied.assert_called_once_with("test-123")
 
     # Verify hook ran: Drive upload called
     mock_cv_up.assert_called_once()

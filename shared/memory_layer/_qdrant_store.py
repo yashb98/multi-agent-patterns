@@ -138,6 +138,7 @@ class QdrantStore:
         filters: Optional[dict] = None,
         min_score: Optional[float] = None,
         score_threshold: Optional[float] = None,
+        _retries: int = 2,
     ) -> list[tuple[str, float]]:
         """Semantic similarity search within a single tier collection.
 
@@ -155,11 +156,15 @@ class QdrantStore:
             Minimum value of the "score" payload field (Range filter).
         score_threshold:
             Minimum cosine similarity score (0-1) to include a result.
+        _retries:
+            Internal retry counter for transient Qdrant failures.
 
         Returns
         -------
         List of (memory_id, cosine_score) tuples, ordered by descending similarity.
+        Returns empty list on failure so callers can fall back to FTS.
         """
+        import time as _time
         collection = _TIER_COLLECTION[tier]
         must_conditions: list[qm.Condition] = []
 
@@ -188,11 +193,22 @@ class QdrantStore:
         if score_threshold is not None:
             kwargs["score_threshold"] = score_threshold
 
-        response = self._client.query_points(**kwargs)
-        return [
-            (point.payload["memory_id"], point.score)
-            for point in response.points
-        ]
+        last_err = None
+        for attempt in range(_retries + 1):
+            try:
+                response = self._client.query_points(**kwargs)
+                return [
+                    (point.payload["memory_id"], point.score)
+                    for point in response.points
+                ]
+            except Exception as exc:
+                last_err = exc
+                logger.warning("Qdrant search failed (attempt %d/%d): %s", attempt + 1, _retries + 1, exc)
+                if attempt < _retries:
+                    _time.sleep(0.5 * (attempt + 1))
+
+        logger.error("Qdrant search exhausted retries: %s", last_err)
+        return []  # caller falls back to FTS
 
     def search_all_tiers(
         self,

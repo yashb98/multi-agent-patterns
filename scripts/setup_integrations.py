@@ -116,16 +116,10 @@ def test_github():
         return False
 
 
-GOOGLE_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/drive.file",
-]
-
-
 def setup_google_oauth():
     """Walk through Google OAuth2 setup for Gmail + Calendar + Drive."""
+    from jobpulse.config import GOOGLE_SCOPES
+
     print("\n── Google OAuth2 (Gmail + Calendar + Drive) ──")
 
     client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID")
@@ -139,7 +133,10 @@ def setup_google_oauth():
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
+            creds = Credentials.from_authorized_user_file(
+                token_path,
+                GOOGLE_SCOPES,
+            )
 
             # Check if token has drive.file scope by testing Drive API
             has_drive = False

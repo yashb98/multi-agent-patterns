@@ -9,6 +9,7 @@ Usage:
     python scripts/update_stats.py --check  # Check only, exit 1 if stale
 """
 
+import json
 import re
 import subprocess
 import sys
@@ -108,6 +109,24 @@ def update_file(path: Path, stats_line: str) -> bool:
     return True
 
 
+def write_stats_json(loc: int, files: int, tests: int, databases: int, dashboards: int) -> None:
+    """Write stats to data/project_stats.json for CV/CL templates to read."""
+    loc_rounded = round(loc / 500) * 500
+    tests_rounded = round(tests / 50) * 50
+    stats = {
+        "loc": loc_rounded,
+        "loc_display": f"{loc_rounded:,}+",
+        "tests": tests_rounded,
+        "tests_display": f"{tests_rounded:,}+",
+        "python_files": files,
+        "databases": databases,
+        "dashboards": dashboards,
+    }
+    stats_path = ROOT / "data" / "project_stats.json"
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    stats_path.write_text(json.dumps(stats, indent=2) + "\n")
+
+
 def main():
     check_only = "--check" in sys.argv
 
@@ -120,6 +139,9 @@ def main():
 
     stats_line = build_stats_line(loc, files, tests, databases, dashboards)
     print(f"  {stats_line}")
+
+    write_stats_json(loc, files, tests, databases, dashboards)
+    print("  Updated data/project_stats.json")
 
     changed = []
     for path in [CLAUDE_MD, README_MD]:

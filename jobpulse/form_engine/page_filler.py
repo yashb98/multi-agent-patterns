@@ -39,12 +39,12 @@ async def fill_field_by_type(
             value_attempted=value, error="Unsupported input type: unknown",
         )
 
-    if field.input_type in (InputType.TEXT, InputType.TEXTAREA):
-        if field.input_type == InputType.TEXTAREA:
+    if field.input_type in (InputType.TEXT, InputType.TEXTAREA) or str(field.input_type) in ("email", "tel", "url", "number", "search", "password", "textarea"):
+        if field.input_type == InputType.TEXTAREA or str(field.input_type) == "textarea":
             return await text_filler.fill_textarea(page, field.selector, value)
         return await text_filler.fill_text(page, field.selector, value)
 
-    if field.input_type == InputType.SELECT_NATIVE:
+    if field.input_type in (InputType.SELECT_NATIVE, InputType.COMBOBOX) or str(field.input_type) in ("select", "select-one", "select-multiple", "combobox"):
         return await select_filler.fill_select(page, field.selector, value)
 
     if field.input_type == InputType.SELECT_CUSTOM:

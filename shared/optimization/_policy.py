@@ -136,6 +136,10 @@ class OptimizationPolicy:
                 evidence=insight.evidence,
                 confidence=insight.confidence,
             ))
+        elif insight.pattern_type == "success_streak":
+            actions.extend(self._handle_success_streak(insight))
+        elif insight.pattern_type == "adaptation_worked":
+            actions.extend(self._handle_adaptation_worked(insight))
 
         if not actions and insight.confidence < _CONFIDENCE_THRESHOLD_FOR_LLM:
             actions.append(PolicyAction(
@@ -263,6 +267,48 @@ class OptimizationPolicy:
                 confidence=insight.confidence,
             ),
         ]
+
+    def _handle_success_streak(self, insight: AggregatedInsight) -> list[PolicyAction]:
+        """Reward domains that are working well — positive reinforcement."""
+        actions = []
+        # Pin the strategy in memory so it survives forgetting sweeps
+        actions.append(PolicyAction(
+            action_type="promote_strategy",
+            target="memory_manager",
+            domain=insight.domain,
+            evidence=insight.evidence,
+            confidence=insight.confidence,
+        ))
+        # If confidence is high, also generate an insight so other agents can learn
+        if insight.confidence >= 0.8:
+            actions.append(PolicyAction(
+                action_type="generate_insight",
+                target="semantic_memory",
+                domain=insight.domain,
+                evidence=f"[POSITIVE] {insight.evidence}",
+                confidence=insight.confidence,
+            ))
+        return actions
+
+    def _handle_adaptation_worked(self, insight: AggregatedInsight) -> list[PolicyAction]:
+        """Reinforce an adaptation that correlated with success."""
+        actions = []
+        actions.append(PolicyAction(
+            action_type="reinforce_adaptation",
+            target="agent_rules",
+            domain=insight.domain,
+            evidence=insight.evidence,
+            confidence=insight.confidence,
+        ))
+        # Freeze this adaptation from future rollbacks
+        actions.append(PolicyAction(
+            action_type="freeze_baseline",
+            target="memory_manager",
+            domain=insight.domain,
+            evidence=insight.evidence,
+            confidence=insight.confidence,
+        ))
+        return actions
 
     def promote_memory(self, memory_id: str):
         if self._memory:

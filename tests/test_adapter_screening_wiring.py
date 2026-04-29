@@ -26,8 +26,8 @@ def test_get_adapter_all_platforms():
         assert adapter.name == "playwright", f"{platform} should route to playwright"
 
 
-def test_smartrecruiters_gets_own_adapter():
-    """SmartRecruiters routes to its dedicated adapter."""
+def test_smartrecruiters_routes_to_playwright():
+    """SmartRecruiters now routes through PlaywrightAdapter (collapsed into strategy)."""
     from jobpulse.ats_adapters import get_adapter
     adapter = get_adapter("smartrecruiters")
-    assert adapter.name != "playwright"
+    assert adapter.name == "playwright"

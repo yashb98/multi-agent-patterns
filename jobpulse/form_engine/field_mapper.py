@@ -732,11 +732,13 @@ async def review_form(page: "Page") -> tuple[dict, int]:
 
     client = get_openai_client()
     try:
+        from shared.agents import _token_limit_kwargs
+        _model = get_model_name()
         response = client.chat.completions.create(
-            model=get_model_name(),
-            max_tokens=1000,
+            model=_model,
             temperature=0.0,
             timeout=30,
+            **_token_limit_kwargs(_model, 1000),
             messages=[{
                 "role": "user",
                 "content": [
@@ -747,6 +749,12 @@ async def review_form(page: "Page") -> tuple[dict, int]:
                 ],
             }],
         )
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="field_mapper", model_hint=get_model_name())
+        except Exception:
+            pass
+
         raw = response.choices[0].message.content.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()

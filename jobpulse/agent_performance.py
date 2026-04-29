@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS fill_sessions (
     agent_fields_filled INTEGER DEFAULT 0,
     agent_fields_failed INTEGER DEFAULT 0,
     claude_fields_filled INTEGER DEFAULT 0,
+    ai_agent_name TEXT,
+    ai_fixes_count INTEGER DEFAULT 0,
+    ai_strategies_count INTEGER DEFAULT 0,
+    ai_reasoning_summary TEXT,
     failed_labels TEXT,
     fill_time_seconds REAL,
     dry_run INTEGER DEFAULT 0,
@@ -59,6 +63,10 @@ class AgentPerformanceDB:
         url: str | None = None,
         agent_stats: dict[str, Any] | None = None,
         claude_fields_filled: int = 0,
+        ai_agent_name: str = "",
+        ai_fixes_count: int = 0,
+        ai_strategies_count: int = 0,
+        ai_reasoning_summary: str = "",
         fill_time_seconds: float | None = None,
         dry_run: bool = False,
         success: bool = False,
@@ -70,9 +78,10 @@ class AgentPerformanceDB:
                 """INSERT INTO fill_sessions
                    (timestamp, company, role, platform, url,
                     agent_fields_attempted, agent_fields_filled, agent_fields_failed,
-                    claude_fields_filled, failed_labels, fill_time_seconds,
-                    dry_run, success, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    claude_fields_filled, ai_agent_name, ai_fixes_count,
+                    ai_strategies_count, ai_reasoning_summary, failed_labels,
+                    fill_time_seconds, dry_run, success, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     datetime.now(timezone.utc).isoformat(),
                     company,
@@ -83,6 +92,10 @@ class AgentPerformanceDB:
                     stats.get("fields_filled", 0),
                     stats.get("fields_failed", 0),
                     claude_fields_filled,
+                    ai_agent_name,
+                    ai_fixes_count,
+                    ai_strategies_count,
+                    ai_reasoning_summary,
                     json.dumps(stats.get("failed_labels", [])),
                     fill_time_seconds,
                     int(dry_run),
@@ -114,6 +127,10 @@ class AgentPerformanceDB:
             "agent_fields_failed": total_failed,
             "total_attempted": total_attempted,
             "agent_success_rate": round(total_agent / max(total_attempted, 1) * 100, 1),
+            "ai_sessions": sum(
+                1 for r in rows
+                if "ai_agent_name" in r.keys() and r["ai_agent_name"]
+            ),
             "recent": [
                 {
                     "company": r["company"],
@@ -121,6 +138,8 @@ class AgentPerformanceDB:
                     "platform": r["platform"],
                     "agent_filled": r["agent_fields_filled"],
                     "claude_filled": r["claude_fields_filled"],
+                    "ai_agent": r["ai_agent_name"] if "ai_agent_name" in r.keys() else "",
+                    "ai_fixes": r["ai_fixes_count"] if "ai_fixes_count" in r.keys() else 0,
                     "failed": r["agent_fields_failed"],
                     "success": bool(r["success"]),
                     "timestamp": r["timestamp"],

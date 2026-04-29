@@ -13,47 +13,25 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-def _get_openai_client():  # pragma: no cover
-    """Return an OpenAI client, or None if the key is not configured."""
-    try:
-        from jobpulse.config import OPENAI_API_KEY
-
-        if not OPENAI_API_KEY:
-            return None
-        from openai import OpenAI
-
-        return OpenAI(api_key=OPENAI_API_KEY)
-    except Exception:
-        return None
-
-
 def _llm_call(
     system: str,
     user: str,
-    max_tokens: int = 2500,
-    temperature: float = 0.3,
+    max_tokens: int = 2500,  # noqa: ARG001
+    temperature: float = 0.3,  # noqa: ARG001
 ) -> str:
     """Make a single LLM call and return the response text.
 
-    Returns empty string on failure.
+    Routes through CognitiveEngine (default-on). Returns empty string on failure.
     """
-    client = _get_openai_client()
-    if client is None:
-        logger.warning("_llm_call: no OpenAI client configured")
-        return ""
     try:
-        response = client.chat.completions.create(
-            model="gpt-5-mini",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        return response.choices[0].message.content or ""
+        from shared.agents import cognitive_llm_call
+        return cognitive_llm_call(
+            task=f"SYSTEM: {system}\nUSER: {user}",
+            domain="blog_pipeline",
+            stakes="medium",
+        ) or ""
     except Exception as exc:
-        logger.warning("_llm_call: LLM call failed (%s)", exc)
+        logger.warning("_llm_call: cognitive LLM call failed (%s)", exc)
         return ""
 
 

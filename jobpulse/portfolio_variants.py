@@ -27,45 +27,55 @@ _AUTO_PATH = Path(__file__).parent.parent / "data" / "portfolio_auto.json"
 # Hand-crafted variants for hero projects
 # ---------------------------------------------------------------------------
 
-MANUAL_VARIANTS: dict[str, dict[str, list[str]]] = {
-    "yashb98/multi-agent-patterns": {
+def _multi_agent_variants() -> dict[str, list[str]]:
+    from jobpulse.cv_templates import get_project_stats
+    s = get_project_stats()
+    loc = s.get("loc_display", "142,500+")
+    tests = s.get("tests_display", "3,350+")
+    files = s.get("python_files", 680)
+    dbs = s.get("databases", 57)
+    return {
         "agentic": [
-            'Built a <b>88,500+ LOC</b> production multi-agent system with <b>10+ autonomous agents</b> orchestrated via <b>4 LangGraph</b> patterns, featuring human-in-the-loop flows, Swarm-based routing, and tool-use integration running <b>24/7</b>.',
+            f'Built a <b>{loc} LOC</b> production multi-agent system with <b>10+ autonomous agents</b> orchestrated via <b>4 LangGraph</b> patterns, featuring human-in-the-loop flows, Swarm-based routing, and tool-use integration running <b>24/7</b>.',
             'Designed agentic architectures with <b>GRPO experiential learning</b>, persona evolution, and <b>A/B testing</b>, enabling self-improving agents with <b>99.9%</b> uptime across Gmail, Calendar, GitHub, and Notion.',
             'Engineered <b>5-gate pre-screen pipeline</b> with autonomous job scanning and application submission, processing <b>200+ JDs/day</b> with <b>92%+</b> skill match accuracy.',
             'Built multi-source <b>fact-checking</b> agent with Semantic Scholar API, <b>9.5/10</b> accuracy gate, and automated Google Drive document management.',
         ],
         "data_scientist": [
-            'Built a <b>88,500+ LOC</b> production system with <b>2,350 tests</b>, deploying <b>ML classification pipelines</b> and statistical correlation engines that reduced costs by <b>96%</b> through hybrid rule-based and ML routing.',
+            f'Built a <b>{loc} LOC</b> production system with <b>{tests} tests</b>, deploying <b>ML classification pipelines</b> and statistical correlation engines that reduced costs by <b>96%</b> through hybrid rule-based and ML routing.',
             'Designed <b>GRPO experiential learning</b> framework with A/B testing and adaptive thresholds, applying reinforcement learning to optimise across <b>41 intent categories</b>.',
             'Engineered <b>NLP classification pipeline</b> with 3-tier architecture (regex, semantic embeddings, LLM fallback) and <b>250+ training examples</b> with sub-5ms embedding inference.',
             'Built <b>statistical correlation engine</b> tracking <b>17 verification signals</b> with per-bucket block rate analysis and automated pattern detection.',
         ],
         "data_analyst": [
             'Built <b>4 analytics dashboards</b> tracking conversion funnels, platform breakdowns, and gate statistics across <b>200+ daily job listings</b> with automated weekly comparison reports.',
-            'Designed automated <b>ETL pipelines</b> aggregating data from LinkedIn, Indeed, Reed, and Greenhouse APIs into <b>21 SQLite databases</b>, cutting manual data collection by <b>95%</b>.',
+            f'Designed automated <b>ETL pipelines</b> aggregating data from LinkedIn, Indeed, Reed, and Greenhouse APIs into <b>{dbs} SQLite databases</b>, cutting manual data collection by <b>95%</b>.',
             'Engineered <b>ATS scoring system</b> with deterministic keyword matching and statistical analysis, producing <b>0-100</b> match scores with category-level breakdowns.',
             'Built <b>rejection pattern analysis</b> with blocker classification, cohort comparison, and data-driven recommendations improving application conversion rates.',
         ],
         "ai_ml": [
-            'Built a <b>88,500+ LOC</b> production AI system with <b>2,350 tests</b>, implementing <b>GRPO experiential learning</b>, NLP pipelines, and embedding-based semantic search across <b>19,400+</b> indexed nodes.',
+            f'Built a <b>{loc} LOC</b> production AI system with <b>{tests} tests</b>, implementing <b>GRPO experiential learning</b>, NLP pipelines, and embedding-based semantic search across <b>19,400+</b> indexed nodes.',
             'Designed <b>3-tier NLP pipeline</b> (regex, semantic embeddings, LLM) with <b>250+ training examples</b> and sub-5ms inference through TF-IDF vectorisation and cosine similarity.',
             'Engineered hybrid classification reducing LLM calls by <b>96%</b> through rule-based extraction (<b>582-entry taxonomy</b>) with ML fallback, processing <b>200+ JDs/day</b>.',
             'Built <b>fact-checking pipeline</b> with Semantic Scholar API, NLI scoring, and chain-of-thought verification achieving <b>9.5/10</b> accuracy gate.',
         ],
         "data_engineer": [
-            'Built a <b>88,500+ LOC</b> production system with <b>21 SQLite databases</b>, <b>412 files</b>, and automated data pipelines running <b>24/7</b> via macOS launchd with cron scheduling.',
+            f'Built a <b>{loc} LOC</b> production system with <b>{dbs} SQLite databases</b>, <b>{files} files</b>, and automated data pipelines running <b>24/7</b> via macOS launchd with cron scheduling.',
             'Designed <b>multi-source data ingestion</b> from GitHub, LinkedIn, Indeed, Reed, arXiv, Gmail, and Notion APIs with adaptive rate limiting and cross-platform deduplication.',
             'Engineered <b>5-gate data processing pipeline</b> with rule-based extraction (<b>582-entry taxonomy</b>), statistical correlation, and SQLite caching, processing <b>200+ records/day</b>.',
             'Built <b>scan learning engine</b> tracking <b>17 signals</b> per session with statistical analysis, automated cooldown scheduling, and persistent SQLite event storage.',
         ],
         "data_platform": [
-            'Built a <b>88,500+ LOC</b> production system with <b>2,350 tests</b>, <b>CI/CD</b> via GitHub Actions, and <b>10+ autonomous services</b> running 24/7 with <b>99.9%</b> uptime.',
+            f'Built a <b>{loc} LOC</b> production system with <b>{tests} tests</b>, <b>CI/CD</b> via GitHub Actions, and <b>10+ autonomous services</b> running 24/7 with <b>99.9%</b> uptime.',
             'Designed <b>MLOps pipeline</b> with model evaluation, A/B testing, and <b>GRPO experiential learning</b> for automated model selection across <b>41 classification categories</b>.',
             'Engineered <b>rate-limited automation</b> across 5 platforms with adaptive delays, session management, and <b>17-signal verification detection</b>.',
             'Built <b>monitoring and alerting</b> with 5 Telegram bots, automated error reporting, conversion funnel tracking, and weekly dashboards.',
         ],
-    },
+    }
+
+
+MANUAL_VARIANTS: dict[str, dict[str, list[str]]] = {
+    "yashb98/multi-agent-patterns": _multi_agent_variants(),
     "yashb98/DataMind": {
         "agentic": [
             'Built AI analytics platform with <b>48-agent</b> Digital Labor Workforce using multi-agent orchestration for autonomous <b>ETL</b>, anomaly detection, and reporting.',
@@ -288,7 +298,7 @@ def _generate_jd_aware_bullets(
     )
 
     try:
-        llm = get_llm(model="gpt-5-mini", temperature=0.3)
+        llm = get_llm(model="gpt-5-mini", temperature=0.3, agent_name="portfolio_variants")
         response = smart_llm_call(llm, prompt)
         text = response.content if hasattr(response, "content") else str(response)
 
@@ -353,7 +363,7 @@ def generate_portfolio_entry(
     )
 
     try:
-        llm = get_llm(model="gpt-5-mini", temperature=0.3)
+        llm = get_llm(model="gpt-5-mini", temperature=0.3, agent_name="portfolio_variants")
         response = smart_llm_call(llm, prompt)
         text = response.content if hasattr(response, "content") else str(response)
 

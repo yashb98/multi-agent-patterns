@@ -103,6 +103,12 @@ def chat(user_message: str) -> str:
             temperature=0.7,
         )
 
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="conversation", model_hint=model)
+        except Exception:
+            pass
+
         reply = response.choices[0].message.content.strip()
 
         # Add assistant reply to history

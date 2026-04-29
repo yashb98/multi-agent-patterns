@@ -183,7 +183,7 @@ def reflect_with_llm(
     prompt = _build_reflection_prompt(strategy, trajectories)
 
     try:
-        llm = get_llm(temperature=0.3, tier="mini")
+        llm = get_llm(temperature=0.3, tier="mini", agent_name="strategy_reflector")
         response = smart_llm_call(
             llm, prompt, agent_name="strategy_reflection",
         )

@@ -205,6 +205,48 @@ def send_jobs_photo(photo_path: str, caption: str = "", max_retries: int = 2) ->
     return False
 
 
+def send_jobs_document(document_path: str, caption: str = "", max_retries: int = 2) -> bool:
+    """Send a document via jobs bot with retry. Falls back to main if not configured."""
+    token = TELEGRAM_JOBS_BOT_TOKEN or TELEGRAM_BOT_TOKEN
+    cid = TELEGRAM_CHAT_ID
+    if not token or not cid:
+        return False
+    for attempt in range(max_retries + 1):
+        try:
+            cmd = [
+                "curl", "-s", "-X", "POST",
+                telegram_url(token, "sendDocument"),
+                "-F", f"chat_id={cid}",
+                "-F", f"document=@{document_path}",
+            ]
+            if caption:
+                cmd.extend(["-F", f"caption={caption[:1024]}"])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            resp = json.loads(result.stdout)
+            if resp.get("ok"):
+                return True
+            desc = resp.get("description", "").lower()
+            retry_after = resp.get("parameters", {}).get("retry_after", 0)
+            if retry_after and attempt < max_retries:
+                time.sleep(retry_after + 1)
+                continue
+            if any(k in desc for k in ("timeout", "connection", "network", "temporary")):
+                if attempt < max_retries:
+                    delay = min(2 ** attempt, 10) * (0.5 + random.random())
+                    time.sleep(delay)
+                    continue
+            logger.warning("Telegram sendDocument error: %s", resp.get("description", "unknown"))
+            return False
+        except Exception as e:
+            if attempt < max_retries:
+                delay = min(2 ** attempt, 10) * (0.5 + random.random())
+                time.sleep(delay)
+            else:
+                logger.warning("Telegram sendDocument failed after %d attempts: %s", max_retries + 1, e)
+                return False
+    return False
+
+
 # ── Intent → Bot mapping ──
 
 # Which intents route to which bot for REPLIES
@@ -369,8 +411,7 @@ HELP_JOBS = """💼 JOBS BOT — Job Autopilot
 📋 REVIEW:
   "jobs" — show pending review jobs
   "job 3" — full details for job #3
-  "apply 1,3,5" — approve specific jobs
-  "apply all" — approve all pending
+  "apply 1" — open one live application for review
   "reject 2" — skip a job
 
 📊 STATS:
@@ -385,7 +426,7 @@ HELP_JOBS = """💼 JOBS BOT — Job Autopilot
   "resume jobs" — restart autopilot
 
 Runs: 7am, 10am, 1pm, 4:30pm, 7pm, 2am
-Auto-applies 90%+ ATS. Sends 82-89% for review."""
+Processes one live application at a time. AI fills first, you approve before submit."""
 
 HELP_ALERT = """\U0001f514 ALERT BOT — Notifications Only
 

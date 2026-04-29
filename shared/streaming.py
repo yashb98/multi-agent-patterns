@@ -266,7 +266,7 @@ def smart_llm_call(llm, messages, **kwargs):
         try:
             record_llm_usage(
                 response,
-                agent_name="unknown",
+                agent_name=getattr(llm, "_agent_name", "unknown"),
                 messages=messages,
                 model_hint=getattr(llm, "model_name", None),
                 operation="stream",

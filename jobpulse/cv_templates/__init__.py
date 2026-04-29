@@ -1,9 +1,33 @@
 """CV and Cover Letter PDF generators matching Yash's template style."""
 
+import json
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 import pymupdf
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_STATS_PATH = _PROJECT_ROOT / "data" / "project_stats.json"
+
+_DEFAULT_STATS = {
+    "loc_display": "142,500+",
+    "tests_display": "3,350+",
+    "databases": 57,
+}
+
+_stats_cache: dict | None = None
+
+
+def get_project_stats() -> dict:
+    """Load project stats from data/project_stats.json (written by update_stats.py)."""
+    global _stats_cache
+    if _stats_cache is not None:
+        return _stats_cache
+    try:
+        _stats_cache = json.loads(_STATS_PATH.read_text())
+    except Exception:
+        _stats_cache = _DEFAULT_STATS
+    return _stats_cache
 
 
 _XMP_TEMPLATE = (

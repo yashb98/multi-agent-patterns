@@ -30,7 +30,7 @@ class EvalRunner:
         self._tracker = BaselineTracker(db_path=baseline_db_path)
         self._tester = InjectionTester()
 
-    def run(self, quick: bool = False) -> EvalReport:
+    def run(self, quick: bool = False, suite_name: str = "adversarial") -> EvalReport:
         start = time.monotonic()
         cases = load_golden_suite()
         all_results: list[TestResult] = []
@@ -52,8 +52,8 @@ class EvalRunner:
 
         pass_rate = passed / len(all_results) if all_results else 0.0
         scores = {"pass_rate": pass_rate, "total": float(len(all_results)), "passed": float(passed)}
-        self._tracker.record("adversarial", scores)
-        regressions = self._tracker.detect_regressions("adversarial", scores)
+        self._tracker.record(suite_name, scores)
+        regressions = self._tracker.detect_regressions(suite_name, scores)
 
         try:
             from shared.execution import emit
@@ -85,3 +85,7 @@ class EvalRunner:
             logger.info("Adversarial eval: %d/%d passed in %.2fs", passed, len(all_results), duration)
 
         return report
+
+    def run_nightly(self) -> EvalReport:
+        """Nightly profile runs the full 50+ case corpus with its own baseline."""
+        return self.run(quick=False, suite_name="adversarial_nightly")

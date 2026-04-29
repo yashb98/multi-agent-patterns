@@ -145,3 +145,31 @@ class TestStrategyComposer:
         assert "Base prompt." in result.text
         assert len(result.templates_used) == 0
         assert len(result.anti_patterns_used) == 0
+
+    def test_cross_domain_fallback(self, mock_memory):
+        """Related domain templates used when own domain has < 3 templates."""
+        mock_memory._procedural.append(MockProceduralEntry(
+            procedure_id="cross_1", domain="screening_answers",
+            strategy="Ask about visa first for UK roles",
+            success_rate=0.85, times_used=10, avg_score_when_used=8.0,
+        ))
+        composer = StrategyComposer()
+        result = composer.compose("fill form", "form_filling", "filler_agent", mock_memory)
+        assert "visa" in result.text.lower()
+
+    def test_cross_domain_skipped_when_enough_own(self, mock_memory):
+        """Cross-domain not triggered when own domain has >= 3 templates."""
+        for i in range(4):
+            mock_memory._procedural.append(MockProceduralEntry(
+                procedure_id=f"own_{i}", domain="form_filling",
+                strategy=f"Own strategy {i}",
+                success_rate=0.9, times_used=5,
+            ))
+        mock_memory._procedural.append(MockProceduralEntry(
+            procedure_id="cross_x", domain="screening_answers",
+            strategy="CROSS DOMAIN STRATEGY",
+            success_rate=0.99, times_used=20,
+        ))
+        composer = StrategyComposer()
+        result = composer.compose("fill form", "form_filling", "agent", mock_memory)
+        assert "CROSS DOMAIN STRATEGY" not in result.text

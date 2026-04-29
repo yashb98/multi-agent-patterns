@@ -307,6 +307,31 @@ class JobDB:
             return None
         return dict(row)
 
+    def get_application_by_notion_page_id(self, notion_page_id: str) -> dict | None:
+        """Look up a local application record by its Notion page ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM applications WHERE notion_page_id = ?", (notion_page_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def get_listing_by_notion_page_id(self, notion_page_id: str) -> dict | None:
+        """Look up a job listing by Notion page ID (via the applications table)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT l.* FROM job_listings l
+                JOIN applications a ON l.job_id = a.job_id
+                WHERE a.notion_page_id = ?
+                """,
+                (notion_page_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
     def update_status(self, job_id: str, new_status: str) -> None:
         """Update the status of an application and log a status_change event."""
         current = self.get_application(job_id)

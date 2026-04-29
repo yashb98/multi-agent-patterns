@@ -19,6 +19,7 @@ class TestOAuthMonitor:
                 "https://www.googleapis.com/auth/gmail.readonly",
                 "https://www.googleapis.com/auth/gmail.modify",
                 "https://www.googleapis.com/auth/calendar.readonly",
+                "https://www.googleapis.com/auth/calendar.events",
                 "https://www.googleapis.com/auth/drive.file",
             ],
             "expiry": "2026-12-31T00:00:00Z",
@@ -44,7 +45,7 @@ class TestOAuthMonitor:
 
         result = check_oauth_health(token_path=token_file)
         assert result["status"] == "scope_mismatch"
-        assert len(result["missing_scopes"]) == 3
+        assert len(result["missing_scopes"]) == 4
 
     def test_missing_token_file(self, tmp_path):
         """Missing token file returns missing status."""

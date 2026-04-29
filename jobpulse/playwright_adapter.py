@@ -57,6 +57,12 @@ class PlaywrightAdapter(BaseATSAdapter):
                 overrides=overrides,
                 dry_run=dry_run,
             )
+            if result.get("success") and driver.page:
+                try:
+                    from jobpulse.browser_cleanup import flush_browser_caches
+                    await flush_browser_caches(driver.page)
+                except Exception as exc:
+                    logger.debug("PlaywrightAdapter: flush_browser_caches: %s", exc)
         finally:
             await driver.close()
         return result

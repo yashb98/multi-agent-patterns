@@ -24,23 +24,17 @@ def company():
 
 def _mock_llm_response(score: float, weaknesses: list[str] | None = None):
     import json
-    content = json.dumps({
+    return json.dumps({
         "score": score,
         "weaknesses": weaknesses or [],
         "suggestions": [],
     })
-    resp = MagicMock()
-    resp.choices = [MagicMock()]
-    resp.choices[0].message.content = content
-    return resp
 
 
-@patch("jobpulse.pre_submit_gate._get_openai_client")
-def test_gate_passes_high_score(mock_client, gate, company):
+@patch("shared.agents.cognitive_llm_call")
+def test_gate_passes_high_score(mock_llm, gate, company):
     """Score >= 7 passes the gate."""
-    client = MagicMock()
-    client.chat.completions.create.return_value = _mock_llm_response(8.5)
-    mock_client.return_value = client
+    mock_llm.return_value = _mock_llm_response(8.5)
 
     result = gate.review(
         filled_answers={"Why us?": "I love NLP and your PyTorch stack."},
@@ -51,14 +45,12 @@ def test_gate_passes_high_score(mock_client, gate, company):
     assert result.score >= 7.0
 
 
-@patch("jobpulse.pre_submit_gate._get_openai_client")
-def test_gate_blocks_low_score(mock_client, gate, company):
+@patch("shared.agents.cognitive_llm_call")
+def test_gate_blocks_low_score(mock_llm, gate, company):
     """Score < 7 blocks the gate."""
-    client = MagicMock()
-    client.chat.completions.create.return_value = _mock_llm_response(
+    mock_llm.return_value = _mock_llm_response(
         4.0, ["Generic answer", "Missing keywords"]
     )
-    mock_client.return_value = client
 
     result = gate.review(
         filled_answers={"Why us?": "I want a job."},
@@ -70,10 +62,10 @@ def test_gate_blocks_low_score(mock_client, gate, company):
     assert len(result.weaknesses) > 0
 
 
-@patch("jobpulse.pre_submit_gate._get_openai_client")
-def test_gate_no_client_passes_by_default(mock_client, gate, company):
-    """No OpenAI client => gate passes (fail-open)."""
-    mock_client.return_value = None
+@patch("shared.agents.cognitive_llm_call")
+def test_gate_cognitive_failure_passes_by_default(mock_llm, gate, company):
+    """Cognitive engine failure => gate passes (fail-open)."""
+    mock_llm.return_value = None
 
     result = gate.review(
         filled_answers={"Why us?": "anything"},

@@ -11,8 +11,9 @@ from jobpulse import approval
 
 
 @pytest.fixture(autouse=True)
-def _reset_pending():
+def _reset_pending(tmp_path, monkeypatch):
     """Reset module-level pending state between tests."""
+    monkeypatch.setattr(approval, "_PENDING_FILE", tmp_path / "pending_approval.json")
     approval._pending = None
     yield
     approval._pending = None
@@ -62,6 +63,17 @@ class TestGetPending:
         approval._pending["created_at"] = time.time() - 2
         assert approval.get_pending() is None
 
+    def test_loads_persisted_pending_when_memory_empty(self):
+        with _mock_send():
+            approval.request_approval(
+                "resume live review?",
+                persistent_context={"kind": "live_review", "session_id": "sess-1"},
+            )
+        approval._pending = None
+        pending = approval.get_pending()
+        assert pending is not None
+        assert pending["persistent_context"]["session_id"] == "sess-1"
+
 
 class TestResolve:
     def test_approve(self):
@@ -95,6 +107,21 @@ class TestResolve:
             approval.request_approval("deploy?", callback=cb)
         result = approval.resolve(approved=True)
         assert "callback failed" in result
+
+    def test_persistent_context_recovers_without_callback(self):
+        with _mock_send():
+            approval.request_approval(
+                "resume live review?",
+                persistent_context={"kind": "live_review", "session_id": "sess-1"},
+            )
+        approval._pending = None
+        with patch(
+            "jobpulse.live_review_applicator.resume_persisted_review_action",
+            return_value="restored!",
+        ) as mock_resume:
+            result = approval.resolve(approved=True)
+        mock_resume.assert_called_once_with({"kind": "live_review", "session_id": "sess-1"}, True)
+        assert "restored!" in result
 
 
 class TestProcessReply:

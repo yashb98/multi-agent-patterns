@@ -46,7 +46,7 @@ async def test_full_daily_pipeline(tmp_path):
     with (
         patch.object(pipeline.fetcher, "fetch_all", side_effect=mock_fetch_all),
         patch.object(pipeline.fetcher, "enrich", new_callable=AsyncMock, side_effect=lambda p: p),
-        patch("jobpulse.papers.ranker._get_openai_client", return_value=None),
+        patch("shared.agents.cognitive_llm_call", return_value=None),
         patch.object(pipeline.notion, "publish_daily", return_value={}),
     ):
         digest = await pipeline.daily_digest(top_n=3)
@@ -88,7 +88,7 @@ async def test_full_pipeline_with_community_sources(tmp_path):
     with (
         patch.object(pipeline.fetcher, "fetch_all", new_callable=AsyncMock, return_value=[paper]),
         patch.object(pipeline.fetcher, "enrich", new_callable=AsyncMock, return_value=[paper]),
-        patch("jobpulse.papers.ranker._get_openai_client", return_value=None),
+        patch("shared.agents.cognitive_llm_call", return_value=None),
         patch.object(pipeline.notion, "publish_daily"),
     ):
         result = await pipeline.daily_digest(top_n=1)
@@ -134,7 +134,7 @@ async def test_weekly_digest_aggregates_stored(tmp_path):
         patch.object(
             pipeline.fetcher, "fetch_missed", new_callable=AsyncMock, return_value=[]
         ),
-        patch("jobpulse.papers.ranker._get_openai_client", return_value=None),
+        patch("shared.agents.cognitive_llm_call", return_value=None),
         patch.object(pipeline.ranker, "extract_themes", return_value=["Theme"]),
         patch.object(pipeline.notion, "publish_weekly", return_value={}),
     ):

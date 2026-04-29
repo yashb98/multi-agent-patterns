@@ -13,6 +13,8 @@ from typing import Any
 
 from shared.logging_config import get_logger
 from jobpulse.utils.safe_io import safe_openai_call
+from jobpulse.cv_templates.scrutiny_calibrator import ScrutinyCalibrator
+from shared.agents import cognitive_llm_call
 
 logger = get_logger(__name__)
 
@@ -260,14 +262,23 @@ def scrutinize_cv_llm(
         f'"verdict": "shortlist"|"maybe"|"reject"}}'
     )
 
-    from shared.agents import get_openai_client, get_model_name
-    client = get_openai_client()
-    response = safe_openai_call(
-        client,
-        model="gpt-5-mini",
-        messages=[{"role": "user", "content": prompt}],
-        caller="gate4_llm_scrutiny",
+    # Route through CognitiveEngine for reflexion + tree-of-thought (L3)
+    response = cognitive_llm_call(
+        task=prompt,
+        domain="cv_scrutiny",
+        stakes="high",
     )
+
+    if not response:
+        # Fallback to safe_openai_call if cognitive fails
+        from shared.agents import get_openai_client
+        client = get_openai_client()
+        response = safe_openai_call(
+            client,
+            model="gpt-5-mini",
+            messages=[{"role": "user", "content": prompt}],
+            caller="gate4_llm_scrutiny",
+        )
 
     if not response:
         logger.warning("Gate 4 LLM scrutiny returned None")
@@ -282,10 +293,17 @@ def scrutinize_cv_llm(
     score = int(data.get("total_score", 0))
     verdict = data.get("verdict", "reject")
 
+    # Use calibrated threshold if enough data exists
+    try:
+        calibrator = ScrutinyCalibrator()
+        threshold = calibrator.adjusted_threshold()
+    except Exception:
+        threshold = 7.0
+
     return LLMScrutinyResult(
         score=score,
         verdict=verdict,
-        needs_review=score < 7,
+        needs_review=score < threshold,
         strengths=data.get("strengths", []),
         weaknesses=data.get("weaknesses", []),
         breakdown={

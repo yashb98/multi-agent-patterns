@@ -1,4 +1,23 @@
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.14.0
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    mem_limit: 256m
+    cpus: 1
+    environment:
+      QDRANT__STORAGE__ON_DISK_PAYLOAD: "true"
+      QDRANT__STORAGE__WAL__WAL_CAPACITY_MB: "16"
+      QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS: "1"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   neo4j:
     image: neo4j:5.26-community
     ports:
@@ -7,9 +26,21 @@ services:
     environment:
       NEO4J_AUTH: neo4j/jobpulse
       NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_initial__size: "128m"
+      NEO4J_server_memory_heap_max__size: "256m"
+      NEO4J_server_memory_pagecache_size: "64m"
+      NEO4J_db_tx__log_rotation_retention__policy: "2 files"
     volumes:
       - neo4j_data:/data
     mem_limit: 512m
+    cpus: 1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "jobpulse", "RETURN 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
+  qdrant_data:
   neo4j_data:

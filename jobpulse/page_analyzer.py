@@ -5,163 +5,24 @@ is UNKNOWN, takes a screenshot and asks the vision model to classify the page.
 """
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from shared.logging_config import get_logger
 
 from jobpulse.form_models import PageType
+from jobpulse.page_analysis.classifier import PageTypeClassifier
 
 logger = get_logger(__name__)
 
 # Confidence threshold — below this, fall back to vision
 _VISION_THRESHOLD = 0.6
 
-# --- Button patterns ---
-_APPLY_BUTTONS = re.compile(
-    r"^(easy\s*apply|apply\s*(now|for\s*this)?|submit\s*application|start\s*application"
-    r"|apply\s*for\s*(this\s*)?job|apply\s*on\s*company\s*website"
-    r"|i.?m\s*interested|submit\s*interest)$",
-    re.IGNORECASE,
-)
-_LOGIN_BUTTONS = re.compile(r"^(sign\s*in|log\s*in|login)$", re.IGNORECASE)
-_SIGNUP_BUTTONS = re.compile(
-    r"^(create\s*account|sign\s*up|register|join\s*now|get\s*started)$", re.IGNORECASE
-)
-
-# --- Page text patterns ---
-_CONFIRMATION_PATTERNS = re.compile(
-    r"(thank\s*you\s*(for\s*)?(applying|your\s*application|submitting)"
-    r"|application\s*(received|submitted|sent)"
-    r"|we\s*(have\s*)?received\s*your\s*application"
-    r"|successfully\s*submitted)",
-    re.IGNORECASE,
-)
-_EMAIL_VERIFY_PATTERNS = re.compile(
-    r"(check\s*your\s*email|verify\s*your\s*(email|account)"
-    r"|sent\s*(a\s*)?(verification|confirmation)\s*(email|link)"
-    r"|click\s*the\s*link\s*(in\s*your\s*email|to\s*verify)"
-    r"|confirm\s*your\s*email\s*address)",
-    re.IGNORECASE,
-)
-
-_SESSION_EXPIRED_PATTERNS = re.compile(
-    r"(session\s*(has\s*)?(expired|timed?\s*out)"
-    r"|please\s*(sign|log)\s*in\s*again"
-    r"|you\s*(have\s*)?been\s*(signed|logged)\s*out"
-    r"|login\s*session\s*(has\s*)?(expired|ended))",
-    re.IGNORECASE,
-)
-
-_CONSENT_GATE_PATTERNS = re.compile(
-    r"(agree\s*to\s*(our\s*)?(privacy|data)\s*(policy|processing)"
-    r"|consent\s*to\s*(the\s*)?(processing|collection|use)\s*of\s*(your\s*)?(personal\s*)?data"
-    r"|accept\s*(our\s*)?terms\s*(and|&)\s*(conditions|privacy)"
-    r"|by\s*continuing.*consent\s*to)",
-    re.IGNORECASE,
-)
-
-# --- Field labels that indicate application forms ---
-_APPLICATION_LABELS = re.compile(
-    r"(first\s*name|last\s*name|phone|resume|cv|cover\s*letter|linkedin|portfolio"
-    r"|work\s*experience|education|sponsorship|right\s*to\s*work|salary|notice\s*period"
-    r"|why\s*(are\s*you|do\s*you)\s*(interested|applying))",
-    re.IGNORECASE,
-)
-
-
-_JOB_VIEW_URLS = re.compile(
-    r"linkedin\.com/jobs/view/"
-    r"|boards\.greenhouse\.io/.+/jobs/"
-    r"|jobs\.lever\.co/.+/"
-    r"|indeed\.com/viewjob"
-    r"|\.myworkdayjobs\.com/"
-    r"|\.zohorecruit\.\w+/jobs/",
-    re.IGNORECASE,
-)
+_classifier = PageTypeClassifier()
 
 
 def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     """Classify page type from DOM snapshot. Returns (PageType, confidence 0.0-1.0)."""
-    if hasattr(snapshot, "model_dump"):
-        snapshot = snapshot.model_dump()
-    buttons = snapshot.get("buttons", [])
-    fields = snapshot.get("fields", [])
-    page_text = snapshot.get("page_text_preview", "")
-    url = snapshot.get("url", "")
-    verification_wall = snapshot.get("verification_wall")
-
-    button_texts = [b.get("text", "") for b in buttons]
-    field_types = [f.get("input_type", "") for f in fields]
-    field_labels = [f.get("label", "") for f in fields]
-    has_application_fields = any(_APPLICATION_LABELS.search(lbl) for lbl in field_labels if lbl)
-
-    # 1. Verification wall (CAPTCHA) — highest priority
-    if verification_wall:
-        return PageType.VERIFICATION_WALL, 0.95
-
-    # 2. Confirmation page
-    if _CONFIRMATION_PATTERNS.search(page_text):
-        return PageType.CONFIRMATION, 0.95
-
-    # 3. Email verification page
-    if _EMAIL_VERIFY_PATTERNS.search(page_text):
-        return PageType.EMAIL_VERIFICATION, 0.9
-
-    # 3.5 Session expired
-    if _SESSION_EXPIRED_PATTERNS.search(page_text):
-        return PageType.SESSION_EXPIRED, 0.95
-
-    # 3.6 Consent gate (full-page, not cookie banner — only if no application fields visible)
-    if _CONSENT_GATE_PATTERNS.search(page_text) and not has_application_fields:
-        if any(re.search(r"(accept|agree|continue|proceed)", b.get("text", ""), re.IGNORECASE)
-               for b in buttons if b.get("enabled", True)):
-            return PageType.CONSENT_GATE, 0.9
-
-    # 4. Signup form: confirm password OR signup button + password
-    password_count = sum(1 for t in field_types if t == "password")
-    has_signup_button = any(_SIGNUP_BUTTONS.search(t) for t in button_texts if t)
-
-    if password_count >= 2:
-        return PageType.SIGNUP_FORM, 0.95
-    if has_signup_button and password_count >= 1:
-        return PageType.SIGNUP_FORM, 0.85
-
-    # 5. Login form: email + password + sign-in, no application fields
-    has_login_button = any(_LOGIN_BUTTONS.search(t) for t in button_texts if t)
-    has_password = password_count >= 1
-    has_email = any(t == "email" for t in field_types) or any(
-        "email" in lbl.lower() for lbl in field_labels
-    )
-
-    if has_login_button and has_password and has_email and not has_application_fields:
-        return PageType.LOGIN_FORM, 0.9
-
-    # 5.5 Modal/dialog with form fields — application form regardless of background
-    has_dialog = snapshot.get("has_dialog", False)
-    if not has_dialog:
-        has_dialog = any("dialog" in f.get("selector", "").lower() for f in fields)
-    if has_dialog and (has_application_fields or len(fields) >= 2):
-        return PageType.APPLICATION_FORM, 0.9
-
-    # 6. Job description: Apply button present, no application-specific fields
-    has_apply_button = any(_APPLY_BUTTONS.search(t) for t in button_texts if t)
-    has_file_input = snapshot.get("has_file_inputs", False)
-    if has_apply_button and not has_application_fields and not has_file_input:
-        return PageType.JOB_DESCRIPTION, 0.85
-
-    # 7. URL hint — known job view page patterns (SPA may not have apply button in DOM yet)
-    if url and _JOB_VIEW_URLS.search(url) and not has_application_fields and not has_file_input and len(fields) <= 5:
-        return PageType.JOB_DESCRIPTION, 0.7
-
-    # 8. Application form: form fields (contact, resume, screening)
-    if has_application_fields or has_file_input:
-        return PageType.APPLICATION_FORM, 0.85
-    if len(fields) >= 3:
-        return PageType.APPLICATION_FORM, 0.65
-
-    # 9. Unknown — low confidence
-    return PageType.UNKNOWN, 0.2
+    return _classifier.classify(snapshot)
 
 
 async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
@@ -170,7 +31,7 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
     import json
 
     try:
-        from shared.agents import get_openai_client, get_model_name, is_local_llm
+        from shared.agents import get_openai_client, get_model_name, is_local_llm, _token_limit_kwargs
     except ImportError:
         logger.warning("OpenAI not available for vision detection")
         return PageType.UNKNOWN, 0.0
@@ -206,9 +67,15 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
                     ],
                 },
             ],
-            max_tokens=300 if is_local_llm() else 100,
+            **_token_limit_kwargs(get_model_name(), 300 if is_local_llm() else 100),
             temperature=0,
         )
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="page_analyzer", model_hint=get_model_name())
+        except Exception:
+            pass
+
         text = response.choices[0].message.content.strip()
         # Parse JSON from response
         if "{" in text:

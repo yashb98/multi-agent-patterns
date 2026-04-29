@@ -24,20 +24,6 @@ class GateResult(BaseModel):
     suggestions: list[str] = []
 
 
-def _get_openai_client():
-    """Return OpenAI client, or None."""
-    try:
-        from jobpulse.config import OPENAI_API_KEY
-
-        if not OPENAI_API_KEY:
-            return None
-        from openai import OpenAI
-
-        return OpenAI(api_key=OPENAI_API_KEY)
-    except Exception:
-        return None
-
-
 class PreSubmitGate:
     """Reviews the filled application before submission."""
 
@@ -51,11 +37,6 @@ class PreSubmitGate:
         company_research: CompanyResearch,
     ) -> GateResult:
         """Score the application 0-10. Block if < 7."""
-        client = _get_openai_client()
-        if client is None:
-            logger.warning("PreSubmitGate: no OpenAI client — passing by default")
-            return GateResult(passed=True, score=0.0)
-
         prompt = (
             f"You are a FAANG recruiter reviewing this job application for "
             f"{company_research.company}.\n\n"
@@ -74,12 +55,16 @@ class PreSubmitGate:
         )
 
         try:
-            response = client.chat.completions.create(
-                model="gpt-5-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+            # Route through CognitiveEngine (default-on) for recruiter-quality review
+            from shared.agents import cognitive_llm_call
+            raw = cognitive_llm_call(
+                task=prompt,
+                domain="pre_submit_review",
+                stakes="high",
             )
-            raw = response.choices[0].message.content or ""
+            if raw is None:
+                logger.warning("PreSubmitGate: cognitive engine returned None — passing by default")
+                return GateResult(passed=True, score=0.0)
             cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
             data = json.loads(cleaned)
             score = float(data.get("score", 0))

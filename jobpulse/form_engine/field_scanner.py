@@ -300,6 +300,36 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 }
                 fields.push(entry);
             }
+            // Custom React dropdowns (data-testid pattern)
+            const ddSel = '[data-testid="dropdown-basic"], [data-testid="agree-data-privacy-dropdown"]';
+            const allDDs = document.querySelectorAll(ddSel);
+            for (let di = 0; di < allDDs.length; di++) {
+                const dd = allDDs[di];
+                const testId = dd.getAttribute('data-testid') || '';
+                let label = '';
+                const titleEl = dd.querySelector('[data-testid="dropdown-title"]');
+                if (titleEl) label = titleEl.textContent.trim();
+                if (!label) {
+                    let node = dd;
+                    for (let depth = 0; node && depth < 6; depth++) {
+                        node = node.parentElement;
+                        if (!node) break;
+                        const qCandidates = node.querySelectorAll(':scope > label, :scope > legend, :scope > h3, :scope > h4, :scope > p, :scope > span[class*="label"]');
+                        for (const c of qCandidates) {
+                            const qt = c.textContent.trim();
+                            if (qt.length > 5 && qt.length < 500) { label = qt; break; }
+                        }
+                        if (label) break;
+                    }
+                }
+                const btn = dd.querySelector('[data-testid="dropdown-button"]') || dd.querySelector('button');
+                const currentValue = btn ? btn.textContent.trim() : '';
+                if (!label) label = currentValue || (testId + '_' + di);
+                const ddKey = 'custom_dd:' + label;
+                if (seen.has(ddKey)) continue;
+                seen.add(ddKey);
+                fields.push({label, type: 'custom_dropdown', value: currentValue, testId, ddIndex: di});
+            }
             return fields;
         }""")
     except Exception as exc:
@@ -323,6 +353,10 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
             entry["checked"] = item["checked"]
         if item.get("name"):
             entry["name"] = item["name"]
+        if item.get("testId"):
+            entry["testId"] = item["testId"]
+        if "ddIndex" in item:
+            entry["ddIndex"] = item["ddIndex"]
         if item.get("question"):
             entry["label"] = item["question"]
             entry["name"] = item.get("name", "")

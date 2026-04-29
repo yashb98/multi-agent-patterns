@@ -344,14 +344,37 @@ class SkillGraphStore:
         result.gate3_score = score
         result.breakdown = breakdown
 
-        if score >= 75:
+        strong_threshold, apply_threshold = self._get_adaptive_thresholds()
+        if score >= strong_threshold:
             result.tier = "strong"
-        elif score >= 55:
+        elif score >= apply_threshold:
             result.tier = "apply"
         else:
             result.tier = "skip"
 
         return result
+
+    def _get_adaptive_thresholds(self) -> tuple[int, int]:
+        """Return (strong, apply) thresholds, adjusted by recent rejection rate.
+
+        Base: 75/55. If rejection rate > 50% of applied jobs, raise by 5.
+        If interview rate > 20%, lower by 5 (we can afford to be less picky).
+        """
+        try:
+            from jobpulse.job_analytics import get_conversion_funnel
+            funnel = get_conversion_funnel(days=14)
+            applied = funnel.get("applied", 0)
+            if applied < 5:
+                return 75, 55
+            rejection_rate = funnel.get("rejected", 0) / applied
+            interview_rate = funnel.get("applied_to_interview", 0) / 100
+            if rejection_rate > 0.5:
+                return 80, 60
+            if interview_rate > 0.2:
+                return 70, 50
+        except Exception:
+            pass
+        return 75, 55
 
     # ------------------------------------------------------------------
     # Gate 1: Kill Signals

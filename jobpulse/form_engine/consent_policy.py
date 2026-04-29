@@ -81,6 +81,15 @@ _ALLOW_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\b(i\s+am\s+(at\s+least\s+)?18)\b",
         r"\b(confirm.{0,40}\b(accuracy|true|correct))\b",
         r"\b(information\s+(is|provided).{0,30}\b(accurate|true|correct))\b",
+        r"^i\s+accept$",
+    )
+)
+
+_SPECIAL_REQUIRED_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bdemographic data surveys above\b",
+        r"\bprocessing my responses to the demographic data surveys above\b",
     )
 )
 
@@ -100,6 +109,10 @@ def is_required_consent(label: str) -> bool:
     """
     if not label or not label.strip():
         return False
+
+    for pattern in _SPECIAL_REQUIRED_PATTERNS:
+        if pattern.search(label):
+            return True
 
     for pattern in _DENY_PATTERNS:
         if pattern.search(label):

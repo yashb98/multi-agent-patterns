@@ -274,15 +274,13 @@ class PlaywrightDriver:
         logger.info("PlaywrightDriver connected to Chrome at %s (tab: %s)", url, self._page.url[:80])
 
     async def close(self) -> None:
-        """Close the tab and disconnect."""
-        if self._page:
-            await self._page.close()
-            self._page = None
+        """Disconnect from Chrome without closing the user's tab."""
+        self._page = None
+        self._browser = None
+        self._context = None
         if self._pw:
             await self._pw.stop()
             self._pw = None
-        self._browser = None
-        self._context = None
 
     async def navigate(self, url: str) -> dict:
         """Navigate to URL, wait for load, return snapshot."""

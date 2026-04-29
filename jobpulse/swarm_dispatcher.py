@@ -587,11 +587,8 @@ def _fact_checker_grounding(result: str, intent: str) -> dict | None:
 def _llm_judge_score(result: str, intent: str, grounding: dict | None) -> float | None:
     """Ask an LLM judge to score quality using a fixed rubric."""
     try:
-        from langchain_core.messages import HumanMessage
-        from shared.agents import get_llm
-        from shared.streaming import smart_llm_call
+        from shared.agents import cognitive_llm_call
 
-        llm = get_llm(model="gpt-5-mini", temperature=0, timeout=20.0)
         grounding_json = json.dumps(grounding, ensure_ascii=True) if grounding else "null"
         prompt = (
             f"You are a strict response-quality judge for intent '{intent}'.\n"
@@ -606,8 +603,13 @@ def _llm_judge_score(result: str, intent: str, grounding: dict | None) -> float 
             "Return strict JSON only: "
             "{\"score\": <float 0-10>, \"reason\": \"<short sentence>\", \"confidence\": <0-1>}"
         )
-        raw_response = smart_llm_call(llm, [HumanMessage(content=prompt)])
-        raw = raw_response.content if hasattr(raw_response, "content") else str(raw_response)
+        raw = cognitive_llm_call(
+            task=prompt,
+            domain="swarm_judge",
+            stakes="medium",
+        )
+        if not raw:
+            return None
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:

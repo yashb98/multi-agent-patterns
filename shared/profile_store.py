@@ -157,6 +157,24 @@ class _SensitiveStore:
         )
         self._conn.commit()
 
+    def get_batch(self, keys: list[str]) -> dict[str, str]:
+        """Fetch multiple sensitive fields in a single query."""
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        rows = self._conn.execute(
+            f"SELECT key, value_encrypted FROM sensitive_fields WHERE key IN ({placeholders})",
+            keys,
+        ).fetchall()
+        result: dict[str, str] = {}
+        for row in rows:
+            try:
+                result[row[0]] = self._fernet.decrypt(row[1]).decode()
+            except InvalidToken:
+                logger.error("ProfileStore: failed to decrypt sensitive field '%s'", row[0])
+                result[row[0]] = ""
+        return result
+
     def get_all(self, category: str | None = None) -> dict[str, str]:
         if category:
             rows = self._conn.execute(
@@ -564,7 +582,7 @@ class ProfileStore:
 
     def as_applicant_profile(self) -> dict[str, str]:
         ident = self.identity()
-        return {
+        result = {
             "first_name": ident.first_name,
             "last_name": ident.last_name,
             "email": ident.email,
@@ -575,14 +593,26 @@ class ProfileStore:
             "location": ident.location,
             "education": self._education_summary(),
         }
+        dob = self._sensitive.get("date_of_birth")
+        if dob:
+            result["date_of_birth"] = dob
+        return result
 
     def as_work_auth(self) -> dict[str, Any]:
+        sens = self._sensitive.get_batch(
+            ["requires_sponsorship", "visa_status", "right_to_work_uk"]
+        )
+        sd_rows = self._conn.execute(
+            "SELECT question_type, answer FROM screening_defaults "
+            "WHERE question_type IN ('notice_period', 'salary_expectation')"
+        ).fetchall()
+        sd = {r["question_type"]: r["answer"] for r in sd_rows}
         return {
-            "requires_sponsorship": self.sensitive("requires_sponsorship").lower() in ("true", "1"),
-            "visa_status": self.sensitive("visa_status"),
-            "right_to_work_uk": self.sensitive("right_to_work_uk") != "false",
-            "notice_period": self.screening_default("notice_period") or "Immediately",
-            "salary_expectation": self.screening_default("salary_expectation") or "",
+            "requires_sponsorship": sens.get("requires_sponsorship", "").lower() in ("true", "1"),
+            "visa_status": sens.get("visa_status", ""),
+            "right_to_work_uk": sens.get("right_to_work_uk", "") != "false",
+            "notice_period": sd.get("notice_period") or "1 month",
+            "salary_expectation": sd.get("salary_expectation") or "",
         }
 
     def _education_summary(self) -> str:

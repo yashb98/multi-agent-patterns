@@ -20,6 +20,16 @@ from shared.optimization._trajectory import (  # noqa: F401
     Trajectory,
     TrajectoryStep,
 )
+from shared.optimization._replay import (  # noqa: F401
+    ReplayFixture,
+    assert_replay_fixture_matches,
+    build_replay_fixtures,
+    diff_replay_fixture,
+    load_replay_fixture,
+    render_replay_digest,
+    select_top_trajectories,
+    write_replay_fixture,
+)
 from shared.optimization._tracker import (  # noqa: F401
     PerformanceTracker,
     PerformanceSnapshot,

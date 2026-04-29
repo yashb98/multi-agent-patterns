@@ -29,7 +29,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 from jobpulse.config import DATA_DIR
-from jobpulse.cv_templates import sanitize_pdf as _sanitize_pdf
+from jobpulse.cv_templates import build_applicant_identity, get_project_stats, sanitize_pdf as _sanitize_pdf
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -125,10 +125,8 @@ def polish_points_llm(
     On any failure (network, bad JSON, missing key) the original *points*
     are returned unchanged — the PDF will still be generated.
     """
-    from shared.agents import get_openai_client
-    from jobpulse.utils.safe_io import safe_openai_call
-
-    client = get_openai_client()
+    # Route through CognitiveEngine (default-on) for creative refinement
+    from shared.agents import cognitive_llm_call
 
     formatted = json.dumps(
         [{"header": h, "detail": d} for h, d in points],
@@ -144,11 +142,10 @@ def polish_points_llm(
         f"{formatted}"
     )
 
-    raw = safe_openai_call(
-        client,
-        model="gpt-5-mini",
-        messages=[{"role": "user", "content": prompt}],
-        caller="polish_cover_letter_points",
+    raw = cognitive_llm_call(
+        task=prompt,
+        domain="cover_letter",
+        stakes="medium",
     )
 
     if raw is None:
@@ -192,16 +189,6 @@ def _register_fonts():
     _FONTS_REGISTERED = True
 
 
-IDENTITY = {
-    "name": "Yash Bishnoi",
-    "phone": "07909445288",
-    "email": "bishnoiyash274@gmail.com",
-    "linkedin": "https://linkedin.com/in/yash-bishnoi-2ab36a1a5",
-    "github": "https://github.com/yashb98",
-    "portfolio": "https://yashbishnoi.io",
-}
-
-
 def generate_cover_letter_pdf(
     company: str,
     role: str,
@@ -232,6 +219,7 @@ def generate_cover_letter_pdf(
         Path to generated PDF.
     """
     _register_fonts()
+    identity = build_applicant_identity()
 
     # Build dynamic points from matched projects if available
     if points is None and matched_projects and required_skills:
@@ -277,22 +265,26 @@ def generate_cover_letter_pdf(
 
     # ── LEFT SIDEBAR ──
     left = []
-    left.append(Paragraph(B(IDENTITY["name"]), name_s))
+    left.append(Paragraph(B(identity["name"]), name_s))
     left.append(Spacer(1, 10))
     left.append(Paragraph(B('Cover Letter'), title_s))
     left.append(Spacer(1, 5))
     left.append(HRFlowable(width="100%", thickness=4, spaceAfter=14, color=HexColor(ORANGE_RED)))
     left.append(Paragraph(location, contact_s))
-    left.append(Paragraph(IDENTITY["phone"], contact_s))
-    left.append(Paragraph(L(f'mailto:{IDENTITY["email"]}', 'Email'), contact_link_s))
+    left.append(Paragraph(identity["phone"], contact_s))
+    left.append(Paragraph(L(f'mailto:{identity["email"]}', 'Email'), contact_link_s))
     left.append(Spacer(1, 10))
-    left.append(Paragraph(L(IDENTITY["linkedin"], 'LinkedIn'), contact_link_s))
-    left.append(Paragraph(L(IDENTITY["github"], 'GitHub'), contact_link_s))
-    left.append(Paragraph(L(IDENTITY["portfolio"], 'Portfolio'), contact_link_s))
+    left.append(Paragraph(L(identity["linkedin"], 'LinkedIn'), contact_link_s))
+    left.append(Paragraph(L(identity["github"], 'GitHub'), contact_link_s))
+    left.append(Paragraph(L(identity["portfolio"], 'Portfolio'), contact_link_s))
 
     # ── RIGHT BODY ──
     right = []
     right.append(Paragraph('Dear Hiring Team,', greeting_s))
+
+    _s = get_project_stats()
+    _loc = _s.get("loc_display", "142,500+")
+    _tests = _s.get("tests_display", "3,350+")
 
     # Intro
     if intro:
@@ -309,7 +301,7 @@ def generate_cover_letter_pdf(
         right.append(Paragraph(hook, body_s))
     else:
         right.append(Paragraph(
-            f'I built a {B("54,500 LOC")} production system with {B("350 tests")} entirely using AI-native '
+            f'I built a {B(_loc + " LOC")} production system with {B(_tests + " tests")} entirely using AI-native '
             f'development practices. This is not theoretical interest - it is how I work every day.', body_s))
 
     right.append(Paragraph(
@@ -322,7 +314,7 @@ def generate_cover_letter_pdf(
     else:
         default_points = [
             ("AI Coding Tools (Claude Code, Cursor, Copilot):",
-             f'I built a production system ({B("multi-agent-patterns")}, {B("54,500 LOC")}) using {B("Claude Code")} '
+             f'I built a production system ({B("multi-agent-patterns")}, {B(_loc + " LOC")}) using {B("Claude Code")} '
              f'as my primary development tool.'),
             ("Python and API Integrations:",
              f'Every project uses {B("Python")} with production APIs: {B("Anthropic SDK")}, {B("OpenAI API")}, '
@@ -353,7 +345,7 @@ def generate_cover_letter_pdf(
 
     right.append(Spacer(1, 8))
     right.append(Paragraph('Best regards,', closing_s))
-    right.append(Paragraph(B(IDENTITY["name"]), closing_name_s))
+    right.append(Paragraph(B(identity["name"]), closing_name_s))
 
     # ── BUILD ──
     if output_dir:

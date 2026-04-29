@@ -1,6 +1,8 @@
 """Web search tool implementation."""
 
+from shared.safe_fetch import safe_fetch
 from shared.tool_integration import ToolDefinition, RiskLevel
+from shared.web_search import search_web
 
 
 class WebSearchTool:
@@ -31,16 +33,19 @@ class WebSearchTool:
     def execute(action: str, params: dict) -> dict:
         if action == "search":
             query = params.get("query", "")
+            results = [hit.to_dict() for hit in search_web(query, max_results=5, context="general")]
             return {
                 "status": "success",
-                "results": f"[Web search results for: {query}]",
-                "note": "Replace with actual search API (SerpAPI/Tavily)",
+                "results": results,
             }
         elif action == "fetch_url":
             url = params.get("url", "")
+
+            result = safe_fetch(url)
             return {
                 "status": "success",
-                "content": f"[Content fetched from: {url}]",
-                "note": "Replace with requests.get() or playwright",
+                "content": result.text,
+                "content_type": result.content_type,
+                "url": result.url,
             }
         return {"status": "error", "message": f"Unknown action: {action}"}

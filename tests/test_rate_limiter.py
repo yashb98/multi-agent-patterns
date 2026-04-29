@@ -125,3 +125,130 @@ def test_reset_daily(limiter):
     limiter.reset_daily()
     assert limiter.get_total_today() == 0
     assert limiter.can_apply("linkedin") is True
+
+
+# --- Task 7: Application Audit Trail ---
+
+
+def test_application_log_recorded(limiter):
+    """record_application stores audit trail with job details."""
+    limiter.record_application(
+        "greenhouse",
+        job_id="gh_12345",
+        company="Snowflake",
+        url="https://boards.greenhouse.io/snowflake/jobs/12345",
+    )
+
+    log = limiter.get_application_log(days=1)
+    assert len(log) == 1
+    assert log[0]["platform"] == "greenhouse"
+    assert log[0]["job_id"] == "gh_12345"
+    assert log[0]["company"] == "Snowflake"
+    assert log[0]["url"] == "https://boards.greenhouse.io/snowflake/jobs/12345"
+    assert log[0]["recorded_at"]
+
+
+def test_application_log_links_to_daily_counts(limiter):
+    """application_log count matches daily_counts total."""
+    limiter.record_application("greenhouse", job_id="gh_1", company="Snowflake", url="https://boards.greenhouse.io/snowflake/jobs/1")
+    limiter.record_application("workday", job_id="wd_2", company="ASOS", url="https://asos.wd3.myworkdayjobs.com/careers/job/2")
+    limiter.record_application("linkedin", job_id="li_3", company="Arm", url="https://www.linkedin.com/jobs/view/3")
+
+    assert limiter.get_total_today() == 3
+
+    log = limiter.get_application_log(days=1)
+    assert len(log) == 3
+    companies = {entry["company"] for entry in log}
+    assert companies == {"Snowflake", "ASOS", "Arm"}
+
+
+def test_application_log_backward_compatible(limiter):
+    """record_application without extra args still works."""
+    limiter.record_application("reed")
+    assert limiter.get_total_today() == 1
+
+    log = limiter.get_application_log(days=1)
+    assert len(log) == 1
+    assert log[0]["job_id"] == ""
+    assert log[0]["company"] == ""
+
+
+# --- Task 9: Proactive Quota Alerts ---
+
+from unittest.mock import patch as mock_patch
+
+
+def test_quota_alert_at_80_percent(tmp_path, monkeypatch):
+    """Alert fires exactly once when total hits 80% of daily cap."""
+    monkeypatch.setattr("jobpulse.rate_limiter.TOTAL_DAILY_CAP", 10)
+    monkeypatch.setattr("jobpulse.rate_limiter.DAILY_CAPS", {"generic": 50})
+    limiter = RateLimiter(db_path=str(tmp_path / "rate_limits.db"))
+
+    with mock_patch("jobpulse.rate_limiter.send_pipeline_alert") as mock_alert:
+        for i in range(7):
+            limiter.record_application("generic")
+        assert mock_alert.call_count == 0
+
+        limiter.record_application("generic")  # 8th = 80% of 10
+        assert mock_alert.call_count == 1
+        assert "80%" in mock_alert.call_args[0][0]
+        assert mock_alert.call_args[1]["severity"] == "warning"
+        assert mock_alert.call_args[1]["category"] == "quota"
+
+        limiter.record_application("generic")  # 9th — no second alert
+        assert mock_alert.call_count == 1
+
+
+def test_platform_quota_alert(tmp_path, monkeypatch):
+    """Alert fires when a single platform hits 80% of its cap."""
+    monkeypatch.setattr("jobpulse.rate_limiter.DAILY_CAPS", {"linkedin": 5, "generic": 5})
+    monkeypatch.setattr("jobpulse.rate_limiter.TOTAL_DAILY_CAP", 50)
+    limiter = RateLimiter(db_path=str(tmp_path / "rate_limits.db"))
+
+    with mock_patch("jobpulse.rate_limiter.send_pipeline_alert") as mock_alert:
+        for i in range(3):
+            limiter.record_application("linkedin")
+        assert mock_alert.call_count == 0
+
+        limiter.record_application("linkedin")  # 4th = 80% of 5
+        assert mock_alert.call_count == 1
+        assert "linkedin" in mock_alert.call_args[0][0].lower()
+
+
+# --- Task 13: DB Retention Cleanup ---
+
+
+def test_cleanup_old_preserves_recent(tmp_path):
+    """cleanup_old deletes old records but preserves recent ones."""
+    import sqlite3
+    from datetime import datetime, timezone, timedelta
+
+    limiter = RateLimiter(db_path=str(tmp_path / "rate_limits.db"))
+
+    utc_now = datetime.now(timezone.utc)
+    old_date = (utc_now - timedelta(days=45)).strftime("%Y-%m-%d")
+    recent_date = (utc_now - timedelta(days=15)).strftime("%Y-%m-%d")
+    today = utc_now.strftime("%Y-%m-%d")
+
+    with sqlite3.connect(limiter.db_path) as conn:
+        for d, plat in [(old_date, "greenhouse"), (recent_date, "workday"), (today, "linkedin")]:
+            conn.execute(
+                "INSERT INTO daily_counts (date, platform, count) VALUES (?, ?, 1)",
+                (d, plat),
+            )
+            conn.execute(
+                "INSERT INTO application_log (date, platform, job_id, company, url, recorded_at) "
+                "VALUES (?, ?, 'j1', 'TestCo', 'https://example.com', ?)",
+                (d, plat, f"{d}T12:00:00Z"),
+            )
+        conn.commit()
+
+    deleted = limiter.cleanup_old(retention_days=30)
+    assert deleted > 0
+
+    with sqlite3.connect(limiter.db_path) as conn:
+        dc_count = conn.execute("SELECT COUNT(*) FROM daily_counts").fetchone()[0]
+        al_count = conn.execute("SELECT COUNT(*) FROM application_log").fetchone()[0]
+
+    assert dc_count == 2  # recent + today
+    assert al_count == 2

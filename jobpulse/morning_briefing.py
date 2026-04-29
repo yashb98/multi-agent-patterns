@@ -144,21 +144,62 @@ def build_and_send(trigger: str = "cron_morning"):
 
     # ── Section 10: Job Autopilot Stats ──
     section_jobs = ""
-    try:
-        from jobpulse.job_db import JobDB
-        from datetime import date
-        job_db = JobDB()
-        job_stats = job_db.get_today_stats()
-        follow_ups = job_db.get_follow_ups_due(date.today())
-        if job_stats["applied"] > 0 or job_stats["found"] > 0:
-            section_jobs = (
-                f"💼 JOB AUTOPILOT:\n"
-                f"  Applied: {job_stats['applied']} (avg ATS: {job_stats['avg_ats']}%)\n"
-                f"  Found: {job_stats['found']} | Skipped: {job_stats['skipped']}\n"
-                f"  Follow-ups due today: {len(follow_ups)}"
-            )
-    except Exception as e:
-        logger.error("Job stats for briefing failed: %s", e)
+    with trail.step("api_call", "Collect job autopilot stats") as s:
+        try:
+            from jobpulse.job_db import JobDB
+            from jobpulse.job_analytics import get_conversion_funnel, get_platform_breakdown
+            from datetime import date
+            job_db = JobDB()
+            job_stats = job_db.get_today_stats()
+            follow_ups = job_db.get_follow_ups_due(date.today())
+            funnel = get_conversion_funnel(days=7)
+            platforms = get_platform_breakdown(days=7)
+
+            lines = ["💼 JOB AUTOPILOT:"]
+            if job_stats["applied"] > 0 or job_stats["found"] > 0:
+                lines.append(f"  Today: {job_stats['applied']} applied, {job_stats['found']} found, {job_stats['skipped']} skipped (avg ATS: {job_stats['avg_ats']}%)")
+            if funnel["found"] > 0:
+                lines.append(f"  7-day funnel: {funnel['found']} found → {funnel['applied']} applied ({funnel['found_to_applied']:.0f}%) → {funnel['interview']} interview ({funnel['applied_to_interview']:.0f}%)")
+                if funnel["rejected"] or funnel["blocked"]:
+                    lines.append(f"  Blocked: {funnel['blocked']} | Rejected: {funnel['rejected']} | Skipped: {funnel['skipped']}")
+            if platforms:
+                plat_parts = [f"{p}: {d.get('applied', 0)}" for p, d in platforms.items() if d.get("applied", 0)]
+                if plat_parts:
+                    lines.append(f"  By platform: {', '.join(plat_parts)}")
+            if follow_ups:
+                lines.append(f"  Follow-ups due today: {len(follow_ups)}")
+
+            if len(lines) > 1:
+                section_jobs = "\n".join(lines)
+            s["output"] = f"Applied: {job_stats['applied']}, Funnel: {funnel['found']}→{funnel['applied']}"
+        except Exception as e:
+            logger.error("Job stats for briefing failed: %s", e)
+            s["output"] = f"Job stats error: {e}"
+
+    # ── Section 11: LLM Cost ──
+    section_cost = ""
+    with trail.step("api_call", "Collect LLM cost data") as s:
+        try:
+            from shared.cost_tracker import get_daily_llm_summary
+            cost_summary = get_daily_llm_summary(days=1)
+            if cost_summary["total_calls"] > 0:
+                top_agents = sorted(
+                    cost_summary["by_agent"].items(),
+                    key=lambda x: x[1]["cost"],
+                    reverse=True,
+                )[:5]
+                agent_parts = ", ".join(
+                    f"{name}: ${data['cost']:.3f}" for name, data in top_agents
+                )
+                section_cost = (
+                    f"LLM COST:\n"
+                    f"  Total: ${cost_summary['total_cost']:.3f} ({cost_summary['total_calls']} calls)\n"
+                    f"  Top agents: {agent_parts}"
+                )
+            s["output"] = f"${cost_summary['total_cost']:.3f}, {cost_summary['total_calls']} calls"
+        except Exception as e:
+            logger.debug("LLM cost section skipped: %s", e)
+            s["output"] = f"Cost error: {e}"
 
     # ── Build Message ──
     message = f"""☀️ Good Morning {_first_name()}! Here's your briefing for {today}:
@@ -212,6 +253,10 @@ def build_and_send(trigger: str = "cron_morning"):
 ━━━━━━━━━━━━━━━━━━━━
 
 {section_jobs}""" if section_jobs else ""}
+{f"""
+━━━━━━━━━━━━━━━━━━━━
+
+💰 {section_cost}""" if section_cost else ""}
 
 ━━━━━━━━━━━━━━━━━━━━
 

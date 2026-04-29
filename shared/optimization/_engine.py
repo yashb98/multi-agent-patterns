@@ -9,8 +9,23 @@ from shared.logging_config import clear_trajectory_id, get_trajectory_id, set_tr
 from shared.optimization._signals import LearningSignal, SignalBus
 from shared.optimization._trajectory import TrajectoryStore, Trajectory, TrajectoryStep
 from shared.optimization._tracker import PerformanceTracker, DomainStats
-from shared.optimization._aggregator import SignalAggregator
+from shared.optimization._aggregator import SignalAggregator, AggregatedInsight
 from shared.optimization._policy import OptimizationPolicy, OptimizationBudget, PolicyAction
+
+# Lazy import to avoid circular dependency
+_AutoRuleGenerator = None
+
+def _get_auto_rule_generator():
+    global _AutoRuleGenerator
+    if _AutoRuleGenerator is not None:
+        return _AutoRuleGenerator
+    try:
+        from jobpulse.auto_rule_generator import AutoRuleGenerator
+        _AutoRuleGenerator = AutoRuleGenerator
+        return _AutoRuleGenerator
+    except Exception as exc:
+        logger.debug("AutoRuleGenerator unavailable: %s", exc)
+        return None
 
 logger = get_logger(__name__)
 
@@ -195,6 +210,10 @@ class OptimizationEngine:
         insights.extend(self._aggregator.check_regressions())
         insights.extend(self._aggregator.sweep())
 
+        # Mine trajectories for additional actionable insights
+        trajectory_insights = self._mine_trajectory_insights()
+        insights.extend(trajectory_insights)
+
         all_actions: list[PolicyAction] = []
         for insight in insights:
             actions = self._policy.decide(insight)
@@ -218,6 +237,29 @@ class OptimizationEngine:
                 for a in all_actions
             ],
         }
+
+    def _mine_trajectory_insights(self) -> list:
+        """Mine trajectories and emit systemic_failure insights for auto-rule generation."""
+        insights = []
+        try:
+            ARGen = _get_auto_rule_generator()
+            if ARGen is None:
+                return insights
+            gen = ARGen()
+            # Check for high-correction fields across all domains
+            rules = gen.from_corrections(min_samples=5, max_rules=5)
+            for rule in rules:
+                insights.append(AggregatedInsight(
+                    pattern_type="systemic_failure",
+                    confidence=rule.confidence,
+                    contributing_signals=[],
+                    domain=rule.category,
+                    recommended_action="generate_rule",
+                    evidence=rule.evidence,
+                ))
+        except Exception as exc:
+            logger.debug("Trajectory mining failed: %s", exc)
+        return insights
 
     def _execute_actions(self, actions: list[PolicyAction]) -> set[str]:
         """Execute policy actions. Returns set of action_types that were executed."""
@@ -275,6 +317,110 @@ class OptimizationEngine:
                       payload={"target": action.target, "evidence": action.evidence})
         elif t == "merge_actions":
             logger.info("Merge recommended for %s: %s", action.domain, action.evidence)
+        elif t == "promote_strategy" and self._memory:
+            try:
+                self._memory.learn_procedure(
+                    domain=action.domain,
+                    strategy=action.evidence,
+                    score=8.0,
+                    source="optimization_success_streak",
+                )
+                logger.info("Promoted strategy for %s: %s", action.domain, action.evidence[:100])
+            except Exception as e:
+                logger.debug("Strategy promotion failed: %s", e)
+        elif t == "reinforce_adaptation":
+            # Deploy an actual agent rule, not just store a memory fact
+            self._deploy_auto_rule(action)
+        elif t == "generate_rule":
+            # Deploy a rule mined from trajectories or corrections
+            self._deploy_auto_rule(action)
+        elif t == "freeze_baseline" and self._memory:
+            try:
+                results = self._memory.search_semantic(
+                    query=action.evidence,
+                    domain=action.domain,
+                    limit=1,
+                )
+                if results and results[0].get("id"):
+                    self._memory.pin_memory(results[0]["id"])
+                    logger.info("Frozen baseline memory %s for %s", results[0]["id"], action.domain)
+            except Exception as e:
+                logger.debug("Baseline freeze failed: %s", e)
+        elif t == "investigate_domain":
+            logger.warning("Investigate recommended for %s: %s", action.domain, action.evidence)
+            if self._alert_fn:
+                try:
+                    self._alert_fn(f"🔍 [{action.domain}] {action.evidence}")
+                except Exception as e:
+                    logger.debug("Alert callback failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # Auto-rule deployment
+    # ------------------------------------------------------------------
+
+    def _deploy_auto_rule(self, action: PolicyAction):
+        """Deploy an agent rule via AutoRuleGenerator from policy action evidence."""
+        ARGen = _get_auto_rule_generator()
+        if ARGen is None:
+            logger.debug("AutoRuleGenerator unavailable — skipping rule deployment")
+            return
+
+        try:
+            gen = ARGen()
+            # If the action has correction-like evidence, try to parse it
+            # Evidence format: "N corrections on 'field': 'old' → 'new'"
+            rule = self._parse_action_to_rule(action)
+            if rule and gen.validate_rule(rule):
+                result = gen.deploy_rule(rule)
+                if result.get("deployed"):
+                    logger.info(
+                        "Auto-deployed rule #%d for %s (%s)",
+                        result["rule_id"], action.domain, action.action_type,
+                    )
+                else:
+                    logger.debug("Rule deployment failed for %s", action.domain)
+            else:
+                # Fall back: generate from corrections for this domain
+                rules = gen.from_corrections(
+                    domain=action.domain, min_samples=3, max_rules=1,
+                )
+                if rules:
+                    gen.deploy_rule(rules[0])
+        except Exception as exc:
+            logger.debug("Auto-rule deployment failed: %s", exc)
+
+    @staticmethod
+    def _parse_action_to_rule(action: PolicyAction):
+        """Try to parse a PolicyAction into a GeneratedRule."""
+        ARGen = _get_auto_rule_generator()
+        if ARGen is None:
+            return None
+        # Simple heuristic: look for correction evidence patterns
+        ev = action.evidence
+        import re as _re
+        m = _re.search(
+            r"(\d+) corrections on '([^']+)'.*?'([^']{1,60})'\s*→\s*'([^']{1,60})'",
+            ev,
+        )
+        if m:
+            count = int(m.group(1))
+            field = m.group(2)
+            old_val = m.group(3)
+            new_val = m.group(4)
+            pattern = ARGen._field_to_pattern(field)
+            action_name, value = ARGen._infer_action(field, old_val, new_val, count)
+            return ARGen.GeneratedRule(
+                rule_type="correction_override",
+                source="optimization_policy",
+                category=field,
+                pattern=pattern,
+                action=action_name,
+                value=value,
+                confidence=min(count / 10.0, 0.95),
+                sample_count=count,
+                evidence=ev,
+            )
+        return None
 
     # ------------------------------------------------------------------
     # Reports & maintenance (W7: fleshed out daily_report)
@@ -294,14 +440,13 @@ class OptimizationEngine:
         if not self._enabled:
             return {"type": "daily", "enabled": False}
         total = self._bus.count()
-        by_type = {}
+        by_type = {"all": total}
         for st in ("correction", "failure", "success", "adaptation", "score_change", "rollback"):
-            by_type[st] = self._bus.count(source_loop="") if st == "all" else 0
             try:
                 sigs = self._bus.query(signal_type=st, limit=10000)
                 by_type[st] = len(sigs)
             except Exception:
-                pass
+                by_type[st] = 0
 
         domains: set[str] = set()
         for sig in self._bus.recent():

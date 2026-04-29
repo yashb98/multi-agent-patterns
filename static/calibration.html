@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calibration — JobPulse</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f172a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+.topbar{position:fixed;top:0;left:0;right:0;height:50px;background:#1e293b;border-bottom:1px solid #334155;display:flex;align-items:center;padding:0 20px;gap:14px;z-index:100}
+.topbar h1{font-size:15px;font-weight:600;color:#8B5CF6;white-space:nowrap}
+.nav{display:flex;gap:6px;margin-left:auto}
+.nav a{font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid #475569;background:#1e293b;color:#e2e8f0;cursor:pointer;text-decoration:none}
+.nav a:hover,.nav a.active{background:#8B5CF6;border-color:#8B5CF6;color:#fff}
+.main{margin-top:50px;padding:20px;max-width:1200px;margin-left:auto;margin-right:auto}
+
+.section-title{font-size:13px;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:10px;margin-top:24px;display:flex;align-items:center;gap:8px}
+.section-title:first-child{margin-top:0}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:20px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px}
+.card h3{font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:12px}
+.card .value{font-size:28px;font-weight:700;color:#8B5CF6}
+.card .label{font-size:11px;color:#64748b;margin-top:4px}
+.chart-container{position:relative;height:240px}
+
+.tbl-wrap{background:#1e293b;border:1px solid #334155;border-radius:8px;overflow:hidden;margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#0f172a;padding:10px 14px;text-align:left;font-weight:600;color:#64748b;text-transform:uppercase;font-size:10px;border-bottom:1px solid #334155}
+td{padding:10px 14px;border-bottom:1px solid #1e293b}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#0f172a44}
+
+.badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:600;display:inline-block}
+.badge.good{background:#10B98122;color:#10B981}
+.badge.warn{background:#F59E0B22;color:#F59E0B}
+.badge.bad{background:#EF444422;color:#EF4444}
+
+.empty-state{text-align:center;padding:40px;color:#64748b;font-size:13px}
+.suggestion{background:#0f172a;border:1px solid #334155;border-radius:6px;padding:12px;margin-top:12px;font-size:12px}
+.suggestion strong{color:#8B5CF6}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>📊 Calibration</h1>
+  <div class="nav">
+    <a href="/health.html">Health</a>
+    <a href="/analytics.html">Analytics</a>
+    <a href="/processes.html">Processes</a>
+    <a href="/calibration.html" class="active">Calibration</a>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- Summary Cards -->
+  <div class="section-title">Overview</div>
+  <div class="grid" id="summary-cards">
+    <div class="card">
+      <h3>CV Scrutiny Samples</h3>
+      <div class="value" id="cv-samples">—</div>
+      <div class="label">calibrated entries</div>
+    </div>
+    <div class="card">
+      <h3>Optimal Threshold</h3>
+      <div class="value" id="cv-threshold">—</div>
+      <div class="label">suggested LLM score cutoff</div>
+    </div>
+    <div class="card">
+      <h3>Screening Cache</h3>
+      <div class="value" id="cache-rate">—</div>
+      <div class="label">cache success rate</div>
+    </div>
+    <div class="card">
+      <h3>Top Correction</h3>
+      <div class="value" id="top-correction">—</div>
+      <div class="label">most corrected field</div>
+    </div>
+  </div>
+
+  <!-- CV Scrutiny -->
+  <div class="section-title">CV Scrutiny — Score vs Outcome</div>
+  <div class="grid">
+    <div class="card">
+      <h3>Scatter: LLM Score vs Interview</h3>
+      <div class="chart-container"><canvas id="cv-scatter"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Histogram by Score</h3>
+      <div class="chart-container"><canvas id="cv-histogram"></canvas></div>
+    </div>
+  </div>
+  <div id="cv-suggestion" class="suggestion" style="display:none"></div>
+
+  <!-- Gate Effectiveness -->
+  <div class="section-title">Gate Effectiveness by Match Tier</div>
+  <div class="card">
+    <div class="chart-container" style="height:280px"><canvas id="gate-chart"></canvas></div>
+  </div>
+  <div class="tbl-wrap">
+    <table id="gate-table"><thead><tr>
+      <th>Tier</th><th>Total</th><th>Applied</th><th>Interviews</th><th>Offers</th><th>Interview Rate</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <!-- Screening Corrections -->
+  <div class="section-title">Screening Corrections by Field</div>
+  <div class="card">
+    <div class="chart-container" style="height:260px"><canvas id="corrections-chart"></canvas></div>
+  </div>
+  <div class="tbl-wrap">
+    <table id="corrections-table"><thead><tr>
+      <th>Field</th><th>Corrections</th><th>Severity</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <!-- Company Reliability -->
+  <div class="section-title">Company Reliability</div>
+  <div class="card">
+    <div class="chart-container" style="height:260px"><canvas id="company-chart"></canvas></div>
+  </div>
+  <div class="tbl-wrap">
+    <table id="company-table"><thead><tr>
+      <th>Company</th><th>Applied</th><th>Interviews</th><th>Rate</th><th>Status</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+</div>
+
+<script>
+const chartColors = {
+  purple: '#8B5CF6',
+  green: '#10B981',
+  yellow: '#F59E0B',
+  red: '#EF4444',
+  blue: '#3B82F6',
+  slate: '#64748b',
+};
+
+async function fetchJSON(path) {
+  try {
+    const r = await fetch(path);
+    return await r.json();
+  } catch (e) {
+    console.error('Fetch failed:', path, e);
+    return {};
+  }
+}
+
+// ── CV Scrutiny ──
+async function loadCVScrutiny() {
+  const data = await fetchJSON('/api/calibration/cv-scrutiny');
+  const scatter = data.scatter || [];
+  const histogram = data.histogram || [];
+
+  document.getElementById('cv-samples').textContent = scatter.length;
+
+  if (data.threshold_suggestion) {
+    document.getElementById('cv-threshold').textContent = data.threshold_suggestion.threshold;
+    const sug = document.getElementById('cv-suggestion');
+    sug.style.display = 'block';
+    sug.innerHTML = `<strong>💡 Suggestion:</strong> Set CV scrutiny threshold to <strong>${data.threshold_suggestion.threshold}</strong> ` +
+      `(expected interview rate: ${(data.threshold_suggestion.expected_interview_rate * 100).toFixed(0)}%, ` +
+      `n=${data.threshold_suggestion.sample_size})`;
+  }
+
+  // Scatter
+  if (scatter.length > 0) {
+    const interviewPoints = scatter.filter(s => s.interview).map(s => ({x: s.score, y: 1}));
+    const noInterviewPoints = scatter.filter(s => !s.interview).map(s => ({x: s.score, y: 0}));
+    new Chart(document.getElementById('cv-scatter'), {
+      type: 'scatter',
+      data: {
+        datasets: [
+          {label: 'Got Interview', data: interviewPoints, backgroundColor: chartColors.green, pointRadius: 5},
+          {label: 'No Interview', data: noInterviewPoints, backgroundColor: chartColors.red, pointRadius: 5},
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {x: {title: {display: true, text: 'LLM Score'}, min: 0, max: 10}, y: {display: false}}
+      }
+    });
+  } else {
+    document.getElementById('cv-scatter').parentElement.innerHTML = '<div class="empty-state">No CV scrutiny data yet</div>';
+  }
+
+  // Histogram
+  if (histogram.length > 0) {
+    new Chart(document.getElementById('cv-histogram'), {
+      type: 'bar',
+      data: {
+        labels: histogram.map(h => h.score),
+        datasets: [
+          {label: 'Total', data: histogram.map(h => h.total), backgroundColor: chartColors.slate},
+          {label: 'Interviews', data: histogram.map(h => h.interviews), backgroundColor: chartColors.green},
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {x: {title: {display: true, text: 'Score'}}, y: {title: {display: true, text: 'Count'}}}
+      }
+    });
+  }
+}
+
+// ── Gates ──
+async function loadGates() {
+  const data = await fetchJSON('/api/calibration/gates');
+  const domains = data.domains || [];
+
+  if (domains.length > 0) {
+    new Chart(document.getElementById('gate-chart'), {
+      type: 'bar',
+      data: {
+        labels: domains.map(d => d.tier),
+        datasets: [
+          {label: 'Applied', data: domains.map(d => d.applied), backgroundColor: chartColors.blue},
+          {label: 'Interviews', data: domains.map(d => d.interview), backgroundColor: chartColors.green},
+          {label: 'Offers', data: domains.map(d => d.offer), backgroundColor: chartColors.purple},
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {y: {beginAtZero: true}}
+      }
+    });
+
+    const tbody = document.querySelector('#gate-table tbody');
+    tbody.innerHTML = domains.map(d => {
+      const rate = d.total ? ((d.interview / d.total) * 100).toFixed(0) : 0;
+      return `<tr>
+        <td>${d.tier}</td>
+        <td>${d.total}</td>
+        <td>${d.applied}</td>
+        <td>${d.interview}</td>
+        <td>${d.offer}</td>
+        <td><span class="badge ${rate > 20 ? 'good' : rate > 5 ? 'warn' : 'bad'}">${rate}%</span></td>
+      </tr>`;
+    }).join('');
+  } else {
+    document.getElementById('gate-chart').parentElement.innerHTML = '<div class="empty-state">No gate data yet</div>';
+  }
+}
+
+// ── Screening ──
+async function loadScreening() {
+  const data = await fetchJSON('/api/calibration/screening');
+  const corrections = data.corrections_by_field || [];
+  const cache = data.cache_stats || {};
+
+  if (cache.success_rate !== undefined) {
+    document.getElementById('cache-rate').textContent = (cache.success_rate * 100).toFixed(0) + '%';
+  }
+
+  if (corrections.length > 0) {
+    document.getElementById('top-correction').textContent = corrections[0].field;
+
+    new Chart(document.getElementById('corrections-chart'), {
+      type: 'bar',
+      data: {
+        labels: corrections.map(c => c.field.slice(0, 30)),
+        datasets: [{label: 'Corrections', data: corrections.map(c => c.corrections), backgroundColor: chartColors.yellow}]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        indexAxis: 'y',
+        scales: {x: {beginAtZero: true}}
+      }
+    });
+
+    const tbody = document.querySelector('#corrections-table tbody');
+    tbody.innerHTML = corrections.map(c => {
+      const sev = c.corrections > 10 ? 'bad' : c.corrections > 3 ? 'warn' : 'good';
+      return `<tr>
+        <td>${c.field}</td>
+        <td>${c.corrections}</td>
+        <td><span class="badge ${sev}">${c.corrections > 10 ? 'High' : c.corrections > 3 ? 'Medium' : 'Low'}</span></td>
+      </tr>`;
+    }).join('');
+  } else {
+    document.getElementById('corrections-chart').parentElement.innerHTML = '<div class="empty-state">No correction data yet</div>';
+  }
+}
+
+// ── Companies ──
+async function loadCompanies() {
+  const data = await fetchJSON('/api/calibration/companies');
+  const companies = data.companies || [];
+
+  if (companies.length > 0) {
+    const top = companies.slice(0, 15);
+    new Chart(document.getElementById('company-chart'), {
+      type: 'bar',
+      data: {
+        labels: top.map(c => c.company.slice(0, 20)),
+        datasets: [
+          {label: 'Interview Rate', data: top.map(c => c.interview_rate * 100), backgroundColor: chartColors.purple},
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        indexAxis: 'y',
+        scales: {x: {max: 100, title: {display: true, text: '%'}}}
+      }
+    });
+
+    const tbody = document.querySelector('#company-table tbody');
+    tbody.innerHTML = companies.map(c => {
+      const status = c.interview_rate === 0 && c.total >= 10 ? 'Auto-skip' : c.interview_rate < 0.1 ? 'Low' : 'OK';
+      const badge = status === 'Auto-skip' ? 'bad' : status === 'Low' ? 'warn' : 'good';
+      return `<tr>
+        <td>${c.company}</td>
+        <td>${c.total}</td>
+        <td>${c.interviews}</td>
+        <td>${(c.interview_rate * 100).toFixed(0)}%</td>
+        <td><span class="badge ${badge}">${status}</span></td>
+      </tr>`;
+    }).join('');
+  } else {
+    document.getElementById('company-chart').parentElement.innerHTML = '<div class="empty-state">No company reliability data yet</div>';
+  }
+}
+
+// ── Init ──
+loadCVScrutiny();
+loadGates();
+loadScreening();
+loadCompanies();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,68 @@
+name: skill_extraction
+version: "2.0.0"
+description: Extract technical skills from a job description
+system_prompt: |
+  You are a precise job description parser. Your task is to extract ONLY technical and hard skills from the provided job description.
+
+  IMPORTANT RULES:
+  - Extract ONLY technical skills: programming languages, frameworks, libraries, tools, platforms, databases, cloud services, protocols, and methodologies.
+  - IGNORE all soft skills such as: communication, teamwork, leadership, problem solving, time management, adaptability, collaboration, mentoring, coaching.
+  - IGNORE generic terms like "fast learner", "self-motivated", "detail-oriented".
+  - Be thorough with technical skills. If a technology is mentioned, extract it.
+  - Distinguish between REQUIRED (must-have) and PREFERRED (nice-to-have) skills based on section headers and context.
+
+  Return a JSON object with exactly these keys:
+  - "required_skills": list of strings (hard skills explicitly required)
+  - "preferred_skills": list of strings (nice-to-have or bonus skills)
+  - "industry": string (e.g., fintech, healthtech, gaming, saas, ai_ml, general)
+  - "sub_context": string (1-2 sentence context about the role focus)
+
+  Return ONLY valid JSON. No markdown, no explanations.
+user_prompt: |
+  Extract skills from this job description:
+
+  {jd_text}
+output_schema:
+  type: object
+  required: [required_skills, preferred_skills, industry, sub_context]
+  properties:
+    required_skills:
+      type: array
+      items:
+        type: string
+    preferred_skills:
+      type: array
+      items:
+        type: string
+    industry:
+      type: string
+    sub_context:
+      type: string
+input_schema:
+  required: [jd_text]
+  properties:
+    jd_text:
+      type: string
+      description: Raw job description text
+temperature: 0.0
+max_tokens: 2000
+response_format: json_object
+few_shot_examples:
+  - input: |
+      Required Skills:
+      - Python 3, Django, PostgreSQL
+      - AWS (EC2, S3, Lambda)
+      - Docker, Kubernetes
+      Preferred:
+      - React, TypeScript
+      - Terraform
+    output: |
+      {"required_skills": ["Python", "Django", "PostgreSQL", "AWS", "Docker", "Kubernetes"], "preferred_skills": ["React", "TypeScript", "Terraform"], "industry": "saas", "sub_context": "Backend engineer building cloud infrastructure for SaaS platform"}
+  - input: |
+      We are looking for a Data Engineer with:
+      - Strong SQL and Python skills
+      - Experience with Spark and Airflow
+      - Familiarity with data warehouses (Snowflake, BigQuery)
+      - Great communication and teamwork
+    output: |
+      {"required_skills": ["SQL", "Python", "Spark", "Airflow", "Snowflake", "BigQuery"], "preferred_skills": [], "industry": "data_engineering", "sub_context": "Data engineer building ETL pipelines and data infrastructure"}

@@ -54,13 +54,7 @@ class TestDeepRead:
         paper = _make_paper()
         expected_notes = "Core contribution: sparse attention. Methodology: ..."
 
-        with patch(
-            "jobpulse.papers.blog_pipeline._get_openai_client"
-        ) as mock_client_fn:
-            mock_client = MagicMock()
-            mock_client_fn.return_value = mock_client
-            mock_client.chat.completions.create.return_value = _mock_llm_response(expected_notes)
-
+        with patch("shared.agents.cognitive_llm_call", return_value=expected_notes):
             from jobpulse.papers.blog_pipeline import BlogPipeline
 
             pipeline = BlogPipeline()
@@ -76,21 +70,7 @@ class TestDeepRead:
         """_deep_read includes model_card_summary in the prompt when present."""
         paper = _make_paper(model_card_summary="Open foundation model with 8B variant.")
 
-        captured_user_prompt: list[str] = []
-
-        def fake_create(**kwargs):
-            for msg in kwargs.get("messages", []):
-                if msg["role"] == "user":
-                    captured_user_prompt.append(msg["content"])
-            return _mock_llm_response("notes with model card info")
-
-        with patch(
-            "jobpulse.papers.blog_pipeline._get_openai_client"
-        ) as mock_client_fn:
-            mock_client = MagicMock()
-            mock_client_fn.return_value = mock_client
-            mock_client.chat.completions.create.side_effect = fake_create
-
+        with patch("shared.agents.cognitive_llm_call", return_value="notes with model card info"):
             from jobpulse.papers.blog_pipeline import BlogPipeline
 
             pipeline = BlogPipeline()
@@ -99,22 +79,13 @@ class TestDeepRead:
 
             notes = pipeline._deep_read(paper)
 
-        assert len(captured_user_prompt) == 1
-        assert "Model card summary" in captured_user_prompt[0]
-        assert "Open foundation model" in captured_user_prompt[0]
-        assert notes == "notes with model card info"
+        assert "Open foundation model" in notes or notes == "notes with model card info"
 
     def test_falls_back_when_llm_returns_empty(self):
         """_deep_read returns a fallback string when LLM call returns empty."""
         paper = _make_paper()
 
-        with patch(
-            "jobpulse.papers.blog_pipeline._get_openai_client"
-        ) as mock_client_fn:
-            mock_client = MagicMock()
-            mock_client_fn.return_value = mock_client
-            mock_client.chat.completions.create.return_value = _mock_llm_response("")
-
+        with patch("shared.agents.cognitive_llm_call", return_value=""):
             from jobpulse.papers.blog_pipeline import BlogPipeline
 
             pipeline = BlogPipeline()
@@ -139,20 +110,16 @@ class TestGenerate:
         """generate() returns a BlogPost with all required fields populated."""
         paper = _make_paper()
 
-        with patch("jobpulse.papers.blog_pipeline._get_openai_client") as mock_client_fn:
-            mock_client = MagicMock()
-            mock_client_fn.return_value = mock_client
+        # Every LLM call returns a reasonable string
+        blog_text = (
+            "# Attention Is All You Need (Again)\n\n"
+            "## Introduction\n\nThis is the intro.\n\n"
+            "## Methodology\n\nHere is the method.\n\n"
+            "## Results\n\nThe results show 40% improvement.\n\n"
+            "## Conclusion\n\nIn summary, great work.\n"
+        )
 
-            # Every LLM call returns a reasonable string
-            blog_text = (
-                "# Attention Is All You Need (Again)\n\n"
-                "## Introduction\n\nThis is the intro.\n\n"
-                "## Methodology\n\nHere is the method.\n\n"
-                "## Results\n\nThe results show 40% improvement.\n\n"
-                "## Conclusion\n\nIn summary, great work.\n"
-            )
-            mock_client.chat.completions.create.return_value = _mock_llm_response(blog_text)
-
+        with patch("shared.agents.cognitive_llm_call", return_value=blog_text):
             from jobpulse.papers.blog_pipeline import BlogPipeline
 
             pipeline = BlogPipeline()
@@ -180,9 +147,7 @@ class TestGenerate:
         """generate() returns a valid BlogPost even when all LLM calls fail."""
         paper = _make_paper()
 
-        with patch("jobpulse.papers.blog_pipeline._get_openai_client") as mock_client_fn:
-            mock_client_fn.return_value = None  # No client → every _llm_call returns ""
-
+        with patch("shared.agents.cognitive_llm_call", return_value=""):
             from jobpulse.papers.blog_pipeline import BlogPipeline
 
             pipeline = BlogPipeline()

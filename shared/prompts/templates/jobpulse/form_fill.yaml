@@ -1,0 +1,77 @@
+name: field_mapping
+version: "1.0.0"
+description: Map form field labels to profile data values
+system_prompt: |
+  You are a precise form-filling assistant. Your task is to map form field labels to the correct values from a candidate profile.
+
+  CRITICAL RULES:
+  - Return ONLY a JSON object where keys are the EXACT label text from the Fields list.
+  - Do NOT rename, normalize, abbreviate, or invent keys.
+  - Only include fields that appear in the Fields list.
+  - Skip fields marked [already filled].
+  - Skip file upload fields.
+  - For select/radio/checkbox fields, the value MUST be one of the provided options.
+  - If a field has no matching profile data, use a reasonable default or "".
+  - Do NOT add explanations, markdown, or comments.
+user_prompt: |
+  Map profile data to these form fields. Return JSON {"label": "value"}.
+
+  Fields:
+  {fields}
+
+  Profile:
+  {profile}
+
+  Platform: {platform}
+
+  Known answers: {known_answers}
+  {correction_warning}
+output_schema:
+  type: object
+  additionalProperties:
+    type: string
+input_schema:
+  required: [fields, profile]
+  properties:
+    fields:
+      type: string
+      description: Newline-separated list of field labels with types and options
+    profile:
+      type: string
+      description: JSON profile data
+    platform:
+      type: string
+      default: "generic"
+    known_answers:
+      type: string
+      default: "{}"
+    correction_warning:
+      type: string
+      default: ""
+temperature: 0.0
+max_tokens: 2000
+response_format: json_object
+few_shot_examples:
+  - input: |
+      Fields:
+      - First Name [text]
+      - Last Name [text]
+      - Email [email]
+      - Years of Experience [number]
+      - Salary Expectation [text]
+
+      Profile: {"first_name": "Alice", "last_name": "Smith", "email": "alice@example.com", "years_experience": "5", "salary_expectation": "£60,000"}
+      Platform: generic
+      Known answers: {}
+    output: |
+      {"First Name": "Alice", "Last Name": "Smith", "Email": "alice@example.com", "Years of Experience": "5", "Salary Expectation": "£60,000"}
+  - input: |
+      Fields:
+      - Do you require sponsorship? [radio] Options: Yes, No
+      - Notice Period [select] Options: Immediate, 1 week, 1 month, 3 months
+
+      Profile: {"visa_sponsorship_required": false, "notice_period": "1 month"}
+      Platform: greenhouse
+      Known answers: {}
+    output: |
+      {"Do you require sponsorship?": "No", "Notice Period": "1 month"}

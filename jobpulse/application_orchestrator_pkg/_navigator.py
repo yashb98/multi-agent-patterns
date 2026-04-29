@@ -9,13 +9,60 @@ import asyncio
 import re
 from typing import Any
 
+from dataclasses import dataclass
+
 from shared.logging_config import get_logger
 
 from jobpulse.form_models import PageType
+from jobpulse.cookie_dismisser import dismiss_cookie_banner_playwright
+from jobpulse.navigation.overlay_dismisser import OverlayDismisser
+from jobpulse.navigation.wait_conditions import wait_for_modal_open, wait_for_page_stable
 
 logger = get_logger(__name__)
 
 MAX_NAVIGATION_STEPS = 10
+
+
+@dataclass
+class ApplyButtonPatterns:
+    """Single source of truth for apply-button text patterns."""
+
+    primary: tuple[str, ...] = (
+        "easy apply", "apply now", "apply for this job", "start application",
+        "apply on company website", "apply for this",
+    )
+    secondary: tuple[str, ...] = (
+        "i'm interested", "submit interest", "begin application", "apply",
+    )
+    exclude: tuple[str, ...] = (
+        "submit application", "submit my application", "save",
+    )
+
+
+def score_apply_button(text: str) -> float:
+    """Score a button text for how likely it is an apply button.
+
+    Returns 0.0-1.0. Higher = stronger apply signal.
+    """
+    lower = text.lower().strip()
+    patterns = ApplyButtonPatterns()
+
+    for pat in patterns.exclude:
+        if pat in lower:
+            return 0.0
+
+    for pat in patterns.primary:
+        if pat in lower:
+            return 1.0
+
+    for pat in patterns.secondary:
+        if pat in lower:
+            return 0.7
+
+    if "apply" in lower:
+        return 0.4
+
+    return 0.0
 
 
 class FormNavigator:
@@ -51,6 +98,12 @@ class FormNavigator:
             return snapshot.model_dump()
         return snapshot
 
+    @staticmethod
+    async def _dismiss_linkedin_discard(page) -> bool:
+        """Dismiss LinkedIn 'Save this application?' overlay — delegates to OverlayDismisser."""
+        dismisser = OverlayDismisser(page)
+        return await dismisser.dismiss_linkedin_discard()
+
     async def navigate_to_form(
         self, url: str, platform: str, steps: list[dict],
         skip_initial_navigate: bool = False,
@@ -61,16 +114,32 @@ class FormNavigator:
         page and injected the snapshot into the bridge cache — we skip the
         initial ``bridge.navigate(url)`` to avoid a redundant MV3 restart.
         """
+        # If LinkedIn Easy Apply modal is already open, skip ALL navigation to avoid
+        # triggering LinkedIn's "Save this application?" dialog.
+        # Only check on LinkedIn pages — generic dialog selectors cause false positives.
+        current_page = getattr(self.driver, "page", None)
+        if current_page is not None:
+            try:
+                page_url = current_page.url or ""
+                if "linkedin.com" in page_url:
+                    modal = current_page.locator('.jobs-easy-apply-modal, [data-test-modal-id="easy-apply-modal"]')
+                    if await modal.count():
+                        logger.info("Easy Apply modal already open — skipping initial navigation")
+                        snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                        return {"page_type": PageType.APPLICATION_FORM, "snapshot": snapshot}
+            except Exception:
+                pass
+
         if not skip_initial_navigate:
             try:
                 await self.driver.navigate(url)
             except (TimeoutError, ConnectionError):
                 logger.info("Navigate lost (MV3 restart) — waiting for extension to reconnect")
-                await asyncio.sleep(5)
+                await wait_for_page_stable(self.driver.page, timeout_ms=8000)
         snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
         if not snapshot or not snapshot.get("url"):
             # Still no snapshot — wait longer
-            await asyncio.sleep(5)
+            await wait_for_page_stable(self.driver.page, timeout_ms=8000)
             snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 
         # Try learned sequence first
@@ -128,8 +197,11 @@ class FormNavigator:
                 logger.info("Replay completed but page_type=%s — continuing with fresh detection", page_type_after)
                 self.learner.mark_failed(domain)
 
-        # Dismiss cookie banner
+        # Dismiss cookie banner (snapshot-based + Playwright-native belt-and-suspenders)
         await self.cookie_dismisser.dismiss(snapshot)
+        current_page = getattr(self.driver, "page", None)
+        if current_page is not None:
+            await dismiss_cookie_banner_playwright(current_page)
         snapshot = self._as_dict(await self.driver.get_snapshot())
 
         apply_attempts = 0
@@ -228,52 +300,77 @@ class FormNavigator:
 
             # Dismiss any new cookie banners after navigation
             await self.cookie_dismisser.dismiss(snapshot)
+            current_page = getattr(self.driver, "page", None)
+            if current_page is not None:
+                await dismiss_cookie_banner_playwright(current_page)
             snapshot = self._as_dict(await self.driver.get_snapshot())
 
         return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
     async def click_apply_button(self, snapshot: dict) -> dict:
-        apply_pattern = re.compile(
-            r"(easy\s*apply|apply\W*(now|for\s*this|on\s*company)?"
-            r"|start\s*application"
-            r"|i.?m\s*interested|submit\s*interest)",
-            re.IGNORECASE,
-        )
-        # "Submit Application" is the FORM submit — never click it during navigation
-        submit_pattern = re.compile(r"submit\s*(my\s*)?application", re.IGNORECASE)
-
         buttons = snapshot.get("buttons", [])
         button_texts = [b.get("text", "")[:60] for b in buttons]
         logger.info("Apply button search: %d buttons found — %s", len(buttons), button_texts[:10])
 
-        # Find apply buttons — collect all matches, prefer ones with href
-        # Reject long text (>50 chars) — those are info labels, not buttons
-        # Never match "Submit Application" — that's the form submit, not apply start
-        apply_matches = []
+        # Score all buttons using unified scoring
+        scored: list[tuple[float, dict]] = []
         for btn in buttons:
             text = btn.get("text", "")
             if btn.get("enabled") is False:
                 continue
-            if text.strip().lower() == "save":
-                continue
             if len(text) > 50:
                 continue
-            if submit_pattern.search(text):
-                continue
-            if apply_pattern.search(text):
-                apply_matches.append(btn)
+            score = score_apply_button(text)
+            if score > 0:
+                scored.append((score, btn))
 
-        if not apply_matches:
-            logger.warning("No apply button found in snapshot")
+        if not scored:
+            logger.warning("No apply button found in snapshot — trying Playwright locator fallback")
+            current_page = getattr(self.driver, "page", None)
+            if current_page is not None:
+                for text_pattern in ("Apply now", "Apply for this job", "Start application", "Apply"):
+                    try:
+                        loc = current_page.get_by_role("link", name=text_pattern, exact=False).first
+                        if await loc.count() and await loc.is_visible():
+                            logger.info("Playwright fallback: clicking link '%s'", text_pattern)
+                            await loc.click()
+                            await wait_for_page_stable(current_page, timeout_ms=8000)
+                            return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                    except Exception:
+                        pass
+                    try:
+                        loc = current_page.get_by_role("button", name=text_pattern, exact=False).first
+                        if await loc.count() and await loc.is_visible():
+                            logger.info("Playwright fallback: clicking button '%s'", text_pattern)
+                            await loc.click()
+                            await wait_for_page_stable(current_page, timeout_ms=8000)
+                            return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                    except Exception:
+                        pass
             return snapshot
 
-        # Rank matches: "Easy Apply" / "Apply Now" are strongest signals,
-        # weaker matches like "I'm interested" only used as last resort.
-        strong_pattern = re.compile(r"easy\s*apply|apply\s*(now|for)", re.IGNORECASE)
-        strong = [b for b in apply_matches if strong_pattern.search(b.get("text", ""))]
-        ranked = strong if strong else apply_matches
+        # Rank by score descending
+        scored.sort(key=lambda x: x[0], reverse=True)
+        ranked = [btn for _, btn in scored]
 
         current_page = getattr(self.driver, "page", None)
+
+        # If LinkedIn Easy Apply modal is already open (from a previous attempt),
+        # skip navigation — going to a URL while the modal is open triggers
+        # LinkedIn's "Save this application?" dialog.
+        # Only check on LinkedIn pages — generic [role="dialog"] matches cookie
+        # consent dialogs on external ATS sites, causing false positives.
+        if current_page is not None:
+            try:
+                page_url = current_page.url or ""
+                if "linkedin.com" in page_url:
+                    modal = current_page.locator('.jobs-easy-apply-modal, [data-test-modal-id="easy-apply-modal"]')
+                    if await modal.count():
+                        logger.info("Easy Apply modal already open — skipping navigation")
+                        return self._as_dict(await self.driver.get_snapshot())
+            except Exception:
+                pass
+
         before_pages = []
         if current_page is not None:
             with_pages = getattr(current_page, "context", None)
@@ -287,7 +384,13 @@ class FormNavigator:
             if href and href.startswith("http") and "linkedin.com/safety/go" not in href:
                 logger.info("Apply link found: '%s' → navigating to %s", btn["text"][:40], href[:100])
                 await self.driver.navigate(href)
-                await asyncio.sleep(3)
+                await wait_for_page_stable(current_page or self.driver.page, timeout_ms=8000)
+                if current_page is not None:
+                    # LinkedIn draft dialog may take time to render — try twice
+                    dismissed = await self._dismiss_linkedin_discard(current_page)
+                    if not dismissed:
+                        await wait_for_modal_open(current_page, timeout_ms=2000)
+                        await self._dismiss_linkedin_discard(current_page)
                 return self._as_dict(await self.driver.get_snapshot())
 
         # Fallback: click the button directly (Easy Apply modals, non-link buttons)
@@ -329,20 +432,13 @@ class FormNavigator:
             except Exception as e:
                 logger.debug("Force click also failed: %s", e)
 
-        # Wait for modal or new form fields (max 8s, 0.5s intervals)
-        modal_found = False
-        for _ in range(16):
-            try:
-                dialog = self.driver.page.locator('[role="dialog"], [aria-modal="true"]')
-                if await dialog.count():
-                    modal_found = True
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
-
+        # Wait for modal or new form fields
+        modal_found = await wait_for_modal_open(self.driver.page, timeout_ms=8000)
         if not modal_found:
-            await asyncio.sleep(1)  # brief fallback wait
+            await wait_for_page_stable(self.driver.page, timeout_ms=3000)
+
+        if current_page is not None:
+            await self._dismiss_linkedin_discard(current_page)
 
         # Follow external applications that open in a new tab/window.
         if current_page is not None:
@@ -362,7 +458,7 @@ class FormNavigator:
 
     async def verify_submission(self) -> dict:
         """Wait for and verify the confirmation page after submit click."""
-        await asyncio.sleep(3.0)
+        await wait_for_page_stable(self.driver.page, timeout_ms=5000)
         snapshot = await self.driver.get_snapshot(force_refresh=True)
         if not snapshot:
             return {"verified": False, "reason": "no_snapshot"}
@@ -417,8 +513,14 @@ def _extract_loop_domain(url: str) -> str:
 
 
 def find_apply_button(snapshot: dict) -> dict | None:
-    pattern = re.compile(r"(apply|start\s*application|begin|submit\s*interest)", re.IGNORECASE)
+    """Find the best apply button in a snapshot using unified scoring."""
+    best: dict | None = None
+    best_score = 0.0
     for btn in snapshot.get("buttons", []):
-        if btn.get("enabled") and pattern.search(btn.get("text", "")):
-            return btn
-    return None
+        if not btn.get("enabled"):
+            continue
+        score = score_apply_button(btn.get("text", ""))
+        if score > best_score:
+            best_score = score
+            best = btn
+    return best if best_score >= 0.4 else None

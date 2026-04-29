@@ -7,7 +7,7 @@ from shared.adversarial._eval_runner import EvalRunner
 def main():
     quick = "--quick" in sys.argv
     runner = EvalRunner()
-    report = runner.run(quick=quick)
+    report = runner.run_nightly() if "--nightly" in sys.argv else runner.run(quick=quick)
     print(f"\nAdversarial Evaluation Report")
     print(f"{'=' * 40}")
     print(f"Total: {report.total}  Passed: {report.passed}  Failed: {report.failed}")

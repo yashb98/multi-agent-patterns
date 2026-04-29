@@ -166,3 +166,53 @@ def test_atomic_sqlite_rolls_back_on_exception(tmp_path):
     with sqlite3.connect(db_path) as conn:
         row = conn.execute("SELECT COUNT(*) FROM t").fetchone()
         assert row == (0,)
+
+
+# ---------------------------------------------------------------------------
+# Tests for safe_openai_call cost tracking
+# ---------------------------------------------------------------------------
+
+
+def test_safe_openai_call_records_cost(monkeypatch, tmp_path):
+    """safe_openai_call should record cost after successful API call."""
+    monkeypatch.setenv("LLM_USAGE_DB", str(tmp_path / "llm_usage.db"))
+
+    from shared.logging_config import set_run_id, set_trajectory_id, clear_trajectory_id
+    set_run_id("run_safe_cost")
+    set_trajectory_id("traj_safe_cost")
+
+    from jobpulse.utils.safe_io import safe_openai_call
+
+    mock_usage = MagicMock()
+    mock_usage.prompt_tokens = 100
+    mock_usage.completion_tokens = 30
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = "LLM response text"
+    mock_response.usage = mock_usage
+    mock_response.model = "gpt-4o-mini-2024-07-18"
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    try:
+        result = safe_openai_call(
+            mock_client,
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "test"}],
+            caller="gate4_scrutiny",
+        )
+    finally:
+        clear_trajectory_id()
+
+    assert result == "LLM response text"
+
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "llm_usage.db"))
+    row = conn.execute("SELECT agent_name, prompt_tokens, completion_tokens FROM llm_calls ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == "gate4_scrutiny"
+    assert row[1] == 100
+    assert row[2] == 30

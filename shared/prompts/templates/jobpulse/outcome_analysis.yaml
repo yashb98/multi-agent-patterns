@@ -1,0 +1,105 @@
+name: outcome_analysis
+version: "1.0.0"
+description: Classify rejection reasons from application outcomes
+system_prompt: |
+  You analyze job application outcomes to identify patterns and actionable insights.
+
+  Given an application outcome and any feedback received, classify the primary blocker and generate specific recommendations for improvement.
+
+  Blocker categories:
+  - "skill_gap" — missing required technical skills
+  - "experience_mismatch" — years of experience too low/high
+  - "salary_mismatch" — compensation expectations misaligned
+  - "visa_issue" — work authorization or sponsorship problem
+  - "location_issue" — relocation or remote work mismatch
+  - "competition" — strong candidate pool, not selected
+  - "ghosted" — no response after application
+  - "generic_rejection" — standard "we chose another candidate" with no detail
+  - "unclear" — insufficient information to determine
+
+  Return JSON with:
+  - "blocker": string (one of the categories above)
+  - "confidence": float 0.0-1.0
+  - "skill_gaps": list of strings (specific skills mentioned or implied)
+  - "recommendations": list of strings (concrete, actionable next steps)
+  - "escalate": boolean (true if this reveals a systemic issue)
+user_prompt: |
+  Job Title: {job_title}
+  Company: {company}
+  ATS Score: {ats_score}
+  Match Tier: {match_tier}
+  Applied: {applied_at}
+  Outcome: {outcome}
+  Feedback: {feedback}
+  Stage Reached: {stage_reached}
+  Days to Response: {days_to_response}
+output_schema:
+  type: object
+  required: [blocker, confidence, skill_gaps, recommendations, escalate]
+  properties:
+    blocker:
+      type: string
+    confidence:
+      type: number
+    skill_gaps:
+      type: array
+      items:
+        type: string
+    recommendations:
+      type: array
+      items:
+        type: string
+    escalate:
+      type: boolean
+input_schema:
+  required: [job_title, company, outcome]
+  properties:
+    job_title:
+      type: string
+    company:
+      type: string
+    ats_score:
+      type: number
+    match_tier:
+      type: string
+    applied_at:
+      type: string
+    outcome:
+      type: string
+    feedback:
+      type: string
+      default: ""
+    stage_reached:
+      type: string
+      default: ""
+    days_to_response:
+      type: number
+      default: 0
+temperature: 0.2
+max_tokens: 1000
+response_format: json_object
+few_shot_examples:
+  - input: |
+      Job Title: Senior ML Engineer
+      Company: DeepMind
+      ATS Score: 88
+      Match Tier: review
+      Applied: 2026-04-01
+      Outcome: Rejected
+      Feedback: "We were impressed by your background but have decided to proceed with candidates who have more production experience with large-scale model serving."
+      Stage Reached: Phone screen
+      Days to Response: 14
+    output: |
+      {"blocker": "skill_gap", "confidence": 0.9, "skill_gaps": ["large-scale model serving", "production ML systems"], "recommendations": ["Add a project demonstrating model serving at scale (e.g., TensorFlow Serving, TorchServe)", "Highlight any production ML deployment experience in CV"], "escalate": false}
+  - input: |
+      Job Title: Junior Developer
+      Company: Unknown Ltd
+      ATS Score: 45
+      Match Tier: skip
+      Applied: 2026-04-10
+      Outcome: No response
+      Feedback: ""
+      Stage Reached: Applied
+      Days to Response: 30
+    output: |
+      {"blocker": "ghosted", "confidence": 0.95, "skill_gaps": [], "recommendations": ["Follow up after 7 days", "Consider this a low-priority application"], "escalate": false}

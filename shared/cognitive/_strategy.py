@@ -7,6 +7,16 @@ from shared.cognitive._prompts import COMPOSED_SECTIONS
 
 logger = get_logger(__name__)
 
+_RELATED_DOMAINS: dict[str, list[str]] = {
+    "form_filling": ["screening_answers", "job_application"],
+    "screening_answers": ["form_filling", "job_application"],
+    "job_application": ["form_filling", "screening_answers"],
+    "email_classification": ["intent_classification"],
+    "intent_classification": ["email_classification"],
+    "cv_generation": ["job_application"],
+    "job_scanning": ["job_application"],
+}
+
 STRATEGY_PAYLOAD_KEYS = {
     "agent_name", "trigger", "composable_fragments", "times_used",
     "times_succeeded", "success_rate", "avg_score", "avg_latency_ms",
@@ -45,6 +55,16 @@ class StrategyComposer:
 
         own = [p for p in procs if getattr(p, "source", "") == agent_name]
         cross = [p for p in procs if p not in own]
+
+        # Cross-domain fallback: if own domain has < 3 templates, pull top
+        # templates from related domains (same agent or high success rate)
+        if len(own) + len(cross) < 3 and hasattr(memory_manager, "get_procedural_entries"):
+            for related in _RELATED_DOMAINS.get(domain, []):
+                related_procs = memory_manager.get_procedural_entries(related)
+                for p in related_procs:
+                    if p not in own and p not in cross:
+                        if getattr(p, "success_rate", 0) >= 0.7:
+                            cross.append(p)
 
         def rank_key(p):
             recency = 0.5

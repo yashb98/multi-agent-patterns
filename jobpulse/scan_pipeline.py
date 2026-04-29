@@ -863,3 +863,176 @@ def route_and_apply(
             listing.title, listing.company, ats_score,
         )
         return RouteResult("skipped", listing.job_id, listing.title, listing.company)
+
+
+# ---------------------------------------------------------------------------
+# Manual URL pipeline — bypass time filters, run full pipeline on any URL
+# ---------------------------------------------------------------------------
+
+
+def process_single_url(
+    url: str,
+    platform: str = "generic",
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Run the full pipeline on a single job URL (bypasses scan + time filters).
+
+    Stages: fetch JD → analyze → pre-screen → generate materials → route.
+    Useful for URLs found outside the 24h scan window.
+
+    Args:
+        url: Job listing URL.
+        platform: Platform hint (linkedin, indeed, reed, generic).
+        dry_run: If True, stops before submission.
+
+    Returns:
+        Dict with pipeline results (listing, pre-screen, ats_score, action).
+    """
+    from jobpulse.job_db import JobDB
+    from jobpulse.liveness_checker import check_liveness
+
+    db = JobDB()
+
+    logger.info("process_single_url: starting pipeline for %s", url)
+
+    # 1. Check liveness
+    try:
+        liveness = check_liveness(url)
+        if liveness and liveness.get("expired"):
+            logger.warning("process_single_url: listing appears expired — continuing anyway")
+    except Exception as exc:
+        logger.warning("process_single_url: liveness check failed: %s", exc)
+
+    # 2. Fetch JD text
+    jd_text = ""
+    title = ""
+    company = ""
+    try:
+        import httpx
+
+        with httpx.Client(timeout=20, follow_redirects=True) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200:
+                from bs4 import BeautifulSoup
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                # Try common JD containers
+                for selector in [
+                    ".show-more-less-html__markup",
+                    ".description__text",
+                    "#job-details",
+                    ".jobsearch-JobComponent-description",
+                    '[data-testid="jobDescriptionText"]',
+                    ".job-description",
+                    "article",
+                    "main",
+                ]:
+                    el = soup.select_one(selector)
+                    if el and len(el.get_text(strip=True)) > 100:
+                        jd_text = el.get_text(separator="\n", strip=True)[:5000]
+                        break
+
+                if not jd_text:
+                    jd_text = soup.get_text(separator="\n", strip=True)[:5000]
+
+                title_el = soup.select_one("h1, .job-title, .topcard__title")
+                if title_el:
+                    title = title_el.get_text(strip=True)
+
+                company_el = soup.select_one(
+                    ".topcard__org-name-link, .company-name, "
+                    '[data-testid="inlineHeader-companyName"]'
+                )
+                if company_el:
+                    company = company_el.get_text(strip=True)
+    except Exception as exc:
+        logger.error("process_single_url: failed to fetch JD: %s", exc)
+        return {"status": "error", "message": f"Failed to fetch JD: {exc}"}
+
+    if not jd_text:
+        logger.warning("process_single_url: no JD text extracted — pipeline may underperform")
+
+    # 3. Analyze JD
+    try:
+        listing = analyze_jd(
+            url=url,
+            title=title or "Unknown Role",
+            company=company or "Unknown Company",
+            platform=platform,
+            jd_text=jd_text,
+        )
+    except Exception as exc:
+        logger.error("process_single_url: analyze_jd failed: %s", exc)
+        return {"status": "error", "message": f"JD analysis failed: {exc}"}
+
+    # Check if already processed
+    existing = db.get_by_job_id(listing.job_id)
+    if existing and existing.get("status") in ("Applied", "Submitted"):
+        return {
+            "status": "already_applied",
+            "listing": listing,
+            "message": f"Already applied to {listing.title} @ {listing.company}",
+        }
+
+    db.upsert(listing)
+    logger.info(
+        "process_single_url: analyzed — %s @ %s (%s)",
+        listing.title, listing.company, listing.platform,
+    )
+
+    # 4. Pre-screen (Gates 1-3)
+    sgs = SkillGraphStore()
+    pre_screen = sgs.pre_screen_jd({
+        "required_skills": listing.required_skills,
+        "preferred_skills": listing.preferred_skills,
+        "description_raw": jd_text,
+    })
+
+    logger.info(
+        "process_single_url: pre-screen tier=%s gate1=%s gate2=%s gate3=%.1f%%",
+        pre_screen.tier, pre_screen.gate1_passed, pre_screen.gate2_passed,
+        pre_screen.gate3_score,
+    )
+
+    if pre_screen.tier == "rejected":
+        db.update_status(listing.job_id, "Rejected")
+        return {
+            "status": "rejected",
+            "listing": listing,
+            "pre_screen": pre_screen,
+            "message": f"Pre-screen rejected: {pre_screen.tier}",
+        }
+
+    # 5. Generate materials
+    trail = ProcessTrail()
+    try:
+        bundle = generate_materials(listing, db, trail)
+    except Exception as exc:
+        logger.error("process_single_url: material generation failed: %s", exc)
+        return {
+            "status": "error",
+            "listing": listing,
+            "pre_screen": pre_screen,
+            "message": f"Material generation failed: {exc}",
+        }
+
+    # 6. Route — apply or queue
+    review_batch: list[dict] = []
+    result = route_and_apply(
+        listing=listing,
+        bundle=bundle,
+        db=db,
+        review_batch=review_batch,
+        remaining_cap=10,
+        auto_applied=0,
+    )
+
+    return {
+        "status": result.action,
+        "listing": listing,
+        "pre_screen": pre_screen,
+        "ats_score": bundle.ats_score,
+        "cv_path": str(bundle.cv_path) if bundle.cv_path else None,
+        "result": result,
+        "message": f"{result.action}: {listing.title} @ {listing.company} (ATS {bundle.ats_score:.1f}%)",
+    }

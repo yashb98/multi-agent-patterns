@@ -39,6 +39,14 @@ _FORM_ROLES = frozenset({
     "button", "slider", "switch",
 })
 
+_COOKIE_BUTTON_PATTERNS = re.compile(
+    r"^(manage\s*cookies?|reject\s*all|allow\s*all|accept\s*(all\s*)?(cookies?)?"
+    r"|cookie\s*(settings|preferences)|customize\s*cookies?"
+    r"|alle\s*akzeptieren|alle\s*ablehnen|cookies?\s*verwalten"
+    r"|tout\s*accepter|tout\s*refuser|g[eé]rer\s*les\s*cookies?)$",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class FormField:
@@ -224,6 +232,11 @@ async def scan_form(page: Page, *, container_backend_node_id: str | None = None)
             continue
 
         if role not in _FORM_ROLES:
+            continue
+
+        # Filter out cookie/overlay buttons — never treat these as form fields
+        if role == "button" and _COOKIE_BUTTON_PATTERNS.search(name):
+            logger.debug("FormScanner: skipping cookie button '%s'", name)
             continue
 
         node_id = node.get("nodeId", "")

@@ -31,6 +31,9 @@ class FormHints:
     frequently_corrected_fields: list[str] = field(default_factory=list)
     match_ratio: float = 0.0
     diverged_fields: list[str] = field(default_factory=list)
+    risk_level: str = "low"
+    scan_delay_range: tuple[float, float] = (1.0, 5.0)
+    simulate_human: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -121,6 +124,26 @@ def prefetch_form_hints(
                 )
     except Exception as exc:
         logger.debug("form_prefetch: correction accuracy lookup failed: %s", exc)
+
+    # 5. Scan risk data from scan_learning
+    try:
+        from jobpulse.scan_learning import ScanLearningEngine
+        platform = hints.platform
+        if not platform and "://" in url:
+            from urllib.parse import urlparse
+            host = urlparse(url).netloc.lower()
+            for p in ("greenhouse", "lever", "workday", "smartrecruiters", "indeed", "reed", "linkedin"):
+                if p in host:
+                    platform = p
+                    break
+        if platform:
+            scan_engine = ScanLearningEngine()
+            params = scan_engine.get_adaptive_params(platform)
+            hints.risk_level = params.get("risk_level", "low")
+            hints.scan_delay_range = tuple(params.get("delay_range", (1.0, 5.0)))
+            hints.simulate_human = params.get("simulate_human", False)
+    except Exception as exc:
+        logger.debug("form_prefetch: scan_learning lookup failed: %s", exc)
 
     _stats["total_lookups"] += 1
     if hints.known_domain:

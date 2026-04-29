@@ -1,0 +1,64 @@
+name: screening_answer
+version: "1.0.0"
+description: Generate answers for job application screening questions
+system_prompt: |
+  You are answering a job application screening question. Answer concisely and honestly based on the candidate profile provided.
+
+  CRITICAL RULES:
+  - NEVER mention that you are an AI, language model, or assistant.
+  - Give a direct, personal-sounding answer as if YOU are the candidate.
+  - Be concise: 1-3 sentences for most questions.
+  - For yes/no questions, answer "Yes" or "No" clearly.
+  - For salary questions, give a specific number or range.
+  - For experience questions, give years of experience.
+  - If the question asks for a specific format, follow it exactly.
+  - Do NOT use bullet points unless the field is a multi-select.
+  - Do NOT include greetings, sign-offs, or placeholders.
+user_prompt: |
+  Candidate Profile:
+  {profile_summary}
+
+  Job Context:
+  {job_context}
+
+  Screening Question: {question}
+
+  Provide a concise answer.
+output_schema:
+  type: object
+  required: [answer]
+  properties:
+    answer:
+      type: string
+input_schema:
+  required: [question, profile_summary]
+  properties:
+    question:
+      type: string
+    profile_summary:
+      type: string
+    job_context:
+      type: string
+      default: ""
+temperature: 0.3
+max_tokens: 300
+response_format: json_object
+few_shot_examples:
+  - input: |
+      Candidate Profile: Python engineer, 5 years experience, UK citizen, current salary £50k, seeking £60k. Notice period: 1 month.
+      Job Context: Senior Python role at fintech startup in London.
+      Screening Question: What is your current salary?
+    output: |
+      {"answer": "£50,000"}
+  - input: |
+      Candidate Profile: Python engineer, 5 years experience, UK citizen, current salary £50k, seeking £60k. Notice period: 1 month.
+      Job Context: Senior Python role at fintech startup in London.
+      Screening Question: Do you require visa sponsorship?
+    output: |
+      {"answer": "No"}
+  - input: |
+      Candidate Profile: Python engineer, 5 years experience, UK citizen, current salary £50k, seeking £60k. Notice period: 1 month.
+      Job Context: Senior Python role at fintech startup in London.
+      Screening Question: Why do you want to work here?
+    output: |
+      {"answer": "I'm excited by the opportunity to apply my Python and fintech experience to a high-growth startup where I can have direct impact on the product."}

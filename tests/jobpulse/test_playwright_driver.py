@@ -54,6 +54,7 @@ async def test_connect_restarts_chrome_and_retries_once(monkeypatch):
     fake_page = MagicMock()
     fake_context = MagicMock()
     fake_context.new_page = AsyncMock(return_value=fake_page)
+    fake_context.pages = [fake_page]
     fake_browser = MagicMock()
     fake_browser.contexts = [fake_context]
 
@@ -90,14 +91,31 @@ async def test_connect_restarts_chrome_and_retries_once(monkeypatch):
     assert driver.page is fake_page
 
 
+def _make_mock_page(**evaluate_return):
+    """Build a mock Playwright page with async methods and frame() wired."""
+    if not evaluate_return:
+        evaluate_return = {"return_value": {
+            "url": "https://example.com", "title": "Test",
+            "fields": [], "buttons": [], "page_text_preview": "",
+            "has_file_inputs": False, "has_dialog": False,
+        }}
+    mock_page = MagicMock()
+    mock_page.goto = AsyncMock()
+    mock_page.wait_for_load_state = AsyncMock()
+    mock_page.evaluate = AsyncMock(**evaluate_return)
+    mock_page.frame = MagicMock(return_value=None)
+    mock_page.query_selector = AsyncMock(return_value=None)
+    mock_page.query_selector_all = AsyncMock(return_value=[])
+    mock_page.context = MagicMock()
+    mock_page.context.new_cdp_session = AsyncMock(side_effect=Exception("no CDP in test"))
+    return mock_page
+
+
 @pytest.mark.asyncio
 async def test_navigate_calls_page_goto():
     """Navigate uses page.goto + networkidle."""
     driver = PlaywrightDriver()
-    mock_page = MagicMock()
-    mock_page.goto = AsyncMock()
-    mock_page.wait_for_load_state = AsyncMock()
-    mock_page.evaluate = AsyncMock(return_value={"url": "https://example.com", "title": "Test", "fields": []})
+    mock_page = _make_mock_page()
     driver._page = mock_page
 
     result = await driver.navigate("https://example.com")
@@ -123,11 +141,12 @@ async def test_screenshot_returns_base64():
 async def test_get_snapshot_evaluates_js():
     """get_snapshot runs JS to scan form fields."""
     driver = PlaywrightDriver()
-    mock_page = MagicMock()
-    mock_page.evaluate = AsyncMock(return_value={
+    mock_page = _make_mock_page(return_value={
         "url": "https://example.com",
         "title": "Test",
         "fields": [{"selector": "#name", "type": "text", "value": "", "label": "", "required": True}],
+        "buttons": [], "page_text_preview": "",
+        "has_file_inputs": False, "has_dialog": False,
     })
     driver._page = mock_page
 
@@ -322,18 +341,16 @@ def test_scroll_delay_scales_with_distance():
 async def test_get_snapshot_includes_a11y_fields():
     """get_snapshot merges a11y tree fields when JS snapshot misses modal fields."""
     driver = PlaywrightDriver.__new__(PlaywrightDriver)
-    page = AsyncMock()
-    driver._page = page
-
-    # JS snapshot returns 0 fields (modal scenario)
-    page.evaluate = AsyncMock(return_value={
+    page = _make_mock_page(return_value={
         "url": "https://linkedin.com/jobs/view/123",
         "title": "Apply",
         "fields": [],
         "buttons": [{"text": "Submit", "selector": "button", "enabled": True, "href": None}],
         "page_text_preview": "Apply for this role",
         "has_file_inputs": False,
+        "has_dialog": False,
     })
+    driver._page = page
 
     # Mock form_scanner to return fields (as if from a11y tree)
     mock_field = MagicMock()
@@ -355,17 +372,16 @@ async def test_get_snapshot_includes_a11y_fields():
 async def test_get_snapshot_deduplicates_a11y_fields():
     """a11y fields with labels already in JS snapshot are skipped."""
     driver = PlaywrightDriver.__new__(PlaywrightDriver)
-    page = AsyncMock()
-    driver._page = page
-
-    page.evaluate = AsyncMock(return_value={
+    page = _make_mock_page(return_value={
         "url": "https://example.com",
         "title": "Form",
         "fields": [{"label": "Email", "type": "email", "input_type": "email", "value": "", "required": True, "selector": "#email"}],
         "buttons": [],
         "page_text_preview": "",
         "has_file_inputs": False,
+        "has_dialog": False,
     })
+    driver._page = page
 
     mock_field_email = MagicMock()
     mock_field_email.label = "Email"  # duplicate

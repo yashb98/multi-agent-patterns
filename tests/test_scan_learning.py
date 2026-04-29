@@ -367,7 +367,7 @@ class TestLLMPatternAnalyzer:
         self._seed_blocks(engine, 6)
         assert engine.should_run_llm_analysis() is False
 
-    @patch("jobpulse.scan_learning.safe_openai_call")
+    @patch("shared.agents.cognitive_llm_call")
     def test_llm_analysis_stores_rule(self, mock_llm, engine, db_path: str):
         mock_llm.return_value = json.dumps({
             "pattern": "Indeed blocks after 8+ requests with delay < 2s",
@@ -386,7 +386,7 @@ class TestLLMPatternAnalyzer:
         assert rules[0][1] == "llm"
         assert rules[0][2] == 0.85
 
-    @patch("jobpulse.scan_learning.safe_openai_call")
+    @patch("shared.agents.cognitive_llm_call")
     def test_llm_analysis_handles_invalid_json(self, mock_llm, engine, db_path: str):
         mock_llm.return_value = "not valid json at all"
         self._seed_blocks(engine, 5)
@@ -399,7 +399,7 @@ class TestLLMPatternAnalyzer:
         conn.close()
         assert rules[0] == 0
 
-    @patch("jobpulse.scan_learning.safe_openai_call")
+    @patch("shared.agents.cognitive_llm_call")
     def test_llm_analysis_handles_none_response(self, mock_llm, engine, db_path: str):
         mock_llm.return_value = None
         self._seed_blocks(engine, 5)
@@ -412,7 +412,7 @@ class TestLLMPatternAnalyzer:
         conn.close()
         assert rules[0] == 0
 
-    @patch("jobpulse.scan_learning.safe_openai_call")
+    @patch("shared.agents.cognitive_llm_call")
     def test_llm_analysis_no_events_does_nothing(self, mock_llm, engine, db_path: str):
         engine.run_llm_analysis("indeed")
         mock_llm.assert_not_called()

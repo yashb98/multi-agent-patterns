@@ -49,7 +49,7 @@ async def fill_radio_group(
 
     Args:
         page: Playwright page.
-        group_selector: CSS selector for the radio inputs (e.g. "input[name='sponsor']").
+        group_selector: CSS selector for the radio inputs or radiogroup container.
         value: The desired answer text (e.g. "No", "Yes", "Prefer not to say").
         timeout: Max wait time in ms.
 
@@ -58,6 +58,17 @@ async def fill_radio_group(
     """
     try:
         radios = await page.query_selector_all(group_selector)
+        # If selector resolved to a container (e.g. radiogroup), find child radios
+        if not radios or len(radios) == 1:
+            # Try common radio input patterns within the group
+            for child_sel in ("input[type='radio']", "[role='radio']"):
+                try:
+                    candidate = await page.query_selector_all(f"{group_selector} {child_sel}")
+                    if len(candidate) > 1:
+                        radios = candidate
+                        break
+                except Exception:
+                    continue
         if not radios:
             return FillResult(
                 success=False, selector=group_selector,

@@ -127,6 +127,12 @@ Return ONLY the evolved prompt text. No explanation."""
             temperature=0.3,
         )
 
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="persona_evolution", model_hint=get_model_name())
+        except Exception:
+            pass
+
         evolved = response.choices[0].message.content.strip()
         if len(evolved) > 50:  # Sanity check
             store_persona(agent_name, evolved, generation, score)
@@ -174,7 +180,7 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
         from shared.agents import get_llm
         from shared.prompt_optimizer import PromptOptimizer
 
-        llm = get_llm(temperature=0.3)
+        llm = get_llm(temperature=0.3, agent_name="persona_evolution")
         optimizer = PromptOptimizer(llm)
 
         # Build training data from stored experiences
@@ -198,6 +204,12 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
                     max_tokens=200,
                     temperature=0.3,
                 )
+                try:
+                    from shared.cost_tracker import record_openai_usage
+                    record_openai_usage(response, agent_name="persona_evolution", model_hint=get_model_name())
+                except Exception:
+                    pass
+
                 output = response.choices[0].message.content.strip()
 
                 # Score: ask LLM to rate the output
@@ -216,6 +228,12 @@ def _deep_optimize(agent_name: str, current_prompt: str, experiences: list, gene
                     max_tokens=20 if is_local_llm() else 5,
                     temperature=0,
                 )
+                try:
+                    from shared.cost_tracker import record_openai_usage as _rec
+                    _rec(score_resp, agent_name="persona_evolution", model_hint=get_model_name())
+                except Exception:
+                    pass
+
                 try:
                     score = float(score_resp.choices[0].message.content.strip())
                 except ValueError:

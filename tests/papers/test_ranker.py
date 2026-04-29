@@ -229,31 +229,27 @@ class TestLlmRank:
 
     def test_fallback_when_no_api_key(self):
         papers = self._make_papers(5)
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=None):
+        with patch("shared.agents.cognitive_llm_call", return_value=None):
             result = llm_rank(papers, top_n=3)
         assert len(result) == 3
         assert all(isinstance(r, RankedPaper) for r in result)
 
     def test_fallback_on_api_error(self):
         papers = self._make_papers(5)
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = RuntimeError("API down")
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=mock_client):
+        with patch("shared.agents.cognitive_llm_call", side_effect=RuntimeError("API down")):
             result = llm_rank(papers, top_n=3)
         assert len(result) == 3
         assert all(isinstance(r, RankedPaper) for r in result)
 
     def test_fallback_on_invalid_json(self):
         papers = self._make_papers(5)
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _mock_openai_response("garbage")
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=mock_client):
+        with patch("shared.agents.cognitive_llm_call", return_value="garbage"):
             result = llm_rank(papers, top_n=3)
         assert len(result) == 3
 
     def test_returns_ranked_papers_from_llm(self):
         papers = self._make_papers(3)
-        llm_json = json_str = (
+        llm_json = (
             '[{"arxiv_id": "2401.00000", "impact_score": 9.0, "impact_reason": "Novel", '
             '"category_tag": "LLM", "key_technique": "LoRA", "practical_takeaway": "Fast fine-tuning"}, '
             '{"arxiv_id": "2401.00001", "impact_score": 7.5, "impact_reason": "Solid", '
@@ -261,9 +257,7 @@ class TestLlmRank:
             '{"arxiv_id": "2401.00002", "impact_score": 6.0, "impact_reason": "Incremental", '
             '"category_tag": "Efficiency", "key_technique": "Pruning", "practical_takeaway": "Smaller models"}]'
         )
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _mock_openai_response(llm_json)
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=mock_client):
+        with patch("shared.agents.cognitive_llm_call", return_value=llm_json):
             result = llm_rank(papers, top_n=3)
         assert len(result) == 3
         assert result[0].arxiv_id == "2401.00000"
@@ -274,26 +268,24 @@ class TestLlmRank:
     def test_weekly_lens_uses_different_weights(self):
         """llm_rank does not error with weekly lens — prompt must include 'weekly'."""
         papers = self._make_papers(3)
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _mock_openai_response("[]")
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=mock_client):
+        with patch("shared.agents.cognitive_llm_call", return_value="[]") as mock_llm:
             result = llm_rank(papers, top_n=3, lens="weekly")
         # Empty JSON → fallback
         assert len(result) == 3
         # Check the prompt included "weekly"
-        call_args = mock_client.chat.completions.create.call_args
-        prompt = call_args[1]["messages"][0]["content"]
+        call_args = mock_llm.call_args
+        prompt = call_args[1]["task"] if call_args[1] else call_args[0][0]
         assert "weekly" in prompt.lower()
 
     def test_top_n_respected(self):
         papers = self._make_papers(10)
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=None):
+        with patch("shared.agents.cognitive_llm_call", return_value=None):
             result = llm_rank(papers, top_n=2)
         assert len(result) == 2
 
     def test_fast_score_populated_in_results(self):
         papers = self._make_papers(3)
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=None):
+        with patch("shared.agents.cognitive_llm_call", return_value=None):
             result = llm_rank(papers, top_n=3)
         for r in result:
             assert r.fast_score > 0.0
@@ -310,32 +302,26 @@ class TestExtractThemes:
 
     def test_no_client_returns_empty(self):
         papers = [make_paper()]
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=None):
+        with patch("shared.agents.cognitive_llm_call", return_value=None):
             result = extract_themes(papers)
         assert result == []
 
     def test_returns_themes_list(self):
         papers = [make_paper(title=f"Paper on LLMs {i}") for i in range(5)]
         llm_response = '["Large Language Models", "Efficient Training", "Multimodal AI"]'
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _mock_openai_response(llm_response)
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=mock_client):
+        with patch("shared.agents.cognitive_llm_call", return_value=llm_response):
             result = extract_themes(papers)
         assert result == ["Large Language Models", "Efficient Training", "Multimodal AI"]
 
     def test_fallback_on_api_error(self):
         papers = [make_paper()]
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = RuntimeError("Timeout")
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=mock_client):
+        with patch("shared.agents.cognitive_llm_call", side_effect=RuntimeError("Timeout")):
             result = extract_themes(papers)
         assert result == []
 
     def test_invalid_json_returns_empty(self):
         papers = [make_paper()]
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _mock_openai_response("not json")
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=mock_client):
+        with patch("shared.agents.cognitive_llm_call", return_value="not json"):
             result = extract_themes(papers)
         assert result == []
 
@@ -348,7 +334,7 @@ class TestExtractThemes:
 class TestSummarizeAndVerify:
     def test_no_client_returns_ranked_papers_without_summary(self):
         papers = [make_paper()]
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=None):
+        with patch("shared.agents.cognitive_llm_call", return_value=None):
             result = summarize_and_verify(papers)
         assert len(result) == 1
         assert isinstance(result[0], RankedPaper)
@@ -356,11 +342,7 @@ class TestSummarizeAndVerify:
 
     def test_with_client_calls_summarize(self):
         papers = [make_paper()]
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _mock_openai_response(
-            "This paper proposes a novel approach."
-        )
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=mock_client):
+        with patch("shared.agents.cognitive_llm_call", return_value="This paper proposes a novel approach."):
             with patch("jobpulse.papers.ranker._verify_paper") as mock_verify:
                 from jobpulse.papers.models import FactCheckResult
                 mock_verify.return_value = FactCheckResult(score=8.0)
@@ -371,6 +353,6 @@ class TestSummarizeAndVerify:
 
     def test_fast_score_populated(self):
         papers = [make_paper(categories=["cs.AI"])]
-        with patch("jobpulse.papers.ranker._get_openai_client", return_value=None):
+        with patch("shared.agents.cognitive_llm_call", return_value=None):
             result = summarize_and_verify(papers)
         assert result[0].fast_score > 0.0

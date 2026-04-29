@@ -324,15 +324,18 @@ PATTERNS: list[tuple[Intent, list[str]]] = [
         r"^(add|new|create)\s+(task|todo)[s:]?\s*(.+)",
         r"^task[s:]?\s+(.+)",
     ]),
+    # Create event
+    (Intent.CREATE_EVENT, [
+        r"^(add|create|set)\s+(event|meeting|reminder)\s+(.+)",
+        r"^(schedule|book)\s+(.+)",
+        r"^(remind me)\s+to\s+(.+)",
+        r"^(remind|set event|add event|schedule|book)\s+(me\s+)?(at|for|to)\s+(.+)",
+        r"^(remind me|set reminder|add reminder)\s+(.+)",
+    ]),
     # Calendar
     (Intent.CALENDAR, [
         r"(calendar|schedule|what.?s (on )?today|what.?s (on )?tomorrow|events?|my day)",
         r"(today.?s|tomorrow.?s)\s+(calendar|schedule|events?)",
-    ]),
-    # Create event
-    (Intent.CREATE_EVENT, [
-        r"(remind|set event|add event|schedule|book)\s+(me\s+)?(at|for|to)\s+(.+)",
-        r"(remind me|set reminder|add reminder)\s+(.+)",
     ]),
     # Gmail
     (Intent.GMAIL, [
@@ -401,12 +404,10 @@ def classify_rule_based(text: str) -> Optional[ParsedCommand]:
 def classify_llm(text: str) -> ParsedCommand:
     """Use LLM to classify ambiguous messages. Fallback when rules don't match."""
     try:
-        from shared.agents import get_openai_client, get_model_name, is_local_llm
+        from shared.agents import cognitive_llm_call
 
-        client = get_openai_client()
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[{"role": "user", "content": f"""Classify this Telegram message into ONE intent:
+        raw = cognitive_llm_call(
+            task=f"""Classify this Telegram message into ONE intent:
 
 CREATE_TASKS — user wants to add tasks/todos
 SHOW_TASKS — user wants to see their tasks
@@ -438,7 +439,7 @@ CLEAR_CHAT — user wants to clear chat history or start a new conversation
 STOP — user wants to undo/reverse/cancel their last command (said "stop", "cancel", "undo that", "oops", "nope", "take that back")
 SCAN_JOBS — user wants to scan for new jobs, run the autopilot, or start a job search
 SHOW_JOBS — user wants to see available/pending job applications
-APPROVE_JOBS — user wants to approve specific jobs for application (e.g., "apply 1,3,5" or "apply all")
+APPROVE_JOBS — user wants to open a specific job for live application review (e.g., "apply 1")
 REJECT_JOB — user wants to skip/reject a specific job (e.g., "reject 3")
 JOB_STATS — user wants job application statistics
 SEARCH_CONFIG — user wants to modify job search settings (e.g., "search: add title X")
@@ -456,11 +457,13 @@ UNKNOWN — doesn't match any of the above
 
 Message: {sanitize_user_input(text, source="telegram")}
 
-Respond with ONLY the intent name. Nothing else."""}],
-            max_tokens=60 if is_local_llm() else 15,
-            temperature=0,
+Respond with ONLY the intent name. Nothing else.""",
+            domain="intent_classification",
+            stakes="low",
         )
-        intent_str = response.choices[0].message.content.strip().upper()
+        if not raw:
+            return ParsedCommand(intent=Intent.UNKNOWN, args=text, raw=text)
+        intent_str = raw.strip().upper()
 
         # Map to enum
         try:

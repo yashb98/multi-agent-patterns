@@ -13,6 +13,7 @@ from mindgraph_app.api import router, process_router, rate_router
 from mindgraph_app.codegraph_api import codegraph_router
 from jobpulse.health_api import health_router
 from jobpulse.analytics_api import analytics_router
+from jobpulse.calibration_api import calibration_router
 from jobpulse.job_api import job_api_router
 from shared.logging_config import get_logger
 
@@ -41,6 +42,7 @@ app.include_router(rate_router)
 # JobPulse dashboards
 app.include_router(health_router)
 app.include_router(analytics_router)
+app.include_router(calibration_router)
 
 # Chrome extension HTTP API
 app.include_router(job_api_router)

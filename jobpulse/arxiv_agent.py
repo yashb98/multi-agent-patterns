@@ -194,8 +194,7 @@ def llm_rank_broad(papers: list[dict], top_n: int = 5) -> list[dict]:
     if not OPENAI_API_KEY:
         return papers[:top_n]
 
-    from shared.agents import get_model_name, is_local_llm
-    client = get_openai_client()
+    from shared.agents import is_local_llm
     _local = is_local_llm()
 
     # Send top 30 by recency (most recent = most likely to be today's papers)
@@ -231,13 +230,15 @@ Return ONLY a JSON array. Compute overall as: (novelty*0.3 + significance*0.25 +
 [{{"rank": 1, "paper_num": X, "scores": {{"novelty": N, "significance": N, "practical": N, "breadth": N}}, "overall": weighted_avg, "reason": "One sentence on why this matters to AI", "key_technique": "The main technique or contribution in 5 words", "category_tag": "e.g. LLM, Agents, Vision, RL, Efficiency, Safety, Reasoning"}}]"""
 
     try:
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2400 if _local else 1200,
-            temperature=0,
+        # Route through CognitiveEngine (default-on) for multi-criteria ranking
+        from shared.agents import cognitive_llm_call
+        raw = cognitive_llm_call(
+            task=prompt,
+            domain="arxiv_ranking",
+            stakes="medium",
         )
-        raw = response.choices[0].message.content.strip()
+        if raw is None:
+            return candidates[:top_n]
         rankings = _extract_json_array(raw)
 
         ranked = []
@@ -364,15 +365,12 @@ def summarize_paper(paper: dict) -> str:
     if not OPENAI_API_KEY:
         return paper["abstract"][:200]
 
-    from shared.agents import get_model_name, is_local_llm
-    client = get_openai_client()
+    from shared.agents import is_local_llm, cognitive_llm_call
     _local = is_local_llm()
-
     _abs_limit = len(paper['abstract']) if _local else 1000
     try:
-        response = client.chat.completions.create(
-            model=get_model_name(),
-            messages=[{"role": "user", "content": f"""Summarize this AI paper for a practitioner in 3-4 sentences:
+        return (cognitive_llm_call(
+            task=f"""Summarize this AI paper for a practitioner in 3-4 sentences:
 
 1. WHAT: What does the paper propose/discover? (1 sentence)
 2. WHY: Why does this matter for the AI field? (1 sentence)
@@ -380,11 +378,10 @@ def summarize_paper(paper: dict) -> str:
 4. USE: One practical way someone could apply this today (1 sentence, start with "Practical takeaway:")
 
 Title: {paper['title']}
-Abstract: {paper['abstract'][:_abs_limit]}"""}],
-            max_tokens=800 if _local else 250,
-            temperature=0.3,
-        )
-        return response.choices[0].message.content.strip()
+Abstract: {paper['abstract'][:_abs_limit]}""",
+            domain="paper_summary",
+            stakes="low",
+        ) or paper["abstract"][:300]).strip()
     except Exception as e:
         logger.warning("Summary failed for %s: %s", paper["arxiv_id"], e)
         return paper["abstract"][:300]

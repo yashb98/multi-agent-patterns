@@ -8,8 +8,10 @@ formatted context package.
 
 import os
 import hashlib
+import time
 from typing import Optional
 from datetime import datetime
+from functools import lru_cache
 
 from typing import TYPE_CHECKING
 
@@ -36,6 +38,38 @@ logger = get_logger(__name__)
 
 # Default persistent storage directory — survives process restarts
 _DEFAULT_STORAGE_DIR = str(DATA_DIR / "agent_memory")
+
+
+class _TTLCache:
+    """Simple dict-based TTL cache for embedding vectors and context strings."""
+
+    def __init__(self, ttl_seconds: float = 60.0, max_size: int = 128):
+        self._ttl = ttl_seconds
+        self._max = max_size
+        self._data: dict = {}
+
+    def _prune(self):
+        now = time.time()
+        expired = [k for k, (_, ts) in self._data.items() if now - ts > self._ttl]
+        for k in expired:
+            del self._data[k]
+        while len(self._data) > self._max:
+            oldest = min(self._data, key=lambda k: self._data[k][1])
+            del self._data[oldest]
+
+    def get(self, key):
+        self._prune()
+        if key in self._data:
+            val, _ = self._data[key]
+            return val
+        return None
+
+    def set(self, key, value):
+        self._prune()
+        self._data[key] = (value, time.time())
+
+    def clear(self):
+        self._data.clear()
 
 
 class MemoryManager:
@@ -105,6 +139,10 @@ class MemoryManager:
         self._linker = None
         self._forgetting = None
 
+        # Caches to avoid repeated embeddings and context builds
+        self._context_cache = _TTLCache(ttl_seconds=60.0, max_size=128)
+        self._embed_cache = _TTLCache(ttl_seconds=120.0, max_size=64)
+
         if sqlite_store:
             from shared.memory_layer._sync import SyncService
             from shared.memory_layer._linker import AutonomousLinker
@@ -126,11 +164,13 @@ class MemoryManager:
         relevant memories from all stores into a single string
         that gets injected into the agent's system prompt.
 
-        Different agents get different memory slices:
-        - Researcher: episodic (what worked before) + semantic (domain facts)
-        - Writer: procedural (writing strategies) + short-term (recent steps)
-        - Reviewer: episodic (past scores) + semantic (quality standards)
+        Results are cached for 60s to avoid repeated formatting work.
         """
+        cache_key = (agent_name, topic, domain)
+        cached = self._context_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         sections = []
 
         # Short-term: always include recent context
@@ -157,7 +197,6 @@ class MemoryManager:
                 sections.append(proc)
 
         # Experiential: GRPO-learned patterns from successful past runs
-        # All agents benefit from these — they capture cross-agent winning patterns
         try:
             from shared.experiential_learning import get_shared_experience_memory
             exp_mem = get_shared_experience_memory()
@@ -165,12 +204,11 @@ class MemoryManager:
             if exp_context:
                 sections.append(exp_context)
         except Exception:
-            pass  # ExperienceMemory is optional — never block agent execution
+            pass
 
-        if not sections:
-            return ""
-
-        return "\n\n".join(sections)
+        result = "\n\n".join(sections) if sections else ""
+        self._context_cache.set(cache_key, result)
+        return result
 
     # ── Operational Principle #1: Memory before action ──
 
@@ -246,11 +284,44 @@ class MemoryManager:
             domain=domain,
         )
         self.episodic.store(episode)
+        # Also push to 3-engine stack
+        if self._sqlite:
+            content = (
+                f"Run: {topic} | Score: {final_score} | "
+                f"Agents: {', '.join(agents_used)} | "
+                f"Pattern: {pattern_used} | "
+                f"Summary: {output_summary[:200]}"
+            )
+            self.store_memory(
+                tier=MemoryTier.EPISODIC,
+                domain=domain,
+                content=content,
+                score=final_score,
+                confidence=0.8,
+                payload={
+                    "run_id": episode.run_id,
+                    "iterations": iterations,
+                    "strengths": strengths,
+                    "weaknesses": weaknesses,
+                    "agents_used": agents_used,
+                    "pattern_used": pattern_used,
+                },
+            )
         logger.info("Stored episode: %s (score: %.1f)", topic, final_score)
 
     def learn_fact(self, domain: str, fact: str, run_id: str = "manual"):
         """Add or reinforce a semantic fact."""
         self.semantic.learn(domain, fact, run_id)
+        # Also push to 3-engine stack
+        if self._sqlite:
+            self.store_memory(
+                tier=MemoryTier.SEMANTIC,
+                domain=domain,
+                content=fact,
+                score=7.0,
+                confidence=0.85,
+                payload={"run_id": run_id, "source": "learn_fact"},
+            )
 
     def learn_procedure(
         self,
@@ -275,6 +346,20 @@ class MemoryManager:
             created_at=datetime.now().isoformat(),
         )
         self.procedural.store(proc)
+        # Also push to 3-engine stack
+        if self._sqlite:
+            self.store_memory(
+                tier=MemoryTier.PROCEDURAL,
+                domain=domain,
+                content=f"{strategy}\nContext: {context}" if context else strategy,
+                score=score,
+                confidence=0.9 if score >= 7.0 else 0.6,
+                payload={
+                    "procedure_id": proc.procedure_id,
+                    "source": source,
+                    "success_rate": proc.success_rate,
+                },
+            )
 
     def get_procedural_entries(self, domain: str) -> list[ProceduralEntry]:
         """Retrieve procedural templates for a domain (cognitive engine API)."""
@@ -326,8 +411,8 @@ class MemoryManager:
             total = self._sqlite.count()
             lines.append(f"\n3-Engine Memory: {total} entries in SQLite")
             for lc in Lifecycle:
-                entries = self._sqlite.query_by_lifecycle(lc, limit=0)
-                # count via a direct query instead
+                count = self._sqlite.count_by_lifecycle(lc)
+                lines.append(f"  {lc.value}: {count} entries")
             lines.append("Engines: SQLite (active)")
             if self._qdrant:
                 lines.append("  + Qdrant (active)")
@@ -383,9 +468,13 @@ class MemoryManager:
 
         memory_ids: set[str] = set()
 
-        # Vector search
+        # Vector search (with embedding cache)
         if Step.VECTOR_SEARCH in plan.steps and self._qdrant and self._embedder:
-            vec = self._embedder.embed(query.semantic_query)
+            embed_key = query.semantic_query or ""
+            vec = self._embed_cache.get(embed_key)
+            if vec is None:
+                vec = self._embedder.embed(query.semantic_query)
+                self._embed_cache.set(embed_key, vec)
             tiers = query.tiers or [MemoryTier.EPISODIC, MemoryTier.SEMANTIC, MemoryTier.PROCEDURAL]
             for tier in tiers:
                 results = self._qdrant.search(tier, vec, top_k=query.top_k)
@@ -407,13 +496,21 @@ class MemoryManager:
             neighbors = self._neo4j.domain_neighbors(query.domain, limit=query.top_k)
             memory_ids.update(neighbors)
 
-        # Hydrate from SQLite
+        # Hydrate from SQLite + update access metadata (batch query — no N+1)
+        entries = self._sqlite.get_by_ids(list(memory_ids))
         results = []
-        for mid in memory_ids:
-            entry = self._sqlite.get_by_id(mid)
-            if entry and entry.decay_score >= query.min_decay_score:
+        touched: list[str] = []
+        for entry in entries:
+            if entry.decay_score >= query.min_decay_score:
                 if not query.tiers or entry.tier in query.tiers:
+                    touched.append(entry.memory_id)
                     results.append(entry)
+
+        if touched:
+            # Batch touch is not implemented in SQLiteStore; touch individually
+            # but only for the filtered subset (much smaller than memory_ids)
+            for mid in touched:
+                self._sqlite.touch(mid)
 
         results.sort(key=lambda e: e.decay_score, reverse=True)
         return results[:query.top_k]
@@ -451,6 +548,27 @@ class MemoryManager:
         """Wait until queued secondary sync work is complete."""
         if self._sync:
             self._sync.flush(timeout=timeout)
+
+    def run_forgetting_sweep(self, dry_run: bool = False) -> dict:
+        """Run the forgetting engine to decay, promote, and demote memories.
+
+        Returns a summary of actions taken.
+        """
+        if not self._forgetting:
+            return {"enabled": False, "reason": "ForgettingEngine not configured"}
+        try:
+            result = self._forgetting.sweep(dry_run=dry_run)
+            logger.info(
+                "Forgetting sweep complete: %d decayed, %d promoted, %d demoted, %d tombstoned",
+                result.get("decayed", 0),
+                result.get("promoted", 0),
+                result.get("demoted", 0),
+                result.get("tombstoned", 0),
+            )
+            return result
+        except Exception as exc:
+            logger.warning("Forgetting sweep failed: %s", exc)
+            return {"enabled": True, "error": str(exc)}
 
     def shutdown(self) -> None:
         """Release background resources (best-effort)."""

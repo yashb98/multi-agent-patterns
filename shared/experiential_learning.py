@@ -337,7 +337,7 @@ class TrainingFreeGRPO:
 
         def make_variant(temp):
             from shared.agents import get_llm
-            return get_llm(model=model_name, temperature=temp, timeout=30.0)
+            return get_llm(model=model_name, temperature=temp, timeout=30.0, agent_name="grpo_variant")
 
         candidates = parallel_grpo_candidates(make_variant, enhanced_system, user_message, temps)
         

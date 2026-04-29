@@ -37,3 +37,6 @@
 - Claim types: benchmark, date, attribution, comparison, technical.
 - Scoring: VERIFIED +1.0, INACCURATE -2.0, EXAGGERATED -1.0, UNVERIFIED -0.5/-1.5.
 - SQLite cache at data/verified_facts.db for instant reuse.
+
+## Real Data + Wiring Verification (MANDATORY)
+New pattern features: test with real topics/data (never stale fixtures). Verify the full chain fires — ExperienceMemory records the run, CodeGraph indexes the output, cost tracking logs the spend, fact checker caches results. Not wired = not done.

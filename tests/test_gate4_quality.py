@@ -160,9 +160,8 @@ class TestCVDeterministicScrutiny:
 class TestLLMFAANGScrutiny:
     """Test B2: LLM-based FAANG recruiter review."""
 
-    @patch("openai.OpenAI")
-    @patch("jobpulse.gate4_quality.safe_openai_call")
-    def test_high_score_shortlist(self, mock_llm, mock_client_cls):
+    @patch("jobpulse.gate4_quality.cognitive_llm_call")
+    def test_high_score_shortlist(self, mock_llm):
         from jobpulse.gate4_quality import scrutinize_cv_llm
         mock_llm.return_value = json.dumps({
             "total_score": 8, "relevance": 3, "evidence": 3,
@@ -175,9 +174,8 @@ class TestLLMFAANGScrutiny:
         assert result.verdict == "shortlist"
         assert result.needs_review is False
 
-    @patch("openai.OpenAI")
-    @patch("jobpulse.gate4_quality.safe_openai_call")
-    def test_low_score_flags_review(self, mock_llm, mock_client_cls):
+    @patch("jobpulse.gate4_quality.cognitive_llm_call")
+    def test_low_score_flags_review(self, mock_llm):
         from jobpulse.gate4_quality import scrutinize_cv_llm
         mock_llm.return_value = json.dumps({
             "total_score": 5, "relevance": 2, "evidence": 1,
@@ -189,18 +187,16 @@ class TestLLMFAANGScrutiny:
         assert result.score == 5
         assert result.needs_review is True
 
-    @patch("openai.OpenAI")
-    @patch("jobpulse.gate4_quality.safe_openai_call")
-    def test_handles_none_response(self, mock_llm, mock_client_cls):
+    @patch("jobpulse.gate4_quality.cognitive_llm_call")
+    def test_handles_none_response(self, mock_llm):
         from jobpulse.gate4_quality import scrutinize_cv_llm
         mock_llm.return_value = None
         result = scrutinize_cv_llm("cv", "SWE", "Google", ["python"], [])
         assert result.score == 0
         assert result.needs_review is True
 
-    @patch("openai.OpenAI")
-    @patch("jobpulse.gate4_quality.safe_openai_call")
-    def test_handles_invalid_json(self, mock_llm, mock_client_cls):
+    @patch("jobpulse.gate4_quality.cognitive_llm_call")
+    def test_handles_invalid_json(self, mock_llm):
         from jobpulse.gate4_quality import scrutinize_cv_llm
         mock_llm.return_value = "not json"
         result = scrutinize_cv_llm("cv", "SWE", "Google", ["python"], [])

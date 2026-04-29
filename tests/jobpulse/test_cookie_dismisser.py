@@ -113,3 +113,90 @@ async def test_dismiss_spanish_aceptar(dismisser, bridge):
                 "page_text_preview": "Utilizamos cookies"}
     assert await dismisser.dismiss(snapshot) is True
     bridge.click.assert_called_with("#es")
+
+
+class TestCookieSiblingDetection:
+    """Verify cookie banner detection via sibling buttons (Reject All, Manage Cookies)."""
+
+    @pytest.mark.asyncio
+    async def test_allow_all_with_reject_sibling(self, dismisser, bridge):
+        """LinkedIn-style: Allow All + Reject All + Manage Cookies, no cookie text in page."""
+        snapshot = {
+            "buttons": [
+                {"text": "Manage Cookies", "enabled": True, "selector": "#manage"},
+                {"text": "Reject All", "enabled": True, "selector": "#reject"},
+                {"text": "Allow All", "enabled": True, "selector": "#allow"},
+            ],
+            "page_text_preview": "Machine Learning Engineer at Intact Insurance UK",
+        }
+        dismissed = await dismisser.dismiss(snapshot)
+        assert dismissed is True
+        bridge.click.assert_called_once_with("#allow")
+
+    @pytest.mark.asyncio
+    async def test_no_sibling_no_context_skips(self, dismisser, bridge):
+        """Buttons without cookie siblings or page context should be skipped."""
+        snapshot = {
+            "buttons": [
+                {"text": "Allow All", "enabled": True, "selector": "#allow"},
+                {"text": "Submit", "enabled": True, "selector": "#submit"},
+            ],
+            "page_text_preview": "Job application form",
+        }
+        dismissed = await dismisser.dismiss(snapshot)
+        assert dismissed is False
+        bridge.click.assert_not_called()
+
+    def test_sibling_detection_method(self):
+        buttons = [
+            {"text": "Reject All"},
+            {"text": "Allow All"},
+            {"text": "Manage Cookies"},
+        ]
+        assert CookieBannerDismisser._has_cookie_sibling_buttons(buttons) is True
+
+    def test_no_sibling_detection(self):
+        buttons = [
+            {"text": "Submit Application"},
+            {"text": "Next"},
+        ]
+        assert CookieBannerDismisser._has_cookie_sibling_buttons(buttons) is False
+
+
+class TestFormConsentFalsePositive:
+    """Form-level data privacy consent must NOT be treated as cookie banner."""
+
+    @pytest.mark.asyncio
+    async def test_data_privacy_statement_not_dismissed(self, dismisser, bridge):
+        """Intact Insurance 'Data Privacy Statement' consent is a form element, not a cookie banner."""
+        snapshot = {
+            "buttons": [
+                {
+                    "text": "By selecting 'I agree' you confirm that you have read and understood the Data Privacy Statement",
+                    "selector": "button.privacy-consent",
+                    "enabled": True,
+                },
+                {"text": "Submit Application", "selector": "button.submit", "enabled": True},
+            ],
+            "page_text_preview": "Machine Learning Engineer application\nPersonal Information\nTitle\nFirst Name",
+        }
+        result = await dismisser.dismiss(snapshot)
+        assert result is False, "Form privacy consent should NOT be dismissed as cookie banner"
+        bridge.click.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_real_cookie_banner_still_dismissed(self, dismisser, bridge):
+        """Actual cookie banners with 'I agree' should still be dismissed."""
+        snapshot = {
+            "buttons": [
+                {
+                    "text": "I agree",
+                    "selector": "#cookie-agree",
+                    "enabled": True,
+                },
+            ],
+            "page_text_preview": "This site uses cookies to improve your experience.",
+        }
+        result = await dismisser.dismiss(snapshot)
+        assert result is True
+        bridge.click.assert_called_once()

@@ -124,3 +124,32 @@ class TestSQLiteStore:
             t.join()
         assert not errors
         assert store.count() == 100
+
+
+    def test_get_by_ids_batch_retrieval(self, store, make_memory):
+        """get_by_ids retrieves multiple entries in a single query (no N+1)."""
+        entries = [make_memory(content=f"batch entry {i}") for i in range(5)]
+        for e in entries:
+            store.insert(e)
+
+        ids = [e.memory_id for e in entries]
+        results = store.get_by_ids(ids)
+        assert len(results) == 5
+        returned_ids = {r.memory_id for r in results}
+        assert returned_ids == set(ids)
+
+    def test_get_by_ids_empty_list(self, store):
+        """get_by_ids with empty list returns empty list."""
+        assert store.get_by_ids([]) == []
+
+    def test_get_by_ids_missing_entries(self, store, make_memory):
+        """get_by_ids skips tombstoned or missing entries."""
+        e1 = make_memory(content="alive")
+        e2 = make_memory(content="tombstoned")
+        store.insert(e1)
+        store.insert(e2)
+        store.tombstone(e2.memory_id)
+
+        results = store.get_by_ids([e1.memory_id, e2.memory_id, "nonexistent"])
+        assert len(results) == 1
+        assert results[0].memory_id == e1.memory_id

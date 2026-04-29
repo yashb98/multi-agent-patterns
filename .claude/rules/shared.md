@@ -6,6 +6,11 @@
 - Remove only what YOUR changes made unused — don't touch pre-existing dead code.
 - State assumptions explicitly before implementing. If multiple approaches exist, present them.
 
+## No PII in Source (MANDATORY)
+Personal information MUST NEVER be hardcoded — always retrieved from databases at runtime.
+All profile data flows through proper data access layers (`get_profile()`, `ScreeningPipeline`, etc.).
+Full policy: `.claude/rules/pii-policy.md`
+
 ## Dependency Direction
 shared/ modules MUST NOT import from patterns/, jobpulse/, or mindgraph_app/.
 Dependency flows one way: systems → shared. Never the reverse.
@@ -43,9 +48,18 @@ SQLite-backed ExperienceMemory shared across all 4 patterns:
 
 ## NLP Classifier (shared/nlp_classifier.py)
 3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001).
-- When adding intents: add regex patterns first, then embedding examples, then LLM gets it for free.
+- When adding intents: add embedding examples first (preferred), then LLM gets it for free. Regex tier is legacy — do NOT add new regex patterns. Migrate existing regex patterns to embedding examples when touching this file.
 - 250+ examples across 41 intents.
 - Strip trailing punctuation before classification (Whisper adds ".", "!", "?").
+
+## No Regex for Semantic Work (MANDATORY)
+Regex MUST NOT be used for classification, intent routing, question categorization, consent detection, field matching, or command parsing. Use dynamic approaches: LLM (with caching), embedding similarity, semantic matching, DOM/a11y inspection, or database-stored patterns.
+- **Regex remains OK for**: text normalization (whitespace/punctuation), security sanitization (injection tag stripping), structural format validation (email/phone/date/URL), number extraction from known formats
+- **Migration rule**: When touching a file with regex-based classification, migrate those patterns to dynamic in the same change
+- This extends the "Dynamic Over Hardcoded" principle — regex patterns are a form of hardcoding that breaks on input variation
+
+## Real Data + Wiring Verification (MANDATORY)
+New shared features: test with real data (real embeddings, real DB queries, real API calls — never mocks or stale fixtures). Verify downstream consumers actually receive signals/data. If `OptimizationEngine` emits a signal, confirm the aggregator consumed it. If `MemoryManager` stores a fact, confirm retrieval returns it. Not wired = not done.
 
 ## Memory Layer (shared/memory_layer/)
 All memory access goes through MemoryManager — never query SQLite/Qdrant/Neo4j directly.

@@ -1,5 +1,5 @@
 """
-Agent System Prompts
+Agent System Prompts for orchestration patterns.
 ====================
 
 Each prompt follows a specific structure:
@@ -126,9 +126,6 @@ You MUST respond with EXACTLY this JSON structure:
 
 Respond with ONLY the JSON. No markdown, no explanation outside the JSON.
 """
-
-
-# ─── PATTERN-SPECIFIC PROMPTS ────────────────────────────────────
 
 SUPERVISOR_PROMPT = """You are the Supervisor agent orchestrating a blog writing team.
 

@@ -5,7 +5,7 @@ description: "MANDATORY 7-principle engineering checklist for ALL code changes"
 
 # Seven Engineering Principles (MANDATORY)
 
-Every new feature, function, file, or code change MUST satisfy these 7 principles.
+Every new feature, function, file, or code change MUST satisfy these 8 principles.
 This is not aspirational — it is a hard gate. Violations found in audit 2026-04-20.
 
 ---
@@ -100,7 +100,7 @@ Known violations (FIXED 2026-04-20 unless noted):
 **Rule**: No PII in source, no injection vectors, validated external input.
 
 Checkpoints:
-- [ ] NO PII (email, phone, address) hardcoded in source — use env vars or encrypted config
+- [ ] NO PII hardcoded in source — ALL personal data (name, email, phone, address, screening answers, skills, links, DEI, salary, visa) retrieved from databases at runtime. See `.claude/rules/pii-policy.md`
 - [ ] NO string interpolation in `page.evaluate()` JS — use Playwright's argument passing
 - [ ] NO arbitrary URL fetching without SSRF protection (validate scheme + host)
 - [ ] NO unauthenticated destructive endpoints
@@ -153,6 +153,8 @@ Known violations (FIXED 2026-04-20 unless noted):
 Checkpoints:
 - [ ] ALL applications use `dry_run=True` first — NEVER hardcode `dry_run=False`
 - [ ] ALL successful submissions call `confirm_application()` — no exceptions
+- [ ] **Real data test** — tested with real URLs, real APIs, real DB queries, real scraping (never mocks, stubs, stale snapshots, or synthetic fixtures)
+- [ ] **Wiring verified** — ran end-to-end and confirmed every downstream system actually fires (hooks, signals, DB writes, learning chains, Notion syncs, Telegram notifications). Not wired = not done.
 - [ ] Error messages are user-actionable, not internal stack traces
 - [ ] Platform-specific paths have fallbacks for unknown platforms
 - [ ] Font paths are OS-aware, not hardcoded to macOS
@@ -169,6 +171,28 @@ Known violations (FIXED 2026-04-20 unless noted):
 - ~~`mindgraph_app/api.py:232`~~ — error responses now use generic messages, details logged ✅
 - ~~`file_filler.py:55`~~ — scoped file input: parent container → accept attribute → generic fallback ✅
 - ~~`screening_answers.py:509`~~ — context-aware fallback: salary/notice/visa answers from WORK_AUTH ✅
+
+## 8. Dynamic Over Hardcoded
+
+**Rule**: All pipeline values resolved at runtime. No regex for semantic classification.
+
+Checkpoints:
+- [ ] Field values read from DOM/a11y tree, databases, LLM, or config — never literal strings in code
+- [ ] Selectors discovered via a11y tree or learned selectors — never hardcoded CSS/XPath
+- [ ] Timing uses adaptive timing from FormExperienceDB — never hardcoded sleep values
+- [ ] Screening answers generated from LLM with JD+CV context — never stale dictionaries
+- [ ] **No regex for classification** — intent routing, question categorization, consent detection, field matching, command parsing use LLM/embeddings/semantic matching/DOM inspection, NOT regex patterns
+- [ ] **Regex only for**: text normalization (whitespace/punctuation `re.sub`), security sanitization (injection tag stripping), structural format validation (email/phone/date/URL patterns), number extraction from known-format strings
+- [ ] When touching a file with regex-based classification, migrate those patterns to dynamic approaches in the same change
+- [ ] Thresholds/limits from config or database — never magic numbers
+
+Known violations (regex-based classification — REMAINING):
+- `screening_answers.py:299,538,636` — regex patterns for screening question routing (should use embedding similarity + cache)
+- `screening_decomposer.py:24,32,95,121` — regex for compound question detection (should use LLM classification)
+- `consent_policy.py:34,68,89` — regex for consent/marketing pattern matching (should use semantic matcher)
+- `email_preclassifier.py:203,231,276` — regex for email body classification (should use embedding tier)
+- `dispatcher.py:279-598` — regex for command parsing (should use NLP classifier)
+- `screening_detector.py:23` — regex for screening keyword detection (should use embedding similarity)
 
 ---
 

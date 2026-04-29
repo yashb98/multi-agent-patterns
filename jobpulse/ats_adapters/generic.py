@@ -1,4 +1,6 @@
 """Generic fallback strategy — no platform-specific overrides."""
+from __future__ import annotations
+
 from jobpulse.ats_adapters.strategy import BasePlatformStrategy, register_strategy
 
 

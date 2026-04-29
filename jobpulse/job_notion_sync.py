@@ -125,8 +125,6 @@ PLATFORM_NAMES: dict[str, str] = {
     "linkedin": "LinkedIn",
     "indeed": "Indeed",
     "reed": "Reed",
-    "totaljobs": "TotalJobs",
-    "glassdoor": "Glassdoor",
 }
 
 SENIORITY_NAMES: dict[str, str] = {
@@ -259,6 +257,11 @@ def build_update_payload(
     recruiter_email: str | None = None,
     company: str | None = None,
     manually_applied: bool | None = None,
+    salary: str | None = None,
+    seniority: str | None = None,
+    remote: bool | None = None,
+    cv_filename: str | None = None,
+    cl_filename: str | None = None,
 ) -> dict:
     """Build Notion update-page payload with only the provided (non-None) fields.
 
@@ -302,17 +305,14 @@ def build_update_payload(
         ats_name = ATS_PLATFORM_NAMES.get(ats_key, ats_platform.title())
         properties["ATS Platform"] = {"select": {"name": ats_name}}
 
-    safe_company = company.replace("/", "_").replace(" ", "_") if company else None
-    _prefix = _file_name_prefix()
-
     if cv_drive_link is not None:
-        cv_name = f"{_prefix}_{safe_company}.pdf" if safe_company else "CV.pdf"
+        cv_name = cv_filename or "CV.pdf"
         properties["CV Version"] = {
             "files": [{"type": "external", "name": cv_name, "external": {"url": cv_drive_link}}]
         }
 
     if cl_drive_link is not None:
-        cl_name = f"Cover_Letter_{safe_company}.pdf" if safe_company else "Cover_Letter.pdf"
+        cl_name = cl_filename or "Cover_Letter.pdf"
         properties["Cover Letter"] = {
             "files": [{"type": "external", "name": cl_name, "external": {"url": cl_drive_link}}]
         }
@@ -323,12 +323,181 @@ def build_update_payload(
     if manually_applied is not None:
         properties["Manually Applied"] = {"checkbox": manually_applied}
 
+    if salary is not None:
+        properties["Salary"] = {"rich_text": [{"text": {"content": salary}}]}
+
+    if seniority is not None:
+        properties["Seniority"] = {"select": {"name": seniority}}
+
+    if remote is not None:
+        properties["Remote"] = {"checkbox": remote}
+
     return {"properties": properties}
 
 
 # ---------------------------------------------------------------------------
 # API operations
 # ---------------------------------------------------------------------------
+
+
+def get_notion_page_status(page_id: str) -> str | None:
+    """Read the current Status of a Job Tracker page from Notion.
+
+    Returns the status name (e.g. "Found", "Applied") or None on failure.
+    """
+    if not page_id:
+        return None
+    result = _notion_api("GET", f"/pages/{page_id}")
+    if not result or "properties" not in result:
+        return None
+    status_prop = result.get("properties", {}).get("Status", {})
+    status_obj = status_prop.get("status")
+    if isinstance(status_obj, dict):
+        return status_obj.get("name")
+    return None
+
+
+def find_application_page(company: str, title: str) -> str | None:
+    """Search the Job Tracker DB for an existing page matching company + title.
+
+    Returns the Notion page ID if found, None otherwise.
+    """
+    if not NOTION_APPLICATIONS_DB_ID or not company:
+        return None
+
+    role_prefix = re.split(r"[,\-–—:|/]", title or "")[0].strip()[:30]
+    filters: list[dict] = [{"property": "Company", "title": {"equals": company}}]
+    if role_prefix:
+        filters.append({"property": "Role", "rich_text": {"contains": role_prefix}})
+    body: dict = {"page_size": 5, "filter": {"and": filters}}
+    result = _notion_api("POST", f"/databases/{NOTION_APPLICATIONS_DB_ID}/query", body)
+    rows = result.get("results", [])
+    if rows:
+        page_id = rows[0].get("id")
+        logger.info("find_application_page: found %s for %s — %s", page_id, company, title)
+        return page_id
+    return None
+
+
+_REVERSE_PLATFORM_NAMES: dict[str, str] = {v.lower(): k for k, v in PLATFORM_NAMES.items()}
+_REVERSE_ATS_PLATFORM_NAMES: dict[str, str] = {v.lower(): k for k, v in ATS_PLATFORM_NAMES.items()}
+
+
+def _parse_notion_job_page(page: dict) -> dict | None:
+    """Extract a standardized job dict from a Notion Job Tracker page."""
+    props = page.get("properties", {})
+
+    company_parts = props.get("Company", {}).get("title", [])
+    company = company_parts[0]["text"]["content"] if company_parts else ""
+
+    role_parts = props.get("Role", {}).get("rich_text", [])
+    title = role_parts[0]["text"]["content"] if role_parts else ""
+
+    if not company or not title:
+        return None
+
+    platform_obj = props.get("Platform", {}).get("select")
+    platform_display_name = platform_obj["name"] if platform_obj else "generic"
+    platform = _REVERSE_PLATFORM_NAMES.get(platform_display_name.lower(), platform_display_name.lower())
+
+    url = props.get("JD URL", {}).get("url") or ""
+
+    ats_score = props.get("ATS Score", {}).get("number") or 0
+
+    loc_parts = props.get("Location", {}).get("rich_text", [])
+    location = loc_parts[0]["text"]["content"] if loc_parts else ""
+
+    ats_plat_obj = props.get("ATS Platform", {}).get("select")
+    ats_platform = (
+        _REVERSE_ATS_PLATFORM_NAMES.get(ats_plat_obj["name"].lower(), ats_plat_obj["name"].lower())
+        if ats_plat_obj
+        else None
+    )
+
+    found_date_obj = props.get("Found Date", {}).get("date")
+    found_date = found_date_obj["start"] if found_date_obj else ""
+
+    sen_obj = props.get("Seniority", {}).get("select")
+    seniority = sen_obj["name"] if sen_obj else None
+
+    remote = props.get("Remote", {}).get("checkbox", False)
+
+    sal_parts = props.get("Salary", {}).get("rich_text", [])
+    salary = sal_parts[0]["text"]["content"] if sal_parts else ""
+
+    matched_proj = [ms["name"] for ms in props.get("Matched Projects", {}).get("multi_select", [])]
+
+    status_obj = props.get("Status", {}).get("status")
+    status = status_obj["name"] if status_obj else ""
+
+    return {
+        "notion_page_id": page["id"],
+        "company": company,
+        "title": title,
+        "platform": platform,
+        "url": url,
+        "ats_score": float(ats_score),
+        "location": location,
+        "ats_platform": ats_platform,
+        "found_date": found_date,
+        "seniority": seniority,
+        "remote": remote,
+        "salary": salary,
+        "matched_projects": matched_proj,
+        "status": status,
+    }
+
+
+def fetch_found_jobs_from_notion(
+    *,
+    found_on: "date | None" = None,
+) -> list[dict]:
+    """Query the Notion Job Tracker for jobs with Status = 'Found'.
+
+    When *found_on* is provided, results are further filtered to that Found Date.
+    Returns a list of standardized job dicts sorted newest-first.
+    """
+    if not NOTION_APPLICATIONS_DB_ID:
+        logger.warning("fetch_found_jobs_from_notion: NOTION_APPLICATIONS_DB_ID unset")
+        return []
+
+    filters: list[dict] = [{"property": "Status", "status": {"equals": "Found"}}]
+    if found_on is not None:
+        filters.append({"property": "Found Date", "date": {"equals": found_on.isoformat()}})
+
+    body: dict = {
+        "page_size": 100,
+        "filter": {"and": filters} if len(filters) > 1 else filters[0],
+        "sorts": [{"property": "Found Date", "direction": "descending"}],
+    }
+
+    all_rows: list[dict] = []
+    cursor: str | None = None
+    while True:
+        if cursor:
+            body["start_cursor"] = cursor
+
+        result = _notion_api("POST", f"/databases/{NOTION_APPLICATIONS_DB_ID}/query", body)
+        if result.get("object") == "error":
+            logger.error(
+                "fetch_found_jobs_from_notion: Notion query failed: %s",
+                result.get("message", result),
+            )
+            return all_rows
+
+        for page in result.get("results", []):
+            parsed = _parse_notion_job_page(page)
+            if parsed:
+                all_rows.append(parsed)
+
+        if not result.get("has_more"):
+            break
+        cursor = result.get("next_cursor")
+        if not cursor:
+            break
+
+    logger.info("fetch_found_jobs_from_notion: found %d jobs (found_on=%s)", len(all_rows), found_on)
+    return all_rows
 
 
 def create_application_page(job: JobListing) -> str | None:

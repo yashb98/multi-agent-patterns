@@ -460,9 +460,6 @@ class TestGenerateMaterials:
         db = _make_db()
         notion_failures: list = []
 
-        fake_cv_path = tmp_path / "cv.pdf"
-        fake_cv_path.write_bytes(b"PDF")
-
         mock_ats = MagicMock()
         mock_ats.total = 88.5
 
@@ -471,16 +468,12 @@ class TestGenerateMaterials:
             patch("jobpulse.scan_pipeline.build_extra_skills", return_value={"extra": "Spark"}),
             patch("jobpulse.scan_pipeline.get_best_projects_for_jd", return_value=[{"title": "P1", "bullets": ["built X"]}]),
             patch("jobpulse.scan_pipeline.get_role_profile", return_value={"tagline": "t", "summary": "s"}),
-            patch("jobpulse.scan_pipeline.generate_cv_pdf", return_value=fake_cv_path),
             patch("jobpulse.scan_pipeline.score_ats", return_value=mock_ats),
             patch("jobpulse.scan_pipeline.BASE_SKILLS", {"a": "Python"}),
             patch("jobpulse.scan_pipeline.EDUCATION", [{"degree": "BSc", "institution": "Uni"}]),
             patch("jobpulse.scan_pipeline.EXPERIENCE", [{"title": "Dev", "bullets": ["did X"]}]),
             patch("jobpulse.scan_pipeline.scrutinize_cv_deterministic", return_value=MagicMock(status="clean", warnings=[])),
             patch("jobpulse.scan_pipeline.scrutinize_cv_llm", return_value=MagicMock(needs_review=False, score=8)),
-            patch("jobpulse.scan_pipeline.upload_cv", return_value="https://drive.google.com/cv"),
-            patch("jobpulse.scan_pipeline.generate_cover_letter_pdf", return_value=tmp_path / "cl.pdf"),
-            patch("jobpulse.scan_pipeline.upload_cover_letter", return_value="https://drive.google.com/cl"),
             patch("jobpulse.scan_pipeline.update_application_page"),
             patch("jobpulse.scan_pipeline.build_page_content", return_value=[]),
             patch("jobpulse.scan_pipeline.set_page_content"),
@@ -493,8 +486,9 @@ class TestGenerateMaterials:
         assert isinstance(bundle, MaterialsBundle)
         assert bundle.ats_score == 88.5
         assert bundle.notion_page_id == "notion-page-id"
-        assert bundle.cv_drive_link == "https://drive.google.com/cv"
-        assert bundle.cover_letter_path is not None
+        assert bundle.cv_path is None
+        assert bundle.cv_drive_link is None
+        assert bundle.cover_letter_path is None
 
     def test_cv_generation_failure_returns_zero_score(self, tmp_path):
         from jobpulse.scan_pipeline import generate_materials
@@ -531,7 +525,6 @@ class TestGenerateMaterials:
             patch("jobpulse.scan_pipeline.fetch_and_cache_repos", return_value=[]),
             patch("jobpulse.scan_pipeline.pick_top_projects", return_value=[]),
             patch("jobpulse.scan_pipeline.get_role_profile", return_value={}),
-            patch("jobpulse.scan_pipeline.generate_cv_pdf", side_effect=Exception("no cv")),
             patch("jobpulse.scan_pipeline.determine_match_tier", return_value="skip"),
         ):
             bundle = generate_materials(listing, None, db, [], notion_failures)
@@ -554,9 +547,6 @@ class TestGenerateMaterials:
         screen = MagicMock()
         screen.best_projects = [proj1, proj2]
 
-        fake_cv_path = tmp_path / "cv.pdf"
-        fake_cv_path.write_bytes(b"PDF")
-
         mock_ats = MagicMock()
         mock_ats.total = 75.0
 
@@ -565,14 +555,12 @@ class TestGenerateMaterials:
             patch("jobpulse.scan_pipeline.build_extra_skills", return_value={}),
             patch("jobpulse.scan_pipeline.get_best_projects_for_jd", return_value=[{"title": "P1", "bullets": []}]),
             patch("jobpulse.scan_pipeline.get_role_profile", return_value={}),
-            patch("jobpulse.scan_pipeline.generate_cv_pdf", return_value=fake_cv_path),
             patch("jobpulse.scan_pipeline.score_ats", return_value=mock_ats),
             patch("jobpulse.scan_pipeline.BASE_SKILLS", {}),
             patch("jobpulse.scan_pipeline.EDUCATION", []),
             patch("jobpulse.scan_pipeline.EXPERIENCE", []),
             patch("jobpulse.scan_pipeline.scrutinize_cv_deterministic", return_value=MagicMock(status="clean", warnings=[])),
             patch("jobpulse.scan_pipeline.scrutinize_cv_llm", return_value=MagicMock(needs_review=False)),
-            patch("jobpulse.scan_pipeline.upload_cv", return_value=None),
             patch("jobpulse.scan_pipeline.update_application_page"),
             patch("jobpulse.scan_pipeline.build_page_content", return_value=[]),
             patch("jobpulse.scan_pipeline.set_page_content"),

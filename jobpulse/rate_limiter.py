@@ -3,6 +3,7 @@
 import sqlite3
 from datetime import date
 
+from shared.alerting import send_pipeline_alert
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
@@ -62,12 +63,30 @@ class RateLimiter:
                     last_break_at INTEGER NOT NULL DEFAULT 0
                 )"""
             )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS application_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    job_id TEXT NOT NULL DEFAULT '',
+                    company TEXT NOT NULL DEFAULT '',
+                    url TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_applog_date ON application_log(date)"
+            )
             conn.commit()
 
     def _today(self) -> str:
         """Return today's date as ISO string. Uses UTC to prevent timezone drift."""
         from datetime import datetime, timezone
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _now_iso(self) -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _get_platform_count(self, platform: str) -> int:
         with sqlite3.connect(self.db_path) as conn:
@@ -105,7 +124,7 @@ class RateLimiter:
             return False
         return True
 
-    def record_application(self, platform: str) -> None:
+    def record_application(self, platform: str, job_id: str = "", company: str = "", url: str = "") -> None:
         """Increment today's count for the given platform (atomic)."""
         from jobpulse.utils.safe_io import atomic_sqlite
 
@@ -127,7 +146,33 @@ class RateLimiter:
                    ON CONFLICT(date) DO UPDATE SET total_today = ?""",
                 (today, total, total),
             )
+            conn.execute(
+                """INSERT INTO application_log (date, platform, job_id, company, url, recorded_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (today, platform, job_id, company, url, self._now_iso()),
+            )
         logger.info("Recorded application on %s (total today: %d)", platform, total)
+
+        # Proactive quota alerts at 80% threshold
+        threshold = int(TOTAL_DAILY_CAP * 0.8)
+        if total == threshold:
+            send_pipeline_alert(
+                f"Daily quota at {total}/{TOTAL_DAILY_CAP} (80%). "
+                f"{TOTAL_DAILY_CAP - total} slots remaining.",
+                severity="warning",
+                category="quota",
+            )
+
+        cap = DAILY_CAPS.get(platform, DAILY_CAPS["generic"])
+        platform_count = self._get_platform_count(platform)
+        platform_threshold = int(cap * 0.8)
+        if platform_threshold > 0 and platform_count == platform_threshold:
+            send_pipeline_alert(
+                f"{platform.title()} quota at {platform_count}/{cap} (80%). "
+                f"{cap - platform_count} slots remaining.",
+                severity="warning",
+                category="quota",
+            )
 
     def get_remaining(self) -> dict[str, int]:
         """Remaining quota per platform for today."""
@@ -139,10 +184,39 @@ class RateLimiter:
         remaining["_total"] = max(0, TOTAL_DAILY_CAP - self.get_total_today())
         return remaining
 
+    def get_application_log(self, days: int = 7) -> list[dict]:
+        """Return application audit trail for the last N days."""
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT date, platform, job_id, company, url, recorded_at "
+                "FROM application_log WHERE date >= ? ORDER BY id DESC",
+                (cutoff,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def should_take_break(self) -> bool:
         """True if total_today is a positive multiple of SESSION_BREAK_EVERY."""
         total = self.get_total_today()
         return total > 0 and total % SESSION_BREAK_EVERY == 0
+
+    def cleanup_old(self, retention_days: int = 30) -> int:
+        """Delete daily_counts and application_log rows older than retention_days."""
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+        total_deleted = 0
+        with sqlite3.connect(self.db_path) as conn:
+            c1 = conn.execute("DELETE FROM daily_counts WHERE date < ?", (cutoff,))
+            total_deleted += c1.rowcount
+            c2 = conn.execute("DELETE FROM application_log WHERE date < ?", (cutoff,))
+            total_deleted += c2.rowcount
+            conn.execute("DELETE FROM session_tracker WHERE date < ?", (cutoff,))
+            conn.commit()
+        if total_deleted:
+            logger.info("Cleaned up %d old rate limiter rows (retention=%d days)", total_deleted, retention_days)
+        return total_deleted
 
     def reset_daily(self) -> None:
         """Explicitly reset today's counts (normally unnecessary due to date-based filtering)."""

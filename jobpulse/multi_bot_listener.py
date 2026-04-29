@@ -31,6 +31,127 @@ def _log(msg: str):
         f.write(f"[{datetime.now().isoformat()}] {msg}\n")
 
 
+def _optimization_tick():
+    """Run OptimizationEngine.optimize() every 15 minutes."""
+    from shared.optimization import get_optimization_engine
+
+    _log("optimization tick started")
+    engine = get_optimization_engine()
+
+    # Also wire memory layer startup on first tick
+    try:
+        from shared.memory_layer import get_shared_memory_manager
+        mm = get_shared_memory_manager()
+        startup_stats = mm.startup()
+        if startup_stats:
+            _log(f"memory layer startup: {startup_stats}")
+    except Exception as e:
+        _log(f"memory layer startup skipped: {e}")
+
+    sweep_counter = 0
+    while True:
+        try:
+            time.sleep(900)
+            result = engine.optimize()
+            n_insights = len(result.get("insights", []))
+            n_actions = len(result.get("actions", []))
+            if n_insights or n_actions:
+                _log(f"optimization tick: {n_insights} insights, {n_actions} actions")
+
+            # Run forgetting sweep every 4th tick (~1 hour)
+            sweep_counter += 1
+            if sweep_counter >= 4:
+                sweep_counter = 0
+                try:
+                    from shared.memory_layer import get_shared_memory_manager
+                    mm = get_shared_memory_manager()
+                    sweep_result = mm.run_forgetting_sweep(dry_run=False)
+                    if sweep_result.get("enabled"):
+                        _log(
+                            f"forgetting sweep: {sweep_result.get('decayed', 0)} decayed, "
+                            f"{sweep_result.get('promoted', 0)} promoted, "
+                            f"{sweep_result.get('demoted', 0)} demoted"
+                        )
+                except Exception as e:
+                    _log(f"forgetting sweep error: {e}")
+
+                # DB retention cleanup (same cadence as forgetting sweep)
+                try:
+                    from jobpulse.rate_limiter import RateLimiter
+                    rl_deleted = RateLimiter().cleanup_old(retention_days=30)
+                    if rl_deleted:
+                        _log(f"rate limiter cleanup: {rl_deleted} old rows deleted")
+                except Exception as e:
+                    _log(f"rate limiter cleanup error: {e}")
+
+                try:
+                    from shared.cost_tracker import cleanup_old_usage
+                    usage_deleted = cleanup_old_usage(retention_days=90)
+                    if usage_deleted:
+                        _log(f"llm usage cleanup: {usage_deleted} old rows deleted")
+                except Exception as e:
+                    _log(f"llm usage cleanup error: {e}")
+
+            write_heartbeat()
+        except KeyboardInterrupt:
+            _log("optimization tick stopped")
+            break
+        except Exception as e:
+            _log(f"optimization tick error: {e}")
+            time.sleep(60)
+
+
+def _poll_local_commands():
+    """Consume trusted local commands and route them like Telegram messages."""
+    from jobpulse.approval import process_reply as check_approval
+    from jobpulse.local_command_inbox import drain_local_commands
+
+    _log("local command listener started")
+    consecutive_errors = 0
+
+    while True:
+        try:
+            commands = drain_local_commands()
+            write_heartbeat()
+
+            if not commands:
+                consecutive_errors = 0
+                time.sleep(1)
+                continue
+
+            for command in commands:
+                text = str(command.get("text", "")).strip()
+                source = command.get("source", "local")
+                if not text:
+                    continue
+
+                approval_response = check_approval(text)
+                if approval_response:
+                    send_for_intent("conversation", approval_response)
+                    _log(f"[local:{source}] Approval: {approval_response[:80]}")
+                    continue
+
+                _log(f"[local:{source}] Got: \"{text[:80]}\"")
+                cmd = classify(text)
+                _log(f"[local:{source}] Intent: {cmd.intent.value}")
+                reply = dispatch(cmd)
+                send_for_intent(cmd.intent.value, reply)
+                _log(f"[local:{source}] Replied: {reply[:80]}...")
+
+            consecutive_errors = 0
+            write_heartbeat()
+        except KeyboardInterrupt:
+            _log("local command listener stopped")
+            break
+        except Exception as e:
+            consecutive_errors += 1
+            _log(f"[local] Error ({consecutive_errors}): {e}")
+            if consecutive_errors > 5:
+                time.sleep(min(60, consecutive_errors * 5))
+            else:
+                time.sleep(2)
+
+
 def _poll_bot(bot_name: str, token: str, allowed_intents: set = None,
               send_fn=None):
     """Poll a single bot in a loop. Handles only allowed intents."""
@@ -259,7 +380,22 @@ def start_all_bots():
         )
         threads.append(("Jobs", t))
 
+    t = threading.Thread(
+        target=_poll_local_commands,
+        name="local-command-listener",
+        daemon=True,
+    )
+    threads.append(("LocalCommands", t))
+
     # Alert bot is send-only — no polling needed
+
+    # Optimization engine tick — runs optimize() every 15 minutes
+    t = threading.Thread(
+        target=_optimization_tick,
+        name="optimization-tick",
+        daemon=True,
+    )
+    threads.append(("OptimizationTick", t))
 
     if not threads:
         logger.error("No Telegram bots configured.")

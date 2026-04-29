@@ -53,6 +53,7 @@ from shared.cost_tracker import (  # noqa: F401
     MODEL_COSTS,
     estimate_cost,
     record_llm_usage,
+    record_openai_usage,
     track_llm_usage,
     compute_cost_summary,
 )
@@ -169,6 +170,19 @@ def get_model_name(default: str = "gpt-5-mini") -> str:
     return default
 
 
+def _needs_max_completion_tokens(model: str) -> bool:
+    """Return True if model requires max_completion_tokens instead of max_tokens."""
+    m = model.lower()
+    return m.startswith(("o1", "o3", "o4", "gpt-5"))
+
+
+def _token_limit_kwargs(model: str, max_tokens: int) -> dict:
+    """Return the correct token limit kwarg for the model."""
+    if _needs_max_completion_tokens(model):
+        return {"max_completion_tokens": max_tokens}
+    return {"max_tokens": max_tokens}
+
+
 def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens: int) -> ChatOpenAI:
     """Build an OpenAI LLM instance."""
     effective_model = _FALLBACK_MODELS.get(model, model) if _use_fallback_models else model
@@ -177,7 +191,7 @@ def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens:
         model=effective_model,
         temperature=effective_temp,
         request_timeout=timeout,
-        max_tokens=max_tokens,
+        **_token_limit_kwargs(effective_model, max_tokens),
     )
 
 
@@ -279,16 +293,17 @@ class _MultiProviderLLM:
 class _InstrumentedLLM:
     """Thin proxy that records LLM usage with run/trajectory context."""
 
-    def __init__(self, llm, model_hint: str | None = None):
+    def __init__(self, llm, model_hint: str | None = None, agent_name: str = "unknown"):
         self._llm = llm
         self._model_hint = model_hint
+        self._agent_name = agent_name
 
     def invoke(self, messages, **kwargs):
         response = self._llm.invoke(messages, **kwargs)
         try:
             record_llm_usage(
                 response,
-                agent_name="unknown",
+                agent_name=self._agent_name,
                 messages=messages,
                 model_hint=self._model_hint,
                 operation="invoke",
@@ -302,7 +317,7 @@ class _InstrumentedLLM:
 
     def bind(self, **kwargs):
         if hasattr(self._llm, "bind"):
-            return _InstrumentedLLM(self._llm.bind(**kwargs), model_hint=self._model_hint)
+            return _InstrumentedLLM(self._llm.bind(**kwargs), model_hint=self._model_hint, agent_name=self._agent_name)
         return self
 
     def __getattr__(self, name):
@@ -310,7 +325,8 @@ class _InstrumentedLLM:
 
 
 def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
-            timeout: float = 30.0, max_tokens: int = 4096):
+            timeout: float = 30.0, max_tokens: int = 4096,
+            agent_name: str = "unknown"):
     """
     Factory function for LLM instances with multi-provider fallback.
 
@@ -333,6 +349,7 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
         return _InstrumentedLLM(
             _make_local_llm(temperature, model, timeout, max_tokens),
             model_hint=model,
+            agent_name=agent_name,
         )
 
     # Build provider chain
@@ -350,8 +367,8 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
             chain.append(llm)
 
     if len(chain) == 1:
-        return _InstrumentedLLM(chain[0], model_hint=model)
-    return _InstrumentedLLM(_MultiProviderLLM(chain), model_hint=model)
+        return _InstrumentedLLM(chain[0], model_hint=model, agent_name=agent_name)
+    return _InstrumentedLLM(_MultiProviderLLM(chain), model_hint=model, agent_name=agent_name)
 
 
 def get_openai_client(timeout: float = 30.0) -> OpenAI:
@@ -404,7 +421,7 @@ Focus on finding information that was missing from the previous research."""
 Conduct comprehensive research on this topic. Gather facts, technical
 details, current trends, and notable perspectives."""
 
-    llm = get_llm(temperature=0.3)
+    llm = get_llm(temperature=0.3, agent_name="researcher")
     response = smart_llm_call(llm, [
         SystemMessage(content=RESEARCHER_PROMPT),
         HumanMessage(content=user_msg)
@@ -470,7 +487,7 @@ RESEARCH NOTES:
 
 Write a complete, polished technical blog article based on these research notes."""
 
-    llm = get_llm(temperature=0.7)
+    llm = get_llm(temperature=0.7, agent_name="writer")
     response = smart_llm_call(llm, [
         SystemMessage(content=WRITER_PROMPT),
         HumanMessage(content=user_msg)
@@ -540,6 +557,7 @@ specified in your instructions."""
         model="gpt-5-mini",
         temperature=0.2,
         timeout=30.0,
+        agent_name="reviewer",
     )
     response = smart_llm_call(llm, [
         SystemMessage(content=REVIEWER_PROMPT),
@@ -758,3 +776,77 @@ def create_initial_state(topic: str) -> AgentState:
         "token_usage": [],
         "total_cost_usd": 0.0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cognitive Engine Default-On Helper
+# ---------------------------------------------------------------------------
+
+
+def cognitive_llm_call(
+    task: str,
+    *,
+    domain: str,
+    stakes: str = "medium",
+    scorer=None,
+    fallback_llm=None,
+    fallback_messages=None,
+) -> str:
+    """Route LLM calls through CognitiveEngine when available (default-on).
+
+    This is the preferred way to invoke LLMs for all medium+ stakes tasks.
+    It automatically uses the CognitiveEngine's multi-level reasoning
+    (reflexion, tree-of-thought) when COGNITIVE_ENABLED is not explicitly
+    set to false.
+
+    Args:
+        task: The task prompt string.
+        domain: Cognitive domain (e.g., "cv_scrutiny", "skill_extraction").
+        stakes: "low", "medium", or "high". Defaults to "medium".
+        scorer: Optional scoring function for cognitive self-improvement.
+        fallback_llm: Optional LangChain LLM for direct fallback.
+        fallback_messages: Optional messages list for direct fallback.
+
+    Returns:
+        The generated text answer.
+    """
+    import os
+
+    if os.getenv("COGNITIVE_ENABLED", "true").lower() == "false":
+        return _direct_llm_call(task, fallback_llm, fallback_messages)
+
+    try:
+        from shared.cognitive import get_cognitive_engine
+        engine = get_cognitive_engine(agent_name=domain)
+        result = engine.think_sync(task=task, domain=domain, stakes=stakes, scorer=scorer)
+        engine.flush_sync()
+        return result.answer.strip()
+    except Exception as exc:
+        logger.debug("Cognitive engine failed for %s, falling back to direct LLM: %s", domain, exc)
+        return _direct_llm_call(task, fallback_llm, fallback_messages)
+
+
+def _direct_llm_call(task: str, fallback_llm=None, fallback_messages=None) -> str:
+    """Direct LLM fallback when cognitive engine is unavailable."""
+    if fallback_llm and fallback_messages:
+        try:
+            from shared.llm_retry import resilient_llm_call
+            response = resilient_llm_call(fallback_llm, fallback_messages)
+            return response.content.strip() if hasattr(response, "content") else str(response).strip()
+        except Exception:
+            pass
+
+    # Raw OpenAI fallback
+    try:
+        client = get_openai_client()
+        model = get_model_name()
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": task}],
+            temperature=0.4,
+            **_token_limit_kwargs(model, 2000),
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as exc:
+        logger.error("Direct LLM fallback failed: %s", exc)
+        return ""

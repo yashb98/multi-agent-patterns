@@ -52,6 +52,15 @@ async def fill_text(
         actual = await el.evaluate("el => el.value || ''")
         verified = actual == fill_value or fill_value[:10] in actual
 
+        # Phone widgets (intl-tel-input) reformat numbers — verify by digit overlap
+        if not verified and fill_value and actual:
+            import re
+            actual_digits = re.sub(r'\D', '', actual)
+            expected_digits = re.sub(r'\D', '', fill_value)
+            if expected_digits and actual_digits:
+                # Accept if most digits match (widget may prepend country code)
+                verified = expected_digits in actual_digits or actual_digits in expected_digits
+
         logger.debug("text_filler: filled %s (%d chars)", selector, len(fill_value))
         return FillResult(
             success=True, selector=selector,

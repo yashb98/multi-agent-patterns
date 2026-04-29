@@ -152,6 +152,12 @@ class ScanLearningEngine:
                     consecutive_blocks INTEGER DEFAULT 1,
                     last_wall_type TEXT
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_scan_events_platform_ts
+                    ON scan_events (platform, timestamp DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_learned_rules_platform
+                    ON learned_rules (platform, confidence DESC);
                 """
             )
 
@@ -459,14 +465,12 @@ class ScanLearningEngine:
             f'"recommendation": "specific parameter changes"}}'
         )
 
-        from shared.agents import get_openai_client
-        client = get_openai_client()
-        response = safe_openai_call(
-            client,
-            model="gpt-5-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            caller="scan_learning_llm_analysis",
+        # Route through CognitiveEngine (default-on) for pattern extraction
+        from shared.agents import cognitive_llm_call
+        response = cognitive_llm_call(
+            task=prompt,
+            domain="scan_learning",
+            stakes="medium",
         )
 
         if not response:

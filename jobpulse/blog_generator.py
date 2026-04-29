@@ -14,20 +14,14 @@ from jobpulse import event_logger
 logger = get_logger(__name__)
 
 
-def _llm_call(system: str, user: str, max_tokens: int = 2500, temperature: float = 0.3) -> str:
-    """Helper for OpenAI chat call."""
-    from shared.agents import get_openai_client, get_model_name, is_local_llm
-    client = get_openai_client()
-    response = client.chat.completions.create(
-        model=get_model_name(),
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    return response.choices[0].message.content.strip()
+def _llm_call(system: str, user: str, max_tokens: int = 2500, temperature: float = 0.3) -> str:  # noqa: ARG001
+    """Helper for OpenAI chat call. Routes through CognitiveEngine (default-on)."""
+    from shared.agents import cognitive_llm_call
+    return cognitive_llm_call(
+        task=f"SYSTEM: {system}\nUSER: {user}",
+        domain="blog_generation",
+        stakes="medium",
+    ) or ""
 
 
 # ── AGENT 1: Deep Reader ──

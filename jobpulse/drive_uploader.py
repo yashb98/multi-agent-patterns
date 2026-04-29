@@ -196,13 +196,10 @@ def upload_cv(cv_path: Path, company: str) -> str | None:
         logger.warning("drive_uploader: GOOGLE_DRIVE_RESUMES_FOLDER_ID not set — skipping CV upload")
         return None
 
-    safe_company = company.replace("/", "_").replace(" ", "_")
-    filename = f"{_file_name_prefix()}_{safe_company}.pdf"
-
     return upload_to_drive(
         cv_path,
         folder_id=GOOGLE_DRIVE_RESUMES_FOLDER_ID,
-        filename=filename,
+        filename=cv_path.name,
     )
 
 
@@ -222,11 +219,8 @@ def upload_cover_letter(cl_path: Path, company: str) -> str | None:
         )
         return None
 
-    safe_company = company.replace("/", "_").replace(" ", "_")
-    filename = f"Cover_Letter_{safe_company}.pdf"
-
     return upload_to_drive(
         cl_path,
         folder_id=GOOGLE_DRIVE_COVERLETTERS_FOLDER_ID,
-        filename=filename,
+        filename=cl_path.name,
     )

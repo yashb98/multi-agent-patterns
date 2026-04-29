@@ -285,6 +285,95 @@ def record_llm_usage(
     return usage
 
 
+def record_openai_usage(
+    response,
+    *,
+    agent_name: str = "unknown",
+    model_hint: str | None = None,
+    operation: str = "chat",
+) -> dict:
+    """Persist a raw OpenAI SDK ChatCompletion response to SQLite."""
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    else:
+        prompt_tokens = 0
+        completion_tokens = 0
+
+    model = getattr(response, "model", None) or model_hint or "gpt-4o-mini"
+    cost = estimate_cost(model, prompt_tokens, completion_tokens)
+
+    result = {
+        "agent": agent_name,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "model": model,
+        "cost_usd": cost,
+        "trajectory_id": get_trajectory_id(),
+        "run_id": get_run_id(),
+        "operation": operation,
+    }
+    _record_usage_row(
+        agent_name=agent_name,
+        operation=operation,
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_usd=cost,
+    )
+    return result
+
+
+def get_daily_llm_summary(days: int = 1) -> dict:
+    """Per-agent cost breakdown for the last N days."""
+    from datetime import datetime, timezone, timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn = _usage_conn()
+    rows = conn.execute(
+        "SELECT agent_name, cost_usd, timestamp FROM llm_calls WHERE timestamp >= ?",
+        (cutoff,),
+    ).fetchall()
+
+    total_cost = 0.0
+    by_agent: dict[str, dict] = {}
+    by_day: dict[str, float] = {}
+
+    for agent_name, cost, ts in rows:
+        total_cost += cost
+        if agent_name not in by_agent:
+            by_agent[agent_name] = {"calls": 0, "cost": 0.0}
+        by_agent[agent_name]["calls"] += 1
+        by_agent[agent_name]["cost"] += cost
+
+        day = ts[:10]
+        by_day[day] = by_day.get(day, 0.0) + cost
+
+    return {
+        "total_cost": total_cost,
+        "total_calls": len(rows),
+        "by_agent": by_agent,
+        "by_day": by_day,
+    }
+
+
+def cleanup_old_usage(retention_days: int = 90) -> int:
+    """Delete llm_calls rows older than retention_days. Returns count deleted."""
+    from datetime import datetime, timezone, timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with _LEDGER_LOCK:
+        conn = _usage_conn()
+        cursor = conn.execute("DELETE FROM llm_calls WHERE timestamp < ?", (cutoff,))
+        deleted = cursor.rowcount
+        conn.commit()
+    if deleted:
+        logger.info("Cleaned up %d old llm_calls rows (retention=%d days)", deleted, retention_days)
+    return deleted
+
+
 def track_llm_usage(response, agent_name: str) -> dict:
     """Extract token usage from a response and return a tracking dict."""
     return record_llm_usage(response, agent_name=agent_name)

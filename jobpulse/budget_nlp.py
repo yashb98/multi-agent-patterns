@@ -94,6 +94,12 @@ Example: income|Salary
 Example: fixed|Subscriptions"""}],
             max_tokens=60 if is_local_llm() else 15, temperature=0,
         )
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="budget_nlp", model_hint=get_model_name())
+        except Exception:
+            pass
+
         raw = response.choices[0].message.content.strip()
         parts = raw.split("|")
         if len(parts) == 2:

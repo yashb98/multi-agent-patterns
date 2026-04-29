@@ -458,8 +458,7 @@ def increment_processed():
 
 def extract_patterns_from_email(sender: str, subject: str, body: str, category: str) -> dict:
     """During learning phase, LLM analyzes email to extract classification patterns."""
-    from shared.agents import get_llm, smart_llm_call
-    from langchain_core.messages import HumanMessage
+    from shared.agents import cognitive_llm_call
 
     prompt = f"""Analyze this email classification to extract reusable patterns.
 
@@ -481,13 +480,18 @@ Extract:
 Respond in JSON only."""
 
     try:
-        llm = get_llm(temperature=0, max_tokens=600 if _is_local_llm else 300)
-        llm = llm.bind(response_format={"type": "json_object"})
-        response = smart_llm_call(llm, [HumanMessage(content=prompt)])
-        return json.loads(response.content)
+        # Route through CognitiveEngine (default-on) for pattern extraction
+        from shared.agents import cognitive_llm_call
+        response_text = cognitive_llm_call(
+            task=prompt,
+            domain="email_preclassifier",
+            stakes="medium",
+        )
+        if response_text:
+            return json.loads(response_text)
     except Exception as e:
         logger.error("Pattern extraction failed: %s", e)
-        return {"sender_type": "unknown", "key_signals": [], "suggested_rule": None}
+    return {"sender_type": "unknown", "key_signals": [], "suggested_rule": None}
 
 
 # ── Learned Rules ─────────────────────────────────────────────────────────

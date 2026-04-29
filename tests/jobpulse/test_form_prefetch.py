@@ -296,3 +296,19 @@ def test_platform_common_screening_questions(tmp_path):
     agg = db.get_platform_aggregate("lever")
     assert agg["common_screening_questions"][0][0] == "visa?"
     assert agg["common_screening_questions"][0][1] == 3
+
+
+def test_record_and_get_failure_reasons(tmp_path):
+    from jobpulse.form_experience_db import FormExperienceDB
+
+    db = FormExperienceDB(db_path=str(tmp_path / "exp.db"))
+    db.record_failure_reason("example.com", "greenhouse", "selector_changed", "email", "#email", "selector no longer matches")
+    db.record_failure_reason("example.com", "greenhouse", "upload_rejected", "resume", "#resume", "file too large")
+
+    reasons = db.get_failure_reasons("example.com")
+    assert len(reasons) == 2
+    assert reasons[0]["failure_type"] == "upload_rejected"
+
+    stats = db.get_platform_failure_stats("greenhouse")
+    assert stats["selector_changed"] == 1
+    assert stats["upload_rejected"] == 1

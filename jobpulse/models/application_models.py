@@ -27,6 +27,7 @@ class ApplicationStatus(str, Enum):
     ANALYZING = "Analyzing"
     READY = "Ready"
     PENDING_APPROVAL = "Pending Approval"
+    REVIEWING = "Reviewing"
     APPLIED = "Applied"
     INTERVIEW = "Interview"
     OFFER = "Offer"
@@ -50,7 +51,7 @@ class JobListing(BaseModel):
     )
     title: str = Field(description="Job title as shown on the listing.")
     company: str = Field(description="Company name as shown on the listing.")
-    platform: Literal["linkedin", "indeed", "reed", "totaljobs", "glassdoor", "generic"] = Field(
+    platform: Literal["linkedin", "indeed", "reed", "generic"] = Field(
         description="Job board the listing was scraped from."
     )
     url: str = Field(description="Canonical URL of the job listing.")
@@ -206,6 +207,14 @@ class ApplicationRecord(BaseModel):
     cover_letter_path: Path | None = Field(
         default=None,
         description="Filesystem path to the cover letter PDF generated for this application.",
+    )
+    cv_version: str | None = Field(
+        default=None,
+        description="Hash or version identifier of the CV generation strategy used.",
+    )
+    generation_strategy: str | None = Field(
+        default=None,
+        description="Name of the generation strategy (e.g. 'skill_match', 'archetype_focus', 'project_heavy').",
     )
     applied_at: datetime | None = Field(
         default=None,

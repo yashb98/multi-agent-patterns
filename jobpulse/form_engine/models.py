@@ -13,6 +13,7 @@ class InputType(str, Enum):
     TEXTAREA = "textarea"
     SELECT_NATIVE = "select_native"
     SELECT_CUSTOM = "select_custom"
+    COMBOBOX = "combobox"
     RADIO = "radio"
     CHECKBOX = "checkbox"
     DATE_NATIVE = "date_native"

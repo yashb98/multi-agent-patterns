@@ -85,6 +85,7 @@ def test_unreachable_qdrant_leaves_qdrant_none(tmp_path, monkeypatch):
 
 def test_unreachable_neo4j_leaves_neo4j_none(tmp_path, monkeypatch):
     monkeypatch.setenv("MEMORY_NEO4J_URI", "bolt://127.0.0.1:65500")
+    monkeypatch.setenv("NEO4J_URI", "bolt://127.0.0.1:65500")
     kit = _build_three_engine_kit(str(tmp_path))
     assert kit["neo4j"] is None
     assert kit["sqlite_store"] is not None
