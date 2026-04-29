@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 
+from jobpulse.form_engine.gotchas import GotchasDB
 from jobpulse.form_experience_db import FormExperienceDB
 from jobpulse.navigation_learner import NavigationLearner
 from jobpulse.platform_transfer import PlatformTransferEngine
@@ -357,3 +358,33 @@ class TestNavigationLearnerFallback:
         result = learner.get_sequence("direct.io")
         assert result is not None
         assert result[0]["action"] == "submit"
+
+
+class TestGotchasDBFallback:
+    def test_lookup_domain_falls_back_to_transfer(self, tmp_path):
+        gotchas_db = str(tmp_path / "form_gotchas.db")
+        fe_db = str(tmp_path / "form_experience.db")
+
+        gotchas = GotchasDB(db_path=gotchas_db)
+        gotchas.store("donor.greenhouse.io", ".salary-input", "hidden field", "scroll first")
+
+        engine = PlatformTransferEngine(db_path=fe_db)
+        conn = sqlite3.connect(fe_db)
+        now = "2026-04-29T00:00:00+00:00"
+        conn.execute("INSERT INTO platform_similarity VALUES (?, ?, ?, ?, ?, ?)",
+            ("new.greenhouse.io", "donor.greenhouse.io", "failure_patterns", 0.8, 3, now))
+        conn.commit()
+        conn.close()
+
+        gotchas._transfer_db_path = fe_db
+        result = gotchas.lookup_domain("new.greenhouse.io")
+        assert len(result) == 1
+        assert result[0]["problem"] == "hidden field"
+
+    def test_lookup_domain_prefers_direct_hit(self, tmp_path):
+        gotchas_db = str(tmp_path / "form_gotchas.db")
+        gotchas = GotchasDB(db_path=gotchas_db)
+        gotchas.store("direct.io", ".btn", "readonly", "click twice")
+        result = gotchas.lookup_domain("direct.io")
+        assert len(result) == 1
+        assert result[0]["solution"] == "click twice"

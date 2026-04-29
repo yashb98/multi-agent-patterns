@@ -45,7 +45,49 @@ class GotchasDB:
                 conn.execute("ALTER TABLE gotchas ADD COLUMN engine TEXT NOT NULL DEFAULT 'extension'")
             except sqlite3.OperationalError:
                 pass  # Already exists
+
+            # Migration: if table was created with old PK (domain, selector_pattern)
+            # without engine, recreate with correct PK
+            try:
+                conn.execute(
+                    """INSERT INTO gotchas (domain, selector_pattern, problem, solution, engine, times_used, created_at)
+                       VALUES ('__pk_check__', '__pk_check__', '', '', 'extension', 0, '')
+                       ON CONFLICT(domain, selector_pattern, engine) DO NOTHING"""
+                )
+            except sqlite3.OperationalError:
+                # Old PK doesn't include engine — need to recreate
+                conn.execute("ALTER TABLE gotchas RENAME TO gotchas_old")
+                conn.execute(
+                    """CREATE TABLE gotchas (
+                        domain TEXT NOT NULL,
+                        selector_pattern TEXT NOT NULL,
+                        problem TEXT NOT NULL,
+                        solution TEXT NOT NULL,
+                        engine TEXT NOT NULL DEFAULT 'extension',
+                        times_used INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        last_used_at TEXT,
+                        PRIMARY KEY (domain, selector_pattern, engine)
+                    )"""
+                )
+                conn.execute(
+                    """INSERT INTO gotchas (domain, selector_pattern, problem, solution, engine, times_used, created_at, last_used_at)
+                       SELECT domain, selector_pattern, problem, solution,
+                              COALESCE(engine, 'extension') AS engine,
+                              COALESCE(times_used, 0) AS times_used,
+                              created_at, last_used_at
+                       FROM gotchas_old"""
+                )
+                conn.execute("DROP TABLE gotchas_old")
             conn.commit()
+
+    @property
+    def _transfer_engine(self):
+        if not hasattr(self, "_te"):
+            from jobpulse.platform_transfer import PlatformTransferEngine
+            db_path = getattr(self, "_transfer_db_path", None)
+            self._te = PlatformTransferEngine(db_path=db_path)
+        return self._te
 
     def store(self, domain: str, selector_pattern: str, problem: str, solution: str, engine: str = "extension") -> None:
         """Store or update a gotcha. Overwrites if same domain+selector+engine exists."""
@@ -82,7 +124,19 @@ class GotchasDB:
                 "SELECT * FROM gotchas WHERE domain = ? AND engine = ? ORDER BY times_used DESC",
                 (domain, engine),
             ).fetchall()
+        if rows:
             return [dict(r) for r in rows]
+        transfer = self._transfer_engine.get_transfer_data(domain, "failure_patterns")
+        if transfer:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                donor_rows = conn.execute(
+                    "SELECT * FROM gotchas WHERE domain = ? AND engine = ? ORDER BY times_used DESC",
+                    (transfer["donor_domain"], engine),
+                ).fetchall()
+            if donor_rows:
+                return [dict(r) for r in donor_rows]
+        return []
 
     def record_usage(self, domain: str, selector_pattern: str, engine: str = "extension") -> None:
         """Increment times_used and update last_used_at."""
