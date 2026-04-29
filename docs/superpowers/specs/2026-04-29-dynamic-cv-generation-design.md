@@ -194,24 +194,98 @@ def generate_cv_pdf(
 
 When `experience` is provided, use it instead of `_load_experience()`.
 
+### Cover Letter Tailoring
+
+The cover letter's 4 numbered points are already LLM-tailored via `build_dynamic_points()` + `polish_points_llm()`. But the intro, hook, and closing paragraphs are still static templates. A 4th parallel tailoring function generates these:
+
+```python
+def tailor_cover_letter_prose(
+    company: str,
+    role: str,
+    required_skills: list[str],
+    matched_projects: list[dict],
+) -> TailoredCoverLetter | None:
+    """Generate intro, hook, and closing paragraphs tailored to the JD."""
+```
+
+```python
+@dataclass
+class TailoredCoverLetter:
+    intro: str
+    hook: str
+    closing: str
+```
+
+**Prompt constraints:**
+- Intro: 2-3 sentences, mention the specific role and company by name, reference why this company specifically interests the candidate
+- Hook: 2-3 sentences, connect the candidate's strongest matching skills to the JD's requirements with a concrete achievement
+- Closing: 2-3 sentences, express enthusiasm for the specific company, mention looking forward to discussion
+- All three: professional tone, no em-dashes, no generic filler phrases ("I believe I would be a great fit"), must feel specific to this company
+- Preserve `<b>` tag formatting for emphasis on key terms
+
+**Validation:**
+- No soft skill words in hook
+- Intro mentions the company name
+- Each section is 50-300 characters
+- On failure: Telegram alert + continue with generated text
+
+**Integration: `scan_pipeline.generate_materials()`**
+
+The cover letter is generated lazily (only when ATS form has CL field), so tailoring runs at generation time inside the `cl_generator` callback:
+
+```python
+# In the cl_generator callback:
+cl_prose = tailor_cover_letter_prose(company, role, required_skills, matched_projects)
+generate_cover_letter_pdf(
+    company=company, role=role,
+    intro=cl_prose.intro if cl_prose else None,
+    hook=cl_prose.hook if cl_prose else None,
+    closing=cl_prose.closing if cl_prose else None,
+    matched_projects=matched_projects,
+    required_skills=required_skills,
+)
+```
+
+The existing `generate_cover_letter_pdf()` signature already accepts `intro`, `hook`, `closing` as optional parameters, so no PDF generator changes needed.
+
+### Orchestrator Update
+
+`tailor_cv_sections()` becomes `tailor_all_sections()` and adds the CL prose call:
+
+```python
+@dataclass
+class TailoredCV:
+    tagline: str | None
+    summary: str | None
+    experience: list[ExperienceEntry] | None
+    projects: list[dict] | None
+    cover_letter: TailoredCoverLetter | None
+```
+
+All 4 calls run in parallel:
+1. `tailor_summary_and_tagline()` — CV header
+2. `tailor_experience_bullets()` — CV experience
+3. `tailor_project_bullets()` — CV projects
+4. `tailor_cover_letter_prose()` — CL intro/hook/closing
+
 ## Cost
 
-- 3 parallel `cognitive_llm_call()` per CV, GPT-5o-mini
-- ~$0.008 per CV generation
-- 5-15 CVs/day after Gate filtering = $0.04-0.12/day
-- Parallel execution: ~2-3 seconds total
+- 4 parallel `cognitive_llm_call()` per application, GPT-5o-mini
+- ~$0.010 per application (CV + CL)
+- 5-15 applications/day after Gate filtering = $0.05-0.15/day
+- Parallel execution: ~2-3 seconds total (all 4 concurrent)
 
 ## Files Changed
 
 | File | Change |
 |------|--------|
-| `jobpulse/cv_tailor.py` | **NEW** — 3 tailoring functions + orchestrator + validation |
-| `jobpulse/scan_pipeline.py` | Call `tailor_cv_sections()` before PDF generation |
+| `jobpulse/cv_tailor.py` | **NEW** — 4 tailoring functions + orchestrator + validation |
+| `jobpulse/scan_pipeline.py` | Call `tailor_all_sections()`, pass CL prose to cl_generator callback |
 | `jobpulse/cv_templates/generate_cv.py` | Add `experience` parameter to `generate_cv_pdf()` |
 
 ## Files NOT Changed
 
-- `generate_cover_letter.py` — already has dynamic point generation
+- `generate_cover_letter.py` — already accepts intro/hook/closing params, no changes needed
 - `project_portfolio.py` — project selection stays the same (MindGraph matching)
 - `archetype_engine.py` — archetypes still used as fallback if tailoring fails
 - `gate4_quality.py` — existing validation reused, not modified
