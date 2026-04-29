@@ -91,3 +91,66 @@ class TestSimilarityMetrics:
         engine = PlatformTransferEngine(db_path=str(tmp_path / "t.db"))
         assert engine._token_overlap("#app .form-container", "#app .form-wrapper") > 0.0
         assert engine._token_overlap("#app .form", "#app .form") == pytest.approx(1.0)
+
+
+class TestSimilarityMatrix:
+    def _seed_two_domains(self, db_path: str) -> None:
+        exp_db = FormExperienceDB(db_path=db_path)
+        exp_db.record(domain="boards.greenhouse.io/acme", platform="greenhouse", adapter="native",
+            pages_filled=3, field_types=["text", "email", "tel", "file"], screening_questions=[], time_seconds=45.0, success=True)
+        exp_db.store_timing("boards.greenhouse.io/acme", hydration_ms=800, fill_ms=2000, transition_ms=500)
+        exp_db.store_container("boards.greenhouse.io/acme", "#application")
+        exp_db.record_fill_technique("boards.greenhouse.io/acme", "email", "email", "type_text")
+        exp_db.record_fill_technique("boards.greenhouse.io/acme", "phone", "tel", "type_text")
+
+        exp_db.record(domain="boards.greenhouse.io/beta", platform="greenhouse", adapter="native",
+            pages_filled=3, field_types=["text", "email", "tel", "file", "select"], screening_questions=[], time_seconds=50.0, success=True)
+        exp_db.store_timing("boards.greenhouse.io/beta", hydration_ms=900, fill_ms=2200, transition_ms=600)
+        exp_db.store_container("boards.greenhouse.io/beta", "#application .form")
+        exp_db.record_fill_technique("boards.greenhouse.io/beta", "email", "email", "type_text")
+        exp_db.record_fill_technique("boards.greenhouse.io/beta", "salary", "text", "select_option")
+
+    def test_recompute_populates_similarity(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        self._seed_two_domains(db)
+        engine = PlatformTransferEngine(db_path=db)
+        engine.recompute_similarity_matrix("boards.greenhouse.io/acme")
+        conn = sqlite3.connect(db)
+        rows = conn.execute("SELECT * FROM platform_similarity").fetchall()
+        conn.close()
+        assert len(rows) > 0
+
+    def test_recompute_stores_all_signal_types(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        self._seed_two_domains(db)
+        engine = PlatformTransferEngine(db_path=db)
+        engine.recompute_similarity_matrix("boards.greenhouse.io/acme")
+        conn = sqlite3.connect(db)
+        signal_types = {r[0] for r in conn.execute("SELECT DISTINCT signal_type FROM platform_similarity").fetchall()}
+        conn.close()
+        assert len(signal_types) >= 5
+
+    def test_recompute_incremental_only_new_domain(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        self._seed_two_domains(db)
+        engine = PlatformTransferEngine(db_path=db)
+        engine.recompute_similarity_matrix("boards.greenhouse.io/acme")
+        conn = sqlite3.connect(db)
+        count_before = conn.execute("SELECT COUNT(*) FROM platform_similarity").fetchone()[0]
+        conn.close()
+        engine.recompute_similarity_matrix("boards.greenhouse.io/acme")
+        conn = sqlite3.connect(db)
+        count_after = conn.execute("SELECT COUNT(*) FROM platform_similarity").fetchone()[0]
+        conn.close()
+        assert count_after == count_before
+
+    def test_similarity_values_in_range(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        self._seed_two_domains(db)
+        engine = PlatformTransferEngine(db_path=db)
+        engine.recompute_similarity_matrix("boards.greenhouse.io/acme")
+        conn = sqlite3.connect(db)
+        rows = conn.execute("SELECT similarity FROM platform_similarity").fetchall()
+        conn.close()
+        for (sim,) in rows:
+            assert 0.0 <= sim <= 1.0

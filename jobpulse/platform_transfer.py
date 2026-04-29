@@ -129,3 +129,177 @@ class PlatformTransferEngine:
             return 0.0
         union = tokens_a | tokens_b
         return len(tokens_a & tokens_b) / len(union)
+
+    # ------------------------------------------------------------------
+    # Data loaders
+    # ------------------------------------------------------------------
+
+    def _load_form_experience_data(self) -> dict[str, dict]:
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM form_experience WHERE success = 1").fetchall()
+        return {r["domain"]: dict(r) for r in rows}
+
+    def _load_timing_data(self) -> dict[str, dict]:
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM page_timings").fetchall()
+        return {r["domain"]: dict(r) for r in rows}
+
+    def _load_container_data(self) -> dict[str, str]:
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute("SELECT domain, selector FROM container_selectors").fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def _load_fill_techniques(self) -> dict[str, set[str]]:
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute("SELECT domain, technique FROM fill_techniques WHERE success = 1").fetchall()
+        result: dict[str, set[str]] = {}
+        for domain, technique in rows:
+            result.setdefault(domain, set()).add(technique)
+        return result
+
+    def _load_failure_data(self) -> dict[str, dict[str, int]]:
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT domain, failure_type, COUNT(*) as cnt FROM form_failure_reasons GROUP BY domain, failure_type"
+            ).fetchall()
+        result: dict[str, dict[str, int]] = {}
+        for domain, ftype, cnt in rows:
+            result.setdefault(domain, {})[ftype] = cnt
+        return result
+
+    def _load_correction_data(self) -> dict[str, dict[str, int]]:
+        corrections_db = str(DATA_DIR / "field_corrections.db")
+        try:
+            with sqlite3.connect(corrections_db) as conn:
+                rows = conn.execute(
+                    "SELECT domain, field_label, COUNT(*) as cnt FROM field_corrections GROUP BY domain, field_label"
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return {}
+        result: dict[str, dict[str, int]] = {}
+        for domain, label, cnt in rows:
+            result.setdefault(domain, {})[label] = cnt
+        return result
+
+    def _load_navigation_data(self) -> dict[str, list[str]]:
+        nav_db = str(DATA_DIR / "navigation_learning.db")
+        try:
+            with sqlite3.connect(nav_db) as conn:
+                rows = conn.execute("SELECT domain, steps FROM sequences WHERE success = 1").fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return {}
+        result: dict[str, list[str]] = {}
+        for domain, steps_json in rows:
+            try:
+                steps = json.loads(steps_json)
+                result[domain] = [s.get("action", "") for s in steps]
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        return result
+
+    # ------------------------------------------------------------------
+    # Similarity matrix recomputation
+    # ------------------------------------------------------------------
+
+    def recompute_similarity_matrix(self, trigger_domain: str) -> int:
+        fe_data = self._load_form_experience_data()
+        timing_data = self._load_timing_data()
+        container_data = self._load_container_data()
+        technique_data = self._load_fill_techniques()
+        failure_data = self._load_failure_data()
+        correction_data = self._load_correction_data()
+        nav_data = self._load_navigation_data()
+
+        all_domains = set(fe_data.keys())
+        if trigger_domain not in all_domains:
+            return 0
+
+        now = datetime.now(UTC).isoformat()
+        written = 0
+
+        with sqlite3.connect(self._db_path) as conn:
+            for other_domain in all_domains:
+                if other_domain == trigger_domain:
+                    continue
+                pairs = self._compute_pair_signals(
+                    trigger_domain, other_domain,
+                    fe_data, timing_data, container_data,
+                    technique_data, failure_data, correction_data, nav_data,
+                )
+                for signal_type, similarity, sample_count in pairs:
+                    if sample_count < 2:
+                        continue
+                    # Store both directions
+                    conn.execute(
+                        """INSERT INTO platform_similarity
+                           (domain_a, domain_b, signal_type, similarity, sample_count, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(domain_a, domain_b, signal_type) DO UPDATE SET
+                               similarity = excluded.similarity, sample_count = excluded.sample_count, updated_at = excluded.updated_at""",
+                        (trigger_domain, other_domain, signal_type, similarity, sample_count, now),
+                    )
+                    conn.execute(
+                        """INSERT INTO platform_similarity
+                           (domain_a, domain_b, signal_type, similarity, sample_count, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(domain_a, domain_b, signal_type) DO UPDATE SET
+                               similarity = excluded.similarity, sample_count = excluded.sample_count, updated_at = excluded.updated_at""",
+                        (other_domain, trigger_domain, signal_type, similarity, sample_count, now),
+                    )
+                    written += 2
+
+        logger.info("transfer: recomputed similarity for %s — %d rows across %d peers", trigger_domain, written, len(all_domains) - 1)
+        return written
+
+    def _compute_pair_signals(self, domain_a, domain_b, fe_data, timing_data, container_data, technique_data, failure_data, correction_data, nav_data) -> list[tuple[str, float, int]]:
+        results: list[tuple[str, float, int]] = []
+        fe_a, fe_b = fe_data.get(domain_a), fe_data.get(domain_b)
+
+        if fe_a and fe_b:
+            def _parse_field_types(ft_raw) -> dict[str, int]:
+                from collections import Counter
+                if isinstance(ft_raw, str):
+                    ft_list = json.loads(ft_raw)
+                else:
+                    ft_list = ft_raw
+                return dict(Counter(ft_list))
+            ft_a = _parse_field_types(fe_a.get("field_types", "[]"))
+            ft_b = _parse_field_types(fe_b.get("field_types", "[]"))
+            count = (fe_a.get("apply_count", 1) or 1) + (fe_b.get("apply_count", 1) or 1)
+            results.append(("field_types", self._cosine_similarity(ft_a, ft_b), count))
+
+            pages_a = fe_a.get("pages_filled", 0) or 0
+            pages_b = fe_b.get("pages_filled", 0) or 0
+            if pages_a > 0 or pages_b > 0:
+                results.append(("page_count", self._normalized_page_diff(pages_a, pages_b), count))
+
+        t_a, t_b = timing_data.get(domain_a), timing_data.get(domain_b)
+        if t_a and t_b:
+            vec_a = {"hydration": t_a["avg_hydration_ms"], "fill": t_a["avg_fill_ms"], "transition": t_a["avg_transition_ms"]}
+            vec_b = {"hydration": t_b["avg_hydration_ms"], "fill": t_b["avg_fill_ms"], "transition": t_b["avg_transition_ms"]}
+            samples = (t_a.get("sample_count", 1) or 1) + (t_b.get("sample_count", 1) or 1)
+            results.append(("timing_profile", self._cosine_similarity(vec_a, vec_b), samples))
+
+        tech_a, tech_b = technique_data.get(domain_a), technique_data.get(domain_b)
+        if tech_a and tech_b:
+            results.append(("fill_techniques", self._jaccard_index(tech_a, tech_b), len(tech_a) + len(tech_b)))
+
+        fail_a, fail_b = failure_data.get(domain_a), failure_data.get(domain_b)
+        if fail_a and fail_b:
+            results.append(("failure_patterns", self._cosine_similarity(fail_a, fail_b), sum(fail_a.values()) + sum(fail_b.values())))
+
+        corr_a, corr_b = correction_data.get(domain_a), correction_data.get(domain_b)
+        if corr_a and corr_b:
+            results.append(("correction_rates", self._cosine_similarity(corr_a, corr_b), sum(corr_a.values()) + sum(corr_b.values())))
+
+        nav_a, nav_b = nav_data.get(domain_a), nav_data.get(domain_b)
+        if nav_a and nav_b:
+            results.append(("navigation_flow", self._normalized_levenshtein(nav_a, nav_b), len(nav_a) + len(nav_b)))
+
+        cont_a, cont_b = container_data.get(domain_a), container_data.get(domain_b)
+        if cont_a and cont_b:
+            results.append(("container_selectors", self._token_overlap(cont_a, cont_b), 2))
+
+        return results
