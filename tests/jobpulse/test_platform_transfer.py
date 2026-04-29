@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from jobpulse.form_experience_db import FormExperienceDB
+from jobpulse.navigation_learner import NavigationLearner
 from jobpulse.platform_transfer import PlatformTransferEngine
 
 
@@ -322,3 +323,37 @@ class TestFormExperienceDBFallback:
         assert result is None
         result = exp_db.get_field_mappings("totally-unknown.io")
         assert result == {}
+
+
+class TestNavigationLearnerFallback:
+    def test_get_sequence_falls_back_to_transfer(self, tmp_path):
+        nav_db = str(tmp_path / "navigation_learning.db")
+        fe_db = str(tmp_path / "form_experience.db")
+
+        learner = NavigationLearner(db_path=nav_db)
+        learner.save_sequence("donor.greenhouse.io", [
+            {"action": "click_apply", "selector": "button.apply"},
+            {"action": "fill_form", "selector": "#form"},
+        ], success=True, platform="greenhouse")
+
+        engine = PlatformTransferEngine(db_path=fe_db)
+        conn = sqlite3.connect(fe_db)
+        now = "2026-04-29T00:00:00+00:00"
+        conn.execute("INSERT INTO platform_similarity VALUES (?, ?, ?, ?, ?, ?)",
+            ("new.greenhouse.io", "donor.greenhouse.io", "navigation_flow", 0.85, 4, now))
+        conn.commit()
+        conn.close()
+
+        learner._transfer_db_path = fe_db
+        result = learner.get_sequence("new.greenhouse.io")
+        assert result is not None
+        assert len(result) == 2
+        assert result[0]["action"] == "click_apply"
+
+    def test_get_sequence_prefers_direct_hit(self, tmp_path):
+        nav_db = str(tmp_path / "navigation_learning.db")
+        learner = NavigationLearner(db_path=nav_db)
+        learner.save_sequence("direct.io", [{"action": "submit"}], success=True)
+        result = learner.get_sequence("direct.io")
+        assert result is not None
+        assert result[0]["action"] == "submit"

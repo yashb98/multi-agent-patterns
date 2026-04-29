@@ -29,6 +29,7 @@ class NavigationLearner:
 
     def _init_db(self):
         with sqlite3.connect(self._db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sequences (
                     domain TEXT PRIMARY KEY,
@@ -47,6 +48,14 @@ class NavigationLearner:
             except sqlite3.OperationalError:
                 conn.execute("ALTER TABLE sequences ADD COLUMN platform TEXT DEFAULT ''")
 
+    @property
+    def _transfer_engine(self):
+        if not hasattr(self, "_te"):
+            from jobpulse.platform_transfer import PlatformTransferEngine
+            db_path = getattr(self, "_transfer_db_path", None)
+            self._te = PlatformTransferEngine(db_path=db_path)
+        return self._te
+
     @staticmethod
     def _normalize_domain(domain_or_url: str) -> str:
         if "://" in domain_or_url:
@@ -62,16 +71,26 @@ class NavigationLearner:
                 "SELECT steps, updated_at FROM sequences WHERE domain = ? AND success = 1",
                 (domain,),
             ).fetchone()
-        if not row:
-            return None
-        try:
-            updated = datetime.fromisoformat(row[1])
-            if (datetime.now(UTC) - updated).days > _SEQUENCE_TTL_DAYS:
-                logger.info("Navigation sequence for %s expired (%s)", domain, row[1])
-                return None
-        except (ValueError, TypeError):
-            pass
-        return json.loads(row[0])
+        if row:
+            try:
+                updated = datetime.fromisoformat(row[1])
+                if (datetime.now(UTC) - updated).days > _SEQUENCE_TTL_DAYS:
+                    logger.info("Navigation sequence for %s expired (%s)", domain, row[1])
+                    row = None
+            except (ValueError, TypeError):
+                pass
+        if row:
+            return json.loads(row[0])
+        transfer = self._transfer_engine.get_transfer_data(domain, "navigation_flow")
+        if transfer:
+            with sqlite3.connect(self._db_path) as conn:
+                donor_row = conn.execute(
+                    "SELECT steps FROM sequences WHERE domain = ? AND success = 1",
+                    (transfer["donor_domain"],),
+                ).fetchone()
+            if donor_row:
+                return json.loads(donor_row[0])
+        return None
 
     def save_sequence(self, domain_or_url: str, steps: list[dict], success: bool, platform: str = ""):
         """Save a navigation sequence for a domain."""
