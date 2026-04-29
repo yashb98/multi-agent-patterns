@@ -87,6 +87,13 @@ class FormExperienceDB:
                 sample_count INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS scan_strategy_preferences (
+                domain TEXT PRIMARY KEY,
+                preferred_strategy TEXT NOT NULL,
+                field_count INTEGER NOT NULL,
+                sample_count INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            );
         """
 
     def _init_db_heal(self):
@@ -183,6 +190,22 @@ class FormExperienceDB:
                     updated_at TEXT NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scan_strategy_preferences (
+                    domain TEXT PRIMARY KEY,
+                    preferred_strategy TEXT NOT NULL,
+                    field_count INTEGER NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+    @property
+    def _transfer_engine(self):
+        if not hasattr(self, "_te"):
+            from jobpulse.platform_transfer import PlatformTransferEngine
+            self._te = PlatformTransferEngine(db_path=self._db_path)
+        return self._te
 
     @staticmethod
     def normalize_domain(domain_or_url: str) -> str:
@@ -430,7 +453,24 @@ class FormExperienceDB:
                 """,
                 (domain, limit),
             ).fetchall()
-        return [dict(r) for r in rows]
+        if rows:
+            return [dict(r) for r in rows]
+        transfer = self._transfer_engine.get_transfer_data(domain, "failure_patterns")
+        if transfer:
+            with sqlite3.connect(self._db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                donor_rows = conn.execute(
+                    """
+                    SELECT * FROM form_failure_reasons
+                    WHERE domain = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (transfer["donor_domain"], limit),
+                ).fetchall()
+            if donor_rows:
+                return [dict(r) for r in donor_rows]
+        return []
 
     def get_platform_failure_stats(self, platform: str) -> dict:
         """Return aggregated failure statistics for a platform."""
@@ -456,7 +496,18 @@ class FormExperienceDB:
                 "SELECT field_label, profile_key FROM field_label_mappings WHERE domain = ?",
                 (domain,),
             ).fetchall()
-        return {label: key for label, key in rows}
+        if rows:
+            return {label: key for label, key in rows}
+        transfer = self._transfer_engine.get_transfer_data(domain, "field_types")
+        if transfer:
+            with sqlite3.connect(self._db_path) as conn:
+                donor_rows = conn.execute(
+                    "SELECT field_label, profile_key FROM field_label_mappings WHERE domain = ?",
+                    (transfer["donor_domain"],),
+                ).fetchall()
+            if donor_rows:
+                return {label: key for label, key in donor_rows}
+        return {}
 
     def record_fill_technique(
         self,
@@ -543,7 +594,18 @@ class FormExperienceDB:
                 "SELECT selector FROM container_selectors WHERE domain = ?",
                 (domain,),
             ).fetchone()
-        return row[0] if row else None
+        if row:
+            return row[0]
+        transfer = self._transfer_engine.get_transfer_data(domain, "container_selectors")
+        if transfer:
+            with sqlite3.connect(self._db_path) as conn:
+                donor_row = conn.execute(
+                    "SELECT selector FROM container_selectors WHERE domain = ?",
+                    (transfer["donor_domain"],),
+                ).fetchone()
+            if donor_row:
+                return donor_row[0]
+        return None
 
     def delete_container(self, domain_or_url: str) -> None:
         domain = self.normalize_domain(domain_or_url)
@@ -588,4 +650,62 @@ class FormExperienceDB:
             row = conn.execute(
                 "SELECT * FROM page_timings WHERE domain = ?", (domain,),
             ).fetchone()
-        return dict(row) if row else None
+        if row:
+            return dict(row)
+        transfer = self._transfer_engine.get_transfer_data(domain, "timing_profile")
+        if transfer:
+            with sqlite3.connect(self._db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                donor_row = conn.execute(
+                    "SELECT * FROM page_timings WHERE domain = ?", (transfer["donor_domain"],),
+                ).fetchone()
+            if donor_row:
+                result = dict(donor_row)
+                result["_transfer"] = True
+                result["_donor"] = transfer["donor_domain"]
+                return result
+        return None
+
+    def store_scan_strategy(
+        self, domain_or_url: str, strategy: str, field_count: int,
+    ) -> None:
+        domain = self.normalize_domain(domain_or_url)
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO scan_strategy_preferences
+                   (domain, preferred_strategy, field_count, sample_count, updated_at)
+                   VALUES (?, ?, ?, 1, ?)
+                   ON CONFLICT(domain) DO UPDATE SET
+                       preferred_strategy = excluded.preferred_strategy,
+                       field_count = excluded.field_count,
+                       sample_count = sample_count + 1,
+                       updated_at = excluded.updated_at""",
+                (domain, strategy, field_count, now),
+            )
+        logger.debug("Stored scan strategy %s for %s (%d fields)", strategy, domain, field_count)
+
+    def get_scan_strategy(self, domain_or_url: str) -> dict | None:
+        domain = self.normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM scan_strategy_preferences WHERE domain = ?",
+                (domain,),
+            ).fetchone()
+        if row:
+            return dict(row)
+        transfer = self._transfer_engine.get_transfer_data(domain, "fill_techniques")
+        if transfer:
+            with sqlite3.connect(self._db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                donor_row = conn.execute(
+                    "SELECT * FROM scan_strategy_preferences WHERE domain = ?",
+                    (transfer["donor_domain"],),
+                ).fetchone()
+            if donor_row:
+                result = dict(donor_row)
+                result["_transfer"] = True
+                result["_donor"] = transfer["donor_domain"]
+                return result
+        return None

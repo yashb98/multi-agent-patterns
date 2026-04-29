@@ -247,7 +247,78 @@ class TestThompsonSampling:
         class FakeEngine:
             def emit(self, **kwargs):
                 emitted.append(kwargs)
-        monkeypatch.setattr("jobpulse.platform_transfer.get_optimization_engine", lambda: FakeEngine())
+        monkeypatch.setattr("shared.optimization.get_optimization_engine", lambda: FakeEngine())
         engine.record_outcome("t.io", "d.io", "timing_profile", success=True)
         assert len(emitted) == 1
         assert emitted[0]["signal_type"] == "transfer"
+
+
+class TestFormExperienceDBFallback:
+    def test_get_timing_falls_back_to_transfer(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        exp_db = FormExperienceDB(db_path=db)
+        exp_db.store_timing("donor.greenhouse.io", hydration_ms=800, fill_ms=2000, transition_ms=500)
+
+        engine = PlatformTransferEngine(db_path=db)
+        conn = sqlite3.connect(db)
+        now = "2026-04-29T00:00:00+00:00"
+        conn.execute("INSERT INTO platform_similarity VALUES (?, ?, ?, ?, ?, ?)",
+            ("new.greenhouse.io", "donor.greenhouse.io", "timing_profile", 0.9, 5, now))
+        conn.commit()
+        conn.close()
+
+        result = exp_db.get_timing("new.greenhouse.io")
+        assert result is not None
+        assert result["avg_hydration_ms"] == 800
+        assert result.get("_transfer") is True
+        assert result.get("_donor") == "donor.greenhouse.io"
+
+    def test_get_timing_prefers_direct_hit(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        exp_db = FormExperienceDB(db_path=db)
+        exp_db.store_timing("direct.io", hydration_ms=100, fill_ms=200, transition_ms=50)
+        result = exp_db.get_timing("direct.io")
+        assert result is not None
+        assert result["avg_hydration_ms"] == 100
+        assert "_transfer" not in result
+
+    def test_get_container_falls_back_to_transfer(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        exp_db = FormExperienceDB(db_path=db)
+        exp_db.store_container("donor.io", "#application")
+
+        engine = PlatformTransferEngine(db_path=db)
+        conn = sqlite3.connect(db)
+        now = "2026-04-29T00:00:00+00:00"
+        conn.execute("INSERT INTO platform_similarity VALUES (?, ?, ?, ?, ?, ?)",
+            ("new.io", "donor.io", "container_selectors", 0.8, 3, now))
+        conn.commit()
+        conn.close()
+
+        result = exp_db.get_container("new.io")
+        assert result is not None
+
+    def test_get_field_mappings_falls_back_to_transfer(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        exp_db = FormExperienceDB(db_path=db)
+        exp_db.save_field_mappings("donor.io", {"email": "email", "phone": "phone"})
+
+        engine = PlatformTransferEngine(db_path=db)
+        conn = sqlite3.connect(db)
+        now = "2026-04-29T00:00:00+00:00"
+        conn.execute("INSERT INTO platform_similarity VALUES (?, ?, ?, ?, ?, ?)",
+            ("new.io", "donor.io", "field_types", 0.85, 4, now))
+        conn.commit()
+        conn.close()
+
+        result = exp_db.get_field_mappings("new.io")
+        assert len(result) == 2
+        assert result["email"] == "email"
+
+    def test_no_transfer_returns_empty(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        exp_db = FormExperienceDB(db_path=db)
+        result = exp_db.get_timing("totally-unknown.io")
+        assert result is None
+        result = exp_db.get_field_mappings("totally-unknown.io")
+        assert result == {}
