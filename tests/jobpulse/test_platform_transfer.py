@@ -154,3 +154,100 @@ class TestSimilarityMatrix:
         conn.close()
         for (sim,) in rows:
             assert 0.0 <= sim <= 1.0
+
+
+class TestThompsonSampling:
+    def _seed_similarity_and_outcomes(self, db_path: str) -> None:
+        conn = sqlite3.connect(db_path)
+        now = "2026-04-29T00:00:00+00:00"
+        conn.execute("INSERT INTO platform_similarity VALUES (?, ?, ?, ?, ?, ?)",
+            ("new.greenhouse.io", "acme.greenhouse.io", "timing_profile", 0.9, 5, now))
+        conn.execute("INSERT INTO platform_similarity VALUES (?, ?, ?, ?, ?, ?)",
+            ("new.greenhouse.io", "beta.greenhouse.io", "timing_profile", 0.5, 3, now))
+        conn.execute(
+            "INSERT INTO transfer_outcomes (target_domain, donor_domain, signal_type, alpha, beta_param, transfer_count, success_count, last_outcome, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("new.greenhouse.io", "acme.greenhouse.io", "timing_profile", 10.0, 2.0, 12, 10, "success", now, now))
+        conn.commit()
+        conn.close()
+
+    def test_get_transfer_data_selects_donor(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        engine = PlatformTransferEngine(db_path=db)
+        self._seed_similarity_and_outcomes(db)
+        result = engine.get_transfer_data("new.greenhouse.io", "timing_profile")
+        assert result is not None
+        assert result["donor_domain"] in ("acme.greenhouse.io", "beta.greenhouse.io")
+        assert result["signal_type"] == "timing_profile"
+        assert result["_transfer"] is True
+        assert 0.0 < result["similarity"] <= 1.0
+
+    def test_get_transfer_data_prefers_strong_donor(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        engine = PlatformTransferEngine(db_path=db)
+        self._seed_similarity_and_outcomes(db)
+        acme_count = 0
+        for _ in range(100):
+            result = engine.get_transfer_data("new.greenhouse.io", "timing_profile")
+            if result and result["donor_domain"] == "acme.greenhouse.io":
+                acme_count += 1
+        assert acme_count > 60
+
+    def test_get_transfer_data_returns_none_below_threshold(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        engine = PlatformTransferEngine(db_path=db)
+        conn = sqlite3.connect(db)
+        now = "2026-04-29T00:00:00+00:00"
+        conn.execute("INSERT INTO platform_similarity VALUES (?, ?, ?, ?, ?, ?)",
+            ("target.io", "donor.io", "timing_profile", 0.1, 2, now))
+        conn.commit()
+        conn.close()
+        result = engine.get_transfer_data("target.io", "timing_profile", min_similarity=0.3)
+        assert result is None
+
+    def test_get_transfer_data_no_donors(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        engine = PlatformTransferEngine(db_path=db)
+        result = engine.get_transfer_data("unknown.io", "timing_profile")
+        assert result is None
+
+    def test_record_outcome_creates_entry(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        engine = PlatformTransferEngine(db_path=db)
+        engine.record_outcome("target.io", "donor.io", "timing_profile", success=True)
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT alpha, beta_param, transfer_count, success_count, last_outcome FROM transfer_outcomes WHERE target_domain = ? AND donor_domain = ? AND signal_type = ?",
+            ("target.io", "donor.io", "timing_profile")).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 2.0   # α = 1 + 1
+        assert row[1] == 1.0   # β = 1
+        assert row[2] == 1
+        assert row[3] == 1
+        assert row[4] == "success"
+
+    def test_record_outcome_updates_existing(self, tmp_path):
+        db = str(tmp_path / "form_experience.db")
+        engine = PlatformTransferEngine(db_path=db)
+        engine.record_outcome("t.io", "d.io", "field_types", success=True)
+        engine.record_outcome("t.io", "d.io", "field_types", success=False)
+        engine.record_outcome("t.io", "d.io", "field_types", success=True)
+        conn = sqlite3.connect(db)
+        row = conn.execute("SELECT alpha, beta_param, transfer_count, success_count FROM transfer_outcomes WHERE target_domain = 't.io' AND donor_domain = 'd.io'").fetchone()
+        conn.close()
+        assert row[0] == 3.0   # α = 1 + 2
+        assert row[1] == 2.0   # β = 1 + 1
+        assert row[2] == 3
+        assert row[3] == 2
+
+    def test_record_outcome_emits_optimization_signal(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "form_experience.db")
+        engine = PlatformTransferEngine(db_path=db)
+        emitted = []
+        class FakeEngine:
+            def emit(self, **kwargs):
+                emitted.append(kwargs)
+        monkeypatch.setattr("jobpulse.platform_transfer.get_optimization_engine", lambda: FakeEngine())
+        engine.record_outcome("t.io", "d.io", "timing_profile", success=True)
+        assert len(emitted) == 1
+        assert emitted[0]["signal_type"] == "transfer"

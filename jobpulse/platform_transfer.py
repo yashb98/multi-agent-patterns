@@ -303,3 +303,94 @@ class PlatformTransferEngine:
             results.append(("container_selectors", self._token_overlap(cont_a, cont_b), 2))
 
         return results
+
+    # ------------------------------------------------------------------
+    # Thompson Sampling donor selection + outcome recording
+    # ------------------------------------------------------------------
+
+    def get_transfer_data(self, target_domain: str, signal_type: str, min_similarity: float = 0.3) -> TransferResult | None:
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            candidates = conn.execute(
+                """SELECT domain_b AS donor_domain, similarity, sample_count
+                   FROM platform_similarity
+                   WHERE domain_a = ? AND signal_type = ? AND similarity >= ? AND sample_count >= 2""",
+                (target_domain, signal_type, min_similarity),
+            ).fetchall()
+        if not candidates:
+            return None
+
+        import numpy as np
+        best_score = -1.0
+        best_candidate = None
+        for row in candidates:
+            donor = row["donor_domain"]
+            alpha, beta_param = self._get_outcome_params(target_domain, donor, signal_type)
+            sampled = float(np.random.beta(alpha, beta_param))
+            score = sampled * row["similarity"]
+            if score > best_score:
+                best_score = score
+                best_candidate = row
+        if best_candidate is None:
+            return None
+
+        return TransferResult(
+            donor_domain=best_candidate["donor_domain"],
+            signal_type=signal_type,
+            similarity=best_candidate["similarity"],
+            confidence=best_candidate["sample_count"],
+            _transfer=True,
+        )
+
+    def _get_outcome_params(self, target: str, donor: str, signal_type: str) -> tuple[float, float]:
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT alpha, beta_param, updated_at FROM transfer_outcomes WHERE target_domain = ? AND donor_domain = ? AND signal_type = ?",
+                (target, donor, signal_type),
+            ).fetchone()
+        if not row:
+            return 1.0, 1.0
+        alpha, beta_param = row[0], row[1]
+        try:
+            updated = datetime.fromisoformat(row[2])
+            if (datetime.now(UTC) - updated).days > 30:
+                alpha = max(1.0, alpha / 2)
+                beta_param = max(1.0, beta_param / 2)
+        except (ValueError, TypeError):
+            pass
+        return alpha, beta_param
+
+    def record_outcome(self, target_domain: str, donor_domain: str, signal_type: str, success: bool) -> None:
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            existing = conn.execute(
+                "SELECT alpha, beta_param, transfer_count, success_count FROM transfer_outcomes WHERE target_domain = ? AND donor_domain = ? AND signal_type = ?",
+                (target_domain, donor_domain, signal_type),
+            ).fetchone()
+            if existing:
+                new_alpha = existing[0] + (1.0 if success else 0.0)
+                new_beta = existing[1] + (0.0 if success else 1.0)
+                new_count = existing[2] + 1
+                new_success = existing[3] + (1 if success else 0)
+                conn.execute(
+                    """UPDATE transfer_outcomes SET alpha = ?, beta_param = ?, transfer_count = ?, success_count = ?, last_outcome = ?, updated_at = ?
+                       WHERE target_domain = ? AND donor_domain = ? AND signal_type = ?""",
+                    (new_alpha, new_beta, new_count, new_success, "success" if success else "failure", now, target_domain, donor_domain, signal_type),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO transfer_outcomes (target_domain, donor_domain, signal_type, alpha, beta_param, transfer_count, success_count, last_outcome, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)""",
+                    (target_domain, donor_domain, signal_type, 2.0 if success else 1.0, 1.0 if success else 2.0, 1 if success else 0, "success" if success else "failure", now, now),
+                )
+
+        logger.info("transfer: recorded %s outcome %s→%s (%s)", signal_type, donor_domain, target_domain, "success" if success else "failure")
+
+        try:
+            get_optimization_engine().emit(
+                signal_type="transfer", source_loop="platform_transfer", domain=target_domain, agent_name="transfer_engine",
+                payload={"donor_domain": donor_domain, "signal": signal_type, "success": success},
+                session_id=f"tx_{target_domain}_{now}",
+            )
+        except Exception as e:
+            logger.debug("Transfer optimization signal failed: %s", e)
