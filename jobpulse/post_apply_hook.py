@@ -115,6 +115,15 @@ def post_apply_hook(
     except Exception as exc:
         logger.warning("post_apply_hook: form experience recording failed: %s", exc)
 
+    # --- 1b. Trigger cross-domain transfer learning ---
+    try:
+        from jobpulse.platform_transfer import PlatformTransferEngine
+        transfer_engine = PlatformTransferEngine(db_path=form_exp_db_path)
+        domain = FormExperienceDB.normalize_domain(url)
+        transfer_engine.recompute_similarity_matrix(domain)
+    except Exception as exc:
+        logger.debug("post_apply_hook: transfer recomputation failed: %s", exc)
+
     # --- 2. Upload documents to Drive ---
     cv_drive_link = None
     cl_drive_link = None

@@ -388,3 +388,41 @@ class TestGotchasDBFallback:
         result = gotchas.lookup_domain("direct.io")
         assert len(result) == 1
         assert result[0]["solution"] == "click twice"
+
+
+class TestPostApplyHookIntegration:
+    def test_post_apply_triggers_recomputation(self, tmp_path, monkeypatch):
+        db = str(tmp_path / "form_experience.db")
+
+        exp_db = FormExperienceDB(db_path=db)
+        # Seed an existing domain so there is a peer for the new domain to compare against
+        exp_db.record(
+            domain="https://acme.greenhouse.io",
+            platform="greenhouse", adapter="native",
+            pages_filled=3, field_types=["text", "email"],
+            screening_questions=[], time_seconds=30.0, success=True,
+        )
+        exp_db.store_timing("acme.greenhouse.io", 500, 1500, 400)
+
+        monkeypatch.setattr("jobpulse.post_apply_hook.upload_cv", lambda *a, **k: None)
+        monkeypatch.setattr("jobpulse.post_apply_hook.upload_cover_letter", lambda *a, **k: None)
+        monkeypatch.setattr("jobpulse.post_apply_hook.find_application_page", lambda *a, **k: None)
+        monkeypatch.setattr("jobpulse.post_apply_hook.JobDB", lambda: type("FakeJobDB", (), {"mark_applied": lambda self, x: None})())
+
+        from jobpulse.post_apply_hook import post_apply_hook
+        result = {
+            "success": True, "pages_filled": 3,
+            "field_types": ["text", "email", "tel"],
+            "screening_questions": [], "time_seconds": 40.0,
+        }
+        job_context = {
+            "job_id": "", "company": "NewCo",
+            "url": "https://newco.greenhouse.io",
+            "platform": "greenhouse", "ats_platform": "greenhouse",
+        }
+        post_apply_hook(result, job_context, form_exp_db_path=db)
+
+        conn = sqlite3.connect(db)
+        rows = conn.execute("SELECT COUNT(*) FROM platform_similarity").fetchone()
+        conn.close()
+        assert rows[0] > 0
