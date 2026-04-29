@@ -102,7 +102,7 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~144,500 LOC | 682 Python files | 58 databases | 3412 tests | 5 dashboards | 5 Telegram bots | 3 platforms
+~145,500 LOC | 682 Python files | 58 databases | 3424 tests | 5 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)

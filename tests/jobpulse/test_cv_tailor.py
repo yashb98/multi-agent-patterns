@@ -6,6 +6,8 @@ _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import json
+
 import pytest
 
 from jobpulse.cv_tailor import (
@@ -13,6 +15,11 @@ from jobpulse.cv_tailor import (
     TailoredCoverLetter,
     TailoredHeader,
     _send_validation_alert,
+    tailor_all_sections,
+    tailor_cover_letter_prose,
+    tailor_experience_bullets,
+    tailor_project_bullets,
+    tailor_summary_and_tagline,
     validate_cover_letter,
     validate_experience,
     validate_projects,
@@ -381,3 +388,439 @@ class TestSendValidationAlert:
             _send_validation_alert("summary", "Acme", "bad", "generated text")
         finally:
             _tb.send_jobs = original
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared across tailoring tests
+# ---------------------------------------------------------------------------
+
+_VALID_SUMMARY = (
+    "I am a <b>data scientist</b> with 3 years of experience building scalable "
+    "ML pipelines that process 50k events per second, reducing inference costs by 30% "
+    "and improving model accuracy by 2x across distributed systems."
+)
+
+_VALID_TAGLINE = "MSc Computer Science (UOD) | 2+ YOE | Data Scientist | Python, ML, NLP"
+
+
+# ---------------------------------------------------------------------------
+# tailor_summary_and_tagline
+# ---------------------------------------------------------------------------
+
+class TestTailorSummaryAndTagline:
+    def test_tailor_summary_and_tagline_success(self, monkeypatch):
+        payload = json.dumps({"tagline": _VALID_TAGLINE, "summary": _VALID_SUMMARY})
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", lambda **kw: payload)
+
+        alerts = []
+        monkeypatch.setattr(
+            "jobpulse.telegram_bots.send_jobs",
+            lambda msg: alerts.append(msg),
+            raising=False,
+        )
+
+        result = tailor_summary_and_tagline(
+            jd_title="Data Scientist",
+            jd_description="Looking for a data scientist.",
+            company="Acme Corp",
+            required_skills=["Python", "ML", "NLP"],
+            preferred_skills=["TensorFlow"],
+        )
+
+        assert result is not None
+        assert isinstance(result, TailoredHeader)
+        assert result.tagline == _VALID_TAGLINE
+        assert result.summary == _VALID_SUMMARY
+        assert alerts == []
+
+    def test_tailor_summary_and_tagline_llm_failure(self, monkeypatch):
+        def boom(**kw):
+            raise RuntimeError("LLM down")
+
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", boom)
+
+        result = tailor_summary_and_tagline(
+            jd_title="Data Scientist",
+            jd_description="desc",
+            company="Acme Corp",
+            required_skills=["Python"],
+            preferred_skills=[],
+        )
+        assert result is None
+
+    def test_tailor_summary_and_tagline_bad_json(self, monkeypatch):
+        monkeypatch.setattr(
+            "jobpulse.cv_tailor.cognitive_llm_call",
+            lambda **kw: "this is not json at all!!!",
+        )
+
+        result = tailor_summary_and_tagline(
+            jd_title="Data Scientist",
+            jd_description="desc",
+            company="Acme Corp",
+            required_skills=["Python"],
+            preferred_skills=[],
+        )
+        assert result is None
+
+    def test_tailor_summary_and_tagline_validation_failure_sends_alert(self, monkeypatch):
+        # Summary too short — fails validate_summary but result still returned
+        short_summary = "<b>Engineer</b> short."
+        payload = json.dumps({"tagline": _VALID_TAGLINE, "summary": short_summary})
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", lambda **kw: payload)
+
+        alerts = []
+
+        from jobpulse import telegram_bots as _tb
+        original = _tb.send_jobs
+        _tb.send_jobs = lambda msg: alerts.append(msg)
+        try:
+            result = tailor_summary_and_tagline(
+                jd_title="Data Scientist",
+                jd_description="desc",
+                company="Acme Corp",
+                required_skills=["Python"],
+                preferred_skills=[],
+            )
+        finally:
+            _tb.send_jobs = original
+
+        # Result still returned despite validation failure
+        assert result is not None
+        assert result.summary == short_summary
+        # Alert was sent
+        assert len(alerts) == 1
+        assert "Acme Corp" in alerts[0]
+
+
+# ---------------------------------------------------------------------------
+# tailor_experience_bullets
+# ---------------------------------------------------------------------------
+
+class TestTailorExperienceBullets:
+    def _make_entry(self, title="Engineer", company="ACME", bullets=None):
+        return ExperienceEntry(
+            title=title,
+            company=company,
+            dates="2023-2024",
+            bullets=bullets or ["Built pipeline processing 50k events/sec, saving 30% cost"],
+            location="London",
+        )
+
+    def test_tailor_experience_success(self, monkeypatch):
+        original = [self._make_entry()]
+        response_data = [
+            {
+                "title": "Engineer",
+                "company": "ACME",
+                "dates": "2023-2024",
+                "bullets": ["Engineered pipeline handling 50k events/sec, reducing cost by 30%"],
+            }
+        ]
+        monkeypatch.setattr(
+            "jobpulse.cv_tailor.cognitive_llm_call",
+            lambda **kw: json.dumps(response_data),
+        )
+
+        result = tailor_experience_bullets(
+            experience=original,
+            jd_title="Data Scientist",
+            required_skills=["Python", "ML"],
+            preferred_skills=[],
+            company="Acme Corp",
+        )
+
+        assert result is not None
+        assert len(result) == 1
+        assert isinstance(result[0], ExperienceEntry)
+        assert result[0].title == "Engineer"
+        assert result[0].company == "ACME"
+        assert result[0].location == "London"
+        # Metric preserved
+        assert "50k" in result[0].bullets[0]
+
+    def test_tailor_experience_llm_failure(self, monkeypatch):
+        def boom(**kw):
+            raise RuntimeError("LLM down")
+
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", boom)
+
+        result = tailor_experience_bullets(
+            experience=[self._make_entry()],
+            jd_title="Data Scientist",
+            required_skills=["Python"],
+            preferred_skills=[],
+            company="Acme Corp",
+        )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# tailor_project_bullets
+# ---------------------------------------------------------------------------
+
+class TestTailorProjectBullets:
+    def _make_project(self, title="RealtimePipeline", bullets=None, url="https://github.com/test/proj"):
+        return {
+            "title": title,
+            "url": url,
+            "bullets": bullets or [
+                "Built 3 REST APIs serving 50k daily requests",
+                "Reduced latency by 40% via caching layer",
+                "Deployed 5 microservices on Kubernetes",
+            ],
+        }
+
+    def test_tailor_projects_success(self, monkeypatch):
+        original = [self._make_project()]
+        response_data = [
+            {
+                "title": "RealtimePipeline",
+                "bullets": [
+                    "Engineered 3 ML-powered REST APIs serving 50k daily requests",
+                    "Optimised inference latency by 40% using Redis caching",
+                    "Deployed 5 containerised microservices on Kubernetes",
+                ],
+            }
+        ]
+        monkeypatch.setattr(
+            "jobpulse.cv_tailor.cognitive_llm_call",
+            lambda **kw: json.dumps(response_data),
+        )
+
+        result = tailor_project_bullets(
+            projects=original,
+            jd_title="Data Scientist",
+            required_skills=["Python", "ML"],
+            preferred_skills=["Kubernetes"],
+            company="Acme Corp",
+        )
+
+        assert result is not None
+        assert len(result) == 1
+        # Original URL preserved
+        assert result[0]["url"] == "https://github.com/test/proj"
+        # Original title preserved from input
+        assert result[0]["title"] == "RealtimePipeline"
+        # Metrics preserved
+        assert any("50k" in b for b in result[0]["bullets"])
+        assert any("40" in b for b in result[0]["bullets"])
+
+    def test_tailor_projects_llm_failure(self, monkeypatch):
+        def boom(**kw):
+            raise RuntimeError("LLM down")
+
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", boom)
+
+        result = tailor_project_bullets(
+            projects=[self._make_project()],
+            jd_title="Data Scientist",
+            required_skills=["Python"],
+            preferred_skills=[],
+            company="Acme Corp",
+        )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# tailor_cover_letter_prose
+# ---------------------------------------------------------------------------
+
+class TestTailorCoverLetterProse:
+    _VALID_INTRO = (
+        "I am excited to apply to Acme Corp for the Data Scientist role, "
+        "having followed your work in scalable ML infrastructure with great interest."
+    )
+    _VALID_HOOK = (
+        "Over 3 years I built pipelines processing 50k events/sec, cutting infrastructure "
+        "costs by 30% for a fintech platform."
+    )
+    _VALID_CLOSING = (
+        "I would welcome the opportunity to discuss how my expertise can contribute "
+        "to Acme Corp's engineering goals."
+    )
+
+    def test_tailor_cover_letter_prose_success(self, monkeypatch):
+        payload = json.dumps({
+            "intro": self._VALID_INTRO,
+            "hook": self._VALID_HOOK,
+            "closing": self._VALID_CLOSING,
+        })
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", lambda **kw: payload)
+
+        result = tailor_cover_letter_prose(
+            company="Acme Corp",
+            role="Data Scientist",
+            required_skills=["Python", "ML"],
+            matched_projects=[{"title": "RealtimePipeline"}],
+        )
+
+        assert result is not None
+        assert isinstance(result, TailoredCoverLetter)
+        assert "Acme Corp" in result.intro
+        assert result.hook == self._VALID_HOOK
+        assert result.closing == self._VALID_CLOSING
+
+    def test_tailor_cover_letter_prose_llm_failure(self, monkeypatch):
+        def boom(**kw):
+            raise RuntimeError("LLM down")
+
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", boom)
+
+        result = tailor_cover_letter_prose(
+            company="Acme Corp",
+            role="Data Scientist",
+            required_skills=["Python"],
+            matched_projects=[],
+        )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# tailor_all_sections
+# ---------------------------------------------------------------------------
+
+class _ListingProxy:
+    title = "Data Scientist"
+    company = "Acme Corp"
+    required_skills = ["Python", "ML", "NLP"]
+    preferred_skills = ["TensorFlow"]
+    description_raw = "Looking for a data scientist."
+
+
+class TestTailorAllSections:
+    def _make_experience(self):
+        return [
+            ExperienceEntry(
+                title="Engineer",
+                company="ACME",
+                dates="2023-2024",
+                bullets=["Built pipeline processing 50k events/sec, saving 30% cost"],
+            )
+        ]
+
+    def _make_projects(self):
+        return [
+            {
+                "title": "RealtimePipeline",
+                "url": "https://github.com/test/proj",
+                "bullets": [
+                    "Built 3 REST APIs serving 50k daily requests",
+                    "Reduced latency by 40% via caching layer",
+                    "Deployed 5 microservices on Kubernetes",
+                ],
+            }
+        ]
+
+    def test_tailor_all_sections_parallel(self, monkeypatch):
+        call_log = []
+
+        def fake_cognitive_llm_call(**kw):
+            task = kw.get("task", "")
+            call_log.append(task)
+            if "tagline" in task:
+                return json.dumps({"tagline": _VALID_TAGLINE, "summary": _VALID_SUMMARY})
+            if "experience" in task.lower() and "cover letter" not in task.lower():
+                return json.dumps([
+                    {
+                        "title": "Engineer",
+                        "company": "ACME",
+                        "dates": "2023-2024",
+                        "bullets": ["Built pipeline handling 50k events/sec, cutting cost by 30%"],
+                    }
+                ])
+            if "cover letter" in task.lower():
+                return json.dumps({
+                    "intro": (
+                        "I am excited to apply to Acme Corp for the Data Scientist role, "
+                        "having followed your innovation in ML infrastructure."
+                    ),
+                    "hook": (
+                        "Over 3 years I built ML pipelines processing 50k events/sec, "
+                        "cutting costs by 30% for a fintech platform."
+                    ),
+                    "closing": (
+                        "I would welcome the opportunity to discuss how my expertise "
+                        "can contribute to Acme Corp's goals."
+                    ),
+                })
+            if "project" in task.lower():
+                return json.dumps([
+                    {
+                        "title": "RealtimePipeline",
+                        "bullets": [
+                            "Engineered 3 ML APIs serving 50k daily requests",
+                            "Reduced latency by 40% via caching",
+                            "Deployed 5 microservices on Kubernetes",
+                        ],
+                    }
+                ])
+            return json.dumps({})
+
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", fake_cognitive_llm_call)
+
+        result = tailor_all_sections(
+            listing=_ListingProxy(),
+            matched_projects=self._make_projects(),
+            experience=self._make_experience(),
+        )
+
+        assert isinstance(result, TailoredCV)
+        assert result.tagline is not None
+        assert result.summary is not None
+        assert result.experience is not None
+        assert result.projects is not None
+        assert result.cover_letter is not None
+        # All 4 LLM calls were made
+        assert len(call_log) == 4
+
+    def test_tailor_all_sections_partial_failure(self, monkeypatch):
+        def fake_cognitive_llm_call(**kw):
+            task = kw.get("task", "")
+            if "tagline" in task:
+                return json.dumps({"tagline": _VALID_TAGLINE, "summary": _VALID_SUMMARY})
+            if "experience" in task.lower() and "cover letter" not in task.lower():
+                raise RuntimeError("LLM down for experience")
+            if "cover letter" in task.lower():
+                return json.dumps({
+                    "intro": (
+                        "I am excited to apply to Acme Corp for the Data Scientist role, "
+                        "having followed your innovation in ML infrastructure."
+                    ),
+                    "hook": (
+                        "Over 3 years I built ML pipelines processing 50k events/sec, "
+                        "cutting costs by 30% for a fintech platform."
+                    ),
+                    "closing": (
+                        "I would welcome the opportunity to discuss how my expertise "
+                        "can contribute to Acme Corp's goals."
+                    ),
+                })
+            if "project" in task.lower():
+                return json.dumps([
+                    {
+                        "title": "RealtimePipeline",
+                        "bullets": [
+                            "Engineered 3 ML APIs serving 50k daily requests",
+                            "Reduced latency by 40% via caching",
+                            "Deployed 5 microservices on Kubernetes",
+                        ],
+                    }
+                ])
+            return json.dumps({})
+
+        monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", fake_cognitive_llm_call)
+
+        result = tailor_all_sections(
+            listing=_ListingProxy(),
+            matched_projects=self._make_projects(),
+            experience=self._make_experience(),
+        )
+
+        assert isinstance(result, TailoredCV)
+        # Experience failed — must be None
+        assert result.experience is None
+        # Other 3 sections succeeded
+        assert result.tagline is not None
+        assert result.projects is not None
+        assert result.cover_letter is not None
