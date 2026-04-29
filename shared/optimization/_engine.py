@@ -120,6 +120,11 @@ class OptimizationEngine:
             return {}
         return self._tracker.after_learning_action(action_id, metrics)
 
+    def snapshot(self, loop_name: str, domain: str, metrics: dict):
+        if not self._enabled:
+            return None
+        return self._tracker.snapshot(loop_name, domain, metrics)
+
     # ------------------------------------------------------------------
     # Trajectory logging
     # ------------------------------------------------------------------
@@ -222,6 +227,17 @@ class OptimizationEngine:
         self._action_counts["insights"] += len(insights)
 
         executed = self._execute_actions(all_actions)
+
+        # Snapshot cycle metrics for performance_snapshots table
+        try:
+            cycle_metrics = {
+                "insights_found": len(insights),
+                "actions_executed": len(executed),
+                "total_actions": len(all_actions),
+            }
+            self._tracker.snapshot("optimization_cycle", "global", cycle_metrics)
+        except Exception as exc:
+            logger.debug("optimize: snapshot failed: %s", exc)
 
         self.flush_sync()
 
