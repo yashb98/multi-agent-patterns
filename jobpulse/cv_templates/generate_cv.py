@@ -22,7 +22,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 from jobpulse.config import DATA_DIR
-from jobpulse.cv_templates import build_applicant_identity, sanitize_pdf as _sanitize_pdf
+from jobpulse.cv_templates import build_applicant_identity, get_project_stats, sanitize_pdf as _sanitize_pdf
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -180,68 +180,80 @@ def __getattr__(name: str):
 # Role-adaptive tagline and summary
 # ---------------------------------------------------------------------------
 
-_ROLE_PROFILES: dict[str, dict[str, str]] = {
-    "data scientist": {
-        "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Scientist | Python | Machine Learning | SQL | NLP",
-        "summary": (
-            '<b>Data Scientist</b> with hands-on experience building production ML systems, '
-            'statistical models, and data pipelines. Built a <b>88,500+ LOC</b> autonomous system '
-            'with <b>2,350 tests</b> integrating ML-based classification, NLP pipelines, and '
-            'experiential learning (GRPO). Specialises in <b>Python</b>, <b>SQL</b>, '
-            '<b>machine learning</b>, and translating complex data into <b>actionable business insights</b>.'
-        ),
-    },
-    "data analyst": {
-        "tagline": "MSc Computer Science (UOD) | 3+ YOE | Data Analyst | Python | SQL | Power BI | Statistical Analysis",
-        "summary": (
-            '<b>Data Analyst</b> with experience building dashboards, automating ETL workflows, '
-            'and delivering actionable insights. Built <b>Power BI</b> dashboards with <b>DAX</b> '
-            'for real-time sales and supplier analysis. Automated <b>SQL</b> and <b>Python</b> '
-            'data pipelines, cutting report prep time by <b>35%</b>. Specialises in '
-            '<b>statistical testing</b>, <b>forecasting</b>, and <b>data-driven decision making</b>.'
-        ),
-    },
-    "ml engineer": {
-        "tagline": "MSc Computer Science (UOD) | 2+ YOE | ML Engineer | Python | PyTorch | MLOps | System Design",
-        "summary": (
-            '<b>ML Engineer</b> who built a <b>88,500+ LOC</b> production AI system with '
-            '<b>2,350 tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
-            '<b>GRPO experiential learning</b> and <b>persona evolution</b>. Deployed '
-            '<b>10+ autonomous agents</b> running 24/7 with rate-limited automation, '
-            'compiled policy gates, and <b>Docker</b>-based sandboxing.'
-        ),
-    },
-    "ai engineer": {
-        "tagline": "MSc Computer Science (UOD) | 2+ YOE | AI Engineer | Python | LangChain | RAG | Multi-Agent Systems",
-        "summary": (
-            '<b>AI Engineer</b> who built a <b>88,500+ LOC</b> production multi-agent system with '
-            '<b>4 LangGraph orchestration patterns</b>, <b>GRPO experiential learning</b>, and '
-            '<b>RAG retrieval</b>. Shipped <b>10+ autonomous agents</b> with fact-checking, '
-            'persona evolution, and human-in-the-loop approval flows. Specialises in '
-            '<b>agentic architectures</b>, <b>tool-use</b>, and <b>production AI deployment</b>.'
-        ),
-    },
-    "data engineer": {
-        "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Engineer | Python | SQL | ETL | Airflow | Cloud",
-        "summary": (
-            '<b>Data Engineer</b> with hands-on experience building data pipelines, ETL workflows, '
-            'and database systems. Built a <b>88,500+ LOC</b> autonomous system with '
-            '<b>20 SQLite databases</b>, automated data ingestion, and scheduled processing. '
-            'Specialises in <b>Python</b>, <b>SQL</b>, <b>pipeline orchestration</b>, '
-            'and <b>scalable data infrastructure</b>.'
-        ),
-    },
-    "software engineer": {
-        "tagline": "MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | System Design | APIs | Testing",
-        "summary": (
-            '<b>Software Engineer</b> who built a <b>88,500+ LOC</b> production system with '
-            '<b>2,350 tests</b>, <b>RESTful APIs</b>, and multi-service architecture. '
-            'Designed modular components with clean interfaces, comprehensive testing, '
-            'and CI/CD automation. Specialises in <b>Python</b>, <b>system design</b>, '
-            '<b>API development</b>, and <b>production-grade software delivery</b>.'
-        ),
-    },
-}
+_role_profiles_cache: dict[str, dict[str, str]] | None = None
+
+
+def _build_role_profiles() -> dict[str, dict[str, str]]:
+    global _role_profiles_cache
+    if _role_profiles_cache is not None:
+        return _role_profiles_cache
+    s = get_project_stats()
+    loc = s.get("loc_display", "142,500+")
+    tests = s.get("tests_display", "3,350+")
+    dbs = s.get("databases", 57)
+    _role_profiles_cache = {
+        "data scientist": {
+            "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Scientist | Python | Machine Learning | SQL | NLP",
+            "summary": (
+                f'<b>Data Scientist</b> with hands-on experience building production ML systems, '
+                f'statistical models, and data pipelines. Built a <b>{loc} LOC</b> autonomous system '
+                f'with <b>{tests} tests</b> integrating ML-based classification, NLP pipelines, and '
+                f'experiential learning (GRPO). Specialises in <b>Python</b>, <b>SQL</b>, '
+                f'<b>machine learning</b>, and translating complex data into <b>actionable business insights</b>.'
+            ),
+        },
+        "data analyst": {
+            "tagline": "MSc Computer Science (UOD) | 3+ YOE | Data Analyst | Python | SQL | Power BI | Statistical Analysis",
+            "summary": (
+                '<b>Data Analyst</b> with experience building dashboards, automating ETL workflows, '
+                'and delivering actionable insights. Built <b>Power BI</b> dashboards with <b>DAX</b> '
+                'for real-time sales and supplier analysis. Automated <b>SQL</b> and <b>Python</b> '
+                'data pipelines, cutting report prep time by <b>35%</b>. Specialises in '
+                '<b>statistical testing</b>, <b>forecasting</b>, and <b>data-driven decision making</b>.'
+            ),
+        },
+        "ml engineer": {
+            "tagline": "MSc Computer Science (UOD) | 2+ YOE | ML Engineer | Python | PyTorch | MLOps | System Design",
+            "summary": (
+                f'<b>ML Engineer</b> who built a <b>{loc} LOC</b> production AI system with '
+                f'<b>{tests} tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
+                f'<b>GRPO experiential learning</b> and <b>persona evolution</b>. Deployed '
+                f'<b>10+ autonomous agents</b> running 24/7 with rate-limited automation, '
+                f'compiled policy gates, and <b>Docker</b>-based sandboxing.'
+            ),
+        },
+        "ai engineer": {
+            "tagline": "MSc Computer Science (UOD) | 2+ YOE | AI Engineer | Python | LangChain | RAG | Multi-Agent Systems",
+            "summary": (
+                f'<b>AI Engineer</b> who built a <b>{loc} LOC</b> production multi-agent system with '
+                f'<b>4 LangGraph orchestration patterns</b>, <b>GRPO experiential learning</b>, and '
+                f'<b>RAG retrieval</b>. Shipped <b>10+ autonomous agents</b> with fact-checking, '
+                f'persona evolution, and human-in-the-loop approval flows. Specialises in '
+                f'<b>agentic architectures</b>, <b>tool-use</b>, and <b>production AI deployment</b>.'
+            ),
+        },
+        "data engineer": {
+            "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Engineer | Python | SQL | ETL | Airflow | Cloud",
+            "summary": (
+                f'<b>Data Engineer</b> with hands-on experience building data pipelines, ETL workflows, '
+                f'and database systems. Built a <b>{loc} LOC</b> autonomous system with '
+                f'<b>{dbs} SQLite databases</b>, automated data ingestion, and scheduled processing. '
+                f'Specialises in <b>Python</b>, <b>SQL</b>, <b>pipeline orchestration</b>, '
+                f'and <b>scalable data infrastructure</b>.'
+            ),
+        },
+        "software engineer": {
+            "tagline": "MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | System Design | APIs | Testing",
+            "summary": (
+                f'<b>Software Engineer</b> who built a <b>{loc} LOC</b> production system with '
+                f'<b>{tests} tests</b>, <b>RESTful APIs</b>, and multi-service architecture. '
+                f'Designed modular components with clean interfaces, comprehensive testing, '
+                f'and CI/CD automation. Specialises in <b>Python</b>, <b>system design</b>, '
+                f'<b>API development</b>, and <b>production-grade software delivery</b>.'
+            ),
+        },
+    }
+    return _role_profiles_cache
 
 
 _SOFT_SKILL_WORDS = {
@@ -315,23 +327,23 @@ def get_role_profile(role_title: str) -> dict[str, str]:
 
     Returns dict with 'tagline' and 'summary' keys, or empty dict if no match.
     """
+    profiles = _build_role_profiles()
     role_lower = role_title.lower()
-    for key, profile in _ROLE_PROFILES.items():
+    for key, profile in profiles.items():
         if key in role_lower:
             return profile
-    # Fallback: check individual keywords
     if any(kw in role_lower for kw in ("data scien", "ds ", "machine learn")):
-        return _ROLE_PROFILES["data scientist"]
+        return profiles["data scientist"]
     if any(kw in role_lower for kw in ("data analy", "bi ", "business intel")):
-        return _ROLE_PROFILES["data analyst"]
+        return profiles["data analyst"]
     if any(kw in role_lower for kw in ("ml eng", "mlops")):
-        return _ROLE_PROFILES["ml engineer"]
+        return profiles["ml engineer"]
     if any(kw in role_lower for kw in ("ai eng", "llm", "agent")):
-        return _ROLE_PROFILES["ai engineer"]
+        return profiles["ai engineer"]
     if any(kw in role_lower for kw in ("data eng", "etl", "pipeline eng")):
-        return _ROLE_PROFILES["data engineer"]
+        return profiles["data engineer"]
     if any(kw in role_lower for kw in ("software eng", "backend", "fullstack", "full stack")):
-        return _ROLE_PROFILES["software engineer"]
+        return profiles["software engineer"]
     return {}
 
 
@@ -348,6 +360,7 @@ def generate_cv_pdf(
     projects: list[dict] | None = None,
     extra_skills: dict[str, str] | None = None,
     output_dir: str | None = None,
+    experience: list[dict] | None = None,
 ) -> Path:
     """Generate a tailored CV PDF matching the reference design.
 
@@ -482,9 +495,10 @@ def generate_cv_pdf(
     if summary:
         el.append(Paragraph(summary, body_s))
     else:
+        _s = get_project_stats()
         el.append(Paragraph(
-            f'{B("Software Engineer")} who built a {B("88,500+ LOC")} production AI system with '
-            f'{B("2,350 tests")} using {B("Claude Code")} as primary development tool. '
+            f'{B("Software Engineer")} who built a {B(_s.get("loc_display", "142,500+") + " LOC")} production AI system with '
+            f'{B(_s.get("tests_display", "3,350+") + " tests")} using {B("Claude Code")} as primary development tool. '
             f'Researches and deploys emerging {B("AI tools")} ({I("Cursor")}, {I("Copilot")}, '
             f'{I("Codex")}) into working systems used by real teams. Specialises in '
             f'{B("rapid prototyping")}, {B("Python API integrations")}, and '
@@ -529,7 +543,7 @@ def generate_cv_pdf(
 
     # ── EXPERIENCE ──
     section('Experience')
-    for i, exp in enumerate(_load_experience()):
+    for i, exp in enumerate(experience if experience is not None else _load_experience()):
         if i > 0:
             el.append(Spacer(1, 2))
         row(B(exp["title"]), exp["dates"])
