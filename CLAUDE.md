@@ -57,14 +57,16 @@ Every feature, function, and file MUST satisfy all 8 principles. Full checklist:
 2. **Tool & Contract Design** — Typed interfaces, centralized LLM factories, consistent return types
 3. **Retrieval Engineering** — Connection pooling, no N+1, cached lookups, lazy loading
 4. **Reliability Engineering** — Resource cleanup in finally, guarded LLM calls, bounded loops
-5. **Security & Safety** — No PII in source, no injection vectors, SSRF protection, parameterized SQL
+5. **Security & Safety** — No PII in source (all personal data from DBs at runtime), no injection vectors, SSRF protection, parameterized SQL
 6. **Evaluation & Observability** — Cost tracking on all LLM calls, decision logging, structured errors
 7. **Product Thinking** — Dry-run-first, confirm_application(), OS-aware paths, user-actionable errors
-8. **Dynamic Over Hardcoded** — All pipeline values resolved at runtime, never hardcoded for specific forms/platforms
+8. **Dynamic Over Hardcoded** — All pipeline values resolved at runtime, never hardcoded for specific forms/platforms. No regex for semantic work — use LLM/embeddings/semantic matching instead
 
 ## Live Pipeline Observation (MANDATORY)
 
 All applications run the real live pipeline. No mocks, no headless, no silent runs.
+
+**Claude's role: Orchestrator, not doer.** When running the pipeline, invoke the actual AI agents (`job-apply-next`, `apply_job()`, `ApplicationOrchestrator`, `NativeFormFiller`). Observe their output, diagnose failures, direct corrections — but let the agents execute. Don't bypass agents by writing ad-hoc Playwright scripts — that skips the learning loop (CorrectionCapture, AgentRulesDB, strategy_reflector never fire). The agents can only learn from runs they actually performed.
 
 **Visibility:** Browser always headed — human watches live. No screenshots needed (human sees it). Logs to stdout; cron streams to Telegram. On ambiguity: STOP, tell human.
 
@@ -88,6 +90,8 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 3. **Cognitive Escalation** — `CognitiveEngine` (L0→L3) + `OptimizationEngine` → `EscalationClassifier`
 
 ## Critical Rules
+- **Real data + wiring verification** — Every new feature tested with real URLs/APIs/DBs (never mocks or stale data), then verified end-to-end that all downstream systems fire (hooks, signals, DB writes, learning chains). Not wired = not done.
+- **No PII in source code** — ALL personal data (name, email, address, screening answers, skills, links, DEI) retrieved from databases at runtime, never hardcoded. Full policy: `.claude/rules/pii-policy.md`
 - Update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
 - Always HTTPS for external APIs | Tests NEVER touch data/*.db — use tmp_path
 - Never rewrite a file without checking `callers_of` (or Grep) for all function names used by other modules
@@ -98,7 +102,7 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
 ## Stats
-~143,500 LOC | 680 Python files | 57 databases | 3378 tests | 5 dashboards | 5 Telegram bots | 3 platforms
+~144,500 LOC | 682 Python files | 58 databases | 3412 tests | 5 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
