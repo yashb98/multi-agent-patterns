@@ -13,6 +13,13 @@ python -m jobpulse.runner export       # Full data backup
 python -m jobpulse.runner profile-sync # Refresh skill/project graph (3am cron)
 python -m jobpulse.runner skill-gaps   # Show top missing skills + export CSV
 python -m jobpulse.runner chrome-pw     # Launch Chrome with CDP for Playwright
+python -m jobpulse.runner job-apply-next  # Apply next N jobs from queue
+python -m jobpulse.runner job-process-url # Full pipeline on a URL
+python -m jobpulse.runner job-scan        # Scan all platforms for jobs
+python -m jobpulse.runner optimize        # Run optimization engine
+python -m jobpulse.runner learning-report # Show learning system status
+python -m jobpulse.runner skill-verify    # Sync verified skills from Notion
+python -m jobpulse.runner restart         # Restart daemon
 ```
 
 ## Code Intelligence (use for ALL code exploration)
@@ -78,39 +85,92 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 5. **Submit** — Rate limiter + mutex + `confirm_application()` (mandatory)
 6. **Learning** — Verify ALL fire and capture maximum data: `post_apply_hook` → `CorrectionCapture` → `AgentRulesDB` → `strategy_reflector` → `OptimizationEngine` signals → `AgentPerformanceDB`. Each system stores what worked AND what didn't — failures are learning data too.
 
-**On error — Diagnose → Fix → Test → Teach → Verify:**
-- Trace via MCP (`find_symbol`, `callers_of`). Fix surgically. Re-run same real data.
-- Route fix to correct DB: fill issue → `CorrectionCapture` + `AgentRulesDB` | quirk → `GotchasDB` | answer → screening cache | nav → `NavigationLearner`
-- Always emit `adaptation` signal + log trajectory step via `OptimizationEngine`
-- Verify learning persisted (query DB)
+**On error — OPRAL loop (Observe → Plan → Reason → Act → Learn):**
+1. **Observe** — Capture the error in context: logs, DOM state, DB state, which agent failed and where
+2. **Plan** — Trace via MCP (`find_symbol`, `callers_of`). Identify root cause, not symptoms. Determine which DB/system needs the fix
+3. **Reason** — Why did this fail? Is it a one-off or a pattern? Which learning system should prevent recurrence?
+4. **Act** — Fix surgically. Re-run same real data. Route fix to correct DB: fill issue → `CorrectionCapture` + `AgentRulesDB` | quirk → `GotchasDB` | answer → screening cache | nav → `NavigationLearner`
+5. **Learn** — Emit `adaptation` signal via `OptimizationEngine`. Verify learning persisted (query DB). Confirm the agent handles this case autonomously on next run. Every error makes the system smarter — if an error can recur, the fix is incomplete.
 
 **Verify 3 self-adaptation layers after every application:**
 1. **Correction → Rule → Consumption** — `CorrectionCapture` → `AgentRulesDB` → `NativeFormFiller` consumes
 2. **Strategy Reflection** — `strategy_reflector` → `TrajectoryStore` + `ExperienceMemory`
 3. **Cognitive Escalation** — `CognitiveEngine` (L0→L3) + `OptimizationEngine` → `EscalationClassifier`
 
+## Database Wiring Status
+22 DBs active with data, 24 wired but empty (code exists, never fires in production), 16 dead/legacy (62 total .db files in data/). Critical empty DBs that MUST be wired: `form_experience.db`, `optimization.db`, `applications.db`, `trajectory.db`, `user_profile.db`, `scan_learning.db`. When touching any pipeline code, verify the relevant DB actually receives data — query it after a run.
+
 ## Critical Rules
+- **OPRAL on every error** — Observe → Plan → Reason → Act → Learn. Every error must make the system smarter. If an error can recur, the fix is incomplete.
 - **Real data + wiring verification** — Every new feature tested with real URLs/APIs/DBs (never mocks or stale data), then verified end-to-end that all downstream systems fire (hooks, signals, DB writes, learning chains). Not wired = not done.
 - **No PII in source code** — ALL personal data (name, email, address, screening answers, skills, links, DEI) retrieved from databases at runtime, never hardcoded. Full policy: `.claude/rules/pii-policy.md`
-- Update BOTH dispatcher.py AND swarm_dispatcher.py for new intents
+- New intents via handler_registry.py + intent_registry.py + command_router.py (both dispatchers consume via get_handler_map())
 - Always HTTPS for external APIs | Tests NEVER touch data/*.db — use tmp_path
 - Never rewrite a file without checking `callers_of` (or Grep) for all function names used by other modules
 - Log errors to `.claude/mistakes.md` | Full rules in `.claude/rules/`
 - Use `semantic_search` to retrieve detailed rules/docs on demand — they're all indexed
+- **Security wall bypass** — Playwright auto-bypass first (6 stages: auto-wait, human simulation, Turnstile click, reload ×2), THEN human fallback via Telegram (MANDATORY). Never abort without asking human. Full spec: `.claude/rules/jobs.md`
+- **Semantic page reasoning** — When DOM classifier confidence is low, `page_analysis/page_reasoner.py` uses LLM to understand the page and recommend actions (dismiss_dialog, click_apply, fill_form, etc.). Cached per domain. Navigator executes the recommended action.
 
 ## Dispatch
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
+## Infrastructure
+
+### Docker Services
+- `docker-compose.memory.yml` — Qdrant (port 6333) + Neo4j (port 7687) for memory layer
+- `docker-compose.searxng.yml` — SearXNG metasearch (port 8888)
+
+### Scripts (`scripts/`)
+- `install_cron.py` — Install/update full crontab (marker-based merge)
+- `setup_integrations.py` — First-run setup for Google OAuth, Notion, GitHub, Telegram
+- `migrate_*.py` — Database migrations (run once per schema change)
+- `update_stats.py` — Refresh stats line in CLAUDE.md
+- `apply_live_with_review.py` — Live apply with human review
+- `test_pipeline_live.py` — Live pipeline testing
+
+### GitHub Actions (`.github/workflows/`)
+Failover layer on top of local daemon + cron:
+- `health-check.yml` — Every 10 min watchdog
+- `telegram-poll.yml` — Every 5 min backup Telegram polling (8AM-10PM)
+- `gmail-check.yml` — 1/3/5 PM backup Gmail recruiter checks
+- `morning-briefing.yml` + `failover-briefing.yml` — Backup morning briefing
+- `agent-readiness.yml` — Daily regression suite + PR checks
+
+### Cron Schedule (16 tasks via `scripts/install_cron.py`)
+2 AM overnight scan | 3 AM profile sync | 7/1/7 PM full job scan | 7:57 AM arXiv | 8:03 AM briefing | 9 AM follow-ups | 9/12/3 PM calendar | 10 AM/4:30 PM quick scan | 1/3/5 PM Gmail | Sun 7 AM archive | Sun 8 PM weekly report | Mon 8:33 AM papers | Every 10 min health | Every 3 hrs daemon restart
+
+### Data Directory (`data/`)
+62 SQLite databases, JSON configs, fonts, locks, and runtime artifacts. Key files:
+- `profile_seed.json` — Profile DB seed data
+- `skill_synonyms.json` — 36K+ skill synonym mappings
+- `job_search_config.json` — Search configuration
+- `fonts/` — ReportLab CV fonts (Lato, Raleway, Spectral)
+- `locks/` — Mutex locks (apply, runner, scan_window)
+- `applications/` — Per-application data snapshots
+
+### Logs Directory (`logs/`)
+24 log files, one per agent/subsystem. RotatingFileHandler: 5MB max, 5 backups (e.g., `jobpulse.log` → `jobpulse.log.5`).
+Key logs: `daemon-stdout.log`/`daemon-stderr.log` (daemon output), `jobs.log` (application pipeline), `jobpulse.log` (main agent loop), `multi-listener.log` (Telegram bots), `health.log` (watchdog).
+Config: `shared/logging_config.py`. All loggers via `get_logger(__name__)`.
+
+### Dependencies (`requirements.txt`)
+46 packages. Core: `langchain-core`, `langgraph`, `openai`, `python-dotenv`. Google: `google-api-python-client`, `google-auth-oauthlib`. Optional (commented): `playwright`, `dspy-ai`.
+Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
+
 ## Stats
-~146,500 LOC | 684 Python files | 58 databases | 3458 tests | 5 dashboards | 5 Telegram bots | 3 platforms
+~148,000 LOC | 687 Python files | 60 databases | 3461 tests | 5 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
 - `jobpulse/CLAUDE.md` — Agents, dispatch, Telegram, extension engine, application orchestrator
-- `patterns/CLAUDE.md` — 4 LangGraph orchestration patterns
+- `patterns/CLAUDE.md` — 6 LangGraph orchestration patterns
 - `mindgraph_app/CLAUDE.md` — Code Review Graph, risk scoring, Mermaid/DOT viz
 - `shared/CLAUDE.md` — Cross-cutting utilities, NLP, fact-checker
 - `shared/cognitive/CLAUDE.md` — 4-level cognitive engine: memory recall, single shot, reflexion, tree of thought
-- `shared/memory_layer/CLAUDE.md` — 3-engine memory: SQLite (truth) + Qdrant (vectors) + Neo4j (graph)
+- `shared/memory_layer/CLAUDE.md` — 5-tier memory (STM/Episodic/Semantic/Procedural/Pattern) with 3 engines (SQLite/Qdrant/Neo4j)
 - `shared/optimization/CLAUDE.md` — Continuous learning: signal bus, aggregator, tracker, policy, trajectories
-- `.claude/rules/` — Domain-specific rules (jobs, testing, patterns, shared, frontend, error-handling)
+- `shared/adversarial/CLAUDE.md` — Adversarial evaluation framework, red-teaming, robustness testing
+- `shared/execution/CLAUDE.md` — Durable execution, event sourcing, checkpointing
+- `shared/governance/CLAUDE.md` — Security, score validation, policy engine, API auth
+- `.claude/rules/` — Domain-specific rules (jobs, jobpulse, jobpulse-agents, orchestration-agents, patterns, shared, testing, frontend, error-handling, pii-policy, seven-principles)
