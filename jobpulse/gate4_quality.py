@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from shared.logging_config import get_logger
+from jobpulse.job_db import JobDB
 from jobpulse.utils.safe_io import safe_openai_call
 from jobpulse.cv_templates.scrutiny_calibrator import ScrutinyCalibrator
 from shared.agents import cognitive_llm_call
@@ -61,50 +62,56 @@ def check_jd_quality(jd_text: str, extracted_skills: list[str]) -> JDQualityResu
     """
     skill_count = len(extracted_skills)
     jd_lower = jd_text.lower()
+    boilerplate_count = sum(1 for phrase in BOILERPLATE_PHRASES if phrase in jd_lower)
 
     # 1. Length check
     if len(jd_text) < 200:
         logger.info("Gate 4: JD too short (%d chars)", len(jd_text))
-        return JDQualityResult(
+        result = JDQualityResult(
             passed=False,
             reason="JD too short — fewer than 200 characters",
             boilerplate_count=0,
             skill_count=skill_count,
         )
-
     # 2. Skill count check
-    if skill_count < 5:
+    elif skill_count < 5:
         logger.info("Gate 4: JD too vague — only %d skills extracted", skill_count)
-        return JDQualityResult(
+        result = JDQualityResult(
             passed=False,
             reason=f"JD too vague — only {skill_count} skills extracted",
             boilerplate_count=0,
             skill_count=skill_count,
         )
-
     # 3. Boilerplate check (only blocks if skills are also low)
-    boilerplate_count = sum(1 for phrase in BOILERPLATE_PHRASES if phrase in jd_lower)
-
-    if boilerplate_count >= 3 and skill_count < 8:
+    elif boilerplate_count >= 3 and skill_count < 8:
         logger.info(
             "Gate 4: boilerplate JD — %d boilerplate phrases, only %d skills",
             boilerplate_count,
             skill_count,
         )
-        return JDQualityResult(
+        result = JDQualityResult(
             passed=False,
             reason=f"Boilerplate JD — {boilerplate_count} generic phrases with only {skill_count} skills",
             boilerplate_count=boilerplate_count,
             skill_count=skill_count,
         )
+    else:
+        logger.info("Gate 4: JD passed quality check (%d skills, %d boilerplate)", skill_count, boilerplate_count)
+        result = JDQualityResult(
+            passed=True,
+            reason="OK",
+            boilerplate_count=boilerplate_count,
+            skill_count=skill_count,
+        )
 
-    logger.info("Gate 4: JD passed quality check (%d skills, %d boilerplate)", skill_count, boilerplate_count)
-    return JDQualityResult(
-        passed=True,
-        reason="OK",
-        boilerplate_count=boilerplate_count,
-        skill_count=skill_count,
-    )
+    # Record gate decision for effectiveness tracking
+    try:
+        decision = "pass" if result.passed else "fail"
+        JobDB().record_gate_decision("jd_quality", decision, result.reason)
+    except Exception:
+        logger.debug("Failed to record jd_quality gate decision", exc_info=True)
+
+    return result
 
 
 def check_company_background(
@@ -139,6 +146,13 @@ def check_company_background(
 
     if not note:
         note = "No previous application found" if not is_generic else f"Generic company name: {company}"
+
+    # Record gate decision for effectiveness tracking
+    try:
+        decision = "generic" if is_generic else ("reapply" if previously_applied else "pass")
+        JobDB().record_gate_decision("company_background", decision, note)
+    except Exception:
+        logger.debug("Failed to record company_background gate decision", exc_info=True)
 
     return CompanyBackgroundResult(
         is_generic=is_generic,
