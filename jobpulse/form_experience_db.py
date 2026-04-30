@@ -94,6 +94,16 @@ class FormExperienceDB:
                 sample_count INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS field_confidence_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                field_label TEXT NOT NULL,
+                predicted_confidence REAL NOT NULL,
+                actual_correct INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_confidence_domain
+            ON field_confidence_log (domain);
         """
 
     def _init_db_heal(self):
@@ -198,6 +208,20 @@ class FormExperienceDB:
                     sample_count INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL
                 )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS field_confidence_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    field_label TEXT NOT NULL,
+                    predicted_confidence REAL NOT NULL,
+                    actual_correct INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_confidence_domain
+                ON field_confidence_log (domain)
             """)
 
     @property
@@ -709,3 +733,27 @@ class FormExperienceDB:
                 result["_donor"] = transfer["donor_domain"]
                 return result
         return None
+
+    def log_field_confidence(
+        self, domain: str, field_label: str,
+        predicted_confidence: float, actual_correct: bool,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO field_confidence_log
+                   (domain, field_label, predicted_confidence, actual_correct, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (domain, field_label, predicted_confidence, int(actual_correct), now),
+            )
+
+    def get_confidence_calibration(self, domain: str) -> dict:
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                """SELECT COUNT(*), SUM(actual_correct)
+                   FROM field_confidence_log WHERE domain = ?""",
+                (domain,),
+            ).fetchone()
+        total = row[0] if row else 0
+        correct = row[1] or 0
+        return {"total": total, "correct": correct}

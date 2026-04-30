@@ -336,6 +336,95 @@ async def map_fields(
     return mapping, llm_calls
 
 
+async def map_fields_with_confidence(
+    page_url: str, fields: list[dict], profile: dict,
+    custom_answers: dict, platform: str,
+    known_domain: bool, correction_warning: str,
+    domain_field_mappings: dict[str, str] | None = None,
+    cached_screening: dict[str, str] | None = None,
+) -> tuple[list, int]:
+    """Like map_fields() but returns confidence-scored FieldMappings.
+
+    Returns (list[FieldMapping], llm_calls).
+    Low-confidence fields are escalated via Best-of-N consensus (System 2).
+    """
+    from jobpulse.form_engine.confidence_scorer import ConfidenceScorer, FieldMapping
+
+    scorer = ConfidenceScorer()
+    llm_calls = 0
+
+    cached = try_cached_mapping(
+        page_url, fields, profile, custom_answers, known_domain,
+        domain_field_mappings=domain_field_mappings,
+    )
+    if cached is not None:
+        return scorer.score_mappings(cached, source="cached", fields=fields), 0
+
+    mapping, unresolved = seed_mapping(fields, profile, custom_answers)
+    scored = scorer.score_mappings(mapping, source="deterministic", fields=fields)
+
+    if not unresolved:
+        return scored, 0
+
+    llm_mapping, llm_call_count = await map_fields(
+        page_url, fields, profile, custom_answers, platform,
+        known_domain, correction_warning,
+        domain_field_mappings=domain_field_mappings,
+        cached_screening=cached_screening,
+    )
+    llm_calls += llm_call_count
+
+    llm_only = {k: v for k, v in llm_mapping.items() if k not in mapping}
+    llm_scored = scorer.score_mappings(llm_only, source="llm", fields=fields)
+    scored.extend(llm_scored)
+
+    low_conf = [fm for fm in scored if not fm.is_confident]
+    if low_conf:
+        logger.info(
+            "AUQ: %d/%d fields below confidence threshold, escalating to System 2",
+            len(low_conf), len(scored),
+        )
+        consensus = scorer.escalate_low_confidence(
+            low_confidence_mappings=low_conf,
+            fields=fields,
+            profile=profile,
+            custom_answers=custom_answers,
+            platform=platform,
+        )
+        llm_calls += 1
+        for fm in scored:
+            if fm.label in consensus:
+                fm.value = consensus[fm.label]
+                fm.confidence = 0.92
+                fm.source = "consensus"
+
+        _emit_escalation_signal(low_conf, platform, page_url)
+
+    return scored, llm_calls
+
+
+def _emit_escalation_signal(
+    low_conf_fields: list, platform: str, page_url: str,
+) -> None:
+    try:
+        from shared.optimization import get_optimization_engine
+        get_optimization_engine().emit(
+            signal_type="adaptation",
+            source_loop="auq_escalation",
+            domain=platform,
+            agent_name="field_mapper",
+            payload={
+                "param": "confidence_escalation",
+                "field_count": len(low_conf_fields),
+                "fields": [fm.label for fm in low_conf_fields],
+                "page_url": page_url,
+            },
+            session_id=f"auq_{platform}",
+        )
+    except Exception as exc:
+        logger.debug("AUQ escalation signal failed: %s", exc)
+
+
 async def screen_questions(
     unresolved_fields: list[dict], job_context: dict[str, Any] | None,
     profile_store: Any, correction_warning: str,

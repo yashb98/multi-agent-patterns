@@ -122,3 +122,32 @@ class TestBestOfNConsensus:
         )
         assert mock_grpo.called
         assert "Q" in result
+
+
+class TestConfidenceTracking:
+    def test_log_and_retrieve_confidence(self, tmp_path):
+        from jobpulse.form_experience_db import FormExperienceDB
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        db.log_field_confidence(
+            domain="greenhouse.io",
+            field_label="Salary",
+            predicted_confidence=0.7,
+            actual_correct=True,
+        )
+        db.log_field_confidence(
+            domain="greenhouse.io",
+            field_label="Salary",
+            predicted_confidence=0.8,
+            actual_correct=False,
+        )
+        stats = db.get_confidence_calibration("greenhouse.io")
+        assert stats["total"] == 2
+        assert stats["correct"] == 1
+
+    def test_calibration_empty_domain(self, tmp_path):
+        from jobpulse.form_experience_db import FormExperienceDB
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        stats = db.get_confidence_calibration("unknown.com")
+        assert stats["total"] == 0
