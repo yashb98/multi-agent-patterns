@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from jobpulse.form_experience_db import FormExperienceDB
+from jobpulse.navigation_learner import NavigationLearner
 
 
 class TestContentHashStorage:
@@ -103,3 +104,35 @@ class TestNegativeExemplars:
         negatives = db.get_negative_exemplars("dup.com")
         assert len(negatives) == 1
         assert negatives[0]["attempt_count"] == 3
+
+
+class TestNavigationLearnerContentHash:
+    def test_save_with_content_hash(self, tmp_path):
+        nl = NavigationLearner(db_path=str(tmp_path / "nav.db"))
+        nl._transfer_db_path = str(tmp_path / "transfer.db")
+        steps = [{"action": "click", "selector": "#apply"}]
+        nl.save_sequence("company-a.com", steps, success=True,
+                         platform="greenhouse", content_hash="nav_hash_1234")
+        result = nl.get_sequence("company-a.com")
+        assert result == steps
+
+    def test_cross_domain_nav_fallback(self, tmp_path):
+        nl = NavigationLearner(db_path=str(tmp_path / "nav.db"))
+        nl._transfer_db_path = str(tmp_path / "transfer.db")
+        steps = [{"action": "click", "selector": "#apply-btn"}]
+        nl.save_sequence("alpha.com", steps, success=True,
+                         platform="greenhouse", content_hash="shared_nav_hash")
+        result = nl.get_sequence_by_content_hash(
+            "shared_nav_hash", exclude_domain="beta.com",
+        )
+        assert result == steps
+
+    def test_failed_sequence_stored_with_hash(self, tmp_path):
+        nl = NavigationLearner(db_path=str(tmp_path / "nav.db"))
+        nl._transfer_db_path = str(tmp_path / "transfer.db")
+        fail_steps = [{"action": "click", "selector": "#wrong"}]
+        nl.save_sequence("fail.com", fail_steps, success=False,
+                         platform="lever", content_hash="fail_hash")
+        assert nl.get_sequence("fail.com") is None
+        result = nl.get_failed_sequences("fail.com")
+        assert len(result) == 1

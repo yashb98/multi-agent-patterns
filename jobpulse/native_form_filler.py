@@ -20,6 +20,7 @@ from shared.agents import get_openai_client, get_model_name
 from shared.logging_config import get_logger
 from shared.pii import assert_prompt_has_wrapped_pii
 
+from jobpulse.content_hasher import compute_content_hash
 from jobpulse.form_engine.field_resolver import (
     _best_option_match,
     _build_option_aliases,

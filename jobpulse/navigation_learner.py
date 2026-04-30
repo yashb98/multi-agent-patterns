@@ -47,6 +47,15 @@ class NavigationLearner:
                 conn.execute("SELECT platform FROM sequences LIMIT 1")
             except sqlite3.OperationalError:
                 conn.execute("ALTER TABLE sequences ADD COLUMN platform TEXT DEFAULT ''")
+            # Migration: add content_hash column if missing
+            try:
+                conn.execute("SELECT content_hash FROM sequences LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE sequences ADD COLUMN content_hash TEXT DEFAULT ''")
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sequences_content_hash
+                ON sequences (content_hash)
+            """)
 
     @property
     def _transfer_engine(self):
@@ -92,7 +101,7 @@ class NavigationLearner:
                 return json.loads(donor_row[0])
         return None
 
-    def save_sequence(self, domain_or_url: str, steps: list[dict], success: bool, platform: str = ""):
+    def save_sequence(self, domain_or_url: str, steps: list[dict], success: bool, platform: str = "", content_hash: str = ""):
         """Save a navigation sequence for a domain."""
         domain = self._normalize_domain(domain_or_url)
         now = datetime.now(UTC).isoformat()
@@ -112,14 +121,15 @@ class NavigationLearner:
 
         with sqlite3.connect(self._db_path) as conn:
             conn.execute(
-                """INSERT INTO sequences (domain, steps, success, created_at, updated_at, platform)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO sequences (domain, steps, success, created_at, updated_at, platform, content_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(domain) DO UPDATE SET
                        steps = excluded.steps,
                        success = excluded.success,
                        updated_at = excluded.updated_at,
-                       platform = CASE WHEN excluded.platform != '' THEN excluded.platform ELSE platform END""",
-                (domain, steps_json, int(success), now, now, platform),
+                       platform = CASE WHEN excluded.platform != '' THEN excluded.platform ELSE platform END,
+                       content_hash = CASE WHEN excluded.content_hash != '' THEN excluded.content_hash ELSE content_hash END""",
+                (domain, steps_json, int(success), now, now, platform, content_hash),
             )
         logger.info("Saved navigation sequence for %s (success=%s, %d steps)", domain, success, len(steps))
         try:
@@ -169,6 +179,37 @@ class NavigationLearner:
                 return json.loads(row[0])
 
         return None  # pragma: no cover
+
+    def get_sequence_by_content_hash(
+        self, content_hash: str, exclude_domain: str = "",
+    ) -> list[dict] | None:
+        """Return a successful sequence from any domain sharing the same content_hash."""
+        if not content_hash:
+            return None
+        exclude = self._normalize_domain(exclude_domain) if exclude_domain else ""
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                """SELECT steps FROM sequences
+                   WHERE content_hash = ? AND domain != ? AND success = 1
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (content_hash, exclude),
+            ).fetchone()
+        if row:
+            return json.loads(row[0])
+        return None
+
+    def get_failed_sequences(self, domain_or_url: str) -> list[dict]:
+        """Return all failed sequences for a domain."""
+        domain = self._normalize_domain(domain_or_url)
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT steps, updated_at, content_hash FROM sequences WHERE domain = ? AND success = 0",
+                (domain,),
+            ).fetchall()
+        return [
+            {"steps": json.loads(r[0]), "updated_at": r[1], "content_hash": r[2]}
+            for r in rows
+        ]
 
     def mark_failed(self, domain_or_url: str):
         """Mark a learned sequence as failed. Purges after 3 consecutive failures."""
