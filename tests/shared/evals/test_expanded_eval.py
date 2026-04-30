@@ -293,3 +293,156 @@ def test_page_classification_verification_wall_verify():
 def test_page_classification_unknown():
     result = _run_case(_page_case(text="Welcome to our website"))
     assert result["page_type"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# TestFailureHarvester
+# ---------------------------------------------------------------------------
+
+
+class TestFailureHarvester:
+    def test_harvest_from_form_failures(self, tmp_path):
+        from jobpulse.form_experience_db import FormExperienceDB
+        from shared.evals.failure_harvester import FailureHarvester
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        import sqlite3
+        from datetime import datetime, UTC
+        with sqlite3.connect(str(tmp_path / "test.db")) as conn:
+            conn.execute(
+                """INSERT INTO form_failure_reasons
+                   (domain, platform, failure_type, field_label, details, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("test.com", "greenhouse", "wrong_value", "Salary",
+                 "Expected integer, got string", datetime.now(UTC).isoformat()),
+            )
+
+        harvester = FailureHarvester(form_experience_db=db)
+        cases = harvester.harvest_form_failures()
+        assert len(cases) >= 1
+        assert cases[0]["flow"] == "fill_failure_class"
+        assert cases[0]["case_id"] == "harvest-fail-001"
+
+    def test_harvest_from_mistakes_md(self, tmp_path):
+        from shared.evals.failure_harvester import FailureHarvester
+
+        mistakes = tmp_path / "mistakes.md"
+        mistakes.write_text(
+            "## 2026-04-25\n"
+            "- **field_mapping**: Gender field mapped to 'Male' but form had 'Man'\n"
+            "- **screening**: Salary question answered with range instead of integer\n"
+        )
+        harvester = FailureHarvester(mistakes_path=str(mistakes))
+        cases = harvester.harvest_mistakes()
+        assert len(cases) == 2
+        assert cases[0]["flow"] == "field_mapping"
+        assert cases[1]["flow"] == "screening_answer"
+
+    def test_empty_sources_return_empty(self, tmp_path):
+        from shared.evals.failure_harvester import FailureHarvester
+        from jobpulse.form_experience_db import FormExperienceDB
+
+        db = FormExperienceDB(db_path=str(tmp_path / "empty.db"))
+        harvester = FailureHarvester(
+            form_experience_db=db,
+            mistakes_path=str(tmp_path / "nonexistent.md"),
+        )
+        assert harvester.harvest_form_failures() == []
+        assert harvester.harvest_mistakes() == []
+
+    def test_harvest_all_combines(self, tmp_path):
+        from shared.evals.failure_harvester import FailureHarvester
+
+        mistakes = tmp_path / "mistakes.md"
+        mistakes.write_text("- **page**: Misclassified login as form\n")
+        harvester = FailureHarvester(mistakes_path=str(mistakes))
+        all_cases = harvester.harvest_all()
+        assert len(all_cases) >= 1
+
+
+# ---------------------------------------------------------------------------
+# TestTrajectoryEval
+# ---------------------------------------------------------------------------
+
+
+class TestTrajectoryEval:
+    def test_optimal_trajectory_scores_high(self):
+        from shared.evals.trajectory_eval import score_trajectory
+
+        trajectory = [
+            {"action": "navigate", "page_type": "job_listing", "time_ms": 500},
+            {"action": "click_apply", "page_type": "application_form", "time_ms": 200},
+            {"action": "fill_form", "page_type": "application_form", "time_ms": 3000},
+            {"action": "submit", "page_type": "confirmation", "time_ms": 100},
+        ]
+        score = score_trajectory(trajectory, success=True)
+        assert score >= 0.8
+
+    def test_looping_trajectory_scores_low(self):
+        from shared.evals.trajectory_eval import score_trajectory
+
+        trajectory = [
+            {"action": "navigate", "page_type": "job_listing", "time_ms": 500},
+            {"action": "navigate", "page_type": "job_listing", "time_ms": 500},
+            {"action": "navigate", "page_type": "job_listing", "time_ms": 500},
+            {"action": "click_apply", "page_type": "application_form", "time_ms": 200},
+            {"action": "fill_form", "page_type": "application_form", "time_ms": 3000},
+            {"action": "submit", "page_type": "confirmation", "time_ms": 100},
+        ]
+        score = score_trajectory(trajectory, success=True)
+        assert score < 0.8
+
+    def test_failed_trajectory_capped(self):
+        from shared.evals.trajectory_eval import score_trajectory
+
+        trajectory = [
+            {"action": "navigate", "page_type": "job_listing", "time_ms": 500},
+            {"action": "error", "page_type": "error", "time_ms": 0},
+        ]
+        score = score_trajectory(trajectory, success=False)
+        assert score <= 0.3
+
+    def test_empty_trajectory(self):
+        from shared.evals.trajectory_eval import score_trajectory
+        assert score_trajectory([], success=True) == 0.0
+        assert score_trajectory([], success=False) == 0.0
+
+    def test_strategy_cached_optimal(self):
+        from shared.evals.trajectory_eval import score_strategy_choice
+
+        result = score_strategy_choice(
+            chosen_strategy="cached",
+            available_strategies=["cached", "llm", "vision"],
+            outcome_success=True,
+        )
+        assert result >= 0.9
+
+    def test_strategy_llm_when_cache_available_penalized(self):
+        from shared.evals.trajectory_eval import score_strategy_choice
+
+        result = score_strategy_choice(
+            chosen_strategy="llm",
+            available_strategies=["cached", "llm", "vision"],
+            outcome_success=True,
+        )
+        assert result < 0.9
+
+    def test_strategy_failure_capped(self):
+        from shared.evals.trajectory_eval import score_strategy_choice
+
+        result = score_strategy_choice(
+            chosen_strategy="cached",
+            available_strategies=["cached"],
+            outcome_success=False,
+        )
+        assert result == 0.3
+
+    def test_strategy_unknown_strategies(self):
+        from shared.evals.trajectory_eval import score_strategy_choice
+
+        result = score_strategy_choice(
+            chosen_strategy="unknown_strat",
+            available_strategies=["unknown_strat"],
+            outcome_success=True,
+        )
+        assert result == 0.5
