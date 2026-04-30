@@ -98,7 +98,7 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 3. **Cognitive Escalation** — `CognitiveEngine` (L0→L3) + `OptimizationEngine` → `EscalationClassifier`
 
 ## Database Wiring Status
-22 DBs active with data, 24 wired but empty (code exists, never fires in production), 16 dead/legacy (62 total .db files in data/). Critical empty DBs that MUST be wired: `form_experience.db`, `optimization.db`, `applications.db`, `trajectory.db`, `user_profile.db`, `scan_learning.db`. When touching any pipeline code, verify the relevant DB actually receives data — query it after a run.
+27 DBs active with data, 19 wired but empty (code exists, not yet firing in production), 5 dead/legacy (51 total .db files in data/). Newly wired tables: `application_outcomes`, `company_reliability`, `gate_effectiveness` (in applications.db via post_apply_hook + gate4_quality), `performance_snapshots`, `cognitive_outcomes` (in optimization.db via optimize() + CognitiveEngine.think()). 11 dead 0-byte databases cleaned up. When touching any pipeline code, verify the relevant DB actually receives data — query it after a run.
 
 ## Critical Rules
 - **OPRAL on every error** — Observe → Plan → Reason → Act → Learn. Every error must make the system smarter. If an error can recur, the fix is incomplete.

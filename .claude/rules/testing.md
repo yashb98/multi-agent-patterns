@@ -7,9 +7,21 @@ Incident: 2026-03-25 — test_mindgraph.py wiped production mindgraph.db via sto
 Fix: use_temp_db autouse fixture patches DB_PATH to tmp_path.
 
 ## Test Structure
-- Tests mirror source: tests/jobpulse/ ↔ jobpulse/, tests/patterns/ ↔ patterns/
+- Tests mirror source: tests/jobpulse/ ↔ jobpulse/, tests/patterns/ ↔ patterns/, tests/shared/ ↔ shared/
+- Not all subdirectories have mirrored test dirs — some tests live as flat files (e.g., `test_page_analysis.py` instead of `tests/jobpulse/page_analysis/`)
 - Shared fixtures in conftest.py (root) and tests/conftest.py
-- Use pytest markers: @pytest.mark.slow for integration tests
+- Use pytest markers: @pytest.mark.slow for integration tests, @pytest.mark.live for real-data tests
+
+### Additional Test Directories
+- `tests/lint/` — 3 lint enforcement tests (no blocking sleep, no raw requests.get, profile prompt wrapping)
+- `tests/papers/` — Paper pipeline tests (10 files)
+- `tests/shared/adversarial/` — Adversarial evaluation tests
+- `tests/shared/evals/` — Agent evaluation tests
+- `tests/shared/execution/` — Durable execution tests (14 files)
+- `tests/shared/governance/` — Auth, sanitizer, policy, score validator tests
+- `tests/shared/prompts/` — Prompt registry tests
+- `tests/jobpulse/integration/` — Live integration tests
+- `tests/fixtures/live_snapshots/` — Indeed/LinkedIn page snapshots + manifest
 
 ## Running Tests
 ```
@@ -32,6 +44,12 @@ A feature that passes unit tests but isn't wired end-to-end is not done.
 - Transform "add validation" → write tests for invalid inputs, then make them pass.
 - Transform "refactor X" → ensure tests pass before and after.
 - Don't add error handling or test coverage for scenarios that can't happen.
+
+## OPRAL Error Loop in Tests
+When a test fails: **Observe** (read the actual error, not just the traceback) → **Plan** (trace to root cause — is it a code bug, a wiring gap, or stale data?) → **Reason** (which learning DB should prevent this class of failure?) → **Act** (fix with real data, never mock the failure away) → **Learn** (if the error reveals a wiring gap, add a wiring test that verifies the DB write). Never fix a test by mocking — fix the underlying system.
+
+## Database Wiring Tests
+19 DBs are wired in code but have zero rows in production. When writing tests for pipeline features, verify the DB actually receives data — query it after a run. Wiring tests exist in `test_wiring_e2e.py`, `test_gate4_wiring.py`, `test_snapshot_wiring.py`, `test_cognitive_wiring.py`, `test_scan_learning_wiring.py`. Priority empties remaining: `user_profile.db`, `project_selection_outcomes.db`.
 
 ## What to Test for New Features
 - Intent routing: test in BOTH dispatcher AND swarm_dispatcher
