@@ -146,6 +146,26 @@ class TestNavigatorReasonerLoop:
         )
 
 
+class TestAuthSimplified:
+    def test_handle_login_delegates_to_reasoner(self):
+        """Auth handler login should not have hardcoded field iteration."""
+        import inspect
+        from jobpulse.application_orchestrator_pkg._auth import AuthHandler
+        source = inspect.getsource(AuthHandler.handle_login)
+        assert 'ftype == "password"' not in source, (
+            "handle_login should not have hardcoded password field matching"
+        )
+
+    def test_handle_signup_delegates_to_reasoner(self):
+        """Auth handler signup should not have hardcoded field iteration."""
+        import inspect
+        from jobpulse.application_orchestrator_pkg._auth import AuthHandler
+        source = inspect.getsource(AuthHandler.handle_signup)
+        assert "create_account" not in source, (
+            "handle_signup should not call create_account — reasoner fills fields"
+        )
+
+
 class TestPageReasonerSync:
     @patch("jobpulse.page_analysis.page_reasoner.smart_llm_call")
     @patch("jobpulse.page_analysis.page_reasoner.get_llm")
