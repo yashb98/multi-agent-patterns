@@ -743,20 +743,88 @@ class FormNavigator:
             pb = get_platform_bypass()
             pb_result = await pb.resolve_direct_url(job, wall_url, page)
             if pb_result.resolved:
-                logger.info("Platform bypass: %s → %s", wall_url[:40], pb_result.direct_url[:60])
-                await self.driver.page.goto(pb_result.direct_url, wait_until="domcontentloaded", timeout=20000)
-                await asyncio.sleep(2)
-                new_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
-                steps.append({
-                    "page_type": "platform_bypass",
-                    "action": "redirect_to_ats",
-                    "from_url": wall_url,
-                    "to_url": pb_result.direct_url,
-                    "strategy": pb_result.strategy_used,
-                })
-                return new_snap
+                return await self._navigate_to_direct_url(
+                    pb_result.direct_url, wall_url, pb_result.strategy_used, steps,
+                )
         except Exception as exc:
             logger.debug("Platform bypass failed: %s", exc)
+
+        # Fallback: scrape the direct URL on-the-fly via python-jobspy
+        direct = self._scrape_direct_url(job)
+        if direct:
+            return await self._navigate_to_direct_url(direct, wall_url, "live_scrape", steps)
+
+        return None
+
+    async def _navigate_to_direct_url(
+        self, direct_url: str, wall_url: str, strategy: str, steps: list[dict],
+    ) -> dict | None:
+        """Navigate to a resolved direct ATS URL and return the new snapshot."""
+        try:
+            logger.info("Platform bypass: %s → %s (strategy=%s)", wall_url[:40], direct_url[:60], strategy)
+            await self.driver.page.goto(direct_url, wait_until="domcontentloaded", timeout=20000)
+            await asyncio.sleep(2)
+            new_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+            steps.append({
+                "page_type": "platform_bypass",
+                "action": "redirect_to_ats",
+                "from_url": wall_url,
+                "to_url": direct_url,
+                "strategy": strategy,
+            })
+            return new_snap
+        except Exception as exc:
+            logger.warning("Failed to navigate to direct URL %s: %s", direct_url[:60], exc)
+            return None
+
+    @staticmethod
+    def _scrape_direct_url(job: dict) -> str | None:
+        """Re-scrape the job via python-jobspy to get job_url_direct.
+
+        Only works for Indeed. Returns the direct ATS URL or None.
+        """
+        platform = (job.get("platform") or "").lower()
+        if platform not in ("indeed",):
+            return None
+
+        title = job.get("title", "")
+        company = job.get("company", "")
+        if not company:
+            return None
+
+        try:
+            from jobspy import scrape_jobs
+        except ImportError:
+            logger.debug("python-jobspy not installed — cannot scrape direct URL")
+            return None
+
+        search_term = f"{company} {title}".strip()
+        logger.info("Scraping direct URL for %r via python-jobspy", search_term[:60])
+        try:
+            results = scrape_jobs(
+                site_name=["indeed"],
+                search_term=search_term,
+                location="UK",
+                results_wanted=5,
+                country_indeed="UK",
+            )
+            for _, row in results.iterrows():
+                row_company = (row.get("company") or "").strip().lower()
+                if row_company and (company.lower() in row_company or row_company in company.lower()):
+                    direct = row.get("job_url_direct") or ""
+                    if direct:
+                        logger.info("Scraped direct URL: %s → %s", company, direct[:60])
+                        # Cache for future use
+                        try:
+                            from jobpulse.platform_bypass import get_platform_bypass
+                            pb = get_platform_bypass()
+                            pb._store_cached(company, direct, ats_platform="", strategy="live_scrape")
+                        except Exception:
+                            pass
+                        return direct
+        except Exception as exc:
+            logger.warning("python-jobspy scrape failed: %s", exc)
+
         return None
 
     async def verify_submission(self) -> dict:
