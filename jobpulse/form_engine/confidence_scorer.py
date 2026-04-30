@@ -152,3 +152,23 @@ class ConfidenceScorer:
         )
 
         return self.pick_consensus(candidates, field_labels=field_labels)
+
+
+def log_fill_outcomes(
+    domain: str,
+    outcomes: list[dict],
+    *,
+    db=None,
+) -> None:
+    """Log per-field confidence vs actual correctness for calibration."""
+    if db is None:
+        from jobpulse.form_experience_db import FormExperienceDB
+        db = FormExperienceDB()
+
+    for o in outcomes:
+        db.log_field_confidence(
+            domain=domain,
+            field_label=o["label"],
+            predicted_confidence=o["confidence"],
+            actual_correct=o["correct"],
+        )

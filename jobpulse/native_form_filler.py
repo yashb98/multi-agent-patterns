@@ -45,6 +45,7 @@ from jobpulse.form_engine.field_mapper import (
     is_screening_like_field,
     learn_field_mapping,
     map_fields,
+    map_fields_with_confidence,
     recover_failed_fields_with_llm,
     recover_failed_fields_with_vision,
     review_form,
@@ -1780,6 +1781,26 @@ class NativeFormFiller:
                         logger.info("SPA hydration complete: %d fields after %.1fs",
                                     len(fields), (time.monotonic() - t_hydration))
                         break
+            if not fields and page_num > 1 and self._container_selector:
+                logger.info("Page %d: 0 fields in container %s — re-resolving container",
+                            page_num, self._container_selector)
+                old_container = self._container_selector
+                try:
+                    from jobpulse.form_engine.field_scanner import resolve_form_container
+                    self._container_selector = await resolve_form_container(
+                        self._page, self._strategy, self._fe_db,
+                    )
+                    if self._container_selector != old_container:
+                        logger.info("Container changed: %s → %s", old_container, self._container_selector)
+                    fields = await self._scan_fields()
+                    if not fields:
+                        self._container_selector = None
+                        logger.info("Re-resolved container still empty — scanning full page")
+                        fields = await self._scan_fields()
+                except Exception as exc:
+                    logger.debug("Container re-resolution failed: %s", exc)
+                    self._container_selector = None
+                    fields = await self._scan_fields()
             hydration_ms = int((time.monotonic() - t_hydration) * 1000)
 
             _cur_fingerprint = self._fingerprint_fields(fields)

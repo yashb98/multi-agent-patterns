@@ -151,3 +151,19 @@ class TestConfidenceTracking:
         db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
         stats = db.get_confidence_calibration("unknown.com")
         assert stats["total"] == 0
+
+
+class TestCalibrationLogging:
+    def test_log_fill_outcome_updates_db(self, tmp_path):
+        from jobpulse.form_engine.confidence_scorer import log_fill_outcomes
+        from jobpulse.form_experience_db import FormExperienceDB
+
+        db = FormExperienceDB(db_path=str(tmp_path / "test.db"))
+        outcomes = [
+            {"label": "Name", "confidence": 0.95, "correct": True},
+            {"label": "Salary", "confidence": 0.6, "correct": False},
+        ]
+        log_fill_outcomes("test.com", outcomes, db=db)
+        stats = db.get_confidence_calibration("test.com")
+        assert stats["total"] == 2
+        assert stats["correct"] == 1
