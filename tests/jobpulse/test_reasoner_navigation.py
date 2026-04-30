@@ -196,3 +196,110 @@ class TestPageReasonerSync:
         assert isinstance(action, PageAction)
         assert action.action == "fill_and_advance"
         assert action.confidence == 0.9
+
+
+class TestReasonerDrivenIntegration:
+    """Integration test: simulate a 3-step navigation via reasoner."""
+
+    @patch("jobpulse.page_analysis.page_reasoner.smart_llm_call")
+    @patch("jobpulse.page_analysis.page_reasoner.get_llm")
+    def test_three_step_navigation(self, mock_get_llm, mock_smart_call):
+        """Job description → signup → application form."""
+        responses = [
+            _fake_llm_response({
+                "page_understanding": "Job listing with Apply button",
+                "page_type": "job_description",
+                "action": "click_element",
+                "target_text": "Apply Now",
+                "field_fills": [],
+                "advance_button": "",
+                "overlays_to_dismiss": [],
+                "reasoning": "Click apply to proceed",
+                "confidence": 0.95,
+            }),
+            _fake_llm_response({
+                "page_understanding": "Email signup page with consent",
+                "page_type": "signup_form",
+                "action": "fill_and_advance",
+                "field_fills": [
+                    {"label": "Email Address", "value": "FROM_PROFILE:email", "method": "fill"},
+                    {"label": "I agree", "value": "true", "method": "check_label"},
+                ],
+                "advance_button": "Next",
+                "overlays_to_dismiss": ["Agree"],
+                "reasoning": "Fill email and accept terms",
+                "confidence": 0.9,
+            }),
+            _fake_llm_response({
+                "page_understanding": "Application form with multiple fields",
+                "page_type": "application_form",
+                "action": "fill_form",
+                "field_fills": [],
+                "advance_button": "",
+                "overlays_to_dismiss": [],
+                "reasoning": "Hand off to form filler",
+                "confidence": 0.95,
+            }),
+        ]
+        mock_smart_call.side_effect = responses
+
+        reasoner = PageReasoner.__new__(PageReasoner)
+        reasoner._db_path = ":memory:"
+        reasoner._ensure_db = lambda: None
+        reasoner._get_cached = lambda k: None
+        reasoner._set_cache = lambda k, a: None
+
+        snapshots = [
+            {"url": "https://indeed.com/viewjob?jk=123", "page_text_preview": "Data Scientist role",
+             "buttons": [{"text": "Apply Now"}], "fields": []},
+            {"url": "https://oracle.com/apply/email", "page_text_preview": "Enter email",
+             "buttons": [{"text": "Next"}], "fields": [{"label": "Email Address", "input_type": "email"}]},
+            {"url": "https://oracle.com/apply/form", "page_text_preview": "Application form",
+             "buttons": [{"text": "Submit"}], "fields": [{"label": "First Name", "input_type": "text"}]},
+        ]
+
+        actions_taken = []
+        for snap in snapshots:
+            action = reasoner.reason_sync(snap)
+            actions_taken.append(action.action)
+            if action.action == "fill_form":
+                break
+
+        assert actions_taken == ["click_element", "fill_and_advance", "fill_form"]
+        assert len(actions_taken) == 3
+
+    @patch("jobpulse.page_analysis.page_reasoner.smart_llm_call")
+    @patch("jobpulse.page_analysis.page_reasoner.get_llm")
+    def test_overlay_then_fill(self, mock_get_llm, mock_smart_call):
+        """Cookie banner → login with overlay dismissed first."""
+        responses = [
+            _fake_llm_response({
+                "page_understanding": "Login form with cookie overlay",
+                "page_type": "login_form",
+                "action": "fill_and_advance",
+                "field_fills": [
+                    {"label": "Email", "value": "FROM_PROFILE:email", "method": "fill"},
+                ],
+                "advance_button": "Sign In",
+                "overlays_to_dismiss": ["Accept Cookies"],
+                "reasoning": "Dismiss cookies, fill email, sign in",
+                "confidence": 0.9,
+            }),
+        ]
+        mock_smart_call.side_effect = responses
+
+        reasoner = PageReasoner.__new__(PageReasoner)
+        reasoner._db_path = ":memory:"
+        reasoner._ensure_db = lambda: None
+        reasoner._get_cached = lambda k: None
+        reasoner._set_cache = lambda k, a: None
+
+        action = reasoner.reason_sync({
+            "url": "https://example.com/login",
+            "page_text_preview": "Login to continue",
+            "buttons": [{"text": "Sign In"}, {"text": "Accept Cookies"}],
+            "fields": [{"label": "Email", "input_type": "email"}],
+        })
+        assert action.action == "fill_and_advance"
+        assert action.overlays_to_dismiss == ["Accept Cookies"]
+        assert len(action.field_fills) == 1
