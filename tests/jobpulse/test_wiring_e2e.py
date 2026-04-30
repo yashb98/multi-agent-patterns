@@ -69,14 +69,13 @@ def _make_job_context(job_id="test_job_001"):
     }
 
 
-def _patch_externals():
-    """Return a list of context managers patching out Drive, Notion, JobDB, strategy_reflector."""
+def _patch_external_apis():
+    """Return a list of context managers patching only Drive, Notion, and strategy_reflector."""
     return [
         patch("jobpulse.post_apply_hook.upload_cv", return_value=None),
         patch("jobpulse.post_apply_hook.upload_cover_letter", return_value=None),
         patch("jobpulse.post_apply_hook.find_application_page", return_value=None),
         patch("jobpulse.post_apply_hook.update_application_page"),
-        patch("jobpulse.post_apply_hook.JobDB", return_value=MagicMock()),
         patch("jobpulse.strategy_reflector.reflect_on_application", return_value=MagicMock(
             heuristics="[]", fields_total=5, fields_pattern=3,
             fields_llm=1, fields_corrected=1,
@@ -107,17 +106,9 @@ def _seed_job_data(jdb, job_id="test_job_001"):
 
 
 def _patch_externals_with_jdb(jdb):
-    """Like _patch_externals but uses a real JobDB instance instead of MagicMock."""
-    return [
-        patch("jobpulse.post_apply_hook.upload_cv", return_value=None),
-        patch("jobpulse.post_apply_hook.upload_cover_letter", return_value=None),
-        patch("jobpulse.post_apply_hook.find_application_page", return_value=None),
-        patch("jobpulse.post_apply_hook.update_application_page"),
+    """Patch external APIs + inject real JobDB instance."""
+    return _patch_external_apis() + [
         patch("jobpulse.post_apply_hook.JobDB", return_value=jdb),
-        patch("jobpulse.strategy_reflector.reflect_on_application", return_value=MagicMock(
-            heuristics="[]", fields_total=5, fields_pattern=3,
-            fields_llm=1, fields_corrected=1,
-        )),
     ]
 
 
@@ -126,11 +117,15 @@ class TestPostApplyHookWiring:
 
     def test_writes_form_experience(self, wiring_dbs):
         """post_apply_hook must write at least 1 row to form_experience table."""
+        from jobpulse.job_db import JobDB
         from jobpulse.post_apply_hook import post_apply_hook
 
+        jdb = JobDB(db_path=Path(wiring_dbs["applications"]))
+        _seed_job_data(jdb)
         opt_engine = OptimizationEngine(db_path=wiring_dbs["optimization"])
 
-        patches = _patch_externals() + [
+        patches = _patch_external_apis() + [
+            patch("jobpulse.post_apply_hook.JobDB", return_value=jdb),
             patch("shared.optimization.get_optimization_engine", return_value=opt_engine),
             patch("shared.optimization._engine.get_optimization_engine", return_value=opt_engine),
             patch("shared.optimization._engine._shared_engine", opt_engine),
@@ -155,11 +150,15 @@ class TestPostApplyHookWiring:
 
     def test_emits_optimization_learning_action(self, wiring_dbs):
         """post_apply_hook must create at least 1 learning_action (before/after pair)."""
+        from jobpulse.job_db import JobDB
         from jobpulse.post_apply_hook import post_apply_hook
 
+        jdb = JobDB(db_path=Path(wiring_dbs["applications"]))
+        _seed_job_data(jdb)
         opt_engine = OptimizationEngine(db_path=wiring_dbs["optimization"])
 
-        patches = _patch_externals() + [
+        patches = _patch_external_apis() + [
+            patch("jobpulse.post_apply_hook.JobDB", return_value=jdb),
             patch("shared.optimization.get_optimization_engine", return_value=opt_engine),
             patch("shared.optimization._engine.get_optimization_engine", return_value=opt_engine),
             patch("shared.optimization._engine._shared_engine", opt_engine),
@@ -185,11 +184,15 @@ class TestPostApplyHookWiring:
 
     def test_records_navigation_sequence(self, wiring_dbs):
         """post_apply_hook must save at least 1 navigation sequence."""
+        from jobpulse.job_db import JobDB
         from jobpulse.post_apply_hook import post_apply_hook
 
+        jdb = JobDB(db_path=Path(wiring_dbs["applications"]))
+        _seed_job_data(jdb)
         opt_engine = OptimizationEngine(db_path=wiring_dbs["optimization"])
 
-        patches = _patch_externals() + [
+        patches = _patch_external_apis() + [
+            patch("jobpulse.post_apply_hook.JobDB", return_value=jdb),
             patch("shared.optimization.get_optimization_engine", return_value=opt_engine),
             patch("shared.optimization._engine.get_optimization_engine", return_value=opt_engine),
             patch("shared.optimization._engine._shared_engine", opt_engine),
