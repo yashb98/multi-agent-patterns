@@ -1,15 +1,6 @@
 """Tests for form_engine detector."""
 
-import os
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
-
-_ROOT = Path(__file__).parent.parent.parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-os.environ.setdefault("JOBPULSE_TEST_MODE", "1")
 
 import pytest
 
