@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,15 +64,51 @@ def _clear_active_review_file() -> None:
         logger.debug("live_review_applicator: failed clearing active review file: %s", exc)
 
 
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+_STALE_MAX_AGE_SECONDS = 7200  # 2 hours
+
+
 def _load_persisted_review() -> dict[str, Any] | None:
     if not _ACTIVE_REVIEW_FILE.exists():
         return None
     try:
-        return json.loads(_ACTIVE_REVIEW_FILE.read_text(encoding="utf-8"))
+        data = json.loads(_ACTIVE_REVIEW_FILE.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.warning("live_review_applicator: failed loading active review file: %s", exc)
         _clear_active_review_file()
         return None
+
+    owner_pid = data.get("pid")
+    started_at = data.get("started_at")
+
+    if not owner_pid and not started_at:
+        logger.warning("live_review_applicator: clearing legacy session (no pid/timestamp)")
+        _clear_active_review_file()
+        return None
+
+    if started_at and (time.time() - started_at) > _STALE_MAX_AGE_SECONDS:
+        logger.warning(
+            "live_review_applicator: clearing stale session (age=%.0fs, max=%ds)",
+            time.time() - started_at, _STALE_MAX_AGE_SECONDS,
+        )
+        _clear_active_review_file()
+        return None
+
+    if owner_pid and not _is_pid_alive(owner_pid):
+        logger.warning(
+            "live_review_applicator: clearing orphaned session (pid=%d is dead)", owner_pid,
+        )
+        _clear_active_review_file()
+        return None
+
+    return data
 
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
@@ -222,6 +260,8 @@ class LiveReviewSession:
         payload = {
             "status": status,
             "session_id": self.session_id,
+            "pid": os.getpid(),
+            "started_at": time.time(),
             "job": self.job,
             "url": self.url,
             "approval_page_url": page_url,
@@ -347,6 +387,11 @@ class LiveReviewSession:
 
         driver = PlaywrightDriver()
         await driver.connect()
+        # Clear stale state from previous runs — navigate to blank page first
+        try:
+            await driver.page.goto("about:blank", wait_until="load", timeout=5000)
+        except Exception:
+            pass
         self._driver = driver
         self._page = driver.page
 
@@ -360,6 +405,7 @@ class LiveReviewSession:
             custom_answers=self.merged_answers,
             overrides=None,
             dry_run=True,
+            job=self.job,
         )
 
     def fill_and_request_approval(self) -> None:
@@ -374,6 +420,7 @@ class LiveReviewSession:
         except Exception as exc:
             logger.error("live_review_applicator: fill failed: %s", exc)
             self._restore_pending_status()
+            self._record_failure_learning(str(exc))
             _clear_active_review_file()
             send_telegram(
                 f"❌ Failed to fill {self.job.get('title')} @ {self.job.get('company')}:\n{exc}",
@@ -387,11 +434,21 @@ class LiveReviewSession:
 
         if not self._fill_result.get("success"):
             err = self._fill_result.get("error", "fill returned success=False")
+            is_expired = self._fill_result.get("expired", False)
             logger.warning("live_review_applicator: fill did not reach submit page: %s", err)
-            self._restore_pending_status()
+
+            if is_expired:
+                self._mark_expired()
+            else:
+                self._restore_pending_status()
+
+            self._record_failure_learning(err, expired=is_expired)
             _clear_active_review_file()
+
+            status_emoji = "💀" if is_expired else "❌"
+            status_label = "Job expired" if is_expired else "Could not reach the submit page for"
             send_telegram(
-                f"❌ Could not reach the submit page for "
+                f"{status_emoji} {status_label} "
                 f"{self.job.get('title')} @ {self.job.get('company')}:\n{err}",
                 chat_id=TELEGRAM_CHAT_ID,
             )
@@ -889,6 +946,89 @@ class LiveReviewSession:
             JobDB().update_status(job_id, "Pending Approval")
         except Exception as exc:
             logger.warning("live_review_applicator: failed to restore Pending Approval: %s", exc)
+
+    def _mark_expired(self) -> None:
+        """Mark job as Expired in both SQLite and Notion so it never re-enters the queue."""
+        from jobpulse.job_db import JobDB
+
+        job_id = self.job.get("job_id")
+        if job_id:
+            try:
+                JobDB().update_status(job_id, "Expired")
+            except Exception as exc:
+                logger.warning("_mark_expired: SQLite update failed: %s", exc)
+
+        notion_page_id = self.job.get("notion_page_id") or self.job.get("_notion_page_id")
+        if notion_page_id:
+            try:
+                from jobpulse.job_notion_sync import update_application_page
+                update_application_page(notion_page_id, status="Expired")
+            except Exception as exc:
+                logger.warning("_mark_expired: Notion update failed: %s", exc)
+
+    def _record_failure_learning(self, error: str, *, expired: bool = False) -> None:
+        """OPRAL Learn phase — emit failure signals to learning systems."""
+        from urllib.parse import urlparse
+        domain = urlparse(self.url).netloc.lower().removeprefix("www.") if self.url else ""
+        company = self.job.get("company", "")
+        title = self.job.get("title", "")
+        platform = self.job.get("platform", "")
+
+        # 1. GotchasDB — record domain-specific failure
+        try:
+            from jobpulse.form_engine.gotchas import GotchasDB
+            gotchas = GotchasDB()
+            problem = "expired_job" if expired else "navigation_failure"
+            gotchas.store(
+                domain=domain,
+                selector_pattern=f"_failure:{problem}",
+                problem=f"{error} | {title} @ {company}",
+                solution="Mark as expired" if expired else "Investigate page structure",
+            )
+        except Exception as exc:
+            logger.debug("_record_failure_learning: GotchasDB failed: %s", exc)
+
+        # 2. OptimizationEngine — emit failure signal
+        try:
+            from shared.optimization import get_optimization_engine
+            engine = get_optimization_engine()
+            signal_type = "failure"
+            engine.emit(
+                signal_type=signal_type,
+                source_loop="live_review_applicator",
+                domain=domain,
+                agent_name="application_orchestrator",
+                payload={
+                    "category": "expired_job" if expired else "navigation_failure",
+                    "company": company,
+                    "title": title,
+                    "platform": platform,
+                    "error": error,
+                    "url": self.url,
+                },
+            )
+        except Exception as exc:
+            logger.debug("_record_failure_learning: OptimizationEngine failed: %s", exc)
+
+        # 3. AgentPerformanceDB — record failed attempt
+        try:
+            from jobpulse.agent_performance import AgentPerformanceDB
+            perf = AgentPerformanceDB()
+            perf.record_session(
+                company=company,
+                role=title,
+                platform=platform,
+                url=self.url,
+                success=False,
+                notes=f"{'expired' if expired else 'failure'}: {error}",
+            )
+        except Exception as exc:
+            logger.debug("_record_failure_learning: AgentPerformanceDB failed: %s", exc)
+
+        logger.info(
+            "OPRAL Learn: recorded failure for %s @ %s (expired=%s, domain=%s)",
+            title, company, expired, domain,
+        )
 
     def release(self) -> None:
         """Detach from Playwright while leaving the Chrome tab open."""

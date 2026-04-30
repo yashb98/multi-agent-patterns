@@ -239,6 +239,16 @@ class FormNavigator:
                 logger.warning("Reasoner loop: %s × %d — aborting", state_key, visited_states[state_key])
                 return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
+            # Expired job — abort immediately, don't re-queue
+            if action.page_type == "expired_job":
+                logger.warning("Job expired/closed: %s", action.page_understanding)
+                return {
+                    "page_type": PageType.UNKNOWN,
+                    "snapshot": snapshot,
+                    "expired": True,
+                    "error": action.page_understanding or "Job is no longer available",
+                }
+
             # Terminal actions
             if action.action == "fill_form":
                 return {"page_type": PageType.APPLICATION_FORM, "snapshot": snapshot}

@@ -220,7 +220,7 @@ class PageReasoner:
             "{\n"
             '  "page_understanding": "one sentence describing what you see",\n'
             '  "page_type": "job_description|application_form|login_form|signup_form|'
-            'email_verification|confirmation|verification_wall|consent_gate|session_expired|unknown",\n'
+            'email_verification|confirmation|verification_wall|consent_gate|session_expired|expired_job|unknown",\n'
             '  "action": "fill_and_advance|click_element|dismiss_overlay|wait_human|fill_form|done|abort",\n'
             '  "target_text": "button/link text to click (if action is click_element)",\n'
             '  "field_fills": [\n'
@@ -241,6 +241,8 @@ class PageReasoner:
             "- If a CAPTCHA/hCaptcha/reCAPTCHA is present and blocking interaction, action = \"wait_human\"\n"
             "- If overlays (cookie consent, session timeout) are blocking the form, list them in overlays_to_dismiss\n"
             "- If this is an application form ready to fill, action = \"fill_form\" (hand off to form filler)\n"
+            "- If the page says the job is no longer available, expired, closed, removed, or filled, "
+            "page_type = \"expired_job\" and action = \"abort\"\n"
             "- If application was submitted successfully, action = \"done\"\n"
             "- action \"fill_and_advance\" = fill the listed fields + click advance_button\n"
             "- action \"click_element\" = click a specific button/link (e.g. Apply Now)\n\n"

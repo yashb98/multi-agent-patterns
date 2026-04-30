@@ -176,8 +176,15 @@ class ApplicationOrchestrator:
             return {"success": False, "error": "CAPTCHA wall", "screenshot": nav_result.get("screenshot")}
 
         if page_type == PageType.UNKNOWN:
-            self._complete_trajectory(_tid, _opt_engine, "failure_unknown_page", 0.0, _t0)
-            return {"success": False, "error": "Unknown page — could not reach application form", "screenshot": nav_result.get("screenshot")}
+            outcome = "failure_expired" if nav_result.get("expired") else "failure_unknown_page"
+            self._complete_trajectory(_tid, _opt_engine, outcome, 0.0, _t0)
+            error_msg = nav_result.get("error", "Unknown page — could not reach application form")
+            return {
+                "success": False,
+                "error": error_msg,
+                "expired": nav_result.get("expired", False),
+                "screenshot": nav_result.get("screenshot"),
+            }
 
         if page_type != PageType.APPLICATION_FORM:
             self._complete_trajectory(_tid, _opt_engine, f"failure_stuck_{page_type}", 0.0, _t0)
