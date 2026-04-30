@@ -214,6 +214,7 @@ class FormNavigator:
         reasoner = get_page_reasoner()
 
         visited_states: dict[str, int] = {}
+        wall_bypass_attempts = 0
         for step in range(MAX_NAVIGATION_STEPS):
             # Fast-path: DOM classifier for high-confidence terminal states
             dom_type, dom_confidence = self._dom_classify(snapshot)
@@ -260,17 +261,47 @@ class FormNavigator:
 
             # Verification wall / CAPTCHA — use existing bypass pipeline
             if action.action == "wait_human":
+                wall_bypass_attempts += 1
+
+                # After 2 failed bypass cycles, skip auto-bypass and go straight
+                # to platform bypass (direct ATS URL) or human fallback
+                if wall_bypass_attempts > 2:
+                    logger.warning(
+                        "Wall persists after %d bypass attempts — escalating to platform bypass / human",
+                        wall_bypass_attempts,
+                    )
+                    # Invalidate cached reasoner response so next domain visit re-evaluates
+                    try:
+                        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                        pr = get_page_reasoner()
+                        cache_key = pr._cache_key(
+                            snapshot.get("url", ""),
+                            snapshot.get("page_text_preview", "")[:800],
+                            snapshot.get("dialog_text", "")[:500],
+                        )
+                        import sqlite3
+                        with sqlite3.connect(pr._db_path) as conn:
+                            conn.execute("DELETE FROM reasoning_cache WHERE cache_key = ?", (cache_key,))
+                    except Exception:
+                        pass
+                    if job:
+                        pb_result = await self._try_platform_bypass(snapshot, job, steps)
+                        if pb_result is not None:
+                            snapshot = pb_result
+                            wall_bypass_attempts = 0
+                            continue
+                    return {"page_type": PageType.VERIFICATION_WALL, "snapshot": snapshot}
+
                 wall_info = snapshot.get("verification_wall") or {"type": "unknown"}
                 bypass_result = await self._bypass_verification_wall(snapshot, wall_info)
                 if bypass_result["solved"]:
                     snapshot = bypass_result["snapshot"]
-                    visited_states.clear()
                     continue
                 if job:
                     pb_result = await self._try_platform_bypass(snapshot, job, steps)
                     if pb_result is not None:
                         snapshot = pb_result
-                        visited_states.clear()
+                        wall_bypass_attempts = 0
                         continue
                 return {"page_type": PageType.VERIFICATION_WALL, "snapshot": bypass_result["snapshot"]}
 
