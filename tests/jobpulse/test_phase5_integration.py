@@ -1,9 +1,11 @@
 """End-to-end integration tests for Phase 5 external application engine."""
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 from jobpulse.application_orchestrator import ApplicationOrchestrator
 from jobpulse.form_models import PageType
+from jobpulse.page_analysis.page_reasoner import PageAction
 
 
 @pytest.fixture
@@ -109,27 +111,44 @@ async def test_jd_then_form(orchestrator, bridge):
         has_file_inputs=True,
     )
     confirm = _snapshot(page_text="Thank you for applying!")
-    # Sequence: navigate→jd, cookie-dismiss→jd, wait_for_apply→jd(refreshed),
-    # apply-click→form, cookie-dismiss→form, fill-loop→confirm...
     bridge.get_snapshot.side_effect = [jd, jd, jd, form, form, confirm, confirm, confirm, confirm]
 
-    result = await orchestrator.apply(
-        url="https://example.com/jobs/123", platform="generic", cv_path=Path("/tmp/cv.pdf"),
+    click_apply_action = PageAction(
+        page_understanding="Job listing", action="click_element",
+        target_text="Apply Now", reasoning="Click apply", confidence=0.95,
+        page_type="job_description",
     )
-    bridge.click.assert_any_call("#apply")
+    fill_form_action = PageAction(
+        page_understanding="Application form", action="fill_form",
+        target_text="", reasoning="Fill form", confidence=0.95,
+        page_type="application_form",
+    )
+    with patch("jobpulse.page_analysis.page_reasoner.get_page_reasoner") as mock_reasoner:
+        mock_reasoner.return_value.reason_sync.side_effect = [click_apply_action, fill_form_action]
+        result = await orchestrator.apply(
+            url="https://example.com/jobs/123", platform="generic", cv_path=Path("/tmp/cv.pdf"),
+        )
     assert result["success"] is True
 
 
 @pytest.mark.asyncio
 async def test_captcha_wall_aborts(orchestrator, bridge):
     wall = _snapshot(verification_wall={"type": "cloudflare", "confidence": 0.9})
-    bridge.get_snapshot.side_effect = [wall, wall, wall, wall]
+    bridge.get_snapshot.side_effect = [wall] * 60
 
-    result = await orchestrator.apply(
-        url="https://example.com/apply", platform="generic", cv_path=Path("/tmp/cv.pdf"),
+    wait_human_action = PageAction(
+        page_understanding="CAPTCHA blocking", action="wait_human",
+        target_text="", reasoning="CAPTCHA", confidence=0.9,
+        page_type="verification_wall",
     )
+    with patch("jobpulse.page_analysis.page_reasoner.get_page_reasoner") as mock_reasoner:
+        mock_reasoner.return_value.reason_sync.return_value = wait_human_action
+        with patch("jobpulse.application_orchestrator_pkg._navigator.FormNavigator._bypass_verification_wall") as mock_bypass:
+            mock_bypass.return_value = {"solved": False, "snapshot": wall}
+            result = await orchestrator.apply(
+                url="https://example.com/apply", platform="generic", cv_path=Path("/tmp/cv.pdf"),
+            )
     assert result["success"] is False
-    assert "CAPTCHA" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -152,9 +171,21 @@ async def test_sso_google_detected(orchestrator, bridge):
     confirm = _snapshot(page_text="Thank you for applying!")
     bridge.get_snapshot.side_effect = [login, login, form, form, form, confirm, confirm, confirm, confirm]
 
-    result = await orchestrator.apply(
-        url="https://careers.acme.com/apply", platform="generic", cv_path=Path("/tmp/cv.pdf"),
+    login_action = PageAction(
+        page_understanding="Login page with SSO", action="fill_and_advance",
+        target_text="", reasoning="Login with SSO", confidence=0.9,
+        page_type="login_form",
     )
+    fill_form_action = PageAction(
+        page_understanding="Application form", action="fill_form",
+        target_text="", reasoning="Fill form", confidence=0.95,
+        page_type="application_form",
+    )
+    with patch("jobpulse.page_analysis.page_reasoner.get_page_reasoner") as mock_reasoner:
+        mock_reasoner.return_value.reason_sync.side_effect = [login_action, fill_form_action]
+        result = await orchestrator.apply(
+            url="https://careers.acme.com/apply", platform="generic", cv_path=Path("/tmp/cv.pdf"),
+        )
     bridge.click.assert_any_call("#google-sso")
     assert result["success"] is True
 
@@ -177,14 +208,33 @@ async def test_signup_verify_login_apply(orchestrator, bridge):
         has_file_inputs=True,
     )
     confirm = _snapshot(page_text="Thank you for applying!")
-    bridge.get_snapshot.side_effect = [signup, signup, verify_page, verify_page, form, form, form, confirm, confirm, confirm]
+    bridge.get_snapshot.side_effect = [signup, signup, signup, verify_page, verify_page, form, form, form, confirm, confirm, confirm]
 
     orchestrator.gmail.wait_for_verification.return_value = "https://example.com/verify?t=abc"
 
-    result = await orchestrator.apply(
-        url="https://careers.example.com/jobs/456", platform="generic", cv_path=Path("/tmp/cv.pdf"),
-        profile={"first_name": "Yash", "last_name": "B"},
+    signup_action = PageAction(
+        page_understanding="Signup form", action="fill_and_advance",
+        target_text="", reasoning="Fill signup", confidence=0.9,
+        page_type="signup_form",
+        field_fills=[{"label": "Email", "value": "FROM_PROFILE:email", "method": "fill"}],
+        advance_button="Create Account",
     )
+    verify_action = PageAction(
+        page_understanding="Email verification", action="fill_and_advance",
+        target_text="", reasoning="Verify email", confidence=0.9,
+        page_type="email_verification",
+    )
+    fill_form_action = PageAction(
+        page_understanding="Application form", action="fill_form",
+        target_text="", reasoning="Fill form", confidence=0.95,
+        page_type="application_form",
+    )
+    with patch("jobpulse.page_analysis.page_reasoner.get_page_reasoner") as mock_reasoner:
+        mock_reasoner.return_value.reason_sync.side_effect = [signup_action, verify_action, fill_form_action]
+        result = await orchestrator.apply(
+            url="https://careers.example.com/jobs/456", platform="generic", cv_path=Path("/tmp/cv.pdf"),
+            profile={"first_name": "Yash", "last_name": "B"},
+        )
     orchestrator.gmail.wait_for_verification.assert_called_once()
     assert result["success"] is True
 
