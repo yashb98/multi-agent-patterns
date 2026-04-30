@@ -104,6 +104,20 @@ class FormExperienceDB:
             );
             CREATE INDEX IF NOT EXISTS idx_confidence_domain
             ON field_confidence_log (domain);
+            CREATE TABLE IF NOT EXISTS negative_exemplars (
+                domain TEXT NOT NULL,
+                field_label TEXT NOT NULL,
+                value_tried TEXT NOT NULL,
+                failure_reason TEXT NOT NULL,
+                platform TEXT NOT NULL DEFAULT '',
+                content_hash TEXT NOT NULL DEFAULT '',
+                attempt_count INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (domain, field_label, value_tried)
+            );
+            CREATE INDEX IF NOT EXISTS idx_neg_content_hash
+            ON negative_exemplars (content_hash);
         """
 
     def _init_db_heal(self):
@@ -223,6 +237,35 @@ class FormExperienceDB:
                 CREATE INDEX IF NOT EXISTS idx_confidence_domain
                 ON field_confidence_log (domain)
             """)
+            # Migration: add content_hash column if missing
+            try:
+                conn.execute("SELECT content_hash FROM form_experience LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "ALTER TABLE form_experience ADD COLUMN content_hash TEXT DEFAULT ''"
+                )
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_form_experience_content_hash
+                ON form_experience (content_hash)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS negative_exemplars (
+                    domain TEXT NOT NULL,
+                    field_label TEXT NOT NULL,
+                    value_tried TEXT NOT NULL,
+                    failure_reason TEXT NOT NULL,
+                    platform TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    attempt_count INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (domain, field_label, value_tried)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_neg_content_hash
+                ON negative_exemplars (content_hash)
+            """)
 
     @property
     def _transfer_engine(self):
@@ -301,6 +344,64 @@ class FormExperienceDB:
         except Exception as e:
             logger.debug("Optimization signal failed: %s", e)
 
+    def store(
+        self,
+        domain: str,
+        platform: str,
+        adapter: str,
+        pages_filled: int,
+        field_types: dict | list,
+        screening_questions: list[str],
+        time_seconds: float,
+        success: bool,
+        content_hash: str = "",
+    ) -> None:
+        """Store form experience with optional content_hash for cross-domain matching.
+
+        This is the PRAXIS-aware variant of record(). Accepts field_types as either
+        a list (legacy) or dict (field_type -> count) and stores content_hash for
+        structural page fingerprinting.
+        """
+        domain = self.normalize_domain(domain)
+        now = datetime.now(UTC).isoformat()
+        if isinstance(field_types, dict):
+            ft_json = json.dumps(field_types)
+        else:
+            ft_json = json.dumps(field_types)
+        sq_json = json.dumps(screening_questions)
+
+        with sqlite3.connect(self._db_path) as conn:
+            existing = conn.execute(
+                "SELECT success FROM form_experience WHERE domain = ?", (domain,)
+            ).fetchone()
+
+            if existing and existing[0] == 1 and not success:
+                conn.execute(
+                    "UPDATE form_experience SET apply_count = apply_count + 1, updated_at = ? WHERE domain = ?",
+                    (now, domain),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO form_experience
+                       (domain, platform, adapter, pages_filled, field_types,
+                        screening_questions, time_seconds, success, apply_count,
+                        content_hash, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                       ON CONFLICT(domain) DO UPDATE SET
+                           platform = excluded.platform,
+                           adapter = excluded.adapter,
+                           pages_filled = excluded.pages_filled,
+                           field_types = excluded.field_types,
+                           screening_questions = excluded.screening_questions,
+                           time_seconds = excluded.time_seconds,
+                           success = excluded.success,
+                           content_hash = excluded.content_hash,
+                           apply_count = apply_count + 1,
+                           updated_at = excluded.updated_at""",
+                    (domain, platform, adapter, pages_filled, ft_json, sq_json,
+                     time_seconds, int(success), content_hash, now, now),
+                )
+
     def lookup(self, domain_or_url: str) -> dict | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -309,6 +410,27 @@ class FormExperienceDB:
                 "SELECT * FROM form_experience WHERE domain = ?", (domain,)
             ).fetchone()
         return dict(row) if row else None
+
+    def lookup_by_content_hash(
+        self, content_hash: str, exclude_domain: str = "",
+    ) -> dict | None:
+        """Find the most recent successful experience with this structural fingerprint.
+
+        Excludes the given domain so callers get cross-domain matches only.
+        """
+        if not content_hash:
+            return None
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """SELECT * FROM form_experience
+                   WHERE content_hash = ? AND domain != ? AND success = 1
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (content_hash, exclude_domain),
+            ).fetchone()
+        if row:
+            return dict(row)
+        return None
 
     def validate_against_live(
         self,
@@ -757,3 +879,50 @@ class FormExperienceDB:
         total = row[0] if row else 0
         correct = row[1] or 0
         return {"total": total, "correct": correct}
+
+    def store_negative_exemplar(
+        self,
+        domain: str,
+        field_label: str,
+        value_tried: str,
+        failure_reason: str,
+        platform: str = "",
+        content_hash: str = "",
+    ) -> None:
+        """Record a value that failed for a field — used by PRAXIS to avoid repeating mistakes."""
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO negative_exemplars
+                   (domain, field_label, value_tried, failure_reason, platform,
+                    content_hash, attempt_count, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                   ON CONFLICT(domain, field_label, value_tried) DO UPDATE SET
+                       attempt_count = attempt_count + 1,
+                       failure_reason = excluded.failure_reason,
+                       updated_at = excluded.updated_at""",
+                (domain, field_label, value_tried, failure_reason, platform,
+                 content_hash, now, now),
+            )
+
+    def get_negative_exemplars(self, domain: str) -> list[dict]:
+        """Return all failed field values for a domain, newest first."""
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM negative_exemplars WHERE domain = ? ORDER BY updated_at DESC",
+                (domain,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_negative_exemplars_by_hash(self, content_hash: str) -> list[dict]:
+        """Return all failed field values matching this structural fingerprint (cross-domain)."""
+        if not content_hash:
+            return []
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM negative_exemplars WHERE content_hash = ? ORDER BY updated_at DESC",
+                (content_hash,),
+            ).fetchall()
+        return [dict(r) for r in rows]

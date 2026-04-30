@@ -159,7 +159,7 @@ Config: `shared/logging_config.py`. All loggers via `get_logger(__name__)`.
 Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 
 ## Stats
-~149,000 LOC | 695 Python files | 50 databases | 3507 tests | 5 dashboards | 5 Telegram bots | 3 platforms
+~149,500 LOC | 698 Python files | 50 databases | 3521 tests | 5 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
