@@ -962,7 +962,11 @@ class LiveReviewSession:
         if notion_page_id:
             try:
                 from jobpulse.job_notion_sync import update_application_page
-                update_application_page(notion_page_id, status="Expired")
+                update_application_page(
+                    notion_page_id,
+                    status="Withdrawn",
+                    notes="Job expired / no longer available",
+                )
             except Exception as exc:
                 logger.warning("_mark_expired: Notion update failed: %s", exc)
 
