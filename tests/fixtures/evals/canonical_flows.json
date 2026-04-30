@@ -53,5 +53,466 @@
     "expected": {
       "overall_score": 10.0
     }
+  },
+  {
+    "case_id": "screen-001",
+    "flow": "screening_answer",
+    "input": {
+      "question": "Do you require visa sponsorship?"
+    },
+    "expected": {
+      "intent": "sponsorship"
+    }
+  },
+  {
+    "case_id": "screen-002",
+    "flow": "screening_answer",
+    "input": {
+      "question": "What is your expected salary?"
+    },
+    "expected": {
+      "intent": "salary_expected"
+    }
+  },
+  {
+    "case_id": "screen-003",
+    "flow": "screening_answer",
+    "input": {
+      "question": "What is your notice period?"
+    },
+    "expected": {
+      "intent": "notice_period"
+    }
+  },
+  {
+    "case_id": "screen-004",
+    "flow": "screening_answer",
+    "input": {
+      "question": "Are you legally authorized to work in the UK?"
+    },
+    "expected": {
+      "intent": "work_auth_yes_no"
+    }
+  },
+  {
+    "case_id": "screen-005",
+    "flow": "screening_answer",
+    "input": {
+      "question": "How many years of experience do you have with Python?"
+    },
+    "expected": {
+      "intent": "experience_skill"
+    }
+  },
+  {
+    "case_id": "screen-006",
+    "flow": "screening_answer",
+    "input": {
+      "question": "Are you willing to relocate?"
+    },
+    "expected": {
+      "intent": "willing_relocate"
+    }
+  },
+  {
+    "case_id": "screen-007",
+    "flow": "screening_answer",
+    "input": {
+      "question": "What is your highest level of education?"
+    },
+    "expected": {
+      "intent": "education_level"
+    }
+  },
+  {
+    "case_id": "screen-008",
+    "flow": "screening_answer",
+    "input": {
+      "question": "Do you have a valid driving licence?"
+    },
+    "expected": {
+      "intent": "driving_license"
+    }
+  },
+  {
+    "case_id": "screen-009",
+    "flow": "screening_answer",
+    "input": {
+      "question": "What gender do you identify as?"
+    },
+    "expected": {
+      "intent": "diversity_monitoring"
+    }
+  },
+  {
+    "case_id": "screen-010",
+    "flow": "screening_answer",
+    "input": {
+      "question": "What is your ethnicity?"
+    },
+    "expected": {
+      "intent": "diversity_monitoring"
+    }
+  },
+  {
+    "case_id": "field-001",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "Yes",
+      "available_options": ["Yes", "No"],
+      "field_label": "Authorized to work?"
+    },
+    "expected": {
+      "matched_option": "Yes"
+    }
+  },
+  {
+    "case_id": "field-002",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "Male",
+      "available_options": ["Man", "Woman", "Non-binary", "Prefer not to say"],
+      "field_label": "Gender"
+    },
+    "expected": {
+      "matched_option": "Man"
+    }
+  },
+  {
+    "case_id": "field-003",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "Female",
+      "available_options": ["Man", "Woman", "Non-binary"],
+      "field_label": "Gender"
+    },
+    "expected": {
+      "matched_option": "Woman"
+    }
+  },
+  {
+    "case_id": "field-004",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "3",
+      "available_options": ["0-1 years", "2-5 years", "6-10 years"],
+      "field_label": "Years of experience",
+      "numeric_value": 3.0
+    },
+    "expected": {
+      "matched_option": "2-5 years"
+    }
+  },
+  {
+    "case_id": "field-005",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "1 month",
+      "available_options": ["Immediately", "4 weeks", "3 months"],
+      "field_label": "Notice period"
+    },
+    "expected": {
+      "matched_option": "4 weeks"
+    }
+  },
+  {
+    "case_id": "field-006",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "United Kingdom",
+      "available_options": ["United States", "United Kingdom", "Canada", "Australia"],
+      "field_label": "Country"
+    },
+    "expected": {
+      "matched_option": "United Kingdom"
+    }
+  },
+  {
+    "case_id": "field-007",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "yes",
+      "available_options": ["Yes", "No"],
+      "field_label": "Authorized?"
+    },
+    "expected": {
+      "matched_option": "Yes"
+    }
+  },
+  {
+    "case_id": "field-008",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "purple elephant",
+      "available_options": ["Red", "Blue", "Green"],
+      "field_label": "Colour"
+    },
+    "expected": {
+      "matched_option": null
+    }
+  },
+  {
+    "case_id": "field-009",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "Indian",
+      "available_options": ["Asian or Asian British - Indian", "Asian or Asian British - Chinese", "White British"],
+      "field_label": "Ethnicity"
+    },
+    "expected": {
+      "matched_option": "Asian or Asian British - Indian"
+    }
+  },
+  {
+    "case_id": "field-010",
+    "flow": "field_mapping",
+    "input": {
+      "desired_value": "Graduate Visa",
+      "available_options": ["Tier 4 Graduate Visa", "Skilled Worker Visa", "British Citizen"],
+      "field_label": "Visa type"
+    },
+    "expected": {
+      "matched_option": "Tier 4 Graduate Visa"
+    }
+  },
+  {
+    "case_id": "bypass-001",
+    "flow": "platform_bypass",
+    "input": {
+      "url": "https://www.indeed.com/jobs?q=data+analyst&l=London"
+    },
+    "expected": {
+      "is_aggregator": true
+    }
+  },
+  {
+    "case_id": "bypass-002",
+    "flow": "platform_bypass",
+    "input": {
+      "url": "https://www.linkedin.com/jobs/view/12345"
+    },
+    "expected": {
+      "is_aggregator": true
+    }
+  },
+  {
+    "case_id": "bypass-003",
+    "flow": "platform_bypass",
+    "input": {
+      "url": "https://www.totaljobs.com/jobs/data-analyst"
+    },
+    "expected": {
+      "is_aggregator": true
+    }
+  },
+  {
+    "case_id": "bypass-004",
+    "flow": "platform_bypass",
+    "input": {
+      "url": "https://www.reed.co.uk/jobs/data-analyst/123"
+    },
+    "expected": {
+      "is_aggregator": true
+    }
+  },
+  {
+    "case_id": "bypass-005",
+    "flow": "platform_bypass",
+    "input": {
+      "url": "https://boards.greenhouse.io/acme/jobs/456"
+    },
+    "expected": {
+      "is_aggregator": false
+    }
+  },
+  {
+    "case_id": "bypass-006",
+    "flow": "platform_bypass",
+    "input": {
+      "url": "https://jobs.lever.co/acme/789"
+    },
+    "expected": {
+      "is_aggregator": false
+    }
+  },
+  {
+    "case_id": "bypass-007",
+    "flow": "platform_bypass",
+    "input": {
+      "url": "https://acme.wd3.myworkdayjobs.com/jobs/101"
+    },
+    "expected": {
+      "is_aggregator": false
+    }
+  },
+  {
+    "case_id": "bypass-008",
+    "flow": "platform_bypass",
+    "input": {
+      "url": "https://acme.com/careers/engineer"
+    },
+    "expected": {
+      "is_aggregator": false
+    }
+  },
+  {
+    "case_id": "fail-001",
+    "flow": "fill_failure_class",
+    "input": {
+      "error_message": "Element not found on page"
+    },
+    "expected": {
+      "failure_class": "no_field"
+    }
+  },
+  {
+    "case_id": "fail-002",
+    "flow": "fill_failure_class",
+    "input": {
+      "error_message": "Field is readonly and cannot be modified"
+    },
+    "expected": {
+      "failure_class": "readonly"
+    }
+  },
+  {
+    "case_id": "fail-003",
+    "flow": "fill_failure_class",
+    "input": {
+      "error_message": "Click intercepted by modal overlay"
+    },
+    "expected": {
+      "failure_class": "blocked"
+    }
+  },
+  {
+    "case_id": "fail-004",
+    "flow": "fill_failure_class",
+    "input": {
+      "error_message": "Invalid value: must be a positive number"
+    },
+    "expected": {
+      "failure_class": "wrong_value"
+    }
+  },
+  {
+    "case_id": "fail-005",
+    "flow": "fill_failure_class",
+    "input": {
+      "error_message": "Connection timed out"
+    },
+    "expected": {
+      "failure_class": "unknown"
+    }
+  },
+  {
+    "case_id": "page-001",
+    "flow": "page_classification",
+    "input": {
+      "text_content": "Fill in your details to apply for this position",
+      "has_form_elements": true,
+      "has_submit_button": true
+    },
+    "expected": {
+      "page_type": "application_form"
+    }
+  },
+  {
+    "case_id": "page-002",
+    "flow": "page_classification",
+    "input": {
+      "text_content": "Job Description: We are looking for a talented data analyst with 3+ years experience",
+      "has_form_elements": false,
+      "has_submit_button": false
+    },
+    "expected": {
+      "page_type": "job_listing"
+    }
+  },
+  {
+    "case_id": "page-003",
+    "flow": "page_classification",
+    "input": {
+      "text_content": "Sign in to your account to view and apply for jobs",
+      "has_form_elements": true,
+      "has_submit_button": false
+    },
+    "expected": {
+      "page_type": "login"
+    }
+  },
+  {
+    "case_id": "page-004",
+    "flow": "page_classification",
+    "input": {
+      "text_content": "Please complete the captcha challenge to prove you are human",
+      "has_form_elements": false,
+      "has_submit_button": false
+    },
+    "expected": {
+      "page_type": "verification_wall"
+    }
+  },
+  {
+    "case_id": "page-005",
+    "flow": "page_classification",
+    "input": {
+      "text_content": "Welcome to our company website. Learn more about our culture.",
+      "has_form_elements": false,
+      "has_submit_button": false
+    },
+    "expected": {
+      "page_type": "unknown"
+    }
+  },
+  {
+    "case_id": "cmd-006",
+    "flow": "classify_command",
+    "input": {
+      "text": "apply next job"
+    },
+    "expected": {
+      "intent": "apply_next"
+    }
+  },
+  {
+    "case_id": "cmd-007",
+    "flow": "classify_command",
+    "input": {
+      "text": "scan jobs"
+    },
+    "expected": {
+      "intent": "scan_jobs"
+    }
+  },
+  {
+    "case_id": "cmd-008",
+    "flow": "classify_command",
+    "input": {
+      "text": "job stats"
+    },
+    "expected": {
+      "intent": "job_stats"
+    }
+  },
+  {
+    "case_id": "cmd-009",
+    "flow": "classify_command",
+    "input": {
+      "text": "show queue"
+    },
+    "expected": {
+      "intent": "show_queue"
+    }
+  },
+  {
+    "case_id": "cmd-010",
+    "flow": "classify_command",
+    "input": {
+      "text": "morning briefing"
+    },
+    "expected": {
+      "intent": "morning_briefing"
+    }
   }
 ]
