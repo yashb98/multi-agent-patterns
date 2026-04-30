@@ -4,6 +4,13 @@ Append on error. Re-check before committing. Use `semantic_search "mistake <topi
 
 ---
 
+- [2026-04-30] Ollama probe must verify model availability, not just server reachability — empty models list = cloud fallback
+- [2026-04-30] Vision fallback must use a vision-capable cloud model (gpt-4o-mini), not local text-only model
+- [2026-04-30] PageReasoner smart_llm_call() requires (llm, messages) positional args, not keyword-only
+- [2026-04-30] Login pages with embedded CAPTCHA/hCaptcha classified as verification_wall — suppress wall score when login/signup signals coexist
+- [2026-04-30] PageReasoner caches `abort` from failed LLM calls — stale cache blocks retry on same page
+- [2026-04-30] Auth handlers must read actual page content, not follow hardcoded flows — Oracle Cloud email-only page crashed because handler assumed password field exists
+- [2026-04-30] PageReasoner must be PRIMARY decision-maker, not fallback — hardcoded classifier→handler chains break on any page layout the code hasn't seen
 - [2026-04-04] Use MCP tools before Explore agents — saves ~190k tokens per exploration
 - [2026-04-03] Route jobs by `classify_action()` not `determine_match_tier()` — tier is display only
 - [2026-04-01] Regex: specific patterns BEFORE general. Test against all question types
