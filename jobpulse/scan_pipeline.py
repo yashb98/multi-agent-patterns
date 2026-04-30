@@ -890,16 +890,21 @@ def process_single_url(
         Dict with pipeline results (listing, pre-screen, ats_score, action).
     """
     from jobpulse.job_db import JobDB
-    from jobpulse.liveness_checker import check_liveness
-
     db = JobDB()
 
     logger.info("process_single_url: starting pipeline for %s", url)
 
-    # 1. Check liveness
+    # 1. Check liveness via HTTP fetch
     try:
-        liveness = check_liveness(url)
-        if liveness and liveness.get("expired"):
+        import httpx
+        from jobpulse.liveness_checker import classify_liveness
+        resp = httpx.get(url, follow_redirects=True, timeout=15)
+        liveness = classify_liveness(
+            status_code=resp.status_code,
+            url=str(resp.url),
+            body=resp.text[:5000],
+        )
+        if liveness.status == "expired":
             logger.warning("process_single_url: listing appears expired — continuing anyway")
     except Exception as exc:
         logger.warning("process_single_url: liveness check failed: %s", exc)
@@ -967,7 +972,7 @@ def process_single_url(
         return {"status": "error", "message": f"JD analysis failed: {exc}"}
 
     # Check if already processed
-    existing = db.get_by_job_id(listing.job_id)
+    existing = db.get_listing(listing.job_id)
     if existing and existing.get("status") in ("Applied", "Submitted"):
         return {
             "status": "already_applied",
@@ -975,7 +980,7 @@ def process_single_url(
             "message": f"Already applied to {listing.title} @ {listing.company}",
         }
 
-    db.upsert(listing)
+    db.save_listing(listing)
     logger.info(
         "process_single_url: analyzed — %s @ %s (%s)",
         listing.title, listing.company, listing.platform,
@@ -1005,7 +1010,8 @@ def process_single_url(
         }
 
     # 5. Generate materials
-    trail = ProcessTrail()
+    from jobpulse.process_logger import ProcessTrail
+    trail = ProcessTrail(agent_name="process_single_url", task_trigger=url[:80])
     try:
         bundle = generate_materials(listing, db, trail)
     except Exception as exc:
