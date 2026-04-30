@@ -25,12 +25,14 @@ def _make_job_id(url: str, fallback: str = "") -> str:
 def normalize_to_job_listing(row: dict, platform: str) -> dict:
     """Normalize a JobSpy row to a JobListing-compatible dict."""
     url = row.get("job_url", "") or row.get("url", "")
+    direct = row.get("job_url_direct", "") or ""
     return {
         "title": row.get("title", ""),
         "company": row.get("company", ""),
         "location": row.get("location", ""),
         "description": row.get("description", ""),
         "url": url,
+        "direct_url": direct if direct and direct != url else "",
         "date_posted": row.get("date_posted", ""),
         "source": platform,
         "platform": platform,

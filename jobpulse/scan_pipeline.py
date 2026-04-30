@@ -299,6 +299,7 @@ def analyze_and_deduplicate(
                 platform=raw.get("platform", "reed"),
                 jd_text=raw.get("description", ""),
                 apply_url=raw.get("apply_url", raw.get("url", "")),
+                direct_url=raw.get("direct_url", ""),
             )
             listings.append(listing)
         except Exception as exc:

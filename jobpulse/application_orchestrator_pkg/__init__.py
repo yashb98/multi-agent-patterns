@@ -100,6 +100,7 @@ class ApplicationOrchestrator:
         jd_keywords: list[str] | None = None,
         company_research: "CompanyResearch | None" = None,
         pre_navigated_snapshot: dict | None = None,
+        job: dict | None = None,
     ) -> dict:
         """Full application flow: navigate → account → verify → fill → submit.
 
@@ -134,9 +135,26 @@ class ApplicationOrchestrator:
             if hasattr(self.driver, '_snapshot'):
                 self.driver._snapshot = self._to_page_snapshot(pre_navigated_snapshot)
         _nav_t0 = _time.monotonic()
+        _job_for_bypass = job
+        if not _job_for_bypass and company_research:
+            _job_for_bypass = {"company": company_research.company, "title": "", "url": url, "platform": platform}
+        if _job_for_bypass and _job_for_bypass.get("direct_url"):
+            try:
+                from jobpulse.platform_bypass import get_platform_bypass
+                pb = get_platform_bypass()
+                pb._store_cached(
+                    _job_for_bypass["company"],
+                    _job_for_bypass["direct_url"],
+                    ats_platform="", strategy="scan_time",
+                )
+                logger.info("Pre-seeded bypass cache: %s → %s",
+                            _job_for_bypass["company"], _job_for_bypass["direct_url"][:60])
+            except Exception as exc:
+                logger.debug("Could not pre-seed bypass cache: %s", exc)
         nav_result = await self._navigator.navigate_to_form(
             url, platform, navigation_steps,
             skip_initial_navigate=pre_navigated_snapshot is not None,
+            job=_job_for_bypass,
         )
         page_type = nav_result["page_type"]
 
@@ -182,7 +200,7 @@ class ApplicationOrchestrator:
         # Re-auth retry on session expiry during form fill
         if result.get("error") == "session_expired" and not result.get("_reauth_attempted"):
             logger.info("Session expired during form fill — re-authenticating")
-            reauth = await self._navigator.navigate_to_form(url, platform, navigation_steps)
+            reauth = await self._navigator.navigate_to_form(url, platform, navigation_steps, job=_job_for_bypass)
             if reauth["page_type"] == PageType.APPLICATION_FORM:
                 result = await self._filler.fill_application(
                     platform=platform, snapshot=reauth["snapshot"],

@@ -574,10 +574,10 @@ def apply_pending_job_from_cli(args: str = "1", *, found_on: date | None = None)
     except Exception as exc:
         logger.debug("job_autopilot: apply_pending_job_from_cli active check: %s", exc)
 
-    return approve_jobs(args, pending_rows=pending_rows)
+    return approve_jobs(args, pending_rows=pending_rows, foreground=True)
 
 
-def approve_jobs(args: str, *, pending_rows: list[dict[str, Any]] | None = None) -> str:
+def approve_jobs(args: str, *, pending_rows: list[dict[str, Any]] | None = None, foreground: bool = False) -> str:
     """Approve pending review jobs.
 
     Args:
@@ -646,6 +646,14 @@ def approve_jobs(args: str, *, pending_rows: list[dict[str, Any]] | None = None)
         app = db.get_application_by_notion_page_id(notion_page_id) or {}
         job_id = app.get("job_id", job_id)
 
+    if not job_id:
+        found = db.find_application_by_company_title(job["company"], job["title"])
+        if found:
+            app = found
+            job_id = found["job_id"]
+            if notion_page_id and not found.get("notion_page_id"):
+                db.link_notion_page(job_id, notion_page_id)
+
     if job_id:
         try:
             from jobpulse.application_materials import ensure_tailored_cv_for_job
@@ -655,11 +663,18 @@ def approve_jobs(args: str, *, pending_rows: list[dict[str, Any]] | None = None)
         except Exception as exc:
             logger.warning("job_autopilot: ensure CV before live review failed: %s", exc)
 
+    direct_url = ""
+    if job_id:
+        listing = db.get_listing(job_id)
+        if listing:
+            direct_url = listing.get("direct_url") or ""
+
     payload = {
         "job_id": job_id,
         "title": job["title"],
         "company": job["company"],
         "url": url,
+        "direct_url": direct_url,
         "platform": job.get("platform", "generic"),
         "ats_platform": job.get("ats_platform"),
         "ats_score": job.get("ats_score", 0),
@@ -679,9 +694,12 @@ def approve_jobs(args: str, *, pending_rows: list[dict[str, Any]] | None = None)
 
     from jobpulse.live_review_applicator import start_live_review
 
-    launch = start_live_review(payload)
+    launch = start_live_review(payload, foreground=foreground)
     if not launch.get("started"):
         return launch.get("message", "A live review session is already active.")
+
+    if foreground:
+        return launch.get("message", f"Completed live review for {job['title']} @ {job['company']}.")
 
     return "\n".join(
         [

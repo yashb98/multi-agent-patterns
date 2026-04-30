@@ -340,6 +340,7 @@ def analyze_jd(
     platform: str,
     jd_text: str,
     apply_url: str = "",
+    direct_url: str = "",
 ) -> JobListing:
     """Combine rule-based and LLM extraction into a JobListing model.
 
@@ -399,5 +400,6 @@ def analyze_jd(
         ats_platform=ats_platform,
         found_at=datetime.now(UTC),
         easy_apply=easy_apply,
+        direct_url=direct_url or None,
         recruiter_email=recruiter_email,
     )
