@@ -111,6 +111,41 @@ class TestPageReasonerParsing:
         assert "wait_human" in VALID_ACTIONS
 
 
+class TestNavigatorReasonerLoop:
+    """Test that the navigator uses the reasoner at every step."""
+
+    def test_reasoner_called_each_step(self):
+        """Verify the reasoner is invoked per navigation step, not just as fallback."""
+        from jobpulse.application_orchestrator_pkg._navigator import FormNavigator
+        import inspect
+        source = inspect.getsource(FormNavigator.navigate_to_form)
+        assert "reason_sync" in source or "reasoner.reason" in source, (
+            "navigate_to_form must call the reasoner at every step"
+        )
+
+    def test_no_hardcoded_page_type_routing(self):
+        """navigate_to_form should not have hardcoded PageType if/elif chains."""
+        from jobpulse.application_orchestrator_pkg._navigator import FormNavigator
+        import inspect
+        source = inspect.getsource(FormNavigator.navigate_to_form)
+        assert "PageType.LOGIN_FORM" not in source, (
+            "navigate_to_form should not route on PageType.LOGIN_FORM"
+        )
+        assert "PageType.SIGNUP_FORM" not in source, (
+            "navigate_to_form should not route on PageType.SIGNUP_FORM"
+        )
+        assert "PageType.CONSENT_GATE" not in source, (
+            "navigate_to_form should not route on PageType.CONSENT_GATE"
+        )
+
+    def test_semantic_fallback_removed(self):
+        """_semantic_fallback should no longer exist — replaced by inline reasoner."""
+        from jobpulse.application_orchestrator_pkg._navigator import FormNavigator
+        assert not hasattr(FormNavigator, "_semantic_fallback"), (
+            "_semantic_fallback should be deleted — reasoner handles this inline"
+        )
+
+
 class TestPageReasonerSync:
     @patch("jobpulse.page_analysis.page_reasoner.smart_llm_call")
     @patch("jobpulse.page_analysis.page_reasoner.get_llm")
