@@ -1,4 +1,4 @@
-"""Semantic option matching — 5-tier cascade for form field values.
+"""Semantic option matching — 6-tier cascade for form field values.
 
 Matches a desired value to available dropdown/radio/combobox options
 without relying on exact string matching. Built from real application
@@ -45,8 +45,20 @@ CANONICAL_ALIASES: dict[str, tuple[str, ...]] = {
 
 _RANGE_PAT = re.compile(r"[£$€]?\s*([\d,]+)\s*[-–—]\s*[£$€]?\s*([\d,]+)")
 
-_CONSENT_WORDS = frozenset({"privacy", "consent", "terms", "agree", "acknowledge", "confirm", "gdpr", "data protection"})
-_MARKETING_WORDS = frozenset({"marketing", "newsletter", "promotional", "offers", "opt in", "subscribe", "communications"})
+_CONSENT_ANCHORS = [
+    "I consent to the processing of my personal data",
+    "I agree to the privacy policy and terms",
+    "I acknowledge and accept the terms and conditions",
+    "consent to data processing",
+    "agree to privacy policy",
+]
+_MARKETING_ANCHORS = [
+    "send me marketing emails and promotions",
+    "subscribe to newsletter and offers",
+    "opt in to promotional communications",
+    "receive marketing updates",
+]
+_CHECKBOX_SIMILARITY_THRESHOLD = 0.65
 
 
 def _normalize(text: str) -> str:
@@ -61,14 +73,15 @@ def semantic_option_match(
     aliases: dict[str, tuple[str, ...]] | None = None,
     numeric_value: float | None = None,
 ) -> str | None:
-    """Match a desired value to available options via 5-tier cascade.
+    """Match a desired value to available options via 6-tier cascade.
 
     Tiers:
     1. Exact match (case-insensitive, whitespace-normalized)
     2. Canonical alias lookup (CANONICAL_ALIASES + caller aliases)
     3. Numeric range match (salary, age, experience years)
-    4. Token overlap (Jaccard similarity, threshold >= 2 shared tokens)
-    5. Substring containment (for values >= 4 chars)
+    4. Embedding similarity (primary semantic tier, min_score=0.70)
+    5. Token overlap (Jaccard similarity, threshold >= 2 shared tokens)
+    6. Substring containment (for values >= 4 chars)
 
     Returns the exact option text to use, or None if no match.
     """
@@ -119,7 +132,17 @@ def semantic_option_match(
                 if low <= numeric <= high:
                     return opt
 
-    # Tier 4: Token overlap
+    # Tier 4: Embedding similarity (primary semantic tier)
+    try:
+        from shared.semantic_utils import best_semantic_match
+        match, score = best_semantic_match(desired_value, available_options, min_score=0.70)
+        if match is not None:
+            logger.debug("Embedding match: '%s' -> '%s' (score=%.3f)", desired_value[:40], match, score)
+            return match
+    except Exception as exc:
+        logger.debug("Embedding tier failed: %s", exc)
+
+    # Tier 5: Token overlap
     stop_words = {"and", "for", "the", "with", "from", "valid", "not", "or", "a", "an", "to", "of", "in", "i", "am", "is"}
     desired_tokens = {t for t in desired_norm.split() if len(t) > 1 and t not in stop_words}
 
@@ -135,7 +158,7 @@ def semantic_option_match(
         if best_opt is not None and best_score >= 2:
             return best_opt
 
-    # Tier 5: Substring containment (for values >= 4 chars)
+    # Tier 6: Substring containment (for values >= 4 chars)
     if len(desired_norm) >= 4:
         for opt_norm, opt_original in opts_norm.items():
             if desired_norm in opt_norm:
@@ -145,19 +168,29 @@ def semantic_option_match(
 
 
 def checkbox_intent(label: str, *, required: bool = False) -> bool | None:
-    """Determine whether to check a checkbox based on its label.
+    """Determine whether to check a checkbox using embedding similarity.
 
-    Returns True (check), False (don't check), or None (ambiguous).
+    Returns True (consent -- check), False (marketing -- don't check),
+    or None (ambiguous).
     """
-    label_lower = label.lower().strip()
+    if not label or not label.strip():
+        return True if required else None
 
-    if any(w in label_lower for w in _CONSENT_WORDS):
-        return True
-
-    if any(w in label_lower for w in _MARKETING_WORDS):
-        return False
+    try:
+        from shared.semantic_utils import semantic_similarity
+        consent_score = max(
+            semantic_similarity(label, anchor) for anchor in _CONSENT_ANCHORS
+        )
+        marketing_score = max(
+            semantic_similarity(label, anchor) for anchor in _MARKETING_ANCHORS
+        )
+        if consent_score >= _CHECKBOX_SIMILARITY_THRESHOLD and consent_score > marketing_score:
+            return True
+        if marketing_score >= _CHECKBOX_SIMILARITY_THRESHOLD and marketing_score > consent_score:
+            return False
+    except Exception:
+        pass
 
     if required:
         return True
-
     return None
