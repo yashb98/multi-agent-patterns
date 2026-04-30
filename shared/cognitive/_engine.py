@@ -149,6 +149,18 @@ class CognitiveEngine:
                 escalated_result.composed_prompt = composed
                 self._classifier.update_domain_stats(domain, original_level, escalated=True)
                 self._record_level(next_level, escalated_result.cost)
+                try:
+                    from shared.optimization import get_optimization_engine
+                    success = escalated_result.score is not None and escalated_result.score >= 6.0
+                    get_optimization_engine().record_cognitive_outcome(
+                        domain=domain,
+                        agent_name=self._agent_name,
+                        level=next_level.value,
+                        success=success,
+                        escalated=True,
+                    )
+                except Exception:
+                    pass
                 return escalated_result
 
         elapsed = (time.monotonic() - start) * 1000
@@ -156,6 +168,18 @@ class CognitiveEngine:
         result.composed_prompt = composed
         self._classifier.update_domain_stats(domain, level, escalated=False)
         self._record_level(level, result.cost)
+        try:
+            from shared.optimization import get_optimization_engine
+            success = result.score is not None and result.score >= 6.0
+            get_optimization_engine().record_cognitive_outcome(
+                domain=domain,
+                agent_name=self._agent_name,
+                level=level.value,
+                success=success,
+                escalated=result.escalated_from is not None,
+            )
+        except Exception:
+            pass
 
         # L1 successes get queued for batch-write via flush()
         if (
