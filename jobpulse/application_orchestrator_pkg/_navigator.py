@@ -244,6 +244,41 @@ class FormNavigator:
         return snapshot
 
     @staticmethod
+    def _detect_ghost_click(
+        pre_url: str, pre_content_hash: str, pre_dialog: bool,
+        post_url: str, post_content_hash: str, post_dialog: bool,
+    ) -> bool:
+        return (pre_url == post_url
+                and pre_content_hash == post_content_hash
+                and pre_dialog == post_dialog)
+
+    @staticmethod
+    def _snapshot_content_hash(snapshot: dict[str, Any]) -> str:
+        text = snapshot.get("page_text_preview", "")[:300]
+        fc = str(len(snapshot.get("fields", [])))
+        bc = str(len(snapshot.get("buttons", [])))
+        return hashlib.sha256(f"{text}|{fc}|{bc}".encode()).hexdigest()[:16]
+
+    @staticmethod
+    def _make_result(ctx: "StepContext") -> dict[str, Any]:
+        action = ctx.planned_action
+        act = action.action if action else "abort"
+        pt = action.page_type if action else "unknown"
+
+        if act == "fill_form":
+            result: dict[str, Any] = {"page_type": PageType.APPLICATION_FORM, "snapshot": ctx.snapshot}
+        elif act == "done":
+            result = {"page_type": PageType.CONFIRMATION, "snapshot": ctx.snapshot}
+        else:
+            result = {"page_type": PageType.UNKNOWN, "snapshot": ctx.snapshot}
+
+        if pt == "expired_job":
+            result["expired"] = True
+            result["error"] = (action.page_understanding if action else "") or "Job is no longer available"
+
+        return result
+
+    @staticmethod
     async def _dismiss_linkedin_discard(page) -> bool:
         """Dismiss LinkedIn 'Save this application?' overlay — delegates to OverlayDismisser."""
         dismisser = OverlayDismisser(page)

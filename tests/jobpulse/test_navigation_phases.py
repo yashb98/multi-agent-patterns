@@ -9,6 +9,7 @@ from jobpulse.application_orchestrator_pkg._navigator import (
     TERMINAL_ACTIONS,
     build_page_fingerprint,
     score_fingerprint_match,
+    FormNavigator,
 )
 from jobpulse.form_models import PageType
 
@@ -239,3 +240,142 @@ class TestScoreFingerprintMatch:
         }
         score = score_fingerprint_match(current, learned)
         assert score >= 0.7
+
+
+class TestGhostClickDetection:
+    def test_nothing_changed_is_ghost(self):
+        assert FormNavigator._detect_ghost_click(
+            pre_url="https://example.com/jobs/1",
+            pre_content_hash="aaa",
+            pre_dialog=False,
+            post_url="https://example.com/jobs/1",
+            post_content_hash="aaa",
+            post_dialog=False,
+        ) is True
+
+    def test_url_changed_not_ghost(self):
+        assert FormNavigator._detect_ghost_click(
+            pre_url="https://example.com/jobs/1",
+            pre_content_hash="aaa",
+            pre_dialog=False,
+            post_url="https://example.com/apply/1",
+            post_content_hash="aaa",
+            post_dialog=False,
+        ) is False
+
+    def test_content_changed_not_ghost(self):
+        assert FormNavigator._detect_ghost_click(
+            pre_url="https://example.com/jobs/1",
+            pre_content_hash="aaa",
+            pre_dialog=False,
+            post_url="https://example.com/jobs/1",
+            post_content_hash="bbb",
+            post_dialog=False,
+        ) is False
+
+    def test_dialog_appeared_not_ghost(self):
+        assert FormNavigator._detect_ghost_click(
+            pre_url="https://example.com/jobs/1",
+            pre_content_hash="aaa",
+            pre_dialog=False,
+            post_url="https://example.com/jobs/1",
+            post_content_hash="aaa",
+            post_dialog=True,
+        ) is False
+
+
+class TestSnapshotContentHash:
+    def test_basic(self):
+        snapshot = {
+            "page_text_preview": "Hello world",
+            "fields": [{"label": "Name"}],
+            "buttons": [{"text": "Submit"}],
+        }
+        h = FormNavigator._snapshot_content_hash(snapshot)
+        assert isinstance(h, str)
+        assert len(h) == 16
+
+    def test_different_content_different_hash(self):
+        s1 = {"page_text_preview": "Page A", "fields": [], "buttons": []}
+        s2 = {"page_text_preview": "Page B", "fields": [], "buttons": []}
+        assert FormNavigator._snapshot_content_hash(s1) != FormNavigator._snapshot_content_hash(s2)
+
+    def test_same_content_same_hash(self):
+        s = {"page_text_preview": "Same", "fields": [{"x": 1}], "buttons": []}
+        assert FormNavigator._snapshot_content_hash(s) == FormNavigator._snapshot_content_hash(s)
+
+
+class TestMakeResult:
+    def test_fill_form_returns_application_form(self):
+        from jobpulse.page_analysis.page_reasoner import PageAction
+        ctx = StepContext(
+            snapshot={"url": "https://example.com"},
+            url="https://example.com",
+            tab_state=TabState.NORMAL,
+        )
+        ctx.planned_action = PageAction(
+            page_understanding="Form ready",
+            action="fill_form",
+            target_text="",
+            reasoning="ready",
+            confidence=0.9,
+            page_type="application_form",
+        )
+        result = FormNavigator._make_result(ctx)
+        assert result["page_type"] == PageType.APPLICATION_FORM
+        assert result["snapshot"] == ctx.snapshot
+
+    def test_done_returns_confirmation(self):
+        from jobpulse.page_analysis.page_reasoner import PageAction
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/thanks"},
+            url="https://example.com/thanks",
+            tab_state=TabState.NORMAL,
+        )
+        ctx.planned_action = PageAction(
+            page_understanding="Submitted",
+            action="done",
+            target_text="",
+            reasoning="confirmed",
+            confidence=0.95,
+            page_type="confirmation",
+        )
+        result = FormNavigator._make_result(ctx)
+        assert result["page_type"] == PageType.CONFIRMATION
+
+    def test_abort_returns_unknown(self):
+        from jobpulse.page_analysis.page_reasoner import PageAction
+        ctx = StepContext(
+            snapshot={"url": "https://example.com"},
+            url="https://example.com",
+            tab_state=TabState.NORMAL,
+        )
+        ctx.planned_action = PageAction(
+            page_understanding="Can't proceed",
+            action="abort",
+            target_text="",
+            reasoning="blocked",
+            confidence=0.8,
+            page_type="unknown",
+        )
+        result = FormNavigator._make_result(ctx)
+        assert result["page_type"] == PageType.UNKNOWN
+
+    def test_expired_job_sets_expired_flag(self):
+        from jobpulse.page_analysis.page_reasoner import PageAction
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/job/closed"},
+            url="https://example.com/job/closed",
+            tab_state=TabState.NORMAL,
+        )
+        ctx.planned_action = PageAction(
+            page_understanding="Job no longer available",
+            action="abort",
+            target_text="",
+            reasoning="expired",
+            confidence=0.9,
+            page_type="expired_job",
+        )
+        result = FormNavigator._make_result(ctx)
+        assert result["expired"] is True
+        assert "error" in result
