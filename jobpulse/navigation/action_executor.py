@@ -54,32 +54,43 @@ class NavigationActionExecutor:
     def __init__(self, page: Any) -> None:
         self._page = page
 
-    async def execute(self, action: PageAction, profile: dict[str, str]) -> None:
-        """Execute the full action: try target first, dismiss overlays only if needed."""
+    async def execute(
+        self, action: PageAction, profile: dict[str, str]
+    ) -> ExecutorResult:
+        """Execute the full action and return a structured outcome."""
+        result = ExecutorResult()
+
         if action.action == "click_element":
+            result.clicks_attempted += 1
             if await self._try_click_by_text(action.target_text):
-                return
+                return result
             if action.overlays_to_dismiss:
                 await self._dismiss_overlays(action.overlays_to_dismiss)
                 if await self._try_click_by_text(action.target_text):
-                    return
-            logger.warning("Could not find clickable element: '%s'", (action.target_text or "")[:40])
-            return
+                    return result
+            logger.warning("Could not find clickable element: '%s'",
+                           (action.target_text or "")[:40])
+            return result
 
         if action.overlays_to_dismiss:
             await self._dismiss_overlays(action.overlays_to_dismiss)
 
         if action.action == "dismiss_overlay":
             if action.target_text:
+                result.clicks_attempted += 1
                 await self._click_by_text(action.target_text)
-            return
+            return result
 
         if action.action in ("fill_and_advance", "login", "signup"):
             for fill in action.field_fills:
-                await self._execute_fill(fill, profile)
+                await self._execute_fill(fill, profile, result)
             if action.advance_button:
                 await asyncio.sleep(0.3)
                 await self._click_by_text(action.advance_button)
+                result.advance_clicked = True
+                result.clicks_attempted += 1
+
+        return result
 
     _PROMO_WORDS = {"premium", "upgrade", "subscribe", "buy", "purchase", "reactivate", "activate", "trial", "pro ", "pricing"}
 
@@ -127,7 +138,9 @@ class NavigationActionExecutor:
             except Exception as exc:
                 logger.debug("Overlay dismiss failed for '%s': %s", text, exc)
 
-    async def _execute_fill(self, fill: dict[str, str], profile: dict[str, str]) -> None:
+    async def _execute_fill(
+        self, fill: dict[str, str], profile: dict[str, str], result: ExecutorResult,
+    ) -> None:
         label = fill.get("label", "")
         value = fill.get("value", "")
         method = fill.get("method", "fill")
@@ -136,6 +149,7 @@ class NavigationActionExecutor:
             logger.debug("Skipping field: %s", label)
             return
 
+        result.fills_attempted += 1
         value = self._resolve_value(value, profile)
 
         try:
