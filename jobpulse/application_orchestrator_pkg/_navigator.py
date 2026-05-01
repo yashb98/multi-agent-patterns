@@ -109,6 +109,8 @@ class ActionVerification:
     ghost_click: bool = False
     expected_outcome_met: bool | None = None  # populated in Task 8
 
+    # url_changed and content_changed are consumed by _check_expected_outcome
+    # in Task 8 (mapping PageAction.expected_outcome to verification predicates).
     @property
     def url_changed(self) -> bool:
         return self.pre_url != self.post_url
@@ -280,7 +282,12 @@ class FormNavigator:
         post_snapshot: dict[str, Any],
         action_kind: str,
     ) -> ActionVerification:
-        """Compute pre/post verification — shared between _phase_act and auth handlers."""
+        """Compute pre/post verification — shared between _phase_act and auth handlers.
+
+        Async to keep the call signature stable for Task 8, where the
+        verification path may await _check_expected_outcome work that
+        consults the page asynchronously.
+        """
         pre_url = pre_snapshot.get("url", "")
         pre_hash = self._snapshot_content_hash(pre_snapshot)
         pre_dialog = bool(pre_snapshot.get("has_dialog"))
