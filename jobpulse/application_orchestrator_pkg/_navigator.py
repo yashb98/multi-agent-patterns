@@ -19,7 +19,7 @@ from jobpulse.form_models import PageType
 from jobpulse.cookie_dismisser import dismiss_cookie_banner_playwright
 from jobpulse.navigation.overlay_dismisser import OverlayDismisser
 from jobpulse.navigation.wait_conditions import wait_for_modal_open, wait_for_page_stable
-from jobpulse.page_analysis.page_reasoner import PageAction
+from jobpulse.page_analysis.page_reasoner import PageAction, get_page_reasoner
 from jobpulse.page_analysis.classifier import PageTypeClassifier
 
 logger = get_logger(__name__)
@@ -408,6 +408,127 @@ class FormNavigator:
             logger.info("MATCH: score=%.2f (below 0.7) — falling through to reasoner", ctx.match_score)
 
         return ctx
+
+    def _phase_plan(self, ctx: StepContext, visited_states: dict[str, int], wall_bypass_attempts: int) -> StepContext:
+        if ctx.wall_detected:
+            ctx.planned_action = PageAction(
+                page_understanding="Verification wall detected",
+                action="wait_human",
+                target_text="",
+                reasoning=f"Wall type: {ctx.wall_detected.get('type', 'unknown')}",
+                confidence=1.0,
+                page_type="verification_wall",
+            )
+            ctx.plan_source = "fast_path"
+            return ctx
+
+        if ctx.dom_confidence >= 0.8 and ctx.dom_type == PageType.CONFIRMATION:
+            ctx.planned_action = PageAction(
+                page_understanding="Confirmation page detected",
+                action="done",
+                target_text="",
+                reasoning=f"DOM confidence {ctx.dom_confidence:.2f}",
+                confidence=ctx.dom_confidence,
+                page_type="confirmation",
+            )
+            ctx.plan_source = "fast_path"
+            return ctx
+
+        if ctx.dom_confidence >= 0.8 and ctx.dom_type == PageType.APPLICATION_FORM:
+            ctx.planned_action = PageAction(
+                page_understanding="Application form detected",
+                action="fill_form",
+                target_text="",
+                reasoning=f"DOM confidence {ctx.dom_confidence:.2f}",
+                confidence=ctx.dom_confidence,
+                page_type="application_form",
+            )
+            ctx.plan_source = "fast_path"
+            return ctx
+
+        if ctx.learned_step and ctx.match_score >= 0.7:
+            learned_action = ctx.learned_step.get("action", "")
+            if self._verify_learned_action(learned_action, ctx.snapshot):
+                ctx.planned_action = PageAction(
+                    page_understanding=f"Learned step (score={ctx.match_score:.2f})",
+                    action=learned_action,
+                    target_text="",
+                    reasoning=f"Matched from {ctx.match_source}",
+                    confidence=ctx.match_score,
+                    page_type=ctx.learned_step.get("page_type", "unknown"),
+                )
+                ctx.plan_source = "learned_verified"
+                logger.info("PLAN: using verified learned action '%s' (score=%.2f)", learned_action, ctx.match_score)
+                return ctx
+            logger.info("PLAN: learned action '%s' failed verification — falling to reasoner", learned_action)
+
+        reasoner = get_page_reasoner()
+        action = reasoner.reason_sync(ctx.snapshot)
+
+        state_key = f"{action.page_type}:{action.action}"
+        visited_states[state_key] = visited_states.get(state_key, 0) + 1
+        if visited_states[state_key] >= 3:
+            logger.warning("PLAN: loop detected — %s x%d — aborting", state_key, visited_states[state_key])
+            ctx.planned_action = PageAction(
+                page_understanding="Navigation loop detected",
+                action="abort",
+                target_text="",
+                reasoning=f"State {state_key} repeated {visited_states[state_key]} times",
+                confidence=0.0,
+                page_type="unknown",
+            )
+            ctx.plan_source = "fast_path"
+            return ctx
+
+        if action.page_type == "expired_job":
+            action = PageAction(
+                page_understanding=action.page_understanding,
+                action="abort",
+                target_text="",
+                reasoning=action.reasoning,
+                confidence=action.confidence,
+                page_type="expired_job",
+            )
+
+        if action.confidence < 0.3 and sum(1 for v in visited_states.values() if v >= 2) >= 2:
+            try:
+                from shared.cognitive import get_cognitive_engine
+                engine = get_cognitive_engine()
+                cog_result = engine.think(
+                    f"Navigation stuck: page_type={action.page_type}, action={action.action}, "
+                    f"confidence={action.confidence:.2f}, visited={visited_states}",
+                    domain="form_navigation",
+                )
+                if cog_result and cog_result.get("action"):
+                    logger.info("PLAN: CognitiveEngine escalation → %s", cog_result["action"])
+            except Exception as exc:
+                logger.debug("CognitiveEngine escalation failed: %s", exc)
+
+        ctx.planned_action = action
+        ctx.plan_source = "reasoner"
+        logger.info("PLAN: reasoner → %s (type=%s, conf=%.2f)",
+                    action.action, action.page_type, action.confidence)
+        return ctx
+
+    def _verify_learned_action(self, action: str, snapshot: dict) -> bool:
+        if action in ("click_apply", "click_apply_guess", "linkedin_direct_apply"):
+            return find_apply_button(snapshot) is not None
+        if action.startswith("sso_"):
+            provider = action[len("sso_"):]
+            sso = self.sso.detect_sso(snapshot)
+            return sso is not None and sso.get("provider") == provider
+        if action in ("fill_login", "fill_signup"):
+            fields = snapshot.get("fields", [])
+            has_password = any(f.get("input_type") == "password" for f in fields)
+            has_email = any(
+                f.get("input_type") == "email" or "email" in f.get("label", "").lower()
+                for f in fields
+            )
+            return has_password and has_email
+        if action == "verify_email":
+            text = (snapshot.get("page_text_preview") or "").lower()
+            return "verify" in text or "check your email" in text
+        return True
 
     @staticmethod
     async def _dismiss_linkedin_discard(page) -> bool:

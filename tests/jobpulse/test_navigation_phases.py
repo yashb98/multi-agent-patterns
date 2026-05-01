@@ -12,6 +12,7 @@ from jobpulse.application_orchestrator_pkg._navigator import (
     FormNavigator,
 )
 from jobpulse.form_models import PageType
+from jobpulse.page_analysis.page_reasoner import PageAction
 
 
 class TestTabState:
@@ -760,3 +761,120 @@ class TestPhaseMatch:
         result = nav._phase_match(ctx, "new-greenhouse.io", "greenhouse", step_index=0)
         assert result.match_score >= 0.7
         assert result.match_source == "platform"
+
+
+class TestPhasePlan:
+    def test_wall_detected_returns_wait_human(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        ctx = StepContext(
+            snapshot={"url": "https://example.com"},
+            url="https://example.com",
+            tab_state=TabState.NORMAL,
+            wall_detected={"type": "cloudflare"},
+        )
+        result = nav._phase_plan(ctx, visited_states={}, wall_bypass_attempts=0)
+        assert result.planned_action is not None
+        assert result.planned_action.action == "wait_human"
+        assert result.plan_source == "fast_path"
+
+    def test_confirmation_with_high_confidence_returns_done(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/thanks"},
+            url="https://example.com/thanks",
+            tab_state=TabState.NORMAL,
+            dom_type=PageType.CONFIRMATION,
+            dom_confidence=0.85,
+        )
+        result = nav._phase_plan(ctx, visited_states={}, wall_bypass_attempts=0)
+        assert result.planned_action.action == "done"
+        assert result.plan_source == "fast_path"
+
+    def test_confirmation_low_confidence_falls_to_reasoner(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/thanks"},
+            url="https://example.com/thanks",
+            tab_state=TabState.NORMAL,
+            dom_type=PageType.CONFIRMATION,
+            dom_confidence=0.5,
+        )
+        with patch("jobpulse.application_orchestrator_pkg._navigator.get_page_reasoner") as mock_reasoner:
+            mock_reasoner.return_value.reason_sync.return_value = PageAction(
+                page_understanding="Confirmation page", action="done",
+                target_text="", reasoning="confirmed", confidence=0.9,
+                page_type="confirmation",
+            )
+            result = nav._phase_plan(ctx, visited_states={}, wall_bypass_attempts=0)
+        assert result.plan_source == "reasoner"
+
+    def test_learned_step_verified_click_apply(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        ctx = StepContext(
+            snapshot={
+                "url": "https://example.com/jobs/1",
+                "buttons": [{"text": "Apply Now", "enabled": True}],
+                "fields": [],
+            },
+            url="https://example.com/jobs/1",
+            tab_state=TabState.NORMAL,
+            learned_step={"page_type": "job_description", "action": "click_apply"},
+            match_score=0.85,
+            match_source="domain",
+        )
+        result = nav._phase_plan(ctx, visited_states={}, wall_bypass_attempts=0)
+        assert result.plan_source == "learned_verified"
+        assert result.planned_action.action == "click_apply"
+
+    def test_learned_step_verification_fails_falls_to_reasoner(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        ctx = StepContext(
+            snapshot={
+                "url": "https://example.com/jobs/1",
+                "buttons": [],  # No apply button
+                "fields": [],
+            },
+            url="https://example.com/jobs/1",
+            tab_state=TabState.NORMAL,
+            learned_step={"page_type": "job_description", "action": "click_apply"},
+            match_score=0.85,
+            match_source="domain",
+        )
+        with patch("jobpulse.application_orchestrator_pkg._navigator.get_page_reasoner") as mock_reasoner:
+            mock_reasoner.return_value.reason_sync.return_value = PageAction(
+                page_understanding="Job page", action="click_element",
+                target_text="Apply", reasoning="found apply link", confidence=0.7,
+                page_type="job_description",
+            )
+            result = nav._phase_plan(ctx, visited_states={}, wall_bypass_attempts=0)
+        assert result.plan_source == "reasoner"
+
+    def test_loop_detection_aborts(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        ctx = StepContext(
+            snapshot={"url": "https://example.com", "buttons": [], "fields": []},
+            url="https://example.com",
+            tab_state=TabState.NORMAL,
+        )
+        visited = {"unknown:click_element": 2}
+        with patch("jobpulse.application_orchestrator_pkg._navigator.get_page_reasoner") as mock_reasoner:
+            mock_reasoner.return_value.reason_sync.return_value = PageAction(
+                page_understanding="Stuck", action="click_element",
+                target_text="Something", reasoning="trying", confidence=0.5,
+                page_type="unknown",
+            )
+            result = nav._phase_plan(ctx, visited_states=visited, wall_bypass_attempts=0)
+        assert result.planned_action.action == "abort"
+
+    def test_application_form_high_confidence_returns_fill_form(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/apply", "buttons": [], "fields": [{"label": "Name"}]},
+            url="https://example.com/apply",
+            tab_state=TabState.NORMAL,
+            dom_type=PageType.APPLICATION_FORM,
+            dom_confidence=0.9,
+        )
+        result = nav._phase_plan(ctx, visited_states={}, wall_bypass_attempts=0)
+        assert result.planned_action.action == "fill_form"
+        assert result.plan_source == "fast_path"
