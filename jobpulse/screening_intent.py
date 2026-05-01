@@ -17,7 +17,6 @@ from enum import Enum
 from typing import Optional
 
 from shared.logging_config import get_logger
-from shared.memory_layer._embedder import MemoryEmbedder
 
 logger = get_logger(__name__)
 
@@ -239,22 +238,13 @@ _SEED_PROTOTYPES: dict[ScreeningIntent, list[str]] = {
 }
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
 class ScreeningIntentClassifier:
     """Embedding-based few-shot intent classifier for screening questions."""
 
     def __init__(
         self,
         db_path: str | None = None,
-        embedder: MemoryEmbedder | None = None,
+        embedder: object | None = None,
         confidence_threshold: float = 0.80,
     ) -> None:
         self._db_path = db_path or _default_db_path()
@@ -266,7 +256,8 @@ class ScreeningIntentClassifier:
         # Lazy-load embedder
         if self._embedder is None:
             try:
-                self._embedder = MemoryEmbedder()
+                from shared.semantic_utils import _get_embedder
+                self._embedder = _get_embedder()
             except Exception as exc:
                 logger.warning("IntentClassifier: Embedder unavailable (%s)", exc)
 
@@ -346,9 +337,15 @@ class ScreeningIntentClassifier:
         best_score = 0.0
 
         for intent, vectors in self._prototypes.items():
-            # Max similarity against any prototype for this intent
-            scores = [_cosine_similarity(query_vec, v) for v in vectors]
-            max_score = max(scores) if scores else 0.0
+            import numpy as np
+            if not vectors:
+                continue
+            proto_arr = np.array(vectors, dtype=np.float32)
+            query_arr = np.array(query_vec, dtype=np.float32)
+            norms = np.linalg.norm(proto_arr, axis=1) * np.linalg.norm(query_arr)
+            norms = np.where(norms == 0, 1, norms)
+            sims = np.dot(proto_arr, query_arr) / norms
+            max_score = float(np.max(sims))
             if max_score > best_score:
                 best_score = max_score
                 best_intent = intent
