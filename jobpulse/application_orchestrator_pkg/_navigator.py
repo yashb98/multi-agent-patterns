@@ -218,6 +218,7 @@ class FormNavigator:
     def __init__(self, orch, auth_handler):
         self._orch = orch
         self.auth = auth_handler
+        self._classifier = PageTypeClassifier()
 
     @property
     def driver(self):
@@ -329,8 +330,7 @@ class FormNavigator:
         return ctx
 
     async def _phase_analyze(self, ctx: StepContext) -> StepContext:
-        clf = PageTypeClassifier()
-        dom_type, dom_confidence = clf.classify(ctx.snapshot)
+        dom_type, dom_confidence = self._classifier.classify(ctx.snapshot)
         ctx.dom_type = dom_type
         ctx.dom_confidence = dom_confidence
 

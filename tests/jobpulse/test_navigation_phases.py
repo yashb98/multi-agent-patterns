@@ -406,7 +406,8 @@ def mock_navigator():
     orch.learner = MagicMock()
 
     auth = MagicMock()
-    nav = FormNavigator(orch, auth)
+    with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier"):
+        nav = FormNavigator(orch, auth)
     return nav, driver, page, context
 
 
@@ -508,10 +509,9 @@ class TestPhaseAnalyze:
         }
         ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
 
-        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf:
-            clf_instance = MockClf.return_value
-            clf_instance.classify.return_value = (PageType.JOB_DESCRIPTION, 0.85)
-            result = await nav._phase_analyze(ctx)
+        nav._classifier = MagicMock()
+        nav._classifier.classify.return_value = (PageType.JOB_DESCRIPTION, 0.85)
+        result = await nav._phase_analyze(ctx)
 
         assert result.dom_type == PageType.JOB_DESCRIPTION
         assert result.dom_confidence == 0.85
@@ -531,10 +531,9 @@ class TestPhaseAnalyze:
         }
         ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
 
-        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf:
-            clf_instance = MockClf.return_value
-            clf_instance.classify.return_value = (PageType.VERIFICATION_WALL, 0.95)
-            result = await nav._phase_analyze(ctx)
+        nav._classifier = MagicMock()
+        nav._classifier.classify.return_value = (PageType.VERIFICATION_WALL, 0.95)
+        result = await nav._phase_analyze(ctx)
 
         assert result.wall_detected == {"type": "cloudflare"}
 
@@ -564,10 +563,9 @@ class TestPhaseAnalyze:
 
         ctx = StepContext(snapshot=snapshot_before, url=snapshot_before["url"], tab_state=TabState.NORMAL)
 
-        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf, \
-             patch("jobpulse.application_orchestrator_pkg._navigator.dismiss_cookie_banner_playwright", new_callable=AsyncMock) as mock_cookie:
-            clf_instance = MockClf.return_value
-            clf_instance.classify.return_value = (PageType.JOB_DESCRIPTION, 0.7)
+        nav._classifier = MagicMock()
+        nav._classifier.classify.return_value = (PageType.JOB_DESCRIPTION, 0.7)
+        with patch("jobpulse.application_orchestrator_pkg._navigator.dismiss_cookie_banner_playwright", new_callable=AsyncMock) as mock_cookie:
             result = await nav._phase_analyze(ctx)
 
         nav.cookie_dismisser.dismiss.assert_awaited()
@@ -594,10 +592,9 @@ class TestPhaseAnalyze:
         }
         ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
 
-        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf:
-            clf_instance = MockClf.return_value
-            clf_instance.classify.return_value = (PageType.APPLICATION_FORM, 0.9)
-            result = await nav._phase_analyze(ctx)
+        nav._classifier = MagicMock()
+        nav._classifier.classify.return_value = (PageType.APPLICATION_FORM, 0.9)
+        result = await nav._phase_analyze(ctx)
 
         assert result.browser_signals is not None
         assert len(result.browser_signals) == 1
@@ -1038,17 +1035,17 @@ class TestNavigateToFormIntegration:
         nav.learner.get_sequence.return_value = None
         nav.learner.get_platform_pattern.return_value = None
 
-        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf, \
-             patch("jobpulse.application_orchestrator_pkg._navigator.get_page_reasoner") as MockReasoner, \
+        mock_clf = MagicMock()
+        clf_returns = iter([
+            (PageType.JOB_DESCRIPTION, 0.9),
+            (PageType.APPLICATION_FORM, 0.92),
+        ])
+        mock_clf.classify.side_effect = lambda s: next(clf_returns, (PageType.APPLICATION_FORM, 0.92))
+        nav._classifier = mock_clf
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.get_page_reasoner") as MockReasoner, \
              patch("jobpulse.application_orchestrator_pkg._navigator.dismiss_cookie_banner_playwright", new_callable=AsyncMock), \
              patch("jobpulse.application_orchestrator_pkg._navigator.NavigationActionExecutor") as MockExec:
-
-            clf_instance = MockClf.return_value
-            clf_returns = iter([
-                (PageType.JOB_DESCRIPTION, 0.9),
-                (PageType.APPLICATION_FORM, 0.92),
-            ])
-            clf_instance.classify.side_effect = lambda s: next(clf_returns, (PageType.APPLICATION_FORM, 0.92))
 
             reasoner_instance = MockReasoner.return_value
             reasoner_instance.reason_sync.return_value = PageAction(
@@ -1119,16 +1116,15 @@ class TestNavigateToFormIntegration:
         driver.navigate = AsyncMock()
         nav.click_apply_button = AsyncMock(return_value=form_snapshot)
 
-        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf, \
-             patch("jobpulse.application_orchestrator_pkg._navigator.dismiss_cookie_banner_playwright", new_callable=AsyncMock):
+        mock_clf = MagicMock()
+        clf_returns = iter([
+            (PageType.JOB_DESCRIPTION, 0.9),
+            (PageType.APPLICATION_FORM, 0.92),
+        ])
+        mock_clf.classify.side_effect = lambda s: next(clf_returns, (PageType.APPLICATION_FORM, 0.92))
+        nav._classifier = mock_clf
 
-            clf_instance = MockClf.return_value
-            clf_returns = iter([
-                (PageType.JOB_DESCRIPTION, 0.9),
-                (PageType.APPLICATION_FORM, 0.92),
-            ])
-            clf_instance.classify.side_effect = lambda s: next(clf_returns, (PageType.APPLICATION_FORM, 0.92))
-
+        with patch("jobpulse.application_orchestrator_pkg._navigator.dismiss_cookie_banner_playwright", new_callable=AsyncMock):
             steps: list[dict] = []
             result = await nav.navigate_to_form(
                 url="https://boards.greenhouse.io/company/jobs/456",
