@@ -35,6 +35,17 @@ class AuthHandler:
     def sso(self):
         return self._orch.sso
 
+    @property
+    def navigator(self):
+        """Access the FormNavigator from the shared orchestrator.
+
+        Goes through the orchestrator because AuthHandler is constructed
+        before FormNavigator (see application_orchestrator_pkg/__init__.py).
+        The navigator is needed at call time (handle_login/signup), by which
+        point the orchestrator has both attributes wired.
+        """
+        return self._orch._navigator
+
     @staticmethod
     def _as_dict(snapshot: Any) -> dict:
         if hasattr(snapshot, "model_dump"):
@@ -63,7 +74,14 @@ class AuthHandler:
 
         import asyncio
         await asyncio.sleep(2.0)
-        return self._as_dict(await self.driver.get_snapshot())
+        post_snap = self._as_dict(await self.driver.get_snapshot())
+
+        verification = await self.navigator._verify_action(
+            pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
+        )
+        if verification.ghost_click:
+            logger.warning("Auth login: ghost click detected — page did not progress")
+        return post_snap
 
     async def handle_signup(self, snapshot: dict, platform: str) -> dict:
         """Signup via reasoner — analyzes actual page content."""
@@ -87,7 +105,14 @@ class AuthHandler:
 
         import asyncio
         await asyncio.sleep(2.0)
-        return self._as_dict(await self.driver.get_snapshot())
+        post_snap = self._as_dict(await self.driver.get_snapshot())
+
+        verification = await self.navigator._verify_action(
+            pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
+        )
+        if verification.ghost_click:
+            logger.warning("Auth signup: ghost click detected — page did not progress")
+        return post_snap
 
     async def handle_email_verification(self, snapshot: dict, platform: str, return_url: str) -> dict:
         domain = _extract_domain(snapshot.get("url", ""))
