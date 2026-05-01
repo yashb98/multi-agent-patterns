@@ -48,7 +48,6 @@ class AuthHandler:
             NavigationActionExecutor, emit_fill_failures,
         )
         from jobpulse.applicator import PROFILE
-        from urllib.parse import urlparse
 
         reasoner = get_page_reasoner()
         action = reasoner.reason_sync(snapshot)
@@ -59,7 +58,7 @@ class AuthHandler:
         if page is not None:
             executor = NavigationActionExecutor(page)
             result = await executor.execute(action, profile=PROFILE)
-            domain = urlparse(snapshot.get("url", "")).netloc.lower().removeprefix("www.")
+            domain = _extract_domain(snapshot.get("url", ""))
             emit_fill_failures(result, domain=domain, source="auth_login")
 
         import asyncio
@@ -73,7 +72,6 @@ class AuthHandler:
             NavigationActionExecutor, emit_fill_failures,
         )
         from jobpulse.applicator import PROFILE
-        from urllib.parse import urlparse
 
         reasoner = get_page_reasoner()
         action = reasoner.reason_sync(snapshot)
@@ -84,7 +82,7 @@ class AuthHandler:
         if page is not None:
             executor = NavigationActionExecutor(page)
             result = await executor.execute(action, profile=PROFILE)
-            domain = urlparse(snapshot.get("url", "")).netloc.lower().removeprefix("www.")
+            domain = _extract_domain(snapshot.get("url", ""))
             emit_fill_failures(result, domain=domain, source="auth_signup")
 
         import asyncio

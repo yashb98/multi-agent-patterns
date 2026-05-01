@@ -17,7 +17,7 @@ from shared.logging_config import get_logger
 
 from jobpulse.form_models import PageType
 from jobpulse.cookie_dismisser import dismiss_cookie_banner_playwright
-from jobpulse.navigation.action_executor import NavigationActionExecutor
+from jobpulse.navigation.action_executor import NavigationActionExecutor, ExecutorResult
 from jobpulse.navigation.overlay_dismisser import OverlayDismisser
 from jobpulse.navigation.wait_conditions import wait_for_modal_open, wait_for_page_stable
 from jobpulse.page_analysis.page_reasoner import PageAction, get_page_reasoner
@@ -95,7 +95,7 @@ class StepContext:
     action_executed: bool = False
     post_snapshot: dict | None = None
     ghost_click: bool = False
-    executor_result: Any = None
+    executor_result: ExecutorResult | None = None
 
 
 TERMINAL_ACTIONS = frozenset({"fill_form", "done", "abort"})

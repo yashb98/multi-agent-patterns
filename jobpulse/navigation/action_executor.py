@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import UTC, datetime
 from typing import Any, TypedDict
 
 from dataclasses import dataclass, field as dc_field
@@ -305,7 +306,6 @@ def emit_fill_failures(
     if not result.has_failures:
         return
     try:
-        from datetime import UTC, datetime
         from shared.optimization import get_optimization_engine
         engine = get_optimization_engine()
         session_id = f"exec_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
