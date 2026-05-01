@@ -243,3 +243,48 @@ class TestPageTypeClassifierEmbedding:
         classifier = PageTypeClassifier()
         # Just verify the method exists and accepts PageFeatures
         assert hasattr(classifier, '_compute_embedding_scores')
+
+
+class TestScreeningPipelineNoKeywordRules:
+    def test_no_agent_rules_method(self):
+        """_agent_rules keyword matching must be removed — intent classifier handles it."""
+        from jobpulse.screening_pipeline import ScreeningPipeline
+        assert not hasattr(ScreeningPipeline, "_agent_rules"), \
+            "_agent_rules must be removed — redundant with intent classifier"
+
+    def test_salary_uses_intent(self):
+        """_finalise must use intent, not keyword matching for salary."""
+        import inspect
+        from jobpulse.screening_pipeline import ScreeningPipeline
+        source = inspect.getsource(ScreeningPipeline._finalise)
+        assert 'result.get("intent")' in source, \
+            "Salary detection should use intent, not keyword matching"
+
+
+class TestScreeningDetectorQuality:
+    """Screening detection with embeddings as primary signal."""
+
+    SCREENING_FIELDS = [
+        {"label": "What is your expected salary?", "type": "text", "required": True, "options": []},
+        {"label": "Do you have the right to work in the UK?", "type": "radio", "required": True, "options": ["Yes", "No"]},
+        {"label": "How many years of experience do you have?", "type": "select", "required": True, "options": ["0-2", "2-5", "5+"]},
+        {"label": "Are you willing to relocate?", "type": "radio", "required": False, "options": ["Yes", "No"]},
+        {"label": "What is your notice period?", "type": "text", "required": True, "options": []},
+    ]
+    NON_SCREENING_FIELDS = [
+        {"label": "First name", "type": "text", "required": True, "options": []},
+        {"label": "Email address", "type": "email", "required": True, "options": []},
+        {"label": "Phone number", "type": "tel", "required": True, "options": []},
+    ]
+
+    def test_detects_screening_fields(self):
+        from jobpulse.screening_detector import ScreeningDetector
+        detector = ScreeningDetector()
+        correct = sum(1 for f in self.SCREENING_FIELDS if detector.is_screening(f))
+        assert correct >= len(self.SCREENING_FIELDS) * 0.9
+
+    def test_no_regex_attribute(self):
+        """Verify _SCREENING_KEYWORDS regex has been removed."""
+        import jobpulse.screening_detector as mod
+        assert not hasattr(mod, "_SCREENING_KEYWORDS"), \
+            "_SCREENING_KEYWORDS regex must be removed -- use embeddings instead"
