@@ -191,17 +191,24 @@ class NavigationActionExecutor:
                     else:
                         # one retry with a small wait — covers React controlled
                         # inputs that revert and autocompletes that need time
-                        await asyncio.sleep(0.2)
-                        await loc.first.fill(value)
-                        if await self._verify_fill(loc.first, value):
-                            result.fills_verified += 1
-                            logger.info("Filled %s (verified after retry)", label[:30])
-                        else:
-                            actual = await self._safe_input_value(loc.first)
-                            result.record_fill_failure(label, value, actual)
+                        try:
+                            await asyncio.sleep(0.2)
+                            await loc.first.fill(value)
+                            if await self._verify_fill(loc.first, value):
+                                result.fills_verified += 1
+                                logger.info("Filled %s (verified after retry)", label[:30])
+                            else:
+                                actual = await self._safe_input_value(loc.first)
+                                result.record_fill_failure(label, value, actual)
+                                logger.warning(
+                                    "Fill mismatch for '%s': expected=%r actual=%r",
+                                    label[:30], value[:40], actual[:40],
+                                )
+                        except Exception as retry_exc:
+                            result.record_fill_failure(label, value, "")
                             logger.warning(
-                                "Fill mismatch for '%s': expected=%r actual=%r",
-                                label[:30], value[:40], actual[:40],
+                                "Fill retry raised for '%s': %s",
+                                label[:30], retry_exc,
                             )
                 else:
                     logger.warning("No locator for fill: %s", label[:40])
@@ -220,12 +227,22 @@ class NavigationActionExecutor:
         actual = await self._safe_input_value(locator)
         if not expected:
             return True
-        # Three-way match — same pattern NativeFormFiller uses (line 879-883)
+        # Lightweight three-way match: exact, expected-in-actual, or actual-in-expected
+        # (covers values that legitimately get reformatted by widgets, e.g. autocompletes
+        # appending text). Note: this is weaker than form_engine._normalize_match_text,
+        # which strips all punctuation. We accept the lighter check here because the
+        # executor fills raw profile values, not display text.
         norm_e = expected.strip().lower()
         norm_a = actual.strip().lower()
-        return bool(norm_a) and (
-            norm_e == norm_a or norm_e in norm_a or norm_a in norm_e
-        )
+        if not norm_a:
+            return False
+        if norm_e == norm_a:
+            return True
+        # Substring arms are gated on length to prevent false positives like
+        # "1" matching "10 years" or "no" matching "not applicable".
+        if len(norm_e) >= 3 and len(norm_a) >= 3:
+            return norm_e in norm_a or norm_a in norm_e
+        return False
 
     async def _try_click_by_text(self, text: str) -> bool:
         """Try to click an element by text, return True if clicked."""

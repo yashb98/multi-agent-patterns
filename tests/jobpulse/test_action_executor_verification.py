@@ -124,3 +124,34 @@ class TestFillReadback:
         assert len(result.fills_failed) == 1
         assert result.fills_failed[0]["label"] == "Email"
         assert result.fills_failed[0]["expected"] == "user@x.com"
+
+    @pytest.mark.asyncio
+    async def test_short_value_no_substring_false_positive(self, executor, mock_page):
+        # Short numeric fills must use exact match — '1' should NOT verify against '10'
+        loc = mock_page.get_by_label.return_value.first
+        loc.input_value = AsyncMock(return_value="10")
+        action = _make_action(field_fills=[
+            {"label": "Years", "value": "1", "method": "fill"}
+        ])
+        result = await executor.execute(action, profile={})
+        # First read-back returns "10" (mismatch under length guard);
+        # retry also returns "10" → recorded as failure
+        assert result.fills_verified == 0
+        assert len(result.fills_failed) == 1
+        assert result.fills_failed[0]["label"] == "Years"
+        assert result.fills_failed[0]["expected"] == "1"
+        assert result.fills_failed[0]["actual"] == "10"
+
+    @pytest.mark.asyncio
+    async def test_retry_exception_records_failure(self, executor, mock_page):
+        # First fill mismatches → retry → retry's fill() raises
+        loc = mock_page.get_by_label.return_value.first
+        loc.input_value = AsyncMock(return_value="")  # mismatch
+        loc.fill = AsyncMock(side_effect=[None, RuntimeError("element detached")])
+        action = _make_action(field_fills=[
+            {"label": "Email", "value": "user@x.com", "method": "fill"}
+        ])
+        result = await executor.execute(action, profile={})
+        assert result.fills_verified == 0
+        assert len(result.fills_failed) == 1
+        assert result.fills_failed[0]["label"] == "Email"
