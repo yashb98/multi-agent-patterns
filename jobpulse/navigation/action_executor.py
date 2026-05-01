@@ -181,17 +181,51 @@ class NavigationActionExecutor:
 
             elif method == "fill":
                 loc = self._page.get_by_label(label, exact=False)
+                if not await loc.count():
+                    loc = self._page.get_by_placeholder(label, exact=False)
                 if await loc.count():
                     await loc.first.fill(value)
-                    logger.info("Filled %s", label[:30])
-                else:
-                    loc = self._page.get_by_placeholder(label, exact=False)
-                    if await loc.count():
+                    if await self._verify_fill(loc.first, value):
+                        result.fills_verified += 1
+                        logger.info("Filled %s (verified)", label[:30])
+                    else:
+                        # one retry with a small wait — covers React controlled
+                        # inputs that revert and autocompletes that need time
+                        await asyncio.sleep(0.2)
                         await loc.first.fill(value)
-                        logger.info("Filled (placeholder) %s", label[:30])
+                        if await self._verify_fill(loc.first, value):
+                            result.fills_verified += 1
+                            logger.info("Filled %s (verified after retry)", label[:30])
+                        else:
+                            actual = await self._safe_input_value(loc.first)
+                            result.record_fill_failure(label, value, actual)
+                            logger.warning(
+                                "Fill mismatch for '%s': expected=%r actual=%r",
+                                label[:30], value[:40], actual[:40],
+                            )
+                else:
+                    logger.warning("No locator for fill: %s", label[:40])
 
         except Exception as exc:
             logger.warning("Fill failed for '%s' (%s): %s", label[:30], method, exc)
+
+    @staticmethod
+    async def _safe_input_value(locator: Any) -> str:
+        try:
+            return (await locator.input_value()) or ""
+        except Exception:
+            return ""
+
+    async def _verify_fill(self, locator: Any, expected: str) -> bool:
+        actual = await self._safe_input_value(locator)
+        if not expected:
+            return True
+        # Three-way match — same pattern NativeFormFiller uses (line 879-883)
+        norm_e = expected.strip().lower()
+        norm_a = actual.strip().lower()
+        return bool(norm_a) and (
+            norm_e == norm_a or norm_e in norm_a or norm_a in norm_e
+        )
 
     async def _try_click_by_text(self, text: str) -> bool:
         """Try to click an element by text, return True if clicked."""

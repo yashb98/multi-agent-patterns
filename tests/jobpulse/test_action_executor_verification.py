@@ -83,3 +83,44 @@ class TestExecuteReturnsResult:
         result = await executor.execute(action, profile={})
         assert result.advance_clicked is True
         assert result.clicks_attempted == 1
+
+
+class TestFillReadback:
+    @pytest.mark.asyncio
+    async def test_successful_fill_marks_verified(self, executor, mock_page):
+        # input_value returns the value we filled — verified
+        mock_page.get_by_label.return_value.first.input_value = AsyncMock(
+            return_value="user@x.com"
+        )
+        action = _make_action(field_fills=[
+            {"label": "Email", "value": "user@x.com", "method": "fill"}
+        ])
+        result = await executor.execute(action, profile={})
+        assert result.fills_verified == 1
+        assert result.fills_failed == []
+
+    @pytest.mark.asyncio
+    async def test_mismatch_triggers_one_retry(self, executor, mock_page):
+        # First read-back returns wrong value, second returns correct
+        loc = mock_page.get_by_label.return_value.first
+        loc.input_value = AsyncMock(side_effect=["", "user@x.com"])
+        action = _make_action(field_fills=[
+            {"label": "Email", "value": "user@x.com", "method": "fill"}
+        ])
+        result = await executor.execute(action, profile={})
+        # fill called twice (initial + retry)
+        assert loc.fill.await_count == 2
+        assert result.fills_verified == 1
+
+    @pytest.mark.asyncio
+    async def test_persistent_mismatch_records_failure(self, executor, mock_page):
+        loc = mock_page.get_by_label.return_value.first
+        loc.input_value = AsyncMock(return_value="")  # always empty
+        action = _make_action(field_fills=[
+            {"label": "Email", "value": "user@x.com", "method": "fill"}
+        ])
+        result = await executor.execute(action, profile={})
+        assert result.fills_verified == 0
+        assert len(result.fills_failed) == 1
+        assert result.fills_failed[0]["label"] == "Email"
+        assert result.fills_failed[0]["expected"] == "user@x.com"
