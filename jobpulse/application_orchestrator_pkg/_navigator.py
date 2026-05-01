@@ -95,6 +95,7 @@ class StepContext:
     action_executed: bool = False
     post_snapshot: dict | None = None
     ghost_click: bool = False
+    executor_result: Any = None
 
 
 TERMINAL_ACTIONS = frozenset({"fill_form", "done", "abort"})
@@ -626,8 +627,12 @@ class FormNavigator:
             page = getattr(self.driver, "page", None)
             if page is not None:
                 from jobpulse.applicator import PROFILE
+                from jobpulse.navigation.action_executor import emit_fill_failures
                 nav_executor = NavigationActionExecutor(page)
-                await nav_executor.execute(action, profile=PROFILE)
+                exec_result = await nav_executor.execute(action, profile=PROFILE)
+                ctx.executor_result = exec_result
+                domain = extract_domain(pre_url)
+                emit_fill_failures(exec_result, domain=domain, source="navigator")
             ctx.action_executed = True
             await asyncio.sleep(1.0)
             post_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))

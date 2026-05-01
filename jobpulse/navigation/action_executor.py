@@ -292,3 +292,36 @@ class NavigationActionExecutor:
             key = m.group(1)
             return profile.get(key, "")
         return value
+
+
+def emit_fill_failures(
+    result: ExecutorResult, *, domain: str, source: str = "navigator",
+) -> None:
+    """Emit one optimization signal per failed fill, for downstream learning.
+
+    Wired so both FormNavigator._phase_act and AuthHandler can call this
+    without each having to know about OptimizationEngine internals.
+    """
+    if not result.has_failures:
+        return
+    try:
+        from datetime import UTC, datetime
+        from shared.optimization import get_optimization_engine
+        engine = get_optimization_engine()
+        session_id = f"exec_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+        for f in result.fills_failed:
+            engine.emit(
+                signal_type="failure",
+                source_loop=source,
+                domain=domain,
+                agent_name="action_executor",
+                payload={
+                    "field": f["label"],
+                    "expected": f["expected"][:60],
+                    "actual": f["actual"][:60],
+                    "kind": "fill_mismatch",
+                },
+                session_id=session_id,
+            )
+    except Exception as exc:
+        logger.debug("emit_fill_failures: optimization signal failed: %s", exc)

@@ -44,17 +44,23 @@ class AuthHandler:
     async def handle_login(self, snapshot: dict, platform: str) -> dict:
         """Login via reasoner — analyzes actual page content."""
         from jobpulse.page_analysis.page_reasoner import get_page_reasoner
-        from jobpulse.navigation.action_executor import NavigationActionExecutor
+        from jobpulse.navigation.action_executor import (
+            NavigationActionExecutor, emit_fill_failures,
+        )
         from jobpulse.applicator import PROFILE
+        from urllib.parse import urlparse
 
         reasoner = get_page_reasoner()
         action = reasoner.reason_sync(snapshot)
-        logger.info("Auth login via reasoner: %s — %s", action.action, action.page_understanding[:60])
+        logger.info("Auth login via reasoner: %s — %s",
+                    action.action, action.page_understanding[:60])
 
         page = getattr(self.driver, "page", None)
         if page is not None:
             executor = NavigationActionExecutor(page)
-            await executor.execute(action, profile=PROFILE)
+            result = await executor.execute(action, profile=PROFILE)
+            domain = urlparse(snapshot.get("url", "")).netloc.lower().removeprefix("www.")
+            emit_fill_failures(result, domain=domain, source="auth_login")
 
         import asyncio
         await asyncio.sleep(2.0)
@@ -63,17 +69,23 @@ class AuthHandler:
     async def handle_signup(self, snapshot: dict, platform: str) -> dict:
         """Signup via reasoner — analyzes actual page content."""
         from jobpulse.page_analysis.page_reasoner import get_page_reasoner
-        from jobpulse.navigation.action_executor import NavigationActionExecutor
+        from jobpulse.navigation.action_executor import (
+            NavigationActionExecutor, emit_fill_failures,
+        )
         from jobpulse.applicator import PROFILE
+        from urllib.parse import urlparse
 
         reasoner = get_page_reasoner()
         action = reasoner.reason_sync(snapshot)
-        logger.info("Auth signup via reasoner: %s — %s", action.action, action.page_understanding[:60])
+        logger.info("Auth signup via reasoner: %s — %s",
+                    action.action, action.page_understanding[:60])
 
         page = getattr(self.driver, "page", None)
         if page is not None:
             executor = NavigationActionExecutor(page)
-            await executor.execute(action, profile=PROFILE)
+            result = await executor.execute(action, profile=PROFILE)
+            domain = urlparse(snapshot.get("url", "")).netloc.lower().removeprefix("www.")
+            emit_fill_failures(result, domain=domain, source="auth_signup")
 
         import asyncio
         await asyncio.sleep(2.0)

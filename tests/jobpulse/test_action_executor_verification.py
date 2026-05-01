@@ -155,3 +155,23 @@ class TestFillReadback:
         assert result.fills_verified == 0
         assert len(result.fills_failed) == 1
         assert result.fills_failed[0]["label"] == "Email"
+
+
+class TestFailureSignalEmission:
+    @pytest.mark.asyncio
+    async def test_emit_helper_sends_optimization_signal(self, monkeypatch, executor, mock_page):
+        from jobpulse.navigation.action_executor import emit_fill_failures
+        captured = []
+        class FakeEngine:
+            def emit(self, **kwargs):
+                captured.append(kwargs)
+        monkeypatch.setattr(
+            "shared.optimization.get_optimization_engine",
+            lambda: FakeEngine(),
+        )
+        result = ExecutorResult()
+        result.record_fill_failure("Email", "a@b.com", "")
+        emit_fill_failures(result, domain="example.com", source="executor_test")
+        assert len(captured) == 1
+        assert captured[0]["signal_type"] == "failure"
+        assert captured[0]["payload"]["field"] == "Email"
