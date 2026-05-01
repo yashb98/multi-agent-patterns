@@ -32,3 +32,9 @@ class TestExecutorResultShape:
         r = ExecutorResult()
         r.record_fill_failure("Email", expected="a@b.com", actual="")
         assert r.fills_failed == [{"label": "Email", "expected": "a@b.com", "actual": ""}]
+
+    def test_has_failures_reflects_fill_failures(self):
+        r = ExecutorResult()
+        assert r.has_failures is False
+        r.record_fill_failure("Name", expected="Alice", actual="")
+        assert r.has_failures is True

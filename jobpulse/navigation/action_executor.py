@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
+from typing import Any, TypedDict
 
 from dataclasses import dataclass, field as dc_field
 
@@ -16,6 +16,12 @@ from shared.logging_config import get_logger
 from jobpulse.page_analysis.page_reasoner import PageAction
 
 logger = get_logger(__name__)
+
+
+class FillFailure(TypedDict):
+    label: str
+    expected: str
+    actual: str
 
 
 @dataclass
@@ -27,14 +33,13 @@ class ExecutorResult:
     """
     fills_attempted: int = 0
     fills_verified: int = 0
-    fills_failed: list[dict] = dc_field(default_factory=list)
+    fills_failed: list[FillFailure] = dc_field(default_factory=list)
     clicks_attempted: int = 0
     advance_clicked: bool = False
 
     def record_fill_failure(self, label: str, expected: str, actual: str) -> None:
-        self.fills_failed.append({
-            "label": label, "expected": expected, "actual": actual,
-        })
+        entry: FillFailure = {"label": label, "expected": expected, "actual": actual}
+        self.fills_failed.append(entry)
 
     @property
     def has_failures(self) -> bool:
