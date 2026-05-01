@@ -93,6 +93,16 @@ class OptionAligner:
             if opt_norm == answer_norm:
                 return opt
 
+        # Embedding similarity (primary semantic tier)
+        try:
+            from shared.semantic_utils import best_semantic_match
+            emb_match, emb_score = best_semantic_match(answer.strip(), options, min_score=0.70)
+            if emb_match is not None:
+                logger.debug("Embedding aligned '%s' -> '%s' (score=%.2f)", answer[:50], emb_match, emb_score)
+                return emb_match
+        except Exception:
+            pass
+
         # Fuzzy prefix / contains match
         best_match: str | None = None
         best_score = 0
@@ -169,7 +179,7 @@ class OptionAligner:
         if a == b:
             return 1.0
         if a in b or b in a:
-            return max(len(a), len(b)) / max(len(a), len(b)) * 0.9
+            return min(len(a), len(b)) / max(len(a), len(b)) * 0.9
         # Word overlap
         words_a = set(a.split())
         words_b = set(b.split())

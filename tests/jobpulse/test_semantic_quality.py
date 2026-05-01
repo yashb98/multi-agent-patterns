@@ -138,3 +138,46 @@ class TestCheckboxIntentQuality:
         from jobpulse.form_engine.semantic_matcher import checkbox_intent
         correct = sum(1 for label in self.MARKETING_LABELS if checkbox_intent(label) is False)
         assert correct >= len(self.MARKETING_LABELS) * 0.9
+
+
+@pytest.mark.usefixtures("mock_embedder")
+class TestOptionAlignerQuality:
+    """>=90% accuracy on answer-to-option alignment."""
+
+    GOLDEN_ALIGNMENTS = [
+        ("yes", ["Yes", "No"], "Yes"),
+        ("Yes", ["Yes", "No"], "Yes"),
+        ("y", ["Yes", "No"], "Yes"),
+        ("no", ["Yes", "No"], "No"),
+        ("true", ["Yes", "No"], "Yes"),
+        ("false", ["Yes", "No"], "No"),
+        ("prefer not to say", ["Yes", "No", "Prefer not to say"], "Prefer not to say"),
+        ("male", ["Man", "Woman", "Non-binary"], "Man"),
+        ("Man", ["Male", "Female", "Other"], "Male"),
+    ]
+
+    def test_golden_set_accuracy(self):
+        from jobpulse.screening_option_aligner import OptionAligner
+        aligner = OptionAligner()
+
+        correct = 0
+        total = len(self.GOLDEN_ALIGNMENTS)
+        failures = []
+        for answer, options, expected in self.GOLDEN_ALIGNMENTS:
+            result = aligner.align_answer(answer, options)
+            if result == expected:
+                correct += 1
+            else:
+                failures.append(f"  {answer!r} -> got {result!r}, expected {expected!r}")
+
+        accuracy = correct / total
+        msg = f"OptionAligner accuracy: {correct}/{total} ({accuracy:.0%})"
+        if failures:
+            msg += "\nFailures:\n" + "\n".join(failures)
+        assert accuracy >= 0.90, msg
+
+    def test_fuzzy_score_containment_bug_fixed(self):
+        """Verify the max/max bug is fixed."""
+        from jobpulse.screening_option_aligner import OptionAligner
+        score = OptionAligner._fuzzy_score("uk", "united kingdom")
+        assert score < 0.9, f"Containment score should be proportional, got {score}"
