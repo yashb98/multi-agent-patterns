@@ -97,6 +97,7 @@ class StepContext:
     ghost_click: bool = False
     executor_result: ExecutorResult | None = None
     reflected_action: Any = None
+    vision_disagreement: Any = None
 
 
 @dataclass
@@ -793,6 +794,30 @@ class FormNavigator:
         if intelligence and post_url != pre_url:
             intelligence.clear()
             await intelligence.inject_on_new_page()
+
+        if action.confidence < 0.7 and act not in ("done", "abort", "wait_human"):
+            try:
+                from jobpulse.vision_tier import classify_page_type_from_screenshot
+                page = getattr(self.driver, "page", None)
+                if page is not None:
+                    shot = await page.screenshot(type="png")
+                    vision_type = await classify_page_type_from_screenshot(shot)
+                    if vision_type and vision_type != "unknown" and vision_type != action.page_type:
+                        logger.warning(
+                            "Vision-DOM disagreement: reasoner=%s vision=%s — escalating",
+                            action.page_type, vision_type,
+                        )
+                        ctx.vision_disagreement = {
+                            "reasoner_type": action.page_type,
+                            "vision_type": vision_type,
+                        }
+                        try:
+                            from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                            get_page_reasoner().invalidate(ctx.snapshot)
+                        except Exception:
+                            pass
+            except Exception as exc:
+                logger.debug("Vision gate failed: %s", exc)
 
         step_record: dict[str, Any] = {
             "page_type": action.page_type,
