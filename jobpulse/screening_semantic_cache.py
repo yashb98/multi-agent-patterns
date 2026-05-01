@@ -17,7 +17,6 @@ from datetime import UTC, datetime
 from typing import Optional
 
 from shared.logging_config import get_logger
-from shared.memory_layer._embedder import MemoryEmbedder
 
 logger = get_logger(__name__)
 
@@ -34,14 +33,6 @@ def _to_qdrant_id(text: str) -> int:
     """Stable unsigned 64-bit ID from text."""
     return int(hashlib.md5(text.encode()).hexdigest(), 16) % (2 ** 63)
 
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
 
 
 @dataclass
@@ -71,7 +62,7 @@ class ScreeningSemanticCache:
         self,
         sqlite_path: str | None = None,
         qdrant_location: str | None = None,
-        embedder: MemoryEmbedder | None = None,
+        embedder: object | None = None,
     ) -> None:
         self._sqlite_path = sqlite_path or _default_sqlite_path()
         self._embedder = embedder
@@ -82,8 +73,10 @@ class ScreeningSemanticCache:
         # Resolve embedder dims BEFORE creating Qdrant collection
         if self._embedder is None:
             try:
-                self._embedder = MemoryEmbedder()
-                self._dims = self._embedder.dims
+                from shared.semantic_utils import _get_embedder
+                self._embedder = _get_embedder()
+                if self._embedder:
+                    self._dims = self._embedder.dims
             except Exception as exc:
                 logger.warning("ScreeningSemanticCache: Embedder init failed (%s). Semantic search disabled.", exc)
                 self._embedder = None
@@ -325,7 +318,12 @@ class ScreeningSemanticCache:
                         # Legacy entry — embed once and queue for backfill
                         row_vec = self._embedder.embed(row["question_text"])
                         backfill.append((json.dumps(row_vec), row["qdrant_id"]))
-                    score = _cosine_similarity(query_vec, row_vec)
+                    import numpy as np
+                    a = np.array(query_vec, dtype=np.float32)
+                    b = np.array(row_vec, dtype=np.float32)
+                    norm_a = np.linalg.norm(a)
+                    norm_b = np.linalg.norm(b)
+                    score = float(np.dot(a, b) / (norm_a * norm_b)) if norm_a > 0 and norm_b > 0 else 0.0
                     if score >= min_score and (best is None or score > best[0]):
                         best = (score, row)
 
@@ -519,21 +517,20 @@ def get_screening_semantic_cache() -> ScreeningSemanticCache:
     return _cached_instance
 
 
-_AFFIRMATIVE = {"i have", "i am", "i can", "i do", "i hold", "permits", "eligible", "authorized", "authorised", "entitled", "visa"}
-_NEGATIVE = {"i don't", "i do not", "i can't", "i cannot", "i require", "i need", "no ", "not eligible", "not authorized", "not authorised"}
-
-
 def _infer_boolean_from_text(text: str) -> bool | None:
-    """Infer yes/no meaning from a long-form answer (e.g. 'I have a visa...' → True)."""
-    t = text.lower().strip()
-    if len(t) < 8:
+    """Infer yes/no meaning from a long-form answer using embedding similarity."""
+    if not text or len(text.strip()) < 8:
         return None
-    neg_score = sum(1 for p in _NEGATIVE if p in t)
-    aff_score = sum(1 for p in _AFFIRMATIVE if p in t)
-    if aff_score > neg_score:
-        return True
-    if neg_score > aff_score:
-        return False
+    try:
+        from shared.semantic_utils import semantic_similarity
+        yes_score = semantic_similarity(text, "yes I do, I am, I have, I can, I agree")
+        no_score = semantic_similarity(text, "no I do not, I am not, I cannot, I don't have")
+        if yes_score > no_score and yes_score > 0.5:
+            return True
+        if no_score > yes_score and no_score > 0.5:
+            return False
+    except Exception:
+        pass
     return None
 
 
