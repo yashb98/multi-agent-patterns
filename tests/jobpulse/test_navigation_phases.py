@@ -878,3 +878,124 @@ class TestPhasePlan:
         result = nav._phase_plan(ctx, visited_states={}, wall_bypass_attempts=0)
         assert result.planned_action.action == "fill_form"
         assert result.plan_source == "fast_path"
+
+
+class TestPhaseAct:
+    @pytest.mark.asyncio
+    async def test_click_apply_dispatches(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        nav.click_apply_button = AsyncMock(return_value={"url": "https://ats.com/apply", "buttons": [], "fields": []})
+        driver.get_snapshot = AsyncMock(return_value={"url": "https://ats.com/apply", "buttons": [], "fields": []})
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/jobs/1", "buttons": [], "fields": []},
+            url="https://example.com/jobs/1",
+            tab_state=TabState.NORMAL,
+            planned_action=PageAction(
+                page_understanding="JD page", action="click_apply",
+                target_text="", reasoning="apply", confidence=0.9,
+                page_type="job_description",
+            ),
+            plan_source="learned_verified",
+            page_fingerprint=PageFingerprint(
+                field_count=0, button_texts=("Apply Now",), content_hash="abc",
+                has_dialog=False, has_file_inputs=False,
+                page_type="job_description", dom_confidence=0.9,
+                url_path_pattern="/jobs/{id}",
+            ),
+        )
+        result = await nav._phase_act(ctx, "greenhouse", [], 0)
+        nav.click_apply_button.assert_awaited_once()
+        assert result.action_executed is True
+        assert result.post_snapshot is not None
+
+    @pytest.mark.asyncio
+    async def test_sso_action_dispatches(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        nav.sso.detect_sso.return_value = {"provider": "google", "selector": "#google-sso"}
+        nav.sso.click_sso = AsyncMock()
+        driver.get_snapshot = AsyncMock(return_value={"url": "https://example.com/sso-done", "buttons": [], "fields": []})
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/login", "buttons": [], "fields": []},
+            url="https://example.com/login",
+            tab_state=TabState.NORMAL,
+            planned_action=PageAction(
+                page_understanding="Login", action="sso_google",
+                target_text="", reasoning="sso", confidence=0.9,
+                page_type="login_form",
+            ),
+            plan_source="learned_verified",
+            page_fingerprint=PageFingerprint(
+                field_count=2, button_texts=("Sign In",), content_hash="xyz",
+                has_dialog=False, has_file_inputs=False,
+                page_type="login_form", dom_confidence=0.8,
+                url_path_pattern="/login",
+            ),
+        )
+        result = await nav._phase_act(ctx, "greenhouse", [], 0)
+        nav.sso.click_sso.assert_awaited_once()
+        assert result.action_executed is True
+
+    @pytest.mark.asyncio
+    async def test_ghost_click_detected_and_retried(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        same_snapshot = {"url": "https://example.com/jobs/1", "page_text_preview": "Same content", "buttons": [{"text": "Apply Now"}], "fields": [], "has_dialog": False}
+        driver.get_snapshot = AsyncMock(return_value=same_snapshot)
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.NavigationActionExecutor") as MockExec:
+            mock_exec = MockExec.return_value
+            mock_exec.execute = AsyncMock()
+
+            ctx = StepContext(
+                snapshot=same_snapshot,
+                url="https://example.com/jobs/1",
+                tab_state=TabState.NORMAL,
+                planned_action=PageAction(
+                    page_understanding="Click element", action="click_element",
+                    target_text="Apply Now", reasoning="click it", confidence=0.8,
+                    page_type="job_description",
+                ),
+                plan_source="reasoner",
+                page_fingerprint=PageFingerprint(
+                    field_count=0, button_texts=("Apply Now",), content_hash="abc",
+                    has_dialog=False, has_file_inputs=False,
+                    page_type="job_description", dom_confidence=0.8,
+                    url_path_pattern="/jobs/{id}",
+                ),
+            )
+            result = await nav._phase_act(ctx, "greenhouse", [], 0)
+
+        assert result.ghost_click is True
+
+    @pytest.mark.asyncio
+    async def test_step_appended_with_fingerprint(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        driver.get_snapshot = AsyncMock(return_value={"url": "https://ats.com/apply", "page_text_preview": "New page", "buttons": [], "fields": [{"label": "Name"}], "has_dialog": False})
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.NavigationActionExecutor") as MockExec:
+            mock_exec = MockExec.return_value
+            mock_exec.execute = AsyncMock()
+
+            steps_list: list[dict] = []
+            fp = PageFingerprint(
+                field_count=0, button_texts=("Apply Now",), content_hash="abc",
+                has_dialog=False, has_file_inputs=False,
+                page_type="job_description", dom_confidence=0.9,
+                url_path_pattern="/jobs/{id}",
+            )
+            ctx = StepContext(
+                snapshot={"url": "https://example.com/jobs/1", "page_text_preview": "Old page", "buttons": [{"text": "Apply Now"}], "fields": [], "has_dialog": False},
+                url="https://example.com/jobs/1",
+                tab_state=TabState.NORMAL,
+                planned_action=PageAction(
+                    page_understanding="JD", action="click_element",
+                    target_text="Apply Now", reasoning="click", confidence=0.8,
+                    page_type="job_description",
+                ),
+                plan_source="reasoner",
+                page_fingerprint=fp,
+            )
+            result = await nav._phase_act(ctx, "greenhouse", steps_list, 0)
+
+        assert len(steps_list) == 1
+        assert "fingerprint" in steps_list[0]
+        assert steps_list[0]["fingerprint"]["page_type"] == "job_description"

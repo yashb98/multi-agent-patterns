@@ -17,6 +17,7 @@ from shared.logging_config import get_logger
 
 from jobpulse.form_models import PageType
 from jobpulse.cookie_dismisser import dismiss_cookie_banner_playwright
+from jobpulse.navigation.action_executor import NavigationActionExecutor
 from jobpulse.navigation.overlay_dismisser import OverlayDismisser
 from jobpulse.navigation.wait_conditions import wait_for_modal_open, wait_for_page_stable
 from jobpulse.page_analysis.page_reasoner import PageAction, get_page_reasoner
@@ -529,6 +530,159 @@ class FormNavigator:
             text = (snapshot.get("page_text_preview") or "").lower()
             return "verify" in text or "check your email" in text
         return True
+
+    async def _phase_act(
+        self, ctx: "StepContext", platform: str, steps: list[dict],
+        wall_bypass_attempts: int, job: dict | None = None,
+    ) -> "StepContext":
+        action = ctx.planned_action
+        if not action:
+            return ctx
+
+        pre_url = ctx.snapshot.get("url", "")
+        pre_hash = self._snapshot_content_hash(ctx.snapshot)
+        pre_dialog = bool(ctx.snapshot.get("has_dialog"))
+        post_snap: dict[str, Any] | None = None
+
+        act = action.action
+
+        if act in ("click_apply", "click_apply_guess", "linkedin_direct_apply"):
+            post_snap = await self.click_apply_button(ctx.snapshot)
+            ctx.action_executed = True
+        elif act.startswith("sso_"):
+            provider = act[len("sso_"):]
+            sso = self.sso.detect_sso(ctx.snapshot)
+            if sso and sso.get("provider") == provider:
+                await self.sso.click_sso(sso)
+            ctx.action_executed = True
+            post_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+        elif act == "verify_email":
+            post_snap = await self.auth.handle_email_verification(
+                ctx.snapshot, platform, pre_url,
+            )
+            ctx.action_executed = True
+        elif act == "wait_human":
+            wall_info = ctx.wall_detected or {"type": "unknown"}
+
+            if wall_bypass_attempts > 2:
+                try:
+                    from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                    import sqlite3
+                    pr = get_page_reasoner()
+                    cache_key = pr._cache_key(
+                        ctx.snapshot.get("url", ""),
+                        ctx.snapshot.get("page_text_preview", "")[:800],
+                        ctx.snapshot.get("dialog_text", "")[:500],
+                        ctx.snapshot.get("fields", []),
+                        ctx.snapshot.get("buttons", []),
+                    )
+                    with sqlite3.connect(pr._db_path) as conn:
+                        conn.execute("DELETE FROM reasoning_cache WHERE cache_key = ?", (cache_key,))
+                except Exception:
+                    pass
+                if job:
+                    pb_result = await self._try_platform_bypass(ctx.snapshot, job, steps)
+                    if pb_result is not None:
+                        ctx.post_snapshot = pb_result
+                        ctx.action_executed = True
+                        return ctx
+
+            bypass_result = await self._bypass_verification_wall(ctx.snapshot, wall_info)
+            ctx.action_executed = True
+            if bypass_result["solved"]:
+                post_snap = bypass_result["snapshot"]
+            else:
+                if job:
+                    pb_result = await self._try_platform_bypass(ctx.snapshot, job, steps)
+                    if pb_result is not None:
+                        ctx.post_snapshot = pb_result
+                        return ctx
+                ctx.post_snapshot = bypass_result["snapshot"]
+                return ctx
+        elif act == "go_back":
+            page = getattr(self.driver, "page", None)
+            if page:
+                await page.go_back(wait_until="domcontentloaded")
+                await wait_for_page_stable(page, timeout_ms=5000)
+            ctx.action_executed = True
+            post_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+        else:
+            page = getattr(self.driver, "page", None)
+            if page is not None:
+                from jobpulse.applicator import PROFILE
+                nav_executor = NavigationActionExecutor(page)
+                await nav_executor.execute(action, profile=PROFILE)
+            ctx.action_executed = True
+            await asyncio.sleep(1.0)
+            post_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+
+        if post_snap is None:
+            post_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+
+        post_url = post_snap.get("url", "")
+        post_hash = self._snapshot_content_hash(post_snap)
+        post_dialog = bool(post_snap.get("has_dialog"))
+
+        is_click = act in ("click_apply", "click_apply_guess", "click_element",
+                            "linkedin_direct_apply", "dismiss_overlay", "dismiss_dialog",
+                            "accept_consent")
+        if is_click and self._detect_ghost_click(pre_url, pre_hash, pre_dialog,
+                                                  post_url, post_hash, post_dialog):
+            logger.warning("ACT: ghost click detected for action '%s'", act)
+            page = getattr(self.driver, "page", None)
+            if page is not None and action.target_text:
+                for role in ("button", "link"):
+                    try:
+                        loc = page.get_by_role(role, name=action.target_text, exact=False)
+                        if await loc.count() and await loc.first.is_visible():
+                            await loc.first.click(force=True)
+                            logger.info("ACT: force-click retry on '%s'", action.target_text[:40])
+                            await asyncio.sleep(1.0)
+                            post_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                            retry_hash = self._snapshot_content_hash(post_snap)
+                            if not self._detect_ghost_click(pre_url, pre_hash, pre_dialog,
+                                                             post_snap.get("url", ""), retry_hash,
+                                                             bool(post_snap.get("has_dialog"))):
+                                break
+                    except Exception:
+                        continue
+                else:
+                    ctx.ghost_click = True
+                    try:
+                        from shared.optimization import get_optimization_engine
+                        from datetime import UTC, datetime
+                        get_optimization_engine().emit(
+                            signal_type="failure",
+                            source_loop="navigator",
+                            domain=extract_domain(pre_url),
+                            agent_name="navigator",
+                            payload={"param": "ghost_click", "action": act, "target": action.target_text[:40]},
+                            session_id=f"gc_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+                        )
+                    except Exception:
+                        pass
+
+        intelligence = getattr(self.driver, "intelligence", None)
+        if intelligence and post_url != pre_url:
+            intelligence.clear()
+            await intelligence.inject_on_new_page()
+
+        step_record: dict[str, Any] = {
+            "page_type": action.page_type,
+            "action": act,
+        }
+        if ctx.page_fingerprint:
+            step_record["fingerprint"] = ctx.page_fingerprint.to_dict()
+        steps.append(step_record)
+
+        await self.cookie_dismisser.dismiss(post_snap)
+        page = getattr(self.driver, "page", None)
+        if page is not None:
+            await dismiss_cookie_banner_playwright(page)
+            post_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+
+        ctx.post_snapshot = post_snap
+        return ctx
 
     @staticmethod
     async def _dismiss_linkedin_discard(page) -> bool:
