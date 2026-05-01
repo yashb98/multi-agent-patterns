@@ -101,6 +101,72 @@ TERMINAL_ACTIONS = frozenset({"fill_form", "done", "abort"})
 
 MAX_NAVIGATION_STEPS = 10
 
+_NUMERIC_ID_RE = re.compile(r"/\d{3,}")
+
+
+def _normalize_url_path(url: str) -> str:
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/") if parsed.path else ""
+    return _NUMERIC_ID_RE.sub("/{id}", path)
+
+
+def _compute_content_hash(url_path: str, page_text: str, field_labels: list[str], button_texts: list[str]) -> str:
+    raw = "|".join([url_path, page_text[:500], ",".join(sorted(field_labels)), ",".join(sorted(button_texts))])
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def build_page_fingerprint(snapshot: dict[str, Any], page_type: str, dom_confidence: float) -> PageFingerprint:
+    url = snapshot.get("url", "")
+    buttons = snapshot.get("buttons", [])
+    fields = snapshot.get("fields", [])
+    page_text = snapshot.get("page_text_preview", "")
+
+    btn_texts = sorted({b.get("text", "")[:20] for b in buttons if b.get("text", "").strip()})
+    field_labels = [f.get("label", "") for f in fields if f.get("label")]
+    url_path = _normalize_url_path(url)
+
+    return PageFingerprint(
+        field_count=len(fields),
+        button_texts=tuple(btn_texts),
+        content_hash=_compute_content_hash(url_path, page_text, field_labels, btn_texts),
+        has_dialog=bool(snapshot.get("has_dialog") or snapshot.get("modal_detected")),
+        has_file_inputs=bool(snapshot.get("has_file_inputs")),
+        page_type=page_type,
+        dom_confidence=dom_confidence,
+        url_path_pattern=url_path,
+    )
+
+
+def score_fingerprint_match(current: PageFingerprint, learned_fp: "dict[str, Any] | None") -> float:
+    if not learned_fp:
+        return 0.0
+
+    score = 0.0
+
+    if current.page_type == learned_fp.get("page_type"):
+        score += 0.30
+    if current.content_hash == learned_fp.get("content_hash"):
+        score += 0.25
+
+    learned_fc = learned_fp.get("field_count", 0)
+    diff = abs(current.field_count - learned_fc)
+    score += 0.15 * (1.0 - min(diff / 10.0, 1.0))
+
+    learned_btns = set(learned_fp.get("button_texts", []))
+    current_btns = set(current.button_texts)
+    if learned_btns or current_btns:
+        union = learned_btns | current_btns
+        intersection = learned_btns & current_btns
+        score += 0.15 * (len(intersection) / len(union))
+    else:
+        score += 0.15
+
+    if current.url_path_pattern == learned_fp.get("url_path_pattern"):
+        score += 0.15
+
+    return round(score, 4)
+
 
 @dataclass
 class ApplyButtonPatterns:
