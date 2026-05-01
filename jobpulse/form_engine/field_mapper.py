@@ -176,6 +176,18 @@ def _fuzzy_custom_answer(label_lower: str, custom_answers: dict) -> str | None:
                 val = custom_answers.get(alt)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
+
+    # Embedding similarity fallback
+    try:
+        from shared.semantic_utils import best_semantic_match
+        candidate_keys = [k for k in custom_answers if not k.startswith("_") and isinstance(custom_answers[k], str) and custom_answers[k].strip()]
+        if candidate_keys:
+            match, score = best_semantic_match(label_lower, candidate_keys, min_score=0.70)
+            if match is not None:
+                return custom_answers[match].strip()
+    except Exception:
+        pass
+
     return None
 
 
@@ -213,8 +225,14 @@ def seed_mapping(
     mapping: dict[str, str] = {}
     unresolved: list[dict] = []
 
+    _placeholder_values = {
+        "select one", "select an option", "select", "-- select --",
+        "-none-", "loading", "choose", "please select",
+    }
     for field in fields:
-        if field["type"] == "file" or field.get("value"):
+        cur_val = field.get("value", "")
+        is_placeholder = isinstance(cur_val, str) and cur_val.strip().lower() in _placeholder_values
+        if field["type"] == "file" or (cur_val and not is_placeholder):
             continue
 
         label = field["label"]
@@ -642,6 +660,18 @@ async def recover_failed_fields_with_llm(
 
 
 
+async def _screenshot_form_area(page: "Page") -> bytes:
+    """Screenshot the form container if locatable, otherwise the viewport."""
+    for selector in ("form", "[role='form']", "#application", ".application-form"):
+        try:
+            loc = page.locator(selector).first
+            if await loc.count() and await loc.is_visible():
+                return await loc.screenshot(type="png")
+        except Exception:
+            continue
+    return await page.screenshot(type="png")
+
+
 async def recover_failed_fields_with_vision(
     page: "Page",
     failed_fields: list[dict[str, Any]],
@@ -654,7 +684,7 @@ async def recover_failed_fields_with_vision(
         return {}, 0
 
     try:
-        screenshot_png = await page.screenshot(type="png")
+        screenshot_png = await _screenshot_form_area(page)
     except Exception as exc:
         logger.warning("Vision recovery: could not capture screenshot: %s", exc)
         return {}, 0
@@ -706,6 +736,11 @@ async def recover_failed_fields_with_vision(
                 ],
             }],
         )
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="vision_recovery", model_hint="gpt-4.1-mini")
+        except Exception:
+            pass
         raw = response.output_text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
@@ -734,7 +769,7 @@ async def vision_map_unlabeled_fields(
         return {}, 0
 
     try:
-        screenshot_png = await page.screenshot(type="png")
+        screenshot_png = await _screenshot_form_area(page)
     except Exception as exc:
         logger.warning("Vision unlabeled scan: could not capture screenshot: %s", exc)
         return {}, 0
@@ -783,6 +818,11 @@ async def vision_map_unlabeled_fields(
                 ],
             }],
         )
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="vision_unlabeled", model_hint="gpt-4.1-mini")
+        except Exception:
+            pass
         raw = response.output_text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
@@ -821,30 +861,26 @@ async def review_form(page: "Page") -> tuple[dict, int]:
 
     client = get_openai_client()
     try:
-        from shared.agents import _token_limit_kwargs
-        _model = get_model_name()
-        response = client.chat.completions.create(
-            model=_model,
-            temperature=0.0,
-            timeout=30,
-            **_token_limit_kwargs(_model, 1000),
-            messages=[{
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:image/png;base64,{b64}",
-                    }},
+                    {"type": "input_text", "text": prompt},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{b64}",
+                    },
                 ],
             }],
         )
         try:
             from shared.cost_tracker import record_openai_usage
-            record_openai_usage(response, agent_name="field_mapper", model_hint=get_model_name())
+            record_openai_usage(response, agent_name="field_mapper", model_hint="gpt-4.1-mini")
         except Exception:
             pass
 
-        raw = response.choices[0].message.content.strip()
+        raw = response.output_text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         return json.loads(raw), 1

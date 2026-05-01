@@ -288,3 +288,60 @@ class TestScreeningDetectorQuality:
         import jobpulse.screening_detector as mod
         assert not hasattr(mod, "_SCREENING_KEYWORDS"), \
             "_SCREENING_KEYWORDS regex must be removed -- use embeddings instead"
+
+
+class TestIntentClassifierQuality:
+    def test_no_local_cosine_function(self):
+        """Verify local _cosine_similarity function has been removed."""
+        import jobpulse.screening_intent as mod
+        assert not hasattr(mod, "_cosine_similarity"), \
+            "Local _cosine_similarity must be removed — use numpy vectorized ops"
+
+    def test_uses_shared_embedder(self):
+        """Verify shared embedder is used instead of direct MemoryEmbedder."""
+        import inspect
+        import jobpulse.screening_intent as mod
+        source = inspect.getsource(mod)
+        assert "_get_embedder" in source, \
+            "Must use shared.semantic_utils._get_embedder()"
+
+
+class TestSemanticCacheSharedUtils:
+    def test_no_local_cosine(self):
+        import jobpulse.screening_semantic_cache as mod
+        assert not hasattr(mod, "_cosine_similarity"), \
+            "Local _cosine_similarity must be removed — use numpy vectorized ops"
+
+    def test_no_keyword_boolean_inference(self):
+        """_infer_boolean_from_text must use embeddings, not keyword sets."""
+        import jobpulse.screening_semantic_cache as mod
+        assert not hasattr(mod, "_AFFIRMATIVE"), \
+            "_AFFIRMATIVE keyword set must be removed — use semantic_similarity"
+        assert not hasattr(mod, "_NEGATIVE"), \
+            "_NEGATIVE keyword set must be removed — use semantic_similarity"
+
+
+class TestNLPClassifierSharedEmbedder:
+    def test_uses_shared_embedder(self):
+        """NLP classifier should use _get_embedder() from shared.semantic_utils."""
+        import inspect
+        import jobpulse.nlp_classifier as mod
+        source = inspect.getsource(mod._load_model)
+        assert "_get_embedder" in source, \
+            "_load_model must use shared.semantic_utils._get_embedder()"
+
+    def test_no_ollama_embedder(self):
+        """_OllamaEmbedder should be removed."""
+        import jobpulse.nlp_classifier as mod
+        assert not hasattr(mod, "_OllamaEmbedder"), \
+            "_OllamaEmbedder must be removed — use shared embedder"
+
+
+class TestFieldMapperEmbeddingFallback:
+    def test_fuzzy_custom_answer_uses_embeddings(self):
+        """_fuzzy_custom_answer should use embedding similarity as fallback."""
+        import inspect
+        from jobpulse.form_engine.field_mapper import _fuzzy_custom_answer
+        source = inspect.getsource(_fuzzy_custom_answer)
+        assert "best_semantic_match" in source, \
+            "_fuzzy_custom_answer must use best_semantic_match as fallback"
