@@ -81,8 +81,14 @@ class AuthHandler:
             verification = await nav._verify_action(
                 pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
             )
+            verification = nav._check_expected_outcome(action, verification)
             if verification.ghost_click:
                 logger.warning("Auth login: ghost click detected — page did not progress")
+            if verification.expected_outcome_met is False:
+                logger.warning(
+                    "Auth login: expected_outcome '%s' not met",
+                    action.expected_outcome,
+                )
         return post_snap
 
     async def handle_signup(self, snapshot: dict, platform: str) -> dict:
@@ -114,8 +120,14 @@ class AuthHandler:
             verification = await nav._verify_action(
                 pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
             )
+            verification = nav._check_expected_outcome(action, verification)
             if verification.ghost_click:
                 logger.warning("Auth signup: ghost click detected — page did not progress")
+            if verification.expected_outcome_met is False:
+                logger.warning(
+                    "Auth signup: expected_outcome '%s' not met",
+                    action.expected_outcome,
+                )
         return post_snap
 
     async def handle_email_verification(self, snapshot: dict, platform: str, return_url: str) -> dict:

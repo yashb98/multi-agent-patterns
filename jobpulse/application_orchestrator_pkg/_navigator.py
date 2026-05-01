@@ -308,6 +308,36 @@ class FormNavigator:
             ghost_click=ghost,
         )
 
+    def _check_expected_outcome(
+        self, action: PageAction, verification: ActionVerification,
+    ) -> ActionVerification:
+        """Populate verification.expected_outcome_met based on action.expected_outcome.
+
+        Returns the same ActionVerification (mutated). The mapping:
+        - url_changes      → True iff verification.url_changed
+        - dialog_dismissed → True iff a dialog was present pre and absent post
+        - page_unchanged   → True iff no content changed
+        - fields_filled    → None (caller checks ExecutorResult, not verification)
+        - unknown          → None (no expectation declared)
+        """
+        outcome = getattr(action, "expected_outcome", "unknown")
+        if outcome == "unknown":
+            verification.expected_outcome_met = None
+            return verification
+        if outcome == "url_changes":
+            verification.expected_outcome_met = verification.url_changed
+        elif outcome == "dialog_dismissed":
+            verification.expected_outcome_met = (
+                verification.pre_dialog and not verification.post_dialog
+            )
+        elif outcome == "page_unchanged":
+            verification.expected_outcome_met = not verification.content_changed
+        elif outcome == "fields_filled":
+            verification.expected_outcome_met = None
+        else:
+            verification.expected_outcome_met = None
+        return verification
+
     @staticmethod
     def _snapshot_content_hash(snapshot: dict[str, Any]) -> str:
         text = snapshot.get("page_text_preview", "")[:300]
@@ -736,6 +766,13 @@ class FormNavigator:
                         )
                     except Exception:
                         pass
+
+        verification = self._check_expected_outcome(action, verification)
+        if verification.expected_outcome_met is False:
+            logger.warning(
+                "ACT: expected_outcome '%s' not met for action '%s'",
+                action.expected_outcome, act,
+            )
 
         intelligence = getattr(self.driver, "intelligence", None)
         if intelligence and post_url != pre_url:
