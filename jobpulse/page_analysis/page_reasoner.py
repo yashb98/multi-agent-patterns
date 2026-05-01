@@ -97,12 +97,29 @@ class PageReasoner:
                     created_at REAL NOT NULL
                 )
             """)
+            existing = {r[1] for r in conn.execute("PRAGMA table_info(reasoning_cache)").fetchall()}
+            if "page_understanding_text" not in existing:
+                conn.execute("ALTER TABLE reasoning_cache ADD COLUMN page_understanding_text TEXT DEFAULT ''")
 
-    def _cache_key(self, url: str, page_text: str, dialog_text: str) -> str:
+    def _cache_key(
+        self, url: str, page_text: str, dialog_text: str,
+        fields: list[dict] | None = None, buttons: list[dict] | None = None,
+    ) -> str:
         from urllib.parse import urlparse
-        domain = urlparse(url).netloc.lower().removeprefix("www.") if url else ""
+        parsed = urlparse(url) if url else None
+        domain = parsed.netloc.lower().removeprefix("www.") if parsed else ""
+        path = parsed.path.rstrip("/") if parsed else ""
+        field_sig = ""
+        if fields:
+            labels = sorted(f.get("label", "")[:30] for f in fields[:15] if f.get("label"))
+            field_sig = f"|fields={len(fields)}:{','.join(labels)}"
+        button_sig = ""
+        if buttons:
+            btn_texts = sorted(b.get("text", "")[:20] for b in buttons[:10] if b.get("text"))
+            button_sig = f"|buttons={','.join(btn_texts)}"
         content_hash = hashlib.sha256(
-            (page_text[:500] + "|" + dialog_text[:300]).encode()
+            (path + "|" + page_text[:500] + "|" + dialog_text[:300]
+             + field_sig + button_sig).encode()
         ).hexdigest()[:16]
         return f"{domain}:{content_hash}"
 
@@ -120,14 +137,41 @@ class PageReasoner:
             pass
         return None
 
+    def _get_cached_semantic(self, domain: str, page_text: str) -> PageAction | None:
+        """Semantic near-miss: find cached entries with similar page understanding."""
+        try:
+            from shared.semantic_utils import best_semantic_match
+            with sqlite3.connect(self._db_path) as conn:
+                rows = conn.execute(
+                    "SELECT cache_key, result_json, created_at, page_understanding_text "
+                    "FROM reasoning_cache WHERE cache_key LIKE ? AND page_understanding_text != ''",
+                    (f"{domain}:%",),
+                ).fetchall()
+            if not rows:
+                return None
+            valid = [(r[0], r[1], r[2], r[3]) for r in rows if (time.time() - r[2]) < 3600]
+            if not valid:
+                return None
+            understandings = [r[3] for r in valid]
+            match, score = best_semantic_match(page_text[:200], understandings, min_score=0.90)
+            if match is not None:
+                idx = understandings.index(match)
+                data = json.loads(valid[idx][1])
+                logger.info("PageReasoner: semantic near-miss hit (score=%.3f)", score)
+                return PageAction(**data)
+        except Exception as exc:
+            logger.debug("Semantic cache lookup failed: %s", exc)
+        return None
+
     def _set_cache(self, key: str, action: PageAction) -> None:
         if action.action == "abort" and action.confidence < 0.5:
             return
         try:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO reasoning_cache (cache_key, result_json, created_at) VALUES (?, ?, ?)",
-                    (key, json.dumps(action.to_dict()), time.time()),
+                    "INSERT OR REPLACE INTO reasoning_cache "
+                    "(cache_key, result_json, created_at, page_understanding_text) VALUES (?, ?, ?, ?)",
+                    (key, json.dumps(action.to_dict()), time.time(), action.page_understanding),
                 )
         except Exception:
             pass
@@ -141,11 +185,19 @@ class PageReasoner:
         fields = snapshot.get("fields", [])
         wall = snapshot.get("verification_wall")
 
-        cache_key = self._cache_key(url, page_text, dialog_text)
+        cache_key = self._cache_key(url, page_text, dialog_text, fields, buttons)
         cached = self._get_cached(cache_key)
         if cached:
             logger.info("PageReasoner: cache hit for %s → %s", cache_key[:30], cached.action)
             return cached
+
+        # Semantic near-miss lookup
+        from urllib.parse import urlparse
+        parsed = urlparse(url) if url else None
+        domain = parsed.netloc.lower().removeprefix("www.") if parsed else ""
+        semantic_hit = self._get_cached_semantic(domain, page_text)
+        if semantic_hit:
+            return semantic_hit
 
         button_summary = [b.get("text", "")[:40] for b in buttons[:15] if b.get("text")]
         field_summary = []
