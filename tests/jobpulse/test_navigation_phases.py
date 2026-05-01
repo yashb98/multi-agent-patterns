@@ -84,7 +84,6 @@ class TestStepContext:
         assert ctx.match_score == 0.0
         assert ctx.planned_action is None
         assert ctx.ghost_click is False
-        assert ctx.overlays_detected == []
 
 
 class TestTerminalActions:
@@ -507,6 +506,7 @@ class TestPhaseAnalyze:
             "has_file_inputs": False,
             "verification_wall": None,
         }
+        driver.get_snapshot = AsyncMock(return_value=snapshot)
         ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
 
         nav._classifier = MagicMock()
@@ -529,6 +529,7 @@ class TestPhaseAnalyze:
             "fields": [],
             "verification_wall": {"type": "cloudflare"},
         }
+        driver.get_snapshot = AsyncMock(return_value=snapshot)
         ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
 
         nav._classifier = MagicMock()
@@ -590,6 +591,7 @@ class TestPhaseAnalyze:
             "buttons": [],
             "fields": [],
         }
+        driver.get_snapshot = AsyncMock(return_value=snapshot)
         ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
 
         nav._classifier = MagicMock()
@@ -1029,14 +1031,19 @@ class TestNavigateToFormIntegration:
         call_count = [0]
         async def _get_snap(force_refresh=False):
             call_count[0] += 1
-            return jd_snapshot if call_count[0] <= 2 else form_snapshot
+            # Calls: 1=initial nav, 2=OBSERVE, 3=ANALYZE re-snapshot → all JD
+            # After ACT navigates away: 4+=form_snapshot
+            return jd_snapshot if call_count[0] <= 3 else form_snapshot
         driver.get_snapshot = _get_snap
         driver.navigate = AsyncMock()
         nav.learner.get_sequence.return_value = None
         nav.learner.get_platform_pattern.return_value = None
 
         mock_clf = MagicMock()
+        # classify called: 1=initial ANALYZE, 2=re-classify after dismiss (same JD),
+        # 3=second loop ANALYZE → form
         clf_returns = iter([
+            (PageType.JOB_DESCRIPTION, 0.9),
             (PageType.JOB_DESCRIPTION, 0.9),
             (PageType.APPLICATION_FORM, 0.92),
         ])
@@ -1111,13 +1118,16 @@ class TestNavigateToFormIntegration:
         call_count = [0]
         async def _get_snap(force_refresh=False):
             call_count[0] += 1
-            return jd_snapshot if call_count[0] <= 2 else form_snapshot
+            # Calls: 1=initial nav, 2=OBSERVE, 3=ANALYZE re-snapshot → JD
+            # After click_apply: 4+=form_snapshot
+            return jd_snapshot if call_count[0] <= 3 else form_snapshot
         driver.get_snapshot = _get_snap
         driver.navigate = AsyncMock()
         nav.click_apply_button = AsyncMock(return_value=form_snapshot)
 
         mock_clf = MagicMock()
         clf_returns = iter([
+            (PageType.JOB_DESCRIPTION, 0.9),
             (PageType.JOB_DESCRIPTION, 0.9),
             (PageType.APPLICATION_FORM, 0.92),
         ])

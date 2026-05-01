@@ -81,9 +81,7 @@ class StepContext:
 
     dom_type: PageType = dc_field(default=PageType.UNKNOWN)
     dom_confidence: float = 0.0
-    page_features: Any = None
     browser_signals: list[dict] | None = None
-    overlays_detected: list[str] = dc_field(default_factory=list)
     wall_detected: dict | None = None
     page_fingerprint: PageFingerprint | None = None
 
@@ -356,12 +354,26 @@ class FormNavigator:
         if wall:
             ctx.wall_detected = wall
 
+        pre_dismiss_hash = self._snapshot_content_hash(ctx.snapshot)
+
         await self.cookie_dismisser.dismiss(ctx.snapshot)
         page = getattr(self.driver, "page", None)
         if page is not None:
             await dismiss_cookie_banner_playwright(page)
 
+        ctx.snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
         ctx.snapshot = await self._dismiss_site_prompt_if_present(ctx.snapshot)
+
+        post_dismiss_hash = self._snapshot_content_hash(ctx.snapshot)
+        if post_dismiss_hash != pre_dismiss_hash:
+            dom_type, dom_confidence = self._classifier.classify(ctx.snapshot)
+            ctx.dom_type = dom_type
+            ctx.dom_confidence = dom_confidence
+            ctx.page_fingerprint = build_page_fingerprint(
+                ctx.snapshot,
+                page_type=dom_type.value if hasattr(dom_type, "value") else str(dom_type),
+                dom_confidence=dom_confidence,
+            )
 
         return ctx
 
@@ -460,6 +472,10 @@ class FormNavigator:
                 )
                 ctx.plan_source = "learned_verified"
                 logger.info("PLAN: using verified learned action '%s' (score=%.2f)", learned_action, ctx.match_score)
+                try:
+                    self.learner.increment_replay(extract_domain(ctx.url))
+                except Exception:
+                    pass
                 return ctx
             logger.info("PLAN: learned action '%s' failed verification — falling to reasoner", learned_action)
 
@@ -518,7 +534,7 @@ class FormNavigator:
             provider = action[len("sso_"):]
             sso = self.sso.detect_sso(snapshot)
             return sso is not None and sso.get("provider") == provider
-        if action in ("fill_login", "fill_signup"):
+        if action in ("login", "signup", "fill_login", "fill_signup"):
             fields = snapshot.get("fields", [])
             has_password = any(f.get("input_type") == "password" for f in fields)
             has_email = any(
