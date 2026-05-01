@@ -186,6 +186,54 @@ class PageReasoner:
         except Exception:
             pass
 
+    @staticmethod
+    def _apply_field_count_guard(
+        action: "PageAction", snapshot_fields: list[dict],
+    ) -> "PageAction":
+        """If the LLM dropped required fields, lower confidence and annotate.
+
+        Only applies when action is fill-related. Honeypots and skip-marked
+        fills do not count toward coverage.
+        """
+        if action.action not in ("fill_and_advance", "fill_form", "login", "signup"):
+            return action
+
+        required = [
+            f for f in snapshot_fields
+            if f.get("required") and f.get("label")
+            and "honeypot" not in (f.get("label") or "").lower()
+        ]
+        if not required:
+            return action
+
+        filled_labels = {
+            (f.get("label") or "").strip().lower()
+            for f in action.field_fills
+            if f.get("method") != "skip"
+        }
+        required_labels = {(f.get("label") or "").strip().lower() for f in required}
+        covered = required_labels & filled_labels
+        coverage = len(covered) / len(required_labels) if required_labels else 1.0
+
+        if coverage < 0.8:
+            new_confidence = min(action.confidence, coverage)
+            return PageAction(
+                page_understanding=action.page_understanding,
+                action=action.action,
+                target_text=action.target_text,
+                reasoning=(
+                    f"{action.reasoning} | field_coverage={coverage:.0%} "
+                    f"({len(covered)}/{len(required_labels)} required fields)"
+                ),
+                confidence=new_confidence,
+                page_type=action.page_type,
+                field_fills=action.field_fills,
+                advance_button=action.advance_button,
+                overlays_to_dismiss=action.overlays_to_dismiss,
+                expected_outcome=action.expected_outcome,
+            )
+        return action
+
     def reason_sync(self, snapshot: dict[str, Any]) -> PageAction:
         """Synchronous page reasoning — primary entry point."""
         url = snapshot.get("url", "")
@@ -227,6 +275,7 @@ class PageReasoner:
         prompt = self._build_prompt(url, page_text, dialog_text, button_summary, field_summary, wall_info)
         action = self._call_llm(prompt)
 
+        action = self._apply_field_count_guard(action, fields)
         self._set_cache(cache_key, action)
         logger.info(
             "PageReasoner: %s → action=%s, type=%s, confidence=%.2f — %s",
