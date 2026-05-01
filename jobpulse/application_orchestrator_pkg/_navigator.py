@@ -364,6 +364,51 @@ class FormNavigator:
 
         return ctx
 
+    def _phase_match(self, ctx: StepContext, domain: str, platform: str, step_index: int) -> StepContext:
+        if ctx.page_fingerprint is None:
+            ctx.match_source = "none"
+            return ctx
+
+        sequence = self.learner.get_sequence(domain)
+        source = "domain"
+        if not sequence and platform:
+            sequence = self.learner.get_platform_pattern(platform, exclude_domain=domain)
+            source = "platform"
+        if not sequence:
+            content_hash = ctx.page_fingerprint.content_hash if ctx.page_fingerprint else ""
+            sequence = self.learner.get_sequence_by_content_hash(content_hash, exclude_domain=domain) if content_hash else None
+            source = "content_hash"
+
+        if not sequence:
+            ctx.match_source = "none"
+            return ctx
+
+        if step_index >= len(sequence):
+            ctx.match_source = "none"
+            return ctx
+
+        learned_step = sequence[step_index]
+        learned_fp = learned_step.get("fingerprint")
+
+        if not learned_fp:
+            page_type_match = (ctx.page_fingerprint.page_type == learned_step.get("page_type", ""))
+            ctx.match_score = 0.3 if page_type_match else 0.0
+            ctx.match_source = "none"
+            return ctx
+
+        ctx.match_score = score_fingerprint_match(ctx.page_fingerprint, learned_fp)
+
+        if ctx.match_score >= 0.7:
+            ctx.learned_step = learned_step
+            ctx.match_source = source
+            logger.info("MATCH: score=%.2f from %s — using learned step: %s",
+                         ctx.match_score, source, learned_step.get("action"))
+        else:
+            ctx.match_source = "none"
+            logger.info("MATCH: score=%.2f (below 0.7) — falling through to reasoner", ctx.match_score)
+
+        return ctx
+
     @staticmethod
     async def _dismiss_linkedin_discard(page) -> bool:
         """Dismiss LinkedIn 'Save this application?' overlay — delegates to OverlayDismisser."""

@@ -600,3 +600,163 @@ class TestPhaseAnalyze:
 
         assert result.browser_signals is not None
         assert len(result.browser_signals) == 1
+
+
+class TestPhaseMatch:
+    def test_matches_learned_sequence_above_threshold(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        fp = PageFingerprint(
+            field_count=0,
+            button_texts=("Apply Now",),
+            content_hash="abc123",
+            has_dialog=False,
+            has_file_inputs=False,
+            page_type="job_description",
+            dom_confidence=0.9,
+            url_path_pattern="/jobs/{id}",
+        )
+        learned_steps = [
+            {
+                "page_type": "job_description",
+                "action": "click_apply",
+                "fingerprint": fp.to_dict(),
+            }
+        ]
+        nav.learner.get_sequence.return_value = learned_steps
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/jobs/123"},
+            url="https://example.com/jobs/123",
+            tab_state=TabState.NORMAL,
+            page_fingerprint=fp,
+        )
+        result = nav._phase_match(ctx, "example.com", "greenhouse", step_index=0)
+        assert result.match_score >= 0.7
+        assert result.learned_step is not None
+        assert result.learned_step["action"] == "click_apply"
+        assert result.match_source == "domain"
+
+    def test_no_match_below_threshold(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        current_fp = PageFingerprint(
+            field_count=10,
+            button_texts=("Submit",),
+            content_hash="xyz",
+            has_dialog=True,
+            has_file_inputs=True,
+            page_type="application_form",
+            dom_confidence=0.8,
+            url_path_pattern="/apply",
+        )
+        learned_steps = [
+            {
+                "page_type": "job_description",
+                "action": "click_apply",
+                "fingerprint": {
+                    "field_count": 0,
+                    "button_texts": ["Apply Now"],
+                    "content_hash": "other",
+                    "page_type": "job_description",
+                    "url_path_pattern": "/jobs/{id}",
+                },
+            }
+        ]
+        nav.learner.get_sequence.return_value = learned_steps
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/apply"},
+            url="https://example.com/apply",
+            tab_state=TabState.NORMAL,
+            page_fingerprint=current_fp,
+        )
+        result = nav._phase_match(ctx, "example.com", "greenhouse", step_index=0)
+        assert result.match_score < 0.7
+        assert result.learned_step is None
+        assert result.match_source == "none"
+
+    def test_no_learned_sequence(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        nav.learner.get_sequence.return_value = None
+        nav.learner.get_platform_pattern.return_value = None
+        nav.learner.get_sequence_by_content_hash.return_value = None
+        fp = PageFingerprint(
+            field_count=0, button_texts=(), content_hash="x",
+            has_dialog=False, has_file_inputs=False,
+            page_type="unknown", dom_confidence=0.5,
+            url_path_pattern="/",
+        )
+        ctx = StepContext(
+            snapshot={"url": "https://new-site.com"},
+            url="https://new-site.com",
+            tab_state=TabState.NORMAL,
+            page_fingerprint=fp,
+        )
+        result = nav._phase_match(ctx, "new-site.com", "", step_index=0)
+        assert result.match_source == "none"
+        assert result.learned_step is None
+
+    def test_step_index_exceeds_sequence(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        learned_steps = [{"page_type": "job_description", "action": "click_apply", "fingerprint": {}}]
+        nav.learner.get_sequence.return_value = learned_steps
+        fp = PageFingerprint(
+            field_count=5, button_texts=("Next",), content_hash="abc",
+            has_dialog=False, has_file_inputs=False,
+            page_type="application_form", dom_confidence=0.9,
+            url_path_pattern="/apply",
+        )
+        ctx = StepContext(
+            snapshot={"url": "https://example.com"},
+            url="https://example.com",
+            tab_state=TabState.NORMAL,
+            page_fingerprint=fp,
+        )
+        result = nav._phase_match(ctx, "example.com", "greenhouse", step_index=5)
+        assert result.match_source == "none"
+
+    def test_old_format_caps_at_04(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        learned_steps = [{"page_type": "job_description", "action": "click_apply"}]
+        nav.learner.get_sequence.return_value = learned_steps
+        fp = PageFingerprint(
+            field_count=0, button_texts=("Apply Now",), content_hash="abc",
+            has_dialog=False, has_file_inputs=False,
+            page_type="job_description", dom_confidence=0.9,
+            url_path_pattern="/jobs/{id}",
+        )
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/jobs/123"},
+            url="https://example.com/jobs/123",
+            tab_state=TabState.NORMAL,
+            page_fingerprint=fp,
+        )
+        result = nav._phase_match(ctx, "example.com", "greenhouse", step_index=0)
+        assert result.match_score <= 0.4
+        assert result.learned_step is None
+
+    def test_falls_back_to_platform_pattern(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        nav.learner.get_sequence.return_value = None
+        fp_dict = {
+            "field_count": 0,
+            "button_texts": ["Apply Now"],
+            "content_hash": "abc123",
+            "page_type": "job_description",
+            "url_path_pattern": "/jobs/{id}",
+        }
+        nav.learner.get_platform_pattern.return_value = [
+            {"page_type": "job_description", "action": "click_apply", "fingerprint": fp_dict}
+        ]
+        fp = PageFingerprint(
+            field_count=0, button_texts=("Apply Now",), content_hash="abc123",
+            has_dialog=False, has_file_inputs=False,
+            page_type="job_description", dom_confidence=0.9,
+            url_path_pattern="/jobs/{id}",
+        )
+        ctx = StepContext(
+            snapshot={"url": "https://new-greenhouse.io/jobs/456"},
+            url="https://new-greenhouse.io/jobs/456",
+            tab_state=TabState.NORMAL,
+            page_fingerprint=fp,
+        )
+        result = nav._phase_match(ctx, "new-greenhouse.io", "greenhouse", step_index=0)
+        assert result.match_score >= 0.7
+        assert result.match_source == "platform"
