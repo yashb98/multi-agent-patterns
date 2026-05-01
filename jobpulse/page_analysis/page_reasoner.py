@@ -55,6 +55,14 @@ VALID_ACTIONS = frozenset({
     "done",
 })
 
+VALID_OUTCOMES = frozenset({
+    "url_changes",        # we expect the URL to change after this action
+    "fields_filled",      # we expect specific fields to become non-empty
+    "dialog_dismissed",   # we expect a dialog/overlay to disappear
+    "page_unchanged",     # we expect to stay on this page (e.g. consent acknowledgement only)
+    "unknown",            # default — no specific expectation
+})
+
 
 @dataclass
 class PageAction:
@@ -67,6 +75,7 @@ class PageAction:
     field_fills: list[dict[str, str]] = dc_field(default_factory=list)
     advance_button: str = ""
     overlays_to_dismiss: list[str] = dc_field(default_factory=list)
+    expected_outcome: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +88,7 @@ class PageAction:
             "field_fills": self.field_fills,
             "advance_button": self.advance_button,
             "overlays_to_dismiss": self.overlays_to_dismiss,
+            "expected_outcome": self.expected_outcome,
         }
 
 
@@ -281,7 +291,8 @@ class PageReasoner:
             '  "advance_button": "text of Next/Submit/Continue button to click after filling",\n'
             '  "overlays_to_dismiss": ["button text to click to dismiss cookie/session overlays"],\n'
             '  "reasoning": "why this action",\n'
-            '  "confidence": 0.0-1.0\n'
+            '  "confidence": 0.0-1.0,\n'
+            '  "expected_outcome": "url_changes|fields_filled|dialog_dismissed|page_unchanged|unknown"\n'
             "}\n\n"
             "RULES:\n"
             '- For email fields, use value "FROM_PROFILE:email"\n'
@@ -297,6 +308,11 @@ class PageReasoner:
             "page_type = \"expired_job\" and action = \"abort\"\n"
             "- If application was submitted successfully, action = \"done\"\n"
             "- action \"fill_and_advance\" = fill the listed fields + click advance_button\n"
+            "- expected_outcome MUST be one of: url_changes, fields_filled, dialog_dismissed, page_unchanged, unknown\n"
+            "- Pick url_changes for navigation/login/submit actions\n"
+            "- Pick dialog_dismissed for overlay/consent dismissals\n"
+            "- Pick fields_filled for fill_form when no advance is expected on this page\n"
+            "- Pick page_unchanged ONLY when no visible state change is expected\n"
             "- action \"click_element\" = click a specific button/link (e.g. Apply Now)\n\n"
             "Context: The bot navigates from a job listing to the application form, "
             "fills it out, and stops before final submission. Dismiss all non-application overlays. "
@@ -333,6 +349,9 @@ class PageReasoner:
             action = data.get("action", "abort")
             if action not in VALID_ACTIONS:
                 action = "abort"
+            outcome = data.get("expected_outcome", "unknown")
+            if outcome not in VALID_OUTCOMES:
+                outcome = "unknown"
             return PageAction(
                 page_understanding=data.get("page_understanding", ""),
                 action=action,
@@ -343,6 +362,7 @@ class PageReasoner:
                 field_fills=data.get("field_fills", []),
                 advance_button=data.get("advance_button", ""),
                 overlays_to_dismiss=data.get("overlays_to_dismiss", []),
+                expected_outcome=outcome,
             )
         except (json.JSONDecodeError, ValueError, KeyError) as exc:
             return PageAction(
