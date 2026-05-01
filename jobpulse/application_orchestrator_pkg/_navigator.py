@@ -96,6 +96,7 @@ class StepContext:
     post_snapshot: dict | None = None
     ghost_click: bool = False
     executor_result: ExecutorResult | None = None
+    reflected_action: Any = None
 
 
 @dataclass
@@ -763,6 +764,23 @@ class FormNavigator:
                             logger.info("Invalidated cached reasoning for ghost-click page")
                     except Exception:
                         pass
+                    try:
+                        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                        reflected = get_page_reasoner().reason_with_failure(
+                            ctx.snapshot,
+                            failure_context=(
+                                f"ghost_click on action={act}, "
+                                f"target='{action.target_text[:60]}', "
+                                f"pre_url={pre_url}, post_url={post_url}"
+                            ),
+                        )
+                        ctx.reflected_action = reflected
+                        logger.info(
+                            "Reflection produced: %s (confidence=%.2f)",
+                            reflected.action, reflected.confidence,
+                        )
+                    except Exception as exc:
+                        logger.debug("Reflection failed: %s", exc)
 
         verification = self._check_expected_outcome(action, verification)
         if verification.expected_outcome_met is False:

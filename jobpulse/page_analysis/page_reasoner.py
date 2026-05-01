@@ -306,6 +306,55 @@ class PageReasoner:
         )
         return action
 
+    def reason_with_failure(
+        self, snapshot: dict[str, Any], failure_context: str,
+    ) -> PageAction:
+        """Re-call the LLM with a failure context appended — does NOT use cache.
+
+        Called by FormNavigator when a previously-cached action led to a
+        ghost click, expected_outcome violation, or persistent fill failure.
+        Returns a fresh PageAction the caller can route on.
+        """
+        url = snapshot.get("url", "")
+        page_text = snapshot.get("page_text_preview", "")[:800]
+        dialog_text = snapshot.get("dialog_text", "")[:500]
+        buttons = snapshot.get("buttons", [])
+        fields = snapshot.get("fields", [])
+        wall = snapshot.get("verification_wall")
+
+        button_summary = [b.get("text", "")[:40] for b in buttons[:15] if b.get("text")]
+        field_summary = []
+        for f in fields[:20]:
+            label = f.get("label", "?")
+            ftype = f.get("input_type", f.get("type", "?"))
+            value = f.get("value", "")
+            entry = f"{label} ({ftype})"
+            if value:
+                entry += f" [current: {value[:30]}]"
+            field_summary.append(entry)
+        wall_info = ""
+        if wall:
+            wall_info = f"\nCAPTCHA/WALL DETECTED: {wall.get('type', 'unknown')}"
+
+        base_prompt = self._build_prompt(
+            url, page_text, dialog_text, button_summary, field_summary, wall_info,
+        )
+        prompt = (
+            base_prompt
+            + "\n\nPRIOR ATTEMPT FAILED:\n"
+            + failure_context
+            + "\n\nYour previous plan did not produce the expected outcome. "
+              "Reconsider: is the page type different than you thought? "
+              "Is there an overlay you missed? Should this escalate to wait_human?"
+        )
+        action = self._call_llm(prompt)
+        # Do not cache reflection results — they are situational.
+        logger.info(
+            "PageReasoner.reflect: %s → action=%s, type=%s, confidence=%.2f",
+            url[:60], action.action, action.page_type, action.confidence,
+        )
+        return action
+
     async def reason(self, snapshot: dict[str, Any]) -> PageAction:
         """Async wrapper for backward compatibility."""
         return self.reason_sync(snapshot)
