@@ -5,12 +5,9 @@ Ties together all screening subsystems:
   2. Semantic Cache (Qdrant)
   3. Intent Classification
   4. Intent Resolution (profile-driven)
-  5. Regex Fallback
-  6. Agent Rules
-  7. Exact Cache Fallback
-  8. LLM Fallback
-  9. Option Alignment
-  10. Validation
+  5. LLM Fallback
+  6. Option Alignment
+  7. Validation
 
 Usage:
     pipeline = ScreeningPipeline(profile=my_profile)
@@ -160,22 +157,6 @@ class ScreeningPipeline:
                 result["source"] = "intent_resolver"
                 return result
 
-        # Step 5: Regex Fallback
-        regex_answer = self._regex_fallback(question)
-        if regex_answer:
-            result["answer"] = regex_answer
-            result["confidence"] = 0.65
-            result["source"] = "regex_fallback"
-            return result
-
-        # Step 6: Agent Rules (heuristic mappings from profile)
-        rules_answer = self._agent_rules(question, job_context)
-        if rules_answer:
-            result["answer"] = rules_answer
-            result["confidence"] = 0.60
-            result["source"] = "agent_rules"
-            return result
-
         # Step 7: Exact Cache Fallback (legacy)
         # This would check the old SQLite ats_answer_cache
         # Skipped here — caller can layer it in if needed
@@ -225,7 +206,7 @@ class ScreeningPipeline:
                     result["metadata"]["original_answer"] = answer
 
             # Salary range fields
-            if any(kw in question.lower() for kw in ("salary", "compensation", "pay")):
+            if result.get("intent") in ("salary_current", "salary_expected"):
                 if options and SalaryFieldHandler.extract_numeric(answer):
                     salary_answer = SalaryFieldHandler.format_for_range(answer, options)
                     if salary_answer != answer:
@@ -344,75 +325,6 @@ class ScreeningPipeline:
         return None
 
     # ── Fallback Generators ─────────────────────────────────────────────────
-
-    def _regex_fallback(self, question: str) -> str | None:
-        """Fast regex-based answer extraction."""
-        q_lower = question.lower()
-
-        # Yes/No questions about work auth
-        if any(kw in q_lower for kw in ("right to work", "work auth", "eligible to work")):
-            if self._profile.get("right_to_work") is not None:
-                return "Yes" if self._profile["right_to_work"] else "No"
-
-        # Visa sponsorship
-        if "sponsor" in q_lower:
-            if self._profile.get("visa_sponsorship_required") is not None:
-                return "Yes" if self._profile["visa_sponsorship_required"] else "No"
-
-        # Notice period
-        if "notice" in q_lower:
-            notice = self._profile.get("notice_period")
-            if notice:
-                return str(notice)
-
-        # Years of experience (simple numeric extraction)
-        m = __import__("re").search(
-            r"(\d+)\+?\s*years?.*experience",
-            q_lower,
-        )
-        if m:
-            years = m.group(1)
-            # Check if profile has matching skill experience
-            return None  # Too risky to guess without skill mapping
-
-        return None
-
-    def _agent_rules(
-        self, question: str, job_context: dict[str, Any] | None = None,
-    ) -> str | None:
-        """Heuristic rules based on profile fields, contextualized by job_context."""
-        q_lower = question.lower()
-
-        # Availability / start date
-        if any(kw in q_lower for kw in ("start", "available", "when can you", "notice")):
-            notice = self._profile.get("notice_period")
-            if notice:
-                return f"I can start after my {notice} notice period."
-            earliest = self._profile.get("earliest_start_date")
-            if earliest:
-                return f"I am available to start from {earliest}."
-
-        # Remote work — contextualized by JD work mode
-        if any(kw in q_lower for kw in ("remote", "work from home", "wfh")):
-            if job_context and job_context.get("work_mode") == "remote":
-                return "Yes, I am fully comfortable working remotely."
-            pref = self._profile.get("remote_preference")
-            if pref:
-                return str(pref)
-
-        # Relocation
-        if "relocat" in q_lower:
-            willing = self._profile.get("willing_to_relocate")
-            if willing is not None:
-                return "Yes" if willing else "No"
-
-        # Education
-        if any(kw in q_lower for kw in ("degree", "education", "university", "qualification")):
-            degree = self._profile.get("highest_degree")
-            if degree:
-                return str(degree)
-
-        return None
 
     def _llm_answer(
         self,

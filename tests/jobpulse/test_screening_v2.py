@@ -406,26 +406,6 @@ class TestScreeningPipeline:
         resolved = fast_pipeline._resolve_intent_from_profile(ScreeningIntent.OPEN_ENDED)
         assert resolved is None
 
-    def test_regex_fallback_notice(self, fast_pipeline):
-        result = fast_pipeline._regex_fallback("What is your notice period?")
-        assert result == "3 months"
-
-    def test_regex_fallback_sponsorship(self, fast_pipeline):
-        result = fast_pipeline._regex_fallback("Do you require visa sponsorship?")
-        assert result == "No"
-
-    def test_agent_rules_relocation(self, fast_pipeline):
-        result = fast_pipeline._agent_rules("Are you willing to relocate?")
-        assert result == "No"
-
-    def test_agent_rules_education(self, fast_pipeline):
-        result = fast_pipeline._agent_rules("What is your highest degree?")
-        assert "MSc" in result
-
-    def test_agent_rules_no_match(self, fast_pipeline):
-        result = fast_pipeline._agent_rules("What is your favourite colour?")
-        assert result is None
-
     def test_finalise_option_alignment(self, fast_pipeline):
         result = {
             "answer": "yes",
