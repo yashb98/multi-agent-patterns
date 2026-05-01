@@ -668,17 +668,7 @@ class FormNavigator:
             if wall_bypass_attempts > 2:
                 try:
                     from jobpulse.page_analysis.page_reasoner import get_page_reasoner
-                    import sqlite3
-                    pr = get_page_reasoner()
-                    cache_key = pr._cache_key(
-                        ctx.snapshot.get("url", ""),
-                        ctx.snapshot.get("page_text_preview", "")[:800],
-                        ctx.snapshot.get("dialog_text", "")[:500],
-                        ctx.snapshot.get("fields", []),
-                        ctx.snapshot.get("buttons", []),
-                    )
-                    with sqlite3.connect(pr._db_path) as conn:
-                        conn.execute("DELETE FROM reasoning_cache WHERE cache_key = ?", (cache_key,))
+                    get_page_reasoner().invalidate(ctx.snapshot)
                 except Exception:
                     pass
                 if job:
@@ -764,6 +754,13 @@ class FormNavigator:
                             payload={"param": "ghost_click", "action": act, "target": action.target_text[:40]},
                             session_id=f"gc_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
                         )
+                    except Exception:
+                        pass
+                    try:
+                        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                        removed = get_page_reasoner().invalidate(ctx.snapshot)
+                        if removed:
+                            logger.info("Invalidated cached reasoning for ghost-click page")
                     except Exception:
                         pass
 

@@ -186,6 +186,28 @@ class PageReasoner:
         except Exception:
             pass
 
+    def invalidate(self, snapshot: dict[str, Any]) -> int:
+        """Delete the cached PageAction for this snapshot. Returns rows removed.
+
+        Called by FormNavigator when verification fails so the next visit
+        re-runs the LLM rather than reusing a wrong cached plan.
+        """
+        url = snapshot.get("url", "")
+        page_text = snapshot.get("page_text_preview", "")[:800]
+        dialog_text = snapshot.get("dialog_text", "")[:500]
+        fields = snapshot.get("fields", []) or []
+        buttons = snapshot.get("buttons", []) or []
+        cache_key = self._cache_key(url, page_text, dialog_text, fields, buttons)
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                cur = conn.execute(
+                    "DELETE FROM reasoning_cache WHERE cache_key = ?", (cache_key,),
+                )
+                return cur.rowcount
+        except Exception as exc:
+            logger.debug("PageReasoner.invalidate failed: %s", exc)
+            return 0
+
     @staticmethod
     def _apply_field_count_guard(
         action: "PageAction", snapshot_fields: list[dict],
