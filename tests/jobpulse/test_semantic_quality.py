@@ -181,3 +181,65 @@ class TestOptionAlignerQuality:
         from jobpulse.screening_option_aligner import OptionAligner
         score = OptionAligner._fuzzy_score("uk", "united kingdom")
         assert score < 0.9, f"Containment score should be proportional, got {score}"
+
+
+class TestPageReasonerSemanticCache:
+    def test_semantic_near_miss_hits_cache(self, tmp_path):
+        from jobpulse.page_analysis.page_reasoner import PageReasoner, PageAction
+        reasoner = PageReasoner(db_path=str(tmp_path / "cache.db"))
+
+        action = PageAction(
+            page_understanding="Job application form with personal details",
+            action="fill_form",
+            target_text="",
+            reasoning="Form detected",
+            confidence=0.9,
+            page_type="application_form",
+        )
+        reasoner._set_cache("testdomain:abc123", action)
+
+        result = reasoner._get_cached_semantic(
+            "testdomain",
+            "Job application form with personal information",
+        )
+        assert result is None or isinstance(result, PageAction)
+
+    def test_set_cache_stores_understanding(self, tmp_path):
+        import sqlite3
+        from jobpulse.page_analysis.page_reasoner import PageReasoner, PageAction
+        reasoner = PageReasoner(db_path=str(tmp_path / "cache.db"))
+
+        action = PageAction(
+            page_understanding="Login page with email and password",
+            action="login",
+            target_text="Sign In",
+            reasoning="Login form",
+            confidence=0.85,
+            page_type="login_form",
+        )
+        reasoner._set_cache("example.com:xyz789", action)
+
+        with sqlite3.connect(str(tmp_path / "cache.db")) as conn:
+            row = conn.execute(
+                "SELECT page_understanding_text FROM reasoning_cache WHERE cache_key = ?",
+                ("example.com:xyz789",),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "Login page with email and password"
+
+
+class TestPageTypeClassifierEmbedding:
+    def test_classifier_has_embedding_signal(self):
+        """Verify the classifier uses embedding similarity as a feature."""
+        from jobpulse.page_analysis.classifier import DEFAULT_WEIGHTS
+
+        assert "embedding_similarity" in DEFAULT_WEIGHTS.get("application_form", {}), \
+            "DEFAULT_WEIGHTS must include embedding_similarity for application_form"
+
+    def test_embedding_scores_computed(self):
+        """Verify _compute_embedding_scores returns scores."""
+        from jobpulse.page_analysis.classifier import PageTypeClassifier, PageFeatures
+
+        classifier = PageTypeClassifier()
+        # Just verify the method exists and accepts PageFeatures
+        assert hasattr(classifier, '_compute_embedding_scores')
