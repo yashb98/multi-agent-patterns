@@ -61,3 +61,28 @@ class TestAuthVerificationRouting:
                             "fields": [], "buttons": []}
                 await auth_handler.handle_signup(snap_pre, platform="generic")
         auth_handler.navigator._verify_action.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_login_warns_on_ghost_click(self, auth_handler, caplog):
+        from jobpulse.page_analysis.page_reasoner import PageAction
+        # Re-stub _verify_action to return ghost_click=True
+        auth_handler.navigator._verify_action = AsyncMock(return_value=ActionVerification(
+            pre_url="https://example.com/login", pre_hash="a", pre_dialog=False,
+            post_url="https://example.com/login", post_hash="a", post_dialog=False,
+            ghost_click=True,
+        ))
+        with patch("jobpulse.page_analysis.page_reasoner.get_page_reasoner") as get_pr:
+            get_pr.return_value.reason_sync = MagicMock(return_value=PageAction(
+                page_understanding="login", action="click_element",
+                target_text="Sign in", reasoning="t", confidence=0.9,
+                page_type="login_form", field_fills=[],
+                advance_button="", overlays_to_dismiss=[],
+            ))
+            with patch("jobpulse.applicator.PROFILE", {}):
+                snap_pre = {"url": "https://example.com/login",
+                            "page_text_preview": "login", "has_dialog": False,
+                            "fields": [], "buttons": []}
+                import logging
+                with caplog.at_level(logging.WARNING):
+                    await auth_handler.handle_login(snap_pre, platform="generic")
+        assert any("ghost click" in r.message.lower() for r in caplog.records)

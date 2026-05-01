@@ -76,11 +76,13 @@ class AuthHandler:
         await asyncio.sleep(2.0)
         post_snap = self._as_dict(await self.driver.get_snapshot())
 
-        verification = await self.navigator._verify_action(
-            pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
-        )
-        if verification.ghost_click:
-            logger.warning("Auth login: ghost click detected — page did not progress")
+        nav = getattr(self._orch, "_navigator", None)
+        if nav is not None:
+            verification = await nav._verify_action(
+                pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
+            )
+            if verification.ghost_click:
+                logger.warning("Auth login: ghost click detected — page did not progress")
         return post_snap
 
     async def handle_signup(self, snapshot: dict, platform: str) -> dict:
@@ -107,11 +109,13 @@ class AuthHandler:
         await asyncio.sleep(2.0)
         post_snap = self._as_dict(await self.driver.get_snapshot())
 
-        verification = await self.navigator._verify_action(
-            pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
-        )
-        if verification.ghost_click:
-            logger.warning("Auth signup: ghost click detected — page did not progress")
+        nav = getattr(self._orch, "_navigator", None)
+        if nav is not None:
+            verification = await nav._verify_action(
+                pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
+            )
+            if verification.ghost_click:
+                logger.warning("Auth signup: ghost click detected — page did not progress")
         return post_snap
 
     async def handle_email_verification(self, snapshot: dict, platform: str, return_url: str) -> dict:
