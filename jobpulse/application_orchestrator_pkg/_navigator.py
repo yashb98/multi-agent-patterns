@@ -6,10 +6,12 @@ LinkedIn direct-apply shortcut, and page-type-based routing.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
+from enum import Enum
 from typing import Any
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 
 from shared.logging_config import get_logger
 
@@ -17,8 +19,85 @@ from jobpulse.form_models import PageType
 from jobpulse.cookie_dismisser import dismiss_cookie_banner_playwright
 from jobpulse.navigation.overlay_dismisser import OverlayDismisser
 from jobpulse.navigation.wait_conditions import wait_for_modal_open, wait_for_page_stable
+from jobpulse.page_analysis.page_reasoner import PageAction
 
 logger = get_logger(__name__)
+
+
+class TabState(Enum):
+    NORMAL = "normal"
+    NEW_TAB = "new_tab"
+    POPUP = "popup"
+    CLOSED = "closed"
+    REDIRECTED = "redirected"
+
+
+@dataclass
+class PageFingerprint:
+    field_count: int
+    button_texts: tuple[str, ...]
+    content_hash: str
+    has_dialog: bool
+    has_file_inputs: bool
+    page_type: str
+    dom_confidence: float
+    url_path_pattern: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "field_count": self.field_count,
+            "button_texts": list(self.button_texts),
+            "content_hash": self.content_hash,
+            "has_dialog": self.has_dialog,
+            "has_file_inputs": self.has_file_inputs,
+            "page_type": self.page_type,
+            "dom_confidence": self.dom_confidence,
+            "url_path_pattern": self.url_path_pattern,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "PageFingerprint":
+        return cls(
+            field_count=d.get("field_count", 0),
+            button_texts=tuple(d.get("button_texts", ())),
+            content_hash=d.get("content_hash", ""),
+            has_dialog=d.get("has_dialog", False),
+            has_file_inputs=d.get("has_file_inputs", False),
+            page_type=d.get("page_type", "unknown"),
+            dom_confidence=d.get("dom_confidence", 0.0),
+            url_path_pattern=d.get("url_path_pattern", ""),
+        )
+
+
+@dataclass
+class StepContext:
+    snapshot: dict[str, Any]
+    url: str
+    tab_state: TabState
+
+    tab_recovered: bool = False
+
+    dom_type: PageType = dc_field(default=PageType.UNKNOWN)
+    dom_confidence: float = 0.0
+    page_features: Any = None
+    browser_signals: list[dict] | None = None
+    overlays_detected: list[str] = dc_field(default_factory=list)
+    wall_detected: dict | None = None
+    page_fingerprint: PageFingerprint | None = None
+
+    learned_step: dict | None = None
+    match_score: float = 0.0
+    match_source: str = ""
+
+    planned_action: PageAction | None = None
+    plan_source: str = ""
+
+    action_executed: bool = False
+    post_snapshot: dict | None = None
+    ghost_click: bool = False
+
+
+TERMINAL_ACTIONS = frozenset({"fill_form", "done", "abort"})
 
 MAX_NAVIGATION_STEPS = 10
 
@@ -278,6 +357,8 @@ class FormNavigator:
                             snapshot.get("url", ""),
                             snapshot.get("page_text_preview", "")[:800],
                             snapshot.get("dialog_text", "")[:500],
+                            snapshot.get("fields", []),
+                            snapshot.get("buttons", []),
                         )
                         import sqlite3
                         with sqlite3.connect(pr._db_path) as conn:
@@ -329,13 +410,16 @@ class FormNavigator:
 
             steps.append({"page_type": action.page_type, "action": action.action})
 
-            # Post-action: dismiss cookies, get fresh snapshot
+            # Post-action: get fresh snapshot FIRST, then dismiss cookies
+            # using the current page state (not the pre-action snapshot)
             await asyncio.sleep(1.0)
+            if page is not None:
+                snapshot = await self._handle_new_tabs(page, snapshot)
+            else:
+                snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
             await self.cookie_dismisser.dismiss(snapshot)
             if page is not None:
                 await dismiss_cookie_banner_playwright(page)
-                snapshot = await self._handle_new_tabs(page, snapshot)
-            else:
                 snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 
         return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
