@@ -98,6 +98,26 @@ class StepContext:
     executor_result: ExecutorResult | None = None
 
 
+@dataclass
+class ActionVerification:
+    pre_url: str
+    pre_hash: str
+    pre_dialog: bool
+    post_url: str
+    post_hash: str
+    post_dialog: bool
+    ghost_click: bool = False
+    expected_outcome_met: bool | None = None  # populated in Task 8
+
+    @property
+    def url_changed(self) -> bool:
+        return self.pre_url != self.post_url
+
+    @property
+    def content_changed(self) -> bool:
+        return self.url_changed or self.pre_hash != self.post_hash or self.pre_dialog != self.post_dialog
+
+
 TERMINAL_ACTIONS = frozenset({"fill_form", "done", "abort"})
 
 MAX_NAVIGATION_STEPS = 10
@@ -253,6 +273,33 @@ class FormNavigator:
         return (pre_url == post_url
                 and pre_content_hash == post_content_hash
                 and pre_dialog == post_dialog)
+
+    async def _verify_action(
+        self,
+        pre_snapshot: dict[str, Any],
+        post_snapshot: dict[str, Any],
+        action_kind: str,
+    ) -> ActionVerification:
+        """Compute pre/post verification — shared between _phase_act and auth handlers."""
+        pre_url = pre_snapshot.get("url", "")
+        pre_hash = self._snapshot_content_hash(pre_snapshot)
+        pre_dialog = bool(pre_snapshot.get("has_dialog"))
+        post_url = post_snapshot.get("url", "")
+        post_hash = self._snapshot_content_hash(post_snapshot)
+        post_dialog = bool(post_snapshot.get("has_dialog"))
+        is_click = action_kind in (
+            "click_apply", "click_apply_guess", "click_element",
+            "linkedin_direct_apply", "dismiss_overlay", "dismiss_dialog",
+            "accept_consent",
+        )
+        ghost = is_click and self._detect_ghost_click(
+            pre_url, pre_hash, pre_dialog, post_url, post_hash, post_dialog,
+        )
+        return ActionVerification(
+            pre_url=pre_url, pre_hash=pre_hash, pre_dialog=pre_dialog,
+            post_url=post_url, post_hash=post_hash, post_dialog=post_dialog,
+            ghost_click=ghost,
+        )
 
     @staticmethod
     def _snapshot_content_hash(snapshot: dict[str, Any]) -> str:
@@ -640,15 +687,15 @@ class FormNavigator:
         if post_snap is None:
             post_snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 
-        post_url = post_snap.get("url", "")
-        post_hash = self._snapshot_content_hash(post_snap)
-        post_dialog = bool(post_snap.get("has_dialog"))
-
-        is_click = act in ("click_apply", "click_apply_guess", "click_element",
-                            "linkedin_direct_apply", "dismiss_overlay", "dismiss_dialog",
-                            "accept_consent")
-        if is_click and self._detect_ghost_click(pre_url, pre_hash, pre_dialog,
-                                                  post_url, post_hash, post_dialog):
+        verification = await self._verify_action(
+            pre_snapshot=ctx.snapshot,
+            post_snapshot=post_snap,
+            action_kind=act,
+        )
+        post_url = verification.post_url
+        post_hash = verification.post_hash
+        post_dialog = verification.post_dialog
+        if verification.ghost_click:
             logger.warning("ACT: ghost click detected for action '%s'", act)
             page = getattr(self.driver, "page", None)
             if page is not None and action.target_text:
