@@ -115,12 +115,17 @@ class TestNavigatorReasonerLoop:
     """Test that the navigator uses the reasoner at every step."""
 
     def test_reasoner_called_each_step(self):
-        """Verify the reasoner is invoked per navigation step, not just as fallback."""
+        """Verify the reasoner is invoked per navigation step via the phase pipeline."""
         from jobpulse.application_orchestrator_pkg._navigator import FormNavigator
         import inspect
-        source = inspect.getsource(FormNavigator.navigate_to_form)
-        assert "reason_sync" in source or "reasoner.reason" in source, (
-            "navigate_to_form must call the reasoner at every step"
+        # navigate_to_form delegates to _phase_plan which calls the reasoner
+        nav_source = inspect.getsource(FormNavigator.navigate_to_form)
+        assert "_phase_plan" in nav_source, (
+            "navigate_to_form must call _phase_plan at every step"
+        )
+        plan_source = inspect.getsource(FormNavigator._phase_plan)
+        assert "reason_sync" in plan_source or "reasoner.reason" in plan_source, (
+            "_phase_plan must call the reasoner"
         )
 
     def test_no_hardcoded_page_type_routing(self):

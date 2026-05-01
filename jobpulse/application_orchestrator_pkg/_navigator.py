@@ -729,205 +729,38 @@ class FormNavigator:
             await wait_for_page_stable(self.driver.page, timeout_ms=8000)
             snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 
-        # Try learned sequence first
+        # ── 5-Phase Navigation Loop ──
         domain = extract_domain(url)
-        learned = self.learner.get_sequence(domain)
-        if not learned and platform:
-            learned = self.learner.get_platform_pattern(platform, exclude_domain=domain)
-            if learned:
-                logger.info("Using PLATFORM pattern for %s (%s, no domain-specific data)", domain, platform)
-        if learned:
-            logger.info("Replaying learned navigation for %s (%d steps)", domain, len(learned))
-            self.learner.increment_replay(domain)
-            replay_ok = True
-            for learned_step in learned:
-                action = learned_step.get("action", "")
-                step_page_type = learned_step.get("page_type", "")
-                try:
-                    if action in {"click_apply", "click_apply_guess", "linkedin_direct_apply"}:
-                        snapshot = await self.click_apply_button(snapshot)
-                    elif action == "fill_login":
-                        snapshot = await self._reasoner_step(snapshot, platform, steps)
-                    elif action.startswith("sso_"):
-                        provider = action[len("sso_"):]
-                        sso = self.sso.detect_sso(snapshot)
-                        if sso and sso.get("provider") == provider:
-                            await self.sso.click_sso(sso)
-                            snapshot = self._as_dict(await self.driver.get_snapshot())
-                        else:
-                            logger.warning("Replay: SSO provider %s not found, falling through", provider)
-                            replay_ok = False
-                            break
-                    elif action == "fill_signup":
-                        snapshot = await self._reasoner_step(snapshot, platform, steps)
-                    elif action == "verify_email":
-                        snapshot = await self.auth.handle_email_verification(snapshot, platform, url)
-                    else:
-                        logger.warning("Replay: unknown action %r in step, falling through", action)
-                        replay_ok = False
-                        break
-                    # Dismiss any new cookie banners after each replay step
-                    await self.cookie_dismisser.dismiss(snapshot)
-                    snapshot = self._as_dict(await self.driver.get_snapshot())
-                except Exception as replay_exc:
-                    logger.warning("Replay step failed (action=%s): %s — falling through to fresh detection", action, replay_exc)
-                    self.learner.mark_failed(domain)
-                    replay_ok = False
-                    break
-
-            if replay_ok:
-                # Check if we reached the application form after replay
-                page_type_after = await self.analyzer.detect(snapshot)
-                if page_type_after == PageType.APPLICATION_FORM:
-                    logger.info("Replay succeeded: reached APPLICATION_FORM for %s", domain)
-                    return {"page_type": page_type_after, "snapshot": snapshot}
-                logger.info("Replay completed but page_type=%s — continuing with fresh detection", page_type_after)
-                self.learner.mark_failed(domain)
-
-        # Dismiss cookie banner (snapshot-based + Playwright-native belt-and-suspenders)
-        await self.cookie_dismisser.dismiss(snapshot)
-        current_page = getattr(self.driver, "page", None)
-        if current_page is not None:
-            await dismiss_cookie_banner_playwright(current_page)
-        snapshot = self._as_dict(await self.driver.get_snapshot())
-
-        # Dismiss site prompts/overlays before entering the navigation loop
-        snapshot = await self._dismiss_site_prompt_if_present(snapshot)
-
-        # ── Reasoner-driven navigation loop ──
-        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
-        from jobpulse.navigation.action_executor import NavigationActionExecutor
-        reasoner = get_page_reasoner()
-
         visited_states: dict[str, int] = {}
         wall_bypass_attempts = 0
-        for step in range(MAX_NAVIGATION_STEPS):
-            # Fast-path: DOM classifier for high-confidence terminal states
-            dom_type, dom_confidence = self._dom_classify(snapshot)
-            if dom_confidence >= 0.85 and dom_type == PageType.APPLICATION_FORM:
-                logger.info("Fast-path: APPLICATION_FORM (confidence=%.2f)", dom_confidence)
-                return {"page_type": PageType.APPLICATION_FORM, "snapshot": snapshot}
-            if dom_confidence >= 0.85 and dom_type == PageType.CONFIRMATION:
-                logger.info("Fast-path: CONFIRMATION (confidence=%.2f)", dom_confidence)
-                return {"page_type": PageType.CONFIRMATION, "snapshot": snapshot}
+        prev_url = snapshot.get("url", "")
 
-            # Reasoner decides what to do
-            action = reasoner.reason_sync(snapshot)
-            logger.info(
-                "Step %d: reasoner → %s (type=%s, conf=%.2f) — %s",
-                step + 1, action.action, action.page_type, action.confidence,
-                action.page_understanding[:80],
-            )
+        for step_idx in range(MAX_NAVIGATION_STEPS):
+            ctx = StepContext(snapshot=snapshot, url=prev_url, tab_state=TabState.NORMAL)
 
-            # Loop detection
-            state_key = f"{action.page_type}:{action.action}"
-            visited_states[state_key] = visited_states.get(state_key, 0) + 1
-            if visited_states[state_key] >= 3:
-                logger.warning("Reasoner loop: %s × %d — aborting", state_key, visited_states[state_key])
-                return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
+            ctx = await self._phase_observe(ctx)
+            if ctx.tab_state == TabState.CLOSED:
+                logger.warning("Page closed during navigation — aborting")
+                return {"page_type": PageType.UNKNOWN, "snapshot": ctx.snapshot}
 
-            # Expired job — abort immediately, don't re-queue
-            if action.page_type == "expired_job":
-                logger.warning("Job expired/closed: %s", action.page_understanding)
-                return {
-                    "page_type": PageType.UNKNOWN,
-                    "snapshot": snapshot,
-                    "expired": True,
-                    "error": action.page_understanding or "Job is no longer available",
-                }
+            ctx = await self._phase_analyze(ctx)
 
-            # Terminal actions
-            if action.action == "fill_form":
-                return {"page_type": PageType.APPLICATION_FORM, "snapshot": snapshot}
-            if action.action == "done":
-                return {"page_type": PageType.CONFIRMATION, "snapshot": snapshot}
-            if action.action == "abort":
-                logger.warning("Reasoner says abort: %s", action.reasoning)
-                return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
+            ctx = self._phase_match(ctx, domain, platform, len(steps))
 
-            # Verification wall / CAPTCHA — use existing bypass pipeline
-            if action.action == "wait_human":
+            ctx = self._phase_plan(ctx, visited_states, wall_bypass_attempts)
+
+            if ctx.planned_action and ctx.planned_action.action in TERMINAL_ACTIONS:
+                return self._make_result(ctx)
+
+            ctx = await self._phase_act(ctx, platform, steps, wall_bypass_attempts, job=job)
+
+            if ctx.planned_action and ctx.planned_action.action == "wait_human":
                 wall_bypass_attempts += 1
-
-                # After 2 failed bypass cycles, skip auto-bypass and go straight
-                # to platform bypass (direct ATS URL) or human fallback
-                if wall_bypass_attempts > 2:
-                    logger.warning(
-                        "Wall persists after %d bypass attempts — escalating to platform bypass / human",
-                        wall_bypass_attempts,
-                    )
-                    # Invalidate cached reasoner response so next domain visit re-evaluates
-                    try:
-                        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
-                        pr = get_page_reasoner()
-                        cache_key = pr._cache_key(
-                            snapshot.get("url", ""),
-                            snapshot.get("page_text_preview", "")[:800],
-                            snapshot.get("dialog_text", "")[:500],
-                            snapshot.get("fields", []),
-                            snapshot.get("buttons", []),
-                        )
-                        import sqlite3
-                        with sqlite3.connect(pr._db_path) as conn:
-                            conn.execute("DELETE FROM reasoning_cache WHERE cache_key = ?", (cache_key,))
-                    except Exception:
-                        pass
-                    if job:
-                        pb_result = await self._try_platform_bypass(snapshot, job, steps)
-                        if pb_result is not None:
-                            snapshot = pb_result
-                            wall_bypass_attempts = 0
-                            continue
-                    return {"page_type": PageType.VERIFICATION_WALL, "snapshot": snapshot}
-
-                wall_info = snapshot.get("verification_wall") or {"type": "unknown"}
-                bypass_result = await self._bypass_verification_wall(snapshot, wall_info)
-                if bypass_result["solved"]:
-                    snapshot = bypass_result["snapshot"]
-                    continue
-                if job:
-                    pb_result = await self._try_platform_bypass(snapshot, job, steps)
-                    if pb_result is not None:
-                        snapshot = pb_result
-                        wall_bypass_attempts = 0
-                        continue
-                return {"page_type": PageType.VERIFICATION_WALL, "snapshot": bypass_result["snapshot"]}
-
-            # SSO detection — check before executing generic fills
-            if action.page_type in ("login_form", "signup_form", "session_expired"):
-                sso = self.sso.detect_sso(snapshot)
-                if sso:
-                    await self.sso.click_sso(sso)
-                    snapshot = self._as_dict(await self.driver.get_snapshot())
-                    steps.append({"page_type": action.page_type, "action": f"sso_{sso['provider']}"})
-                    continue
-
-            # Email verification — delegate to existing handler
-            if action.page_type == "email_verification":
-                snapshot = await self.auth.handle_email_verification(snapshot, platform, url)
-                steps.append({"page_type": "email_verification", "action": "verify_email"})
-                continue
-
-            # Execute the reasoner's action on the page
-            page = getattr(self.driver, "page", None)
-            if page is not None:
-                from jobpulse.applicator import PROFILE
-                nav_executor = NavigationActionExecutor(page)
-                await nav_executor.execute(action, profile=PROFILE)
-
-            steps.append({"page_type": action.page_type, "action": action.action})
-
-            # Post-action: get fresh snapshot FIRST, then dismiss cookies
-            # using the current page state (not the pre-action snapshot)
-            await asyncio.sleep(1.0)
-            if page is not None:
-                snapshot = await self._handle_new_tabs(page, snapshot)
             else:
-                snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
-            await self.cookie_dismisser.dismiss(snapshot)
-            if page is not None:
-                await dismiss_cookie_banner_playwright(page)
-                snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                wall_bypass_attempts = 0
+
+            snapshot = ctx.post_snapshot or ctx.snapshot
+            prev_url = snapshot.get("url", "")
 
         return {"page_type": PageType.UNKNOWN, "snapshot": snapshot}
 
@@ -1283,44 +1116,6 @@ class FormNavigator:
 
         logger.warning("Could not dismiss site prompt dialog — proceeding anyway")
         return snapshot
-
-    async def _reasoner_step(self, snapshot: dict, platform: str, steps: list[dict]) -> dict:
-        """Single reasoner-driven step — used during learned sequence replay fallback."""
-        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
-        from jobpulse.navigation.action_executor import NavigationActionExecutor
-        reasoner = get_page_reasoner()
-        action = reasoner.reason_sync(snapshot)
-        page = getattr(self.driver, "page", None)
-        if page is not None:
-            from jobpulse.applicator import PROFILE
-            nav_executor = NavigationActionExecutor(page)
-            await nav_executor.execute(action, profile=PROFILE)
-        steps.append({"page_type": action.page_type, "action": action.action})
-        await asyncio.sleep(1.0)
-        return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
-
-    @staticmethod
-    def _dom_classify(snapshot: dict) -> tuple:
-        from jobpulse.page_analysis.classifier import PageTypeClassifier
-        clf = PageTypeClassifier()
-        return clf.classify(snapshot)
-
-    async def _handle_new_tabs(self, page, snapshot: dict) -> dict:
-        """Check for new tabs after a click and switch to them."""
-        context = getattr(page, "context", None)
-        if context is None:
-            return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
-        pages = context.pages
-        if len(pages) > 1:
-            newest = pages[-1]
-            try:
-                await newest.wait_for_load_state("domcontentloaded", timeout=10000)
-            except Exception:
-                pass
-            if newest.url and newest.url != page.url:
-                logger.info("Switched to new tab: %s", newest.url[:80])
-                self.driver._page = newest
-        return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
 
     async def _try_platform_bypass(self, snapshot: dict, job: dict, steps: list[dict]) -> dict | None:
         """Try platform bypass for aggregator walls. Returns new snapshot or None."""

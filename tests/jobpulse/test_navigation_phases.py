@@ -999,3 +999,142 @@ class TestPhaseAct:
         assert len(steps_list) == 1
         assert "fingerprint" in steps_list[0]
         assert steps_list[0]["fingerprint"]["page_type"] == "job_description"
+
+
+class TestNavigateToFormIntegration:
+    @pytest.mark.asyncio
+    async def test_simple_job_description_to_form(self, mock_navigator):
+        """JD page -> click apply -> application form. 2 steps."""
+        nav, driver, page, context = mock_navigator
+        jd_snapshot = {
+            "url": "https://boards.greenhouse.io/company/jobs/123",
+            "page_text_preview": "Software Engineer at Acme Corp",
+            "buttons": [{"text": "Apply Now", "enabled": True, "selector": "#apply"}],
+            "fields": [],
+            "has_dialog": False,
+            "has_file_inputs": False,
+            "verification_wall": None,
+        }
+        form_snapshot = {
+            "url": "https://boards.greenhouse.io/company/jobs/123/apply",
+            "page_text_preview": "Application Form - First Name Last Name",
+            "buttons": [{"text": "Submit"}],
+            "fields": [
+                {"label": "First Name", "input_type": "text"},
+                {"label": "Last Name", "input_type": "text"},
+                {"label": "Resume", "input_type": "file"},
+            ],
+            "has_dialog": False,
+            "has_file_inputs": True,
+            "verification_wall": None,
+        }
+
+        call_count = [0]
+        async def _get_snap(force_refresh=False):
+            call_count[0] += 1
+            return jd_snapshot if call_count[0] <= 2 else form_snapshot
+        driver.get_snapshot = _get_snap
+        driver.navigate = AsyncMock()
+        nav.learner.get_sequence.return_value = None
+        nav.learner.get_platform_pattern.return_value = None
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf, \
+             patch("jobpulse.application_orchestrator_pkg._navigator.get_page_reasoner") as MockReasoner, \
+             patch("jobpulse.application_orchestrator_pkg._navigator.dismiss_cookie_banner_playwright", new_callable=AsyncMock), \
+             patch("jobpulse.application_orchestrator_pkg._navigator.NavigationActionExecutor") as MockExec:
+
+            clf_instance = MockClf.return_value
+            clf_returns = iter([
+                (PageType.JOB_DESCRIPTION, 0.9),
+                (PageType.APPLICATION_FORM, 0.92),
+            ])
+            clf_instance.classify.side_effect = lambda s: next(clf_returns, (PageType.APPLICATION_FORM, 0.92))
+
+            reasoner_instance = MockReasoner.return_value
+            reasoner_instance.reason_sync.return_value = PageAction(
+                page_understanding="JD with apply button",
+                action="click_element",
+                target_text="Apply Now",
+                reasoning="click to apply",
+                confidence=0.9,
+                page_type="job_description",
+            )
+
+            mock_exec = MockExec.return_value
+            mock_exec.execute = AsyncMock()
+
+            steps: list[dict] = []
+            result = await nav.navigate_to_form(
+                url="https://boards.greenhouse.io/company/jobs/123",
+                platform="greenhouse",
+                steps=steps,
+            )
+
+        assert result["page_type"] == PageType.APPLICATION_FORM
+        assert len(steps) >= 1
+        assert "fingerprint" in steps[0]
+
+    @pytest.mark.asyncio
+    async def test_learned_replay_with_verification(self, mock_navigator):
+        """Learned sequence matches -> verified -> executed without LLM."""
+        nav, driver, page, context = mock_navigator
+        fp_dict = {
+            "field_count": 0,
+            "button_texts": ["Apply Now"],
+            "content_hash": "abc123",
+            "page_type": "job_description",
+            "dom_confidence": 0.9,
+            "url_path_pattern": "/company/jobs/{id}",
+            "has_dialog": False,
+            "has_file_inputs": False,
+        }
+        nav.learner.get_sequence.return_value = [
+            {"page_type": "job_description", "action": "click_apply", "fingerprint": fp_dict}
+        ]
+        nav.learner.increment_replay = MagicMock()
+
+        jd_snapshot = {
+            "url": "https://boards.greenhouse.io/company/jobs/456",
+            "page_text_preview": "Software Engineer at Acme Corp",
+            "buttons": [{"text": "Apply Now", "enabled": True, "selector": "#apply"}],
+            "fields": [],
+            "has_dialog": False,
+            "has_file_inputs": False,
+            "verification_wall": None,
+        }
+        form_snapshot = {
+            "url": "https://boards.greenhouse.io/company/jobs/456/apply",
+            "page_text_preview": "Application Form - First Name",
+            "buttons": [{"text": "Submit"}],
+            "fields": [{"label": "First Name", "input_type": "text"}],
+            "has_dialog": False,
+            "has_file_inputs": True,
+            "verification_wall": None,
+        }
+        call_count = [0]
+        async def _get_snap(force_refresh=False):
+            call_count[0] += 1
+            return jd_snapshot if call_count[0] <= 2 else form_snapshot
+        driver.get_snapshot = _get_snap
+        driver.navigate = AsyncMock()
+        nav.click_apply_button = AsyncMock(return_value=form_snapshot)
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf, \
+             patch("jobpulse.application_orchestrator_pkg._navigator.dismiss_cookie_banner_playwright", new_callable=AsyncMock):
+
+            clf_instance = MockClf.return_value
+            clf_returns = iter([
+                (PageType.JOB_DESCRIPTION, 0.9),
+                (PageType.APPLICATION_FORM, 0.92),
+            ])
+            clf_instance.classify.side_effect = lambda s: next(clf_returns, (PageType.APPLICATION_FORM, 0.92))
+
+            steps: list[dict] = []
+            result = await nav.navigate_to_form(
+                url="https://boards.greenhouse.io/company/jobs/456",
+                platform="greenhouse",
+                steps=steps,
+            )
+
+        assert result["page_type"] == PageType.APPLICATION_FORM
+        assert any(s.get("action") == "click_apply" for s in steps)
