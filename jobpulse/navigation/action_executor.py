@@ -45,6 +45,7 @@ class ExecutorResult:
     def has_failures(self) -> bool:
         return bool(self.fills_failed)
 
+
 _PROFILE_REF = re.compile(r"^FROM_PROFILE:(\w+)$")
 
 

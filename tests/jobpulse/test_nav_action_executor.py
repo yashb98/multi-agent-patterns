@@ -25,20 +25,43 @@ def _make_action(**kwargs) -> PageAction:
 def mock_page():
     page = AsyncMock()
     page.url = "https://example.com/apply"
-    btn_locator = AsyncMock()
-    btn_locator.count = AsyncMock(return_value=1)
-    btn_locator.first = AsyncMock()
-    btn_locator.first.is_visible = AsyncMock(return_value=True)
-    btn_locator.first.click = AsyncMock()
-    btn_locator.first.is_checked = AsyncMock(return_value=False)
-    btn_locator.first.check = AsyncMock()
-    btn_locator.first.fill = AsyncMock()
-    btn_locator.first.select_option = AsyncMock()
-    page.get_by_role = MagicMock(return_value=btn_locator)
-    page.get_by_label = MagicMock(return_value=btn_locator)
-    page.get_by_text = MagicMock(return_value=btn_locator)
-    page.get_by_placeholder = MagicMock(return_value=btn_locator)
-    page.locator = MagicMock(return_value=btn_locator)
+
+    STANDARD_CLOSE = {"Not now", "No thanks", "Dismiss", "Close", "Got it", "Maybe later", "Skip"}
+
+    def _make_locator(matches: bool):
+        loc = AsyncMock()
+        loc.count = AsyncMock(return_value=1 if matches else 0)
+        loc.first = AsyncMock()
+        loc.first.is_visible = AsyncMock(return_value=matches)
+        loc.first.click = AsyncMock()
+        loc.first.is_checked = AsyncMock(return_value=False)
+        loc.first.check = AsyncMock()
+        loc.first.fill = AsyncMock()
+        loc.first.select_option = AsyncMock()
+        return loc
+
+    matching_locator = _make_locator(matches=True)
+    empty_locator = _make_locator(matches=False)
+
+    def get_by_role(role, *, name=None, exact=False):
+        # Return empty locator for standard close-button names so
+        # _dismiss_overlays falls through to LLM-suggested overlay texts.
+        if name in STANDARD_CLOSE:
+            return empty_locator
+        return matching_locator
+
+    def get_by_locator(selector):
+        # The aria-label close/dismiss locator path uses .first directly on the
+        # locator, so we return empty_locator to prevent early exit there too.
+        if "aria-label" in str(selector):
+            return empty_locator
+        return matching_locator
+
+    page.get_by_role = MagicMock(side_effect=get_by_role)
+    page.get_by_label = MagicMock(return_value=matching_locator)
+    page.get_by_text = MagicMock(return_value=matching_locator)
+    page.get_by_placeholder = MagicMock(return_value=matching_locator)
+    page.locator = MagicMock(side_effect=get_by_locator)
     page.fill = AsyncMock()
     page.click = AsyncMock()
     page.evaluate = AsyncMock(return_value=None)

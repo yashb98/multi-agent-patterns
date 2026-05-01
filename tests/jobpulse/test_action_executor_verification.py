@@ -82,3 +82,4 @@ class TestExecuteReturnsResult:
         action = _make_action(advance_button="Next")
         result = await executor.execute(action, profile={})
         assert result.advance_clicked is True
+        assert result.clicks_attempted == 1
