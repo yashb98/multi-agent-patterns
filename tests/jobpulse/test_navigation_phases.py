@@ -379,3 +379,224 @@ class TestMakeResult:
         result = FormNavigator._make_result(ctx)
         assert result["expired"] is True
         assert "error" in result
+
+
+@pytest.fixture
+def mock_navigator():
+    """Build a FormNavigator with fully mocked orchestrator."""
+    orch = MagicMock()
+    page = AsyncMock()
+    page.url = "https://example.com/jobs/123"
+    page.is_closed = MagicMock(return_value=False)
+    context = MagicMock()
+    context.pages = [page]
+    page.context = context
+
+    driver = MagicMock()
+    driver.page = page
+    driver._page = page
+    driver.get_snapshot = AsyncMock(return_value={"url": "https://example.com/jobs/123", "buttons": [], "fields": []})
+    driver.intelligence = None
+    orch.driver = driver
+    orch.analyzer = MagicMock()
+    orch.cookie_dismisser = MagicMock()
+    orch.cookie_dismisser.dismiss = AsyncMock()
+    orch.sso = MagicMock()
+    orch.learner = MagicMock()
+
+    auth = MagicMock()
+    nav = FormNavigator(orch, auth)
+    return nav, driver, page, context
+
+
+class TestPhaseObserve:
+    @pytest.mark.asyncio
+    async def test_normal_state_single_tab(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/jobs/123"},
+            url="https://example.com/jobs/123",
+            tab_state=TabState.NORMAL,
+        )
+        result = await nav._phase_observe(ctx)
+        assert result.tab_state == TabState.NORMAL
+        assert result.tab_recovered is False
+
+    @pytest.mark.asyncio
+    async def test_detects_new_tab(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        new_page = AsyncMock()
+        new_page.url = "https://ats.example.com/apply"
+        new_page.is_closed = MagicMock(return_value=False)
+        new_page.wait_for_load_state = AsyncMock()
+        context.pages = [page, new_page]
+        driver.get_snapshot = AsyncMock(return_value={"url": "https://ats.example.com/apply", "buttons": [], "fields": []})
+
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/jobs/123"},
+            url="https://example.com/jobs/123",
+            tab_state=TabState.NORMAL,
+        )
+        result = await nav._phase_observe(ctx)
+        assert result.tab_state == TabState.NEW_TAB
+        assert result.tab_recovered is True
+        assert driver._page == new_page
+
+    @pytest.mark.asyncio
+    async def test_detects_redirect(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        page.url = "https://example.com/redirected"
+        driver.get_snapshot = AsyncMock(return_value={"url": "https://example.com/redirected", "buttons": [], "fields": []})
+
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/jobs/123"},
+            url="https://example.com/jobs/123",
+            tab_state=TabState.NORMAL,
+        )
+        result = await nav._phase_observe(ctx)
+        assert result.tab_state == TabState.REDIRECTED
+        assert result.snapshot["url"] == "https://example.com/redirected"
+
+    @pytest.mark.asyncio
+    async def test_detects_closed_page(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        page.is_closed = MagicMock(return_value=True)
+
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/jobs/123"},
+            url="https://example.com/jobs/123",
+            tab_state=TabState.NORMAL,
+        )
+        result = await nav._phase_observe(ctx)
+        assert result.tab_state == TabState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_reinjects_browser_intelligence_on_new_tab(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        intelligence = AsyncMock()
+        driver.intelligence = intelligence
+        new_page = AsyncMock()
+        new_page.url = "https://ats.example.com/apply"
+        new_page.is_closed = MagicMock(return_value=False)
+        new_page.wait_for_load_state = AsyncMock()
+        context.pages = [page, new_page]
+        driver.get_snapshot = AsyncMock(return_value={"url": "https://ats.example.com/apply"})
+
+        ctx = StepContext(
+            snapshot={"url": "https://example.com/jobs/123"},
+            url="https://example.com/jobs/123",
+            tab_state=TabState.NORMAL,
+        )
+        await nav._phase_observe(ctx)
+        intelligence.clear.assert_called_once()
+        intelligence.inject_on_new_page.assert_awaited_once()
+
+
+class TestPhaseAnalyze:
+    @pytest.mark.asyncio
+    async def test_classifies_page_and_builds_fingerprint(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        snapshot = {
+            "url": "https://boards.greenhouse.io/company/jobs/123",
+            "page_text_preview": "Apply for Software Engineer",
+            "buttons": [{"text": "Apply Now"}],
+            "fields": [{"label": "Name", "input_type": "text"}],
+            "has_dialog": False,
+            "has_file_inputs": False,
+            "verification_wall": None,
+        }
+        ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf:
+            clf_instance = MockClf.return_value
+            clf_instance.classify.return_value = (PageType.JOB_DESCRIPTION, 0.85)
+            result = await nav._phase_analyze(ctx)
+
+        assert result.dom_type == PageType.JOB_DESCRIPTION
+        assert result.dom_confidence == 0.85
+        assert result.page_fingerprint is not None
+        assert result.page_fingerprint.page_type == "job_description"
+        assert result.page_fingerprint.field_count == 1
+
+    @pytest.mark.asyncio
+    async def test_detects_verification_wall(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        snapshot = {
+            "url": "https://example.com",
+            "page_text_preview": "Checking your browser",
+            "buttons": [],
+            "fields": [],
+            "verification_wall": {"type": "cloudflare"},
+        }
+        ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf:
+            clf_instance = MockClf.return_value
+            clf_instance.classify.return_value = (PageType.VERIFICATION_WALL, 0.95)
+            result = await nav._phase_analyze(ctx)
+
+        assert result.wall_detected == {"type": "cloudflare"}
+
+    @pytest.mark.asyncio
+    async def test_dismisses_cookies_and_resnapshots(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        snapshot_before = {
+            "url": "https://example.com",
+            "page_text_preview": "Cookie consent dialog here",
+            "buttons": [{"text": "Accept Cookies"}],
+            "fields": [],
+            "has_dialog": True,
+            "dialog_text": "We use cookies. Accept?",
+        }
+        snapshot_after = {
+            "url": "https://example.com",
+            "page_text_preview": "Welcome to our site",
+            "buttons": [{"text": "Apply"}],
+            "fields": [],
+            "has_dialog": False,
+        }
+        call_count = [0]
+        async def _get_snap(force_refresh=False):
+            call_count[0] += 1
+            return snapshot_after if call_count[0] > 1 else snapshot_before
+        driver.get_snapshot = _get_snap
+
+        ctx = StepContext(snapshot=snapshot_before, url=snapshot_before["url"], tab_state=TabState.NORMAL)
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf, \
+             patch("jobpulse.application_orchestrator_pkg._navigator.dismiss_cookie_banner_playwright", new_callable=AsyncMock) as mock_cookie:
+            clf_instance = MockClf.return_value
+            clf_instance.classify.return_value = (PageType.JOB_DESCRIPTION, 0.7)
+            result = await nav._phase_analyze(ctx)
+
+        nav.cookie_dismisser.dismiss.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reads_browser_signals(self, mock_navigator):
+        nav, driver, page, context = mock_navigator
+        mock_signal = MagicMock()
+        mock_signal.source = "console"
+        mock_signal.level = "error"
+        mock_signal.text = "validation failed"
+        mock_signal.timestamp_ms = 1000.0
+        mock_signal.url = "https://example.com"
+        mock_signal.metadata = {}
+        intelligence = MagicMock()
+        intelligence.get_signals.return_value = [mock_signal]
+        driver.intelligence = intelligence
+
+        snapshot = {
+            "url": "https://example.com",
+            "page_text_preview": "Form",
+            "buttons": [],
+            "fields": [],
+        }
+        ctx = StepContext(snapshot=snapshot, url=snapshot["url"], tab_state=TabState.NORMAL)
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.PageTypeClassifier") as MockClf:
+            clf_instance = MockClf.return_value
+            clf_instance.classify.return_value = (PageType.APPLICATION_FORM, 0.9)
+            result = await nav._phase_analyze(ctx)
+
+        assert result.browser_signals is not None
+        assert len(result.browser_signals) == 1

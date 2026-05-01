@@ -20,6 +20,7 @@ from jobpulse.cookie_dismisser import dismiss_cookie_banner_playwright
 from jobpulse.navigation.overlay_dismisser import OverlayDismisser
 from jobpulse.navigation.wait_conditions import wait_for_modal_open, wait_for_page_stable
 from jobpulse.page_analysis.page_reasoner import PageAction
+from jobpulse.page_analysis.classifier import PageTypeClassifier
 
 logger = get_logger(__name__)
 
@@ -277,6 +278,91 @@ class FormNavigator:
             result["error"] = (action.page_understanding if action else "") or "Job is no longer available"
 
         return result
+
+    async def _phase_observe(self, ctx: StepContext) -> StepContext:
+        page = getattr(self.driver, "page", None)
+        if page is None:
+            return ctx
+
+        if hasattr(page, "is_closed") and page.is_closed():
+            ctx.tab_state = TabState.CLOSED
+            return ctx
+
+        browser_ctx = getattr(page, "context", None)
+        if browser_ctx is not None:
+            pages = browser_ctx.pages
+            if len(pages) > 1:
+                newest = pages[-1]
+                if newest != page and not (hasattr(newest, "is_closed") and newest.is_closed()):
+                    try:
+                        await newest.wait_for_load_state("domcontentloaded", timeout=10000)
+                    except Exception:
+                        pass
+                    logger.info("OBSERVE: new tab detected — switching to %s", newest.url[:80])
+                    self.driver._page = newest
+                    ctx.tab_state = TabState.NEW_TAB
+                    ctx.tab_recovered = True
+                    intelligence = getattr(self.driver, "intelligence", None)
+                    if intelligence:
+                        intelligence.clear()
+                        await intelligence.inject_on_new_page()
+                    ctx.snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                    ctx.url = ctx.snapshot.get("url", "")
+                    return ctx
+
+        current_url = page.url or ""
+        if current_url and current_url != ctx.url:
+            logger.info("OBSERVE: redirect detected — %s → %s", ctx.url[:50], current_url[:50])
+            ctx.tab_state = TabState.REDIRECTED
+            ctx.tab_recovered = True
+            ctx.snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+            ctx.url = ctx.snapshot.get("url", "")
+            intelligence = getattr(self.driver, "intelligence", None)
+            if intelligence:
+                intelligence.clear()
+                await intelligence.inject_on_new_page()
+            return ctx
+
+        ctx.snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+        ctx.url = ctx.snapshot.get("url", "")
+        return ctx
+
+    async def _phase_analyze(self, ctx: StepContext) -> StepContext:
+        clf = PageTypeClassifier()
+        dom_type, dom_confidence = clf.classify(ctx.snapshot)
+        ctx.dom_type = dom_type
+        ctx.dom_confidence = dom_confidence
+
+        ctx.page_fingerprint = build_page_fingerprint(
+            ctx.snapshot,
+            page_type=dom_type.value if hasattr(dom_type, "value") else str(dom_type),
+            dom_confidence=dom_confidence,
+        )
+
+        intelligence = getattr(self.driver, "intelligence", None)
+        if intelligence:
+            try:
+                signals = intelligence.get_signals()
+                ctx.browser_signals = [
+                    {"source": s.source, "level": s.level, "text": s.text,
+                     "timestamp_ms": s.timestamp_ms, "url": s.url}
+                    for s in signals
+                ]
+            except Exception:
+                pass
+
+        wall = ctx.snapshot.get("verification_wall")
+        if wall:
+            ctx.wall_detected = wall
+
+        await self.cookie_dismisser.dismiss(ctx.snapshot)
+        page = getattr(self.driver, "page", None)
+        if page is not None:
+            await dismiss_cookie_banner_playwright(page)
+
+        ctx.snapshot = await self._dismiss_site_prompt_if_present(ctx.snapshot)
+
+        return ctx
 
     @staticmethod
     async def _dismiss_linkedin_discard(page) -> bool:
