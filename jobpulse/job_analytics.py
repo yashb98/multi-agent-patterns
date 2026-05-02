@@ -14,7 +14,7 @@ from shared.logging_config import get_logger
 from jobpulse.config import DATA_DIR
 
 logger = get_logger(__name__)
-_DB_PATH = str(DATA_DIR / "jobpulse.db")
+_DB_PATH = str(DATA_DIR / "applications.db")
 
 
 def _connect(db_path: str | None = None) -> sqlite3.Connection:
