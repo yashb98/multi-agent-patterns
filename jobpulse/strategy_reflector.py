@@ -31,6 +31,12 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def get_memory_manager():
+    """Lazy accessor — patchable in tests via jobpulse.strategy_reflector.get_memory_manager."""
+    from shared.memory_layer import get_shared_memory_manager
+    return get_shared_memory_manager()
+
+
 # ------------------------------------------------------------------
 # Pass 1: Deterministic heuristic extraction (free, instant)
 # ------------------------------------------------------------------
@@ -297,6 +303,7 @@ def reflect_on_application(
 
     # Feed to ExperienceMemory (GRPO) for cross-domain learning
     _feed_experience_memory(strategy, all_heuristics)
+    _record_failure_episode(strategy, all_heuristics)
 
     return strategy
 
@@ -339,6 +346,58 @@ def _feed_experience_memory(
         )
     except Exception as exc:
         logger.debug("strategy_reflector: ExperienceMemory feed failed: %s", exc)
+
+
+def _record_failure_episode(
+    strategy: "ApplicationStrategy",
+    heuristics: list[dict],
+) -> None:
+    """Record failure as an episode so the memory stack learns from what didn't work.
+
+    Successful runs go through _feed_experience_memory + ExperienceMemory.
+    Failures are higher signal but were previously dropped. This routes them
+    through MemoryManager.record_episode where the 3-engine memory stack
+    captures the weaknesses for future avoidance.
+    """
+    if strategy.success:
+        return
+
+    try:
+        mm = get_memory_manager()
+        score = _compute_strategy_score(strategy)  # returns 2.0 for failures
+        weaknesses = []
+        if hasattr(strategy, "failure_reason") and strategy.failure_reason:
+            weaknesses.append(str(strategy.failure_reason))
+        if strategy.fields_total > 0 and strategy.fields_corrected > 0:
+            corr_pct = strategy.fields_corrected / strategy.fields_total * 100
+            weaknesses.append(f"required {corr_pct:.0f}% corrections")
+
+        strengths = [f"{h['trigger']} → {h['action']}" for h in heuristics[:5]]
+
+        summary = (
+            f"FAILED job_application on {strategy.domain} "
+            f"({strategy.platform}): "
+            f"{strategy.fields_total} fields, {strategy.fields_corrected} corrected. "
+            + (str(getattr(strategy, "failure_reason", "")) or "no specific reason recorded")
+        )
+
+        mm.record_episode(
+            topic=f"job_application_failure:{strategy.domain}:{strategy.platform}",
+            final_score=score,
+            iterations=1,
+            pattern_used="form_fill",
+            agents_used=["NativeFormFiller"],
+            strengths=strengths,
+            weaknesses=weaknesses,
+            output_summary=summary,
+            domain="job_application",
+        )
+        logger.info(
+            "strategy_reflector: recorded failure episode for %s (score=%.1f)",
+            strategy.domain, score,
+        )
+    except Exception as exc:
+        logger.debug("strategy_reflector: failure episode record failed: %s", exc)
 
 
 def _compute_strategy_score(strategy: ApplicationStrategy) -> float:
