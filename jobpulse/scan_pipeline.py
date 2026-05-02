@@ -567,11 +567,14 @@ def generate_materials(
         matched_project_names = [r.get("name", "") for r in matched_repos]
     bundle.matched_project_names = matched_project_names
 
-    # Synthetic CV text for ATS + Gate 4B (no PDF until apply time)
+    # Synthetic CV text for ATS + Gate 4B, then generate PDF
     cv_path = None
     cv_text = ""
     ats_score = 0.0
     matched_projects: list[dict] = []
+    tagline: str | None = None
+    summary: str | None = None
+    extra_skills: dict[str, str] = {}
     try:
         extra_skills = build_extra_skills(listing.required_skills, listing.preferred_skills)
 
@@ -650,6 +653,22 @@ def generate_materials(
     except Exception as exc:
         logger.warning("scan_pipeline: synthetic CV / ATS failed for %s: %s", listing.job_id[:8], exc)
 
+    # Generate CV PDF
+    if cv_text and not cv_path:
+        try:
+            from jobpulse.cv_templates.generate_cv import generate_cv_pdf
+            cv_path = generate_cv_pdf(
+                company=listing.company,
+                location=listing.location or "London, UK",
+                tagline=tagline,
+                summary=summary,
+                projects=matched_projects or None,
+                extra_skills=extra_skills or None,
+            )
+            logger.info("scan_pipeline: generated CV at %s", cv_path)
+        except Exception as exc:
+            logger.warning("scan_pipeline: CV PDF generation failed: %s", exc)
+
     bundle.cv_path = cv_path
     bundle.cv_text = cv_text
     bundle.ats_score = ats_score
@@ -723,7 +742,7 @@ def generate_materials(
                 match_tier=tier,
                 matched_projects=matched_project_names,
                 cv_drive_link=cv_drive_link,
-                cl_drive_link=cl_drive_link_val,
+                cl_drive_link=None,
                 notes=gate4b_notes if gate4b_notes else None,
                 company=listing.company,
             )
@@ -733,7 +752,7 @@ def generate_materials(
                 match_tier=tier,
                 matched_projects=matched_project_names,
                 cv_drive_link=cv_drive_link,
-                cl_drive_link=cl_drive_link_val,
+                cl_drive_link=None,
                 cv_path=str(cv_path) if cv_path else None,
                 cover_letter_path=bundle.cover_letter_path,
                 gate4_notes=gate4b_notes,
@@ -761,6 +780,8 @@ def route_and_apply(
     review_batch: list[dict],
     remaining_cap: int,
     auto_applied: int,
+    *,
+    dry_run: bool = True,
 ) -> RouteResult:
     """Route one job to auto-apply, review queue, or skip based on ATS score.
 
@@ -771,6 +792,7 @@ def route_and_apply(
         review_batch: Mutable list — review jobs appended here.
         remaining_cap: How many more auto-applications are allowed today.
         auto_applied: How many have already been auto-applied this run.
+        dry_run: If True, stops before submission. Defaults to True (safer-by-default).
 
     Returns:
         RouteResult indicating what action was taken.
@@ -813,6 +835,7 @@ def route_and_apply(
                     "ats_score": ats_score,
                     "matched_projects": bundle.matched_project_names,
                 },
+                dry_run=dry_run,
             )
             if result.get("success"):
                 applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
@@ -1012,8 +1035,10 @@ def process_single_url(
     # 5. Generate materials
     from jobpulse.process_logger import ProcessTrail
     trail = ProcessTrail(agent_name="process_single_url", task_trigger=url[:80])
+    repos: list[dict] = []
+    notion_failures: list[str] = []
     try:
-        bundle = generate_materials(listing, db, trail)
+        bundle = generate_materials(listing, pre_screen, db, repos, notion_failures)
     except Exception as exc:
         logger.error("process_single_url: material generation failed: %s", exc)
         return {
@@ -1032,6 +1057,7 @@ def process_single_url(
         review_batch=review_batch,
         remaining_cap=10,
         auto_applied=0,
+        dry_run=dry_run,
     )
 
     return {
