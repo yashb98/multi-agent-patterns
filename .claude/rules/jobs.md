@@ -5,11 +5,14 @@
 - Logs to stdout; cron streams to Telegram. On ambiguity: STOP, tell human.
 
 ## Rate Limits
-LinkedIn 20/day (guest API scan, Playwright Easy Apply only) | Greenhouse/Lever 15/day headed | Indeed/Workday/Generic 15/day | Reed 15/day API | Total 50/day
+LinkedIn 15/day (session break 30min every 5 apps, `LINKEDIN_SESSION_CAP=5`) | Greenhouse/Lever 7/day headed | Indeed 8/day | Workday 5/day | Reed 7/day API | TotalJobs 4/day | Generic 5/day | Total 30/day
+Session breaks: `SESSION_BREAK_EVERY=5`, `SESSION_BREAK_MINUTES=10`
 Safety: `JOB_AUTOPILOT_AUTO_SUBMIT=false` default, `JOB_AUTOPILOT_MAX_DAILY=10`
 
 ## Application Engine
-- Playwright CDP to real Chrome. `PlaywrightAdapter` default for ALL platforms.
+- `PlaywrightDriver` (`playwright_driver.py`): Core CDP driver — connects to real Chrome, human-like input, field interaction.
+- `PlaywrightAdapter` (`playwright_adapter.py`): ATS adapter extending BaseATSAdapter, default for ALL platforms.
+- `driver_protocol.py`: Driver interface protocol shared by both.
 - Platform strategies (`ats_adapters/strategy.py`): container hints, field ranges, screening defaults
 - Container-scoped CDP scan (`getPartialAXTree`). `FormExperienceDB` stores selectors/timing per domain.
 - `FAST_FILL=true` skips delays (Claude Code sessions)
@@ -34,6 +37,7 @@ GitHub data already synced by 3am cron. Only Notion Skill Tracker needs live syn
 - Verify all GitHub URLs. No "JD Match" row. Headers: teal #1a5276.
 
 ## Pre-Screen Pipeline
+- Route jobs via `classify_action()`, not `determine_match_tier()` — tier is display-only, not a routing signal
 - Gate 0 (`recruiter_screen.py`): title + keyword filter, pre-LLM
 - Gates 1-3 (`skill_graph_store.py`): kill signals, must-haves, competitiveness. Hybrid skill extraction (582 taxonomy → LLM fallback <10 skills)
 - Cross-platform dedup: same company+title = one job. K1 seniority kill: ≥3yr (not ≥5)
@@ -56,6 +60,13 @@ Unverified skills → Notion "Pending" → user marks "I Know"/"Don't Know" → 
 - Stuck: fingerprint comparison, abort after 2 identical pages. Max 10 nav steps, 20 form pages.
 - Screening: ScreeningPipeline (cache + intent + alignment) → LLM fallback → SQLite cache.
 - All platforms → NativeFormFiller + `get_strategy(platform)`
+
+**Verification primitives** (post 2026-05 hardening):
+- `NavigationActionExecutor.execute()` reads back every fill, retries once on mismatch, returns `ExecutorResult`.
+- `FormNavigator._verify_action(pre, post, action_kind)` is the shared verifier — `_phase_act` and `AuthHandler` both call it.
+- `PageAction.expected_outcome` is a contract — set it correctly when extending the reasoner prompt.
+- On ghost click: cache invalidation + reflection via `reason_with_failure`. Don't bypass — these run even on auth pages now.
+- Low-confidence (`< 0.7`) actions trigger a screenshot-based page-type cross-check; disagreement invalidates the cache.
 
 ## Form Scoping (`field_scanner.py`)
 3-tier: Learned → Auto-detect (common ancestor JS) → Strategy hint. `validate_field_scan()` rejects noise.
@@ -85,8 +96,9 @@ Fires after EVERY submission (both auto and manual paths). Three concerns:
 3. Notion update → Applied status, dates, links
 Non-blocking. Runs before anti-detection delay.
 
-## Real Data + Wiring Verification (MANDATORY)
+## Real Data + Wiring + OPRAL (MANDATORY)
 Every new job pipeline feature: test with real job URLs, real profile data, real ATS pages (never mocks or stale fixtures). Then verify the full chain fires — `post_apply_hook` → `CorrectionCapture` → `AgentRulesDB` → `strategy_reflector` → `OptimizationEngine` → `AgentPerformanceDB` → Notion update. Not wired = not done.
+On error: **Observe → Plan → Reason → Act → Learn**. Capture error context → trace root cause → determine which DB prevents recurrence → fix + re-run real data → emit signal + verify DB persisted + confirm autonomous on next run.
 
 ## PDF Upload
 Sanitized via PyMuPDF (`_sanitize_pdf()`). `set_input_files()` uses `{name, mimeType: "application/pdf", buffer}` — never bare paths.
@@ -98,11 +110,29 @@ Sanitized via PyMuPDF (`_sanitize_pdf()`). `set_input_files()` uses `{name, mime
 ## Cover Letter
 Lazy via `cl_generator` callback. `build_dynamic_points()` maps projects→skills. `polish_points_llm()` ~$0.002. Static fallback.
 
+## Security Wall Bypass (MANDATORY)
+When any security wall is detected (Cloudflare, Turnstile, reCAPTCHA, hCaptcha, 403, 429), use Playwright's FULL capabilities to bypass it automatically. Human fallback is MANDATORY if auto-bypass fails.
+
+**6-stage bypass pipeline** (`_navigator.py:_bypass_verification_wall`):
+1. **Auto-wait** (15s) — Cloudflare JS challenges auto-resolve in 3-10s. Poll every 3s.
+2. **Human simulation** — Mouse movement, scrolling, random delays via Playwright `page.mouse.move()`, `page.evaluate("window.scrollBy()")`.
+3. **Turnstile checkbox** — Locate Cloudflare iframe → enter content frame → click checkbox/challenge element.
+4. **Page reload** — `page.reload(wait_until="domcontentloaded")` clears transient challenges.
+5. **Second reload** — `page.reload(wait_until="networkidle")` with longer wait.
+6. **Human fallback (MANDATORY)** — Telegram alert with URL + wall type. Poll 120s. Confirm cleared. If still blocked after 120s, skip job + Telegram notification.
+
+**Never abort without human fallback.** Even if all 5 auto-stages fail, the human MUST be asked. The pipeline MUST wait for human response before giving up.
+
+**Platform bypass** (`platform_bypass.py`): When aggregators (Indeed/LinkedIn/TotalJobs/Reed/Glassdoor) block persistently after all 6 stages, resolve the direct ATS URL instead. Resolution order: cached mapping → FormExperienceDB → known ATS board patterns (httpx HEAD) → Playwright web search. Stores results in NavigationLearner, GotchasDB, OptimizationEngine, ExperienceMemory, TrajectoryStore. Wired in `_navigator.py` after `_bypass_verification_wall()` returns `solved=False` on aggregator domains.
+
+**Detection**: `playwright_driver.py:get_snapshot()` inline JS detects Cloudflare selectors, text patterns, and iframe URLs. `page_analysis/classifier.py` weights `verification_wall_present` at 6.0.
+
 ## Verification Wall Learning
 Universal detector (Turnstile/reCAPTCHA/hCaptcha/403/429). 17 signals per session. Statistical correlation (zero LLM). LLM every 5th block (~$0.002).
 Cooldown: 2hr→4hr→48hr exponential. Reset on success. Telegram alert on 3rd block. Adaptive params by risk level.
 
 ## Platform Quirks
+- **LinkedIn**: Navigate to `/jobs/` first, then specific URL. Easy Apply badge can be `<a>` not `<button>`. Stuck detection: compare chars 300-700, not first 200 (generic wrapper text). Numeric fields: plain integers only (no currency, commas, ranges).
 - **Reed**: Modal overlay, pre-filled CV → auto-detect mismatch → Update → file chooser. Google SSO first visit.
 - **SmartRecruiters**: Shadow DOM `spl-*` elements. `get_by_label()`/`get_by_role()` pierce shadow. City: type→ArrowDown→Enter. Gender: multi-select `spl-tag`. Separate Resume* field. Page 2: radios + dropdowns + privacy.
 
