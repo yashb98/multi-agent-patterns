@@ -20,6 +20,27 @@ _DEFAULT_DB = str(DATA_DIR / "agent_rules.db")
 _RULE_TTL_DAYS = 30
 
 
+def _normalize_domain(value: str | None) -> str:
+    """Canonicalize a domain string for AgentRulesDB pattern matching.
+
+    Accepts: bare host, host+path, full URL, with or without scheme,
+    with or without `www.`, mixed case. Returns lowercase host without
+    leading `www.`. Empty input returns empty string.
+    """
+    if not value:
+        return ""
+    from urllib.parse import urlparse
+    s = value.strip().lower()
+    if "://" in s:
+        s = urlparse(s).netloc
+    else:
+        # Drop any path portion for bare host[+path] inputs
+        s = s.split("/", 1)[0]
+    if s.startswith("www."):
+        s = s[4:]
+    return s
+
+
 class AgentRulesDB:
     def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path or _DEFAULT_DB
@@ -104,6 +125,33 @@ class AgentRulesDB:
                 )
             except sqlite3.OperationalError:
                 pass  # Column already exists
+            # 2026-05 migration — normalize correction-style patterns to lowercase host without www/scheme/path
+            try:
+                rows = conn.execute(
+                    "SELECT rule_id, pattern FROM agent_rules "
+                    "WHERE rule_type='correction_override' OR source LIKE 'correction%' "
+                    "   OR source IN ('user_correction', 'user_feedback', 'correction_capture')"
+                ).fetchall()
+                normalized_count = 0
+                for row in rows:
+                    rule_id, raw = row[0], row[1]
+                    if not raw:
+                        continue
+                    normalized = _normalize_domain(raw)
+                    if normalized and normalized != raw:
+                        conn.execute(
+                            "UPDATE agent_rules SET pattern = ? WHERE rule_id = ?",
+                            (normalized, rule_id),
+                        )
+                        normalized_count += 1
+                        logger.info(
+                            "agent_rules: normalized pattern rule_id=%d %r → %r",
+                            rule_id, raw, normalized,
+                        )
+                if normalized_count > 0:
+                    logger.info("agent_rules: migration normalized %d patterns", normalized_count)
+            except Exception as exc:
+                logger.warning("agent_rules: pattern normalization migration failed: %s", exc)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -205,6 +253,7 @@ class AgentRulesDB:
         Returns:
             Dict with rule_id, field_label, action.
         """
+        domain = _normalize_domain(domain)
         now = datetime.now(UTC).isoformat()
         expires = (datetime.now(UTC) + timedelta(days=_RULE_TTL_DAYS)).isoformat()
 
@@ -305,6 +354,7 @@ class AgentRulesDB:
         Queries correction_override rules matching domain or platform.
         Increments times_applied for each returned rule.
         """
+        domain = _normalize_domain(domain)
         rules = self.get_active_rules("correction_override")
         overrides: dict[str, dict] = {}
         rule_ids_used: list[int] = []
