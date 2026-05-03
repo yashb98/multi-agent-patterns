@@ -421,13 +421,43 @@ class PageReasoner:
         base_prompt = self._build_prompt(
             url, page_text, dialog_text, button_summary, field_summary, wall_info,
         )
+        # Pull the failed action out of the failure_context so we can forbid it
+        # explicitly. Caller emits "action=X" inside the pipe-delimited context;
+        # if absent we fall back to a generic "different action" instruction.
+        prior_action = ""
+        for part in failure_context.split("|"):
+            part = part.strip()
+            if part.startswith("action="):
+                prior_action = part[len("action="):].strip()
+                break
+
+        forbidden_clause = (
+            f"DO NOT return action='{prior_action}' again — that exact action "
+            f"was just tried on this page and did not produce the expected "
+            f"outcome. Pick a different action.\n\n"
+            if prior_action
+            else "DO NOT return the same action that just failed — pick a different one.\n\n"
+        )
         prompt = (
             base_prompt
             + "\n\nPRIOR ATTEMPT FAILED:\n"
             + failure_context
-            + "\n\nYour previous plan did not produce the expected outcome. "
-              "Reconsider: is the page type different than you thought? "
-              "Is there an overlay you missed? Should this escalate to wait_human?"
+            + "\n\n"
+            + forbidden_clause
+            + "Choose a DIFFERENT recovery strategy. Concrete options:\n"
+            + "  - 'wait_human' if the page is blocked by auth, CAPTCHA, "
+              "session expiry, MFA, or anything that needs the user\n"
+            + "  - 'go_back' if the navigation landed on the wrong page\n"
+            + "  - 'dismiss_overlay' if a modal/banner is intercepting clicks "
+              "or stealing focus\n"
+            + "  - 'click_element' with a DIFFERENT target_text if the previous "
+              "click hit the wrong element (e.g. promotional or hidden)\n"
+            + "  - 'abort' if there is no way forward (job closed, account "
+              "locked, jurisdiction blocked, page is a 404)\n\n"
+            + "Also reconsider the page_type: a login_form that won't accept "
+              "credentials may actually be a session_expired page, an SSO-only "
+              "page, or an account-creation page that requires email "
+              "verification first."
         )
         action = self._call_llm(prompt)
         action = self._apply_zero_fields_guard(action, fields, buttons)
