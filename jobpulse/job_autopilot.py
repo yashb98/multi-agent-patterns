@@ -47,17 +47,9 @@ from jobpulse.job_scanner import load_search_config, save_search_config
 from jobpulse.process_logger import ProcessTrail
 from jobpulse.telegram_bots import send_jobs
 from shared.alerting import send_pipeline_alert
+from jobpulse.scan_pipeline import determine_match_tier
 
 logger = get_logger(__name__)
-
-
-def determine_match_tier(ats_score: float) -> str:
-    """Return 'auto' if >= 90, 'review' if >= 82, 'skip' otherwise."""
-    if ats_score >= 90:
-        return "auto"
-    if ats_score >= 82:
-        return "review"
-    return "skip"
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +466,14 @@ def _run_scan_window_inner(platforms: list[str] | None = None) -> str:
 
     if notion_failures:
         logger.warning("job_autopilot: %d Notion sync failures this run", len(notion_failures))
+
+    try:
+        from jobpulse.job_notion_sync import delete_job_tracker_non_terminal_pages
+        stale = delete_job_tracker_non_terminal_pages(min_age_days=14)
+        if stale:
+            logger.info("job_autopilot: cleaned up %d stale Notion pages (>14 days old)", stale)
+    except Exception as exc:
+        logger.debug("job_autopilot: stale Notion cleanup failed: %s", exc)
 
     if _evt:
         _evt.emit(_stream_id, "scan.window_done", {
