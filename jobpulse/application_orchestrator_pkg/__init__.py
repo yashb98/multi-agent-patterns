@@ -232,12 +232,26 @@ class ApplicationOrchestrator:
             pass
 
         # Phase 3: Pre-submit quality gate — review filled answers before submitting
-        if result.get("success") and not dry_run and company_research is not None:
+        # Run on every successful non-dry-run application. If company_research is missing,
+        # synthesize a minimal stub so the gate still evaluates JD keyword coverage and
+        # answer quality (the company-context check just degrades gracefully).
+        if result.get("success") and not dry_run:
             _gate_t0 = _time.monotonic()
+            _company_research = company_research
+            if _company_research is None:
+                from jobpulse.perplexity import CompanyResearch as _CR
+                _company_name = (job or {}).get("company", "") if job else ""
+                _company_research = _CR(
+                    company=_company_name,
+                    description="",
+                    tech_stack=[],
+                    size="unknown",
+                    industry="unknown",
+                )
             gate_result = self._run_pre_submit_gate(
                 custom_answers=custom_answers,
                 jd_keywords=jd_keywords or [],
-                company_research=company_research,
+                company_research=_company_research,
             )
 
             try:

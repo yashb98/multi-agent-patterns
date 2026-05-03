@@ -24,6 +24,11 @@ logger = get_logger(__name__)
 # across multiple daemon processes.
 _apply_lock = system_lock("jobpulse_apply")
 
+# Fill/submit lock — separate from _apply_lock so the fill+submit phase is
+# serialized without holding the quota lock through inter-application sleeps
+# (LinkedIn cap, session break). Only one Playwright fill+submit at a time.
+_fill_lock = system_lock("jobpulse_fill_submit")
+
 # Applicant profile and work auth loaded from env vars via config
 from jobpulse.config import APPLICANT_PROFILE as PROFILE, WORK_AUTH
 
@@ -320,39 +325,14 @@ def apply_job(
     adapter = select_adapter(ats_platform)
     logger.info("Applying via %s adapter to %s", adapter.name, url)
 
-    result = _call_fill_and_submit(
-        adapter,
-        url=url,
-        cv_path=cv_path,
-        cover_letter_path=cover_letter_path,
-        profile=PROFILE,
-        custom_answers=merged_answers,
-        overrides=overrides,
-        dry_run=dry_run,
-    )
-
-    # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
-    # external ATS URL. Detect the ATS platform and re-apply via the correct adapter.
-    # Supports multi-hop: LinkedIn → careers portal → ATS (up to 2 hops).
-    for _hop in range(2):
-        if not (result.get("external_redirect") and result.get("external_url")):
-            break
-        external_url = result["external_url"]
-        logger.info("External redirect hop %d: %s → %s", _hop + 1, url, external_url)
-
-        from jobpulse.jd_analyzer import detect_ats_platform
-
-        ext_platform = detect_ats_platform(external_url) or _infer_platform_from_url(external_url)
-        ext_adapter = select_adapter(ext_platform)
-        logger.info(
-            "External ATS detected: %s — using %s adapter",
-            ext_platform or "generic",
-            ext_adapter.name,
-        )
-
+    # Serialize the entire fill+submit phase (including external-redirect retry)
+    # so concurrent apply_job() calls don't race on the shared Playwright browser
+    # (single Chrome via CDP). Quota lock is already released; this lock only
+    # covers the actual form interaction.
+    with _fill_lock:
         result = _call_fill_and_submit(
-            ext_adapter,
-            url=external_url,
+            adapter,
+            url=url,
             cv_path=cv_path,
             cover_letter_path=cover_letter_path,
             profile=PROFILE,
@@ -360,9 +340,39 @@ def apply_job(
             overrides=overrides,
             dry_run=dry_run,
         )
-        result["external_redirect"] = True
-        result["external_url"] = external_url
-        result["external_platform"] = ext_platform or "generic"
+
+        # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
+        # external ATS URL. Detect the ATS platform and re-apply via the correct adapter.
+        # Supports multi-hop: LinkedIn → careers portal → ATS (up to 2 hops).
+        for _hop in range(2):
+            if not (result.get("external_redirect") and result.get("external_url")):
+                break
+            external_url = result["external_url"]
+            logger.info("External redirect hop %d: %s → %s", _hop + 1, url, external_url)
+
+            from jobpulse.jd_analyzer import detect_ats_platform
+
+            ext_platform = detect_ats_platform(external_url) or _infer_platform_from_url(external_url)
+            ext_adapter = select_adapter(ext_platform)
+            logger.info(
+                "External ATS detected: %s — using %s adapter",
+                ext_platform or "generic",
+                ext_adapter.name,
+            )
+
+            result = _call_fill_and_submit(
+                ext_adapter,
+                url=external_url,
+                cv_path=cv_path,
+                cover_letter_path=cover_letter_path,
+                profile=PROFILE,
+                custom_answers=merged_answers,
+                overrides=overrides,
+                dry_run=dry_run,
+            )
+            result["external_redirect"] = True
+            result["external_url"] = external_url
+            result["external_platform"] = ext_platform or "generic"
 
     platform_name = result.get("external_platform", adapter.name)
     if result.get("success"):
