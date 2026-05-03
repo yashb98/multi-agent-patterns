@@ -43,6 +43,18 @@ _NOTION_TYPE_MISMATCH_RE = re.compile(
     r"body\.properties\.(?P<prop>[^.]+)\.",
 )
 
+# Notion's user-facing schema errors don't always include the body.properties
+# path. Two extra shapes seen in production: "X is expected to be <type>" when
+# a column was retyped manually, and 'Status option "X" does not exist' when
+# the code emits a status that's not in the column's option list.
+_NOTION_EXPECTED_TYPE_RE = re.compile(
+    r'^(?P<prop>.+?) is expected to be \w+\.?$',
+    re.MULTILINE,
+)
+_NOTION_BAD_STATUS_OPTION_RE = re.compile(
+    r'Status option "[^"]+" does not exist',
+)
+
 _TERMINAL_JOB_TRACKER_STATUSES = frozenset({
     "Applied", "Rejected", "Withdrawn", "Expired", "Skipped", "Interviewing",
 })
@@ -603,22 +615,31 @@ def update_application_page(page_id: str, **kwargs) -> bool:
             m = _NOTION_UNKNOWN_PROPERTY_RE.search(msg)
             if not m:
                 m = _NOTION_TYPE_MISMATCH_RE.search(msg)
+            if not m:
+                m = _NOTION_EXPECTED_TYPE_RE.search(msg)
+            bad: str | None = None
             if m:
                 bad = m.group("prop").strip()
-                if bad in properties:
-                    logger.warning(
-                        "Notion property %r rejected (missing or type mismatch) — omitting and retrying page %s",
-                        bad,
+            elif _NOTION_BAD_STATUS_OPTION_RE.search(msg) and "Status" in properties:
+                # The Notion Status column is missing the option we tried to
+                # write (e.g. "Skipped"). Drop the Status update and let the
+                # rest of the payload through; the user can add the option
+                # to the Notion DB to re-enable status writes.
+                bad = "Status"
+            if bad and bad in properties:
+                logger.warning(
+                    "Notion property %r rejected (missing, wrong type, or unknown option) — omitting and retrying page %s",
+                    bad,
+                    page_id,
+                )
+                del properties[bad]
+                if not properties:
+                    logger.error(
+                        "Notion update for %s: no properties left after schema mismatch",
                         page_id,
                     )
-                    del properties[bad]
-                    if not properties:
-                        logger.error(
-                            "Notion update for %s: no properties left after schema mismatch",
-                            page_id,
-                        )
-                        return False
-                    continue
+                    return False
+                continue
 
         logger.error(
             "Failed to update Notion page %s: %s",

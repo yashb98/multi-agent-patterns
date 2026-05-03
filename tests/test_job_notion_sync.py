@@ -121,3 +121,56 @@ def test_update_application_page_retries_without_unknown_property(mock_api) -> N
     second = mock_api.call_args_list[1][0][2]["properties"]
     assert "Applied Time" not in second
     assert second["Status"]["status"]["name"] == "Applied"
+
+
+@patch("jobpulse.job_notion_sync._notion_api")
+def test_update_application_page_retries_on_expected_type_error(mock_api) -> None:
+    """Regression: 'X is expected to be <type>.' (column was retyped manually
+    in Notion) used to fall through the retry logic and fail the entire
+    update. Now we strip the offending property and retry.
+    """
+    mock_api.side_effect = [
+        {
+            "object": "error",
+            "status": 400,
+            "message": "Match Tier is expected to be phone_number.",
+        },
+        {"object": "page", "id": "abc"},
+    ]
+    ok = update_application_page(
+        "page-123",
+        status="Applied",
+        match_tier="auto",
+        applied_date=date(2026, 5, 3),
+    )
+    assert ok is True
+    assert mock_api.call_count == 2
+    second = mock_api.call_args_list[1][0][2]["properties"]
+    assert "Match Tier" not in second
+    assert second["Status"]["status"]["name"] == "Applied"
+
+
+@patch("jobpulse.job_notion_sync._notion_api")
+def test_update_application_page_retries_on_unknown_status_option(mock_api) -> None:
+    """Regression: 'Status option "X" does not exist' (option missing from
+    the Notion Status column) used to fail the whole update. Now we drop
+    the Status property and let the rest of the payload through.
+    """
+    mock_api.side_effect = [
+        {
+            "object": "error",
+            "status": 400,
+            "message": 'Invalid status option. Status option "Skipped" does not exist".',
+        },
+        {"object": "page", "id": "abc"},
+    ]
+    ok = update_application_page(
+        "page-123",
+        status="Skipped",
+        match_tier="skip",
+    )
+    assert ok is True
+    assert mock_api.call_count == 2
+    second = mock_api.call_args_list[1][0][2]["properties"]
+    assert "Status" not in second
+    assert "Match Tier" in second
