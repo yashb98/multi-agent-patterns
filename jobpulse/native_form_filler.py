@@ -70,6 +70,7 @@ logger = get_logger(__name__)
 # Re-export for backward compatibility (tests import these from native_form_filler)
 __all__ = [
     "NativeFormFiller",
+    "emit_form_fill_failures",
     "_best_option_match",
     "_build_option_aliases",
     "_canonicalize_country_value",
@@ -90,6 +91,42 @@ _SELECT_PLACEHOLDER_RE = re.compile(
 
 def _is_select_placeholder(value: str) -> bool:
     return bool(_SELECT_PLACEHOLDER_RE.match(value.strip()))
+
+
+def emit_form_fill_failures(
+    failures: list[dict], *, domain: str,
+) -> None:
+    """Emit OptimizationEngine 'failure' signals for unverified fills.
+
+    Mirrors action_executor.emit_fill_failures but with source='form_filler'
+    so the learning DBs see corrections from BOTH paths (navigator and the
+    main NativeFormFiller form-fill loop).
+
+    failures: list of {"label": str, "expected": str, "actual": str}
+    """
+    if not failures:
+        return
+    try:
+        from datetime import UTC, datetime
+        from shared.optimization import get_optimization_engine
+        engine = get_optimization_engine()
+        session_id = f"nff_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+        for f in failures:
+            engine.emit(
+                signal_type="failure",
+                source_loop="form_filler",
+                domain=domain,
+                agent_name="native_form_filler",
+                payload={
+                    "field": f.get("label", ""),
+                    "expected": (f.get("expected") or "")[:60],
+                    "actual": (f.get("actual") or "")[:60],
+                    "kind": "fill_mismatch",
+                },
+                session_id=session_id,
+            )
+    except Exception as exc:
+        logger.debug("emit_form_fill_failures: signal failed: %s", exc)
 
 
 def _resolve_dropdown_from_profile(question: str, options: list[str]) -> str | None:
@@ -230,6 +267,14 @@ class NativeFormFiller:
         self._fe_db: Any = None
         self._container_selector: str | None = None
         self._platform: str = ""
+        self._intelligence: Any = getattr(driver, "intelligence", None)
+        self._signal_interpreter: Any = None
+        if self._intelligence:
+            try:
+                from jobpulse.signal_interpreter import SignalInterpreter
+                self._signal_interpreter = SignalInterpreter()
+            except Exception:
+                pass
 
     # ── Platform Strategy + Domain Knowledge ──
 
@@ -399,7 +444,8 @@ class NativeFormFiller:
         """Use cognitive reasoning to escape a stuck form page.
 
         Called when the same field fingerprint appears for consecutive pages.
-        Returns True if the cognitive engine suggested a viable next action.
+        Asks the LLM for a structured action, then executes it.
+        Returns True if the action changed the page state.
         """
         try:
             from shared.cognitive import get_cognitive_engine
@@ -410,46 +456,133 @@ class NativeFormFiller:
 
             field_summary = "\n".join(
                 f"- {f.get('label', 'unknown')} ({f.get('type', 'unknown')})"
-                for f in fields[:10]
+                + (f" [required]" if f.get("required") else "")
+                + (f" [value: {f.get('value', '')}]" if f.get("value") else " [empty]")
+                for f in fields[:15]
             )
             task = (
                 f"Platform: {platform}\n"
                 f"URL: {page_url}\n"
-                f"Current fields:\n{field_summary}\n\n"
-                "The form appears stuck — the same page keeps appearing after clicking Next. "
-                "What is the most likely cause and what single action should be taken to proceed? "
-                "Answer in ONE sentence with a concrete action."
+                f"Current form fields:\n{field_summary}\n\n"
+                "The form appears stuck — the same page keeps appearing after clicking Next/Continue. "
+                "Common causes: required field empty, validation error, wrong button clicked, unchecked consent.\n\n"
+                'Return ONLY a JSON object: {{"action": "click_button"|"check_required"|"scroll_down", '
+                '"target": "button text or field label", "reason": "why this should work"}}'
             )
             result = engine.think_sync(
                 task=task,
                 domain="form_navigation",
                 stakes="medium",
             )
-            if result and result.score >= 5.0:
-                suggestion = result.answer.strip()
-                logger.info("Cognitive unstuck suggestion (score=%.1f): %s", result.score, suggestion[:200])
-                # Emit an optimization signal so the system learns
-                try:
-                    from shared.optimization import get_optimization_engine
+            if not result or result.score < 5.0:
+                return False
 
-                    get_optimization_engine().emit(
-                        signal_type="adaptation",
-                        source_loop="native_form_filler",
-                        domain=platform,
-                        agent_name="form_filler",
-                        payload={
-                            "param": "stuck_recovery",
-                            "old_value": "abort",
-                            "new_value": suggestion,
-                            "reason": f"Cognitive unstuck for {platform}",
-                        },
-                    )
-                except Exception:
-                    pass
-                return True
+            suggestion = result.answer.strip()
+            logger.info("Cognitive unstuck suggestion (score=%.1f): %s", result.score, suggestion[:200])
+
+            acted = await self._execute_unstuck_action(suggestion)
+
+            try:
+                from shared.optimization import get_optimization_engine
+                get_optimization_engine().emit(
+                    signal_type="adaptation",
+                    source_loop="native_form_filler",
+                    domain=platform,
+                    agent_name="form_filler",
+                    payload={
+                        "param": "stuck_recovery",
+                        "old_value": "abort",
+                        "new_value": suggestion,
+                        "acted": acted,
+                        "reason": f"Cognitive unstuck for {platform}",
+                    },
+                )
+            except Exception:
+                pass
+            return acted
         except Exception as exc:
             logger.debug("Cognitive unstuck failed: %s", exc)
         return False
+
+    async def _execute_unstuck_action(self, suggestion: str) -> bool:
+        """Parse and execute the cognitive engine's unstuck suggestion."""
+        page = self._page
+
+        try:
+            cleaned = suggestion
+            if "{" in cleaned:
+                cleaned = cleaned[cleaned.index("{"):cleaned.rindex("}") + 1]
+            data = json.loads(cleaned)
+        except (json.JSONDecodeError, ValueError):
+            data = {"action": "click_button", "target": suggestion[:80]}
+
+        action = data.get("action", "")
+        target = data.get("target", "")
+
+        if action == "click_button" and target:
+            for role in ("button", "link"):
+                loc = page.get_by_role(role, name=target, exact=False)
+                if await loc.count() and await loc.first.is_visible():
+                    await loc.first.click()
+                    await asyncio.sleep(2)
+                    logger.info("Unstuck: clicked %s '%s'", role, target)
+                    return True
+
+        if action == "check_required":
+            unchecked = page.get_by_role("checkbox").filter(has_not=page.locator(":checked"))
+            for i in range(min(await unchecked.count(), 5)):
+                cb = unchecked.nth(i)
+                name = await get_accessible_name(cb) or ""
+                from jobpulse.form_engine.semantic_matcher import checkbox_intent
+                if checkbox_intent(name) is True or checkbox_intent(name) is None:
+                    await cb.check()
+                    logger.info("Unstuck: checked checkbox '%s'", name[:60])
+            return True
+
+        if action == "scroll_down":
+            await page.evaluate("window.scrollBy(0, 500)")
+            await asyncio.sleep(1)
+            logger.info("Unstuck: scrolled down")
+            return True
+
+        return False
+
+    # ── Browser Signal Intelligence ──
+
+    async def _check_browser_signals(
+        self, field_label: str, field_locator: Any, fill_timestamp_ms: float,
+    ) -> Any:
+        if not self._intelligence or not self._signal_interpreter:
+            return None
+        try:
+            return await self._signal_interpreter.check_after_fill(
+                self._intelligence, field_label, field_locator,
+                fill_timestamp_ms, self._page,
+            )
+        except Exception as exc:
+            logger.debug("Browser signal check failed: %s", exc)
+            return None
+
+    def _pre_fill_transform(self, domain: str, field_label: str, value: str) -> str:
+        if not self._fe_db:
+            return value
+        try:
+            corrections = self._fe_db.get_signal_corrections(domain, field_label)
+            if corrections:
+                from jobpulse.signal_interpreter import TRANSFORMS
+                transform_name = corrections[0]["transform"]
+                transform_fn = TRANSFORMS.get(transform_name)
+                if transform_fn:
+                    transformed = transform_fn(value)
+                    if transformed != value:
+                        logger.info(
+                            "Pre-fill transform '%s' on '%s': '%s' -> '%s'",
+                            transform_name, field_label, value[:30], transformed[:30],
+                        )
+                    return transformed
+        except Exception as exc:
+            logger.debug("Pre-fill transform lookup failed: %s", exc)
+        return value
 
     # ── Human-Like Behavior (delegates to driver) ──
 
@@ -1246,11 +1379,15 @@ class NativeFormFiller:
                 continue
 
             try:
+                button_id = field.get("buttonId", "")
                 dd_index = field.get("ddIndex", -1)
-                result = await self._click_custom_dropdown_option(question, answer, dd_index)
+                if button_id:
+                    result = await self._fill_button_dropdown(button_id, question, answer)
+                else:
+                    result = await self._click_custom_dropdown_option(question, answer, dd_index)
                 if result is True:
                     filled += 1
-                    logger.info("Custom dropdown [%s]: '%s' → '%s'", test_id or dd_index, question[:80], answer)
+                    logger.info("Custom dropdown [%s]: '%s' → '%s'", button_id or test_id or dd_index, question[:80], answer)
                 elif isinstance(result, list) and result:
                     picked = _resolve_dropdown_from_profile(question, result)
                     if not picked:
@@ -1267,7 +1404,10 @@ class NativeFormFiller:
                     if not picked:
                         picked = _best_option_match(question, answer, result, store=self._profile_store)
                     if picked:
-                        re_clicked = await self._click_custom_dropdown_option(question, picked, dd_index)
+                        if button_id:
+                            re_clicked = await self._fill_button_dropdown(button_id, question, picked)
+                        else:
+                            re_clicked = await self._click_custom_dropdown_option(question, picked, dd_index)
                         if re_clicked is True:
                             filled += 1
                             logger.info("Custom dropdown [%s]: '%s' → '%s' (retry matched)", test_id or dd_index, question[:80], picked)
@@ -1439,6 +1579,56 @@ class NativeFormFiller:
             return visible_options
         return False
 
+    async def _fill_button_dropdown(
+        self, button_id: str, question: str, answer: str,
+    ) -> bool | list[str]:
+        """Fill a button-based custom dropdown (e.g. Workday questionnaire)."""
+        page = self._page
+        btn = page.locator(f"#{button_id}")
+        if not await btn.count():
+            return False
+
+        current = (await btn.text_content() or "").strip()
+        if current and _normalize_match_text(current) == _normalize_match_text(answer):
+            return True
+
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.15)
+        await btn.scroll_into_view_if_needed()
+        await btn.click(timeout=5000)
+        await asyncio.sleep(0.6)
+
+        options = await page.evaluate(r"""() => {
+            return Array.from(document.querySelectorAll('[role="option"]'))
+                .filter(o => o.offsetParent !== null)
+                .map(o => o.textContent.trim())
+                .filter(t => t && !/^select\s*(one|an?\s*option)?$/i.test(t));
+        }""")
+
+        if not options:
+            await page.keyboard.press("Escape")
+            return False
+
+        match = _best_option_match(question, answer, options, store=self._profile_store)
+        if match:
+            clicked = await page.evaluate("""(target) => {
+                for (const o of document.querySelectorAll('[role="option"]')) {
+                    if (o.offsetParent !== null && o.textContent.trim() === target) {
+                        o.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""", match)
+            if clicked:
+                await asyncio.sleep(0.3)
+                return True
+
+        await page.keyboard.press("Escape")
+        logger.info("Button dropdown no match: '%s' answer='%s' options=%s",
+                     question[:60], answer[:40], options[:5])
+        return options
+
     # ── Page Detection ──
 
     async def _recover_if_navigated(self, expected_url: str) -> bool:
@@ -1486,6 +1676,32 @@ class NativeFormFiller:
         except Exception as exc:
             logger.error("SPA recovery failed: %s", exc)
             return False
+
+    async def _detect_page_type_quick(self) -> str:
+        """Lightweight page-type check using DOM classifier after page transitions.
+
+        Returns a page type string: 'application_form', 'verification_wall',
+        'login_form', 'session_expired', 'confirmation', or 'unknown'.
+        Only used for high-confidence detections (>= 0.8) to catch obvious
+        non-form pages. Low-confidence results return 'application_form' so
+        the fill loop continues normally.
+        """
+        try:
+            snapshot = await self._driver.get_snapshot(force_refresh=True)
+            if hasattr(snapshot, "model_dump"):
+                snapshot = snapshot.model_dump()
+            from jobpulse.page_analysis.classifier import PageTypeClassifier
+            clf = PageTypeClassifier()
+            page_type, confidence = clf.classify(snapshot)
+            if confidence >= 0.8 and page_type.value != "application_form":
+                logger.info(
+                    "Post-nav page type: %s (confidence=%.2f)",
+                    page_type.value, confidence,
+                )
+                return page_type.value
+        except Exception as exc:
+            logger.debug("Quick page type detection failed: %s", exc)
+        return "application_form"
 
     async def _is_confirmation_page(self) -> bool:
         body = await self._page.locator("body").text_content()
@@ -1551,7 +1767,7 @@ class NativeFormFiller:
         page = self._page
         button_names = [
             ("submit", ["Submit Application", "Submit", "Apply"]),
-            ("next", ["Review", "Save & Continue", "Continue", "Next", "Proceed"]),
+            ("next", ["Review", "Save and Continue", "Save & Continue", "Continue", "Next", "Proceed"]),
         ]
 
         for action, names in button_names:
@@ -1569,6 +1785,21 @@ class NativeFormFiller:
                     except Exception:
                         await asyncio.sleep(2)
                     return "submitted" if action == "submit" else "next"
+
+        # Workday-specific next button via data-automation-id
+        try:
+            wd_btn = page.locator("button[data-automation-id='bottom-navigation-next-button']")
+            if await wd_btn.count() and await wd_btn.first.is_visible():
+                if dry_run:
+                    return "dry_run_stop"
+                await wd_btn.first.click()
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    await asyncio.sleep(2)
+                return "next"
+        except Exception:
+            pass
 
         for name in ["Submit", "Apply Now", "Continue"]:
             link = page.get_by_role("link", name=name, exact=False)
@@ -1761,7 +1992,30 @@ class NativeFormFiller:
             if page_num == 1:
                 await self._recover_if_navigated(_expected_url)
 
+            # 0a. Re-detect page type after page transition — catch walls,
+            # login redirects, session expiry, and confirmation pages instead
+            # of blindly assuming we're still on an application form.
+            if page_num > 1:
+                _post_nav_type = await self._detect_page_type_quick()
+                if _post_nav_type == "verification_wall":
+                    logger.warning("Page %d: verification wall detected after navigation", page_num)
+                    return _result({"success": False, "error": "verification_wall_after_nav"})
+                if _post_nav_type == "session_expired":
+                    logger.warning("Page %d: session expired after navigation", page_num)
+                    return _result({"success": False, "error": "session_expired"})
+                if _post_nav_type == "login_form":
+                    logger.warning("Page %d: login form detected — session likely expired", page_num)
+                    return _result({"success": False, "error": "session_expired"})
+                if _post_nav_type == "confirmation":
+                    logger.info("Page %d: confirmation page detected", page_num)
+                    return _result({"success": True, "pages_filled": page_num - 1})
+
             await self._dismiss_stale_dialogs()
+
+            # 0.4. Clear browser signal buffer between pages
+            if self._intelligence:
+                self._intelligence.clear()
+                await self._intelligence.inject_on_new_page()
 
             # 0.5. Dismiss cookie banners before scanning (defense-in-depth)
             try:
@@ -2036,7 +2290,10 @@ class NativeFormFiller:
                 if override and override["action"] == "override_answer":
                     value_text = override["value"]
                     logger.info("Agent rule override: '%s' -> '%s'", label, value_text)
+                # Pre-fill transform from prior signal corrections
+                value_text = self._pre_fill_transform(_page_domain, label, value_text)
                 total_fields_attempted += 1
+                _fill_ts = time.monotonic() * 1000
                 try:
                     result = await self._fill_by_label(label, value_text)
                     if result.get("success") and result.get("value_verified", True):
@@ -2048,6 +2305,41 @@ class NativeFormFiller:
                             confidence=0.9, time_ms=0, page_index=page_num,
                         )
                     else:
+                        # Browser signal correction before adding to pending_retries
+                        # Resolve locator using same fallback chain as _fill_by_label
+                        _field_locator = self._page.get_by_label(label, exact=False)
+                        if not await _field_locator.count():
+                            _field_locator = self._page.get_by_placeholder(label, exact=False)
+                        if not await _field_locator.count():
+                            for _role in ("combobox", "textbox", "spinbutton"):
+                                _rl = self._page.get_by_role(_role, name=label)
+                                if await _rl.count():
+                                    _field_locator = _rl
+                                    break
+                        _correction = await self._check_browser_signals(label, _field_locator, _fill_ts)
+                        if _correction and _correction.transform != "none":
+                            from jobpulse.signal_interpreter import TRANSFORMS
+                            _tfn = TRANSFORMS.get(_correction.transform)
+                            if _tfn:
+                                _corrected = _tfn(value_text)
+                                if _corrected != value_text:
+                                    logger.info("Signal correction on '%s': %s('%s') -> '%s'",
+                                                label, _correction.transform, value_text[:30], _corrected[:30])
+                                    _retry = await self._fill_by_label(label, _corrected)
+                                    if _retry.get("success"):
+                                        _verified = await self._signal_interpreter.verify_correction(
+                                            _field_locator, self._page,
+                                        )
+                                        if _verified and self._fe_db:
+                                            self._fe_db.store_signal_correction(
+                                                domain=_page_domain, field_label=label,
+                                                signal_type=_correction.signal_type,
+                                                error_message=_correction.error_message[:200],
+                                                original_value=value_text, corrected_value=_corrected,
+                                                transform=_correction.transform,
+                                            )
+                                        total_fields_filled += 1
+                                        continue
                         pending_retries.append({
                             "field": fields_by_label.get(label, {"label": label, "type": "text"}),
                             "attempted_value": value_text,
@@ -2201,6 +2493,31 @@ class NativeFormFiller:
                 fill_failures.extend(final_failed_labels)
                 total_fill_failures.extend(final_failed_labels)
 
+                # Emit failure signals for persistently-unverified fills so the
+                # OptimizationEngine learning loop sees them — same signal stream
+                # as the navigator path's emit_fill_failures (source='form_filler').
+                # For known domains vision is skipped so still_failing is definitive;
+                # for unknown domains final_failed_labels is the persistent set.
+                if self._known_domain:
+                    _persistent = still_failing
+                else:
+                    _persistent_labels = set(final_failed_labels)
+                    _persistent = [
+                        item for item in still_failing
+                        if item["field"].get("label") in _persistent_labels
+                    ]
+                if _persistent:
+                    _failure_records = []
+                    for _item in _persistent:
+                        _field = _item.get("field", {})
+                        _res = _item.get("result") or {}
+                        _failure_records.append({
+                            "label": _field.get("label", "") if isinstance(_field, dict) else str(_field),
+                            "expected": str(_item.get("attempted_value", "")),
+                            "actual": str(_res.get("actual_value", "") if isinstance(_res, dict) else ""),
+                        })
+                    emit_form_fill_failures(_failure_records, domain=_page_domain)
+
             # 7d. Post-fill rescan — catch conditionally-revealed fields
             await asyncio.sleep(0.5)
             rescan_fields = await self._scan_fields()
@@ -2211,33 +2528,21 @@ class NativeFormFiller:
                     "Post-fill rescan found %d new field(s): %s",
                     len(new_fields), [f["label"] for f in new_fields],
                 )
-                new_mapping: dict[str, str] = {}
-                for nf in new_fields:
+                new_mapping, still_unresolved_rescan = seed_mapping(
+                    new_fields, profile, custom_answers,
+                    strategy=getattr(self, "_strategy", None),
+                )
+                for nf in still_unresolved_rescan:
                     lbl = nf["label"]
-                    # Check custom_answers first
-                    ca_val = custom_answers.get(lbl)
-                    if not ca_val:
-                        ca_norm = _normalize_match_text(lbl)
-                        for k, v in custom_answers.items():
-                            if k.startswith("_") or not isinstance(v, str):
-                                continue
-                            if _normalize_match_text(k) == ca_norm:
-                                ca_val = v
-                                break
-                    if ca_val and isinstance(ca_val, str):
-                        new_mapping[lbl] = ca_val
-                        continue
-                    # Profile store sensitive fields (e.g. date_of_birth)
+                    store = getattr(self, "_profile_store", None)
                     if nf.get("type") == "text":
                         el_type = nf.get("input_type", "")
                         lbl_lower = lbl.lower()
-                        store = getattr(self, "_profile_store", None)
                         if store and (el_type == "date" or "date of birth" in lbl_lower or "dob" in lbl_lower):
                             dob = store.sensitive("date_of_birth")
                             if dob and re.fullmatch(r"\d{4}-\d{2}-\d{2}", dob):
                                 new_mapping[lbl] = dob
                                 continue
-                    # Screening pipeline fallback
                     from jobpulse.screening_answers import try_screening_v2
                     v2_answer = try_screening_v2(
                         lbl, _job_ctx,
