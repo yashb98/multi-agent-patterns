@@ -167,11 +167,34 @@ def fetch_papers(max_results: int = 200) -> list[dict]:
 # ── Ranking (Broad AI Impact) ──
 
 def _extract_json_array(raw: str) -> list:
-    """Extract JSON array from LLM response, handling markdown wrappers and text prefixes."""
+    """Extract JSON array from LLM response, handling markdown fences, text
+    prefixes, and the response_format=json_object wrapping pattern.
+
+    OpenAI's response_format=json_object forces a top-level object, so a
+    prompt asking for an array ends up wrapped (e.g. ``{"rankings": [...]}``).
+    Detects the unwrap case alongside the legacy bare-array case.
+    """
+    if not raw:
+        return []
     # Strip markdown code blocks
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip()
     cleaned = re.sub(r"```\s*$", "", cleaned).strip()
-    # Find the first [ ... ] block
+    # Try a clean parse first — handles both pure arrays and pure objects.
+    try:
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        parsed = None
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        # Single-key dict whose value is a list — typical response_format=
+        # json_object wrapping. Multi-key dicts are not arrays we can
+        # extract, fall through.
+        if len(parsed) == 1:
+            only = next(iter(parsed.values()))
+            if isinstance(only, list):
+                return only
+    # Fall back: find the first [ ... ] block in the raw text.
     match = re.search(r"\[.*\]", cleaned, re.DOTALL)
     if match:
         try:
@@ -226,16 +249,20 @@ Prefer: breakthrough techniques, new architectures, surprising results, open-sou
 Papers:
 {chr(10).join(paper_texts)}
 
-Return ONLY a JSON array. Compute overall as: (novelty*0.3 + significance*0.25 + practical*0.3 + breadth*0.15)
-[{{"rank": 1, "paper_num": X, "scores": {{"novelty": N, "significance": N, "practical": N, "breadth": N}}, "overall": weighted_avg, "reason": "One sentence on why this matters to AI", "key_technique": "The main technique or contribution in 5 words", "category_tag": "e.g. LLM, Agents, Vision, RL, Efficiency, Safety, Reasoning"}}]"""
+Return ONLY valid JSON. Compute overall as: (novelty*0.3 + significance*0.25 + practical*0.3 + breadth*0.15)
+{{"rankings": [{{"rank": 1, "paper_num": X, "scores": {{"novelty": N, "significance": N, "practical": N, "breadth": N}}, "overall": weighted_avg, "reason": "One sentence on why this matters to AI", "key_technique": "The main technique or contribution in 5 words", "category_tag": "e.g. LLM, Agents, Vision, RL, Efficiency, Safety, Reasoning"}}]}}"""
 
     try:
-        # Route through CognitiveEngine (default-on) for multi-criteria ranking
+        # Route through CognitiveEngine (default-on) for multi-criteria ranking.
+        # response_format forces a top-level JSON object; the prompt asks for
+        # the rankings array wrapped under a "rankings" key, and
+        # _extract_json_array unwraps single-key dicts whose value is a list.
         from shared.agents import cognitive_llm_call
         raw = cognitive_llm_call(
             task=prompt,
             domain="arxiv_ranking",
             stakes="medium",
+            response_format={"type": "json_object"},
         )
         if raw is None:
             return candidates[:top_n]

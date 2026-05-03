@@ -112,18 +112,27 @@ def fast_score(paper: Paper) -> float:
 
 
 def _extract_json_array(raw: str) -> list:
-    """Strip markdown fences and parse a JSON array.  Returns [] on any error."""
+    """Strip markdown fences and parse a JSON array. Returns [] on any error.
+
+    Also unwraps the response_format=json_object pattern: when the LLM is
+    constrained to a top-level object but the prompt asked for an array,
+    OpenAI wraps the array under a single key (e.g. ``{"rankings": [...]}``).
+    """
     if not raw:
         return []
     # Strip markdown code fences
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
     try:
         parsed = json.loads(cleaned)
-        if isinstance(parsed, list):
-            return parsed
-        return []
     except (json.JSONDecodeError, ValueError):
         return []
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict) and len(parsed) == 1:
+        only = next(iter(parsed.values()))
+        if isinstance(only, list):
+            return only
+    return []
 
 
 def llm_rank(
@@ -164,20 +173,22 @@ def llm_rank(
         f"You are an AI research curator ranking papers for a {lens} digest.\n"
         f"Scoring weights: {weight_desc}.\n\n"
         f"Papers:\n{paper_list}\n\n"
-        f"Return a JSON array of exactly {top_n} objects with this schema:\n"
-        '[\n  {\n    "arxiv_id": "...",\n    "impact_score": <float 0-10>,\n'
-        '    "impact_reason": "...",\n    "category_tag": "one of LLM|Agents|Vision|RL|Efficiency|Safety|Reasoning|Data",\n'
-        '    "key_technique": "...",\n    "practical_takeaway": "..."\n  }\n]\n'
-        "Return ONLY the JSON array, no other text."
+        f"Return ONLY valid JSON. Schema (top_n={top_n} objects in rankings):\n"
+        '{\n  "rankings": [\n    {\n      "arxiv_id": "...",\n      "impact_score": <float 0-10>,\n'
+        '      "impact_reason": "...",\n      "category_tag": "one of LLM|Agents|Vision|RL|Efficiency|Safety|Reasoning|Data",\n'
+        '      "key_technique": "...",\n      "practical_takeaway": "..."\n    }\n  ]\n}'
     )
 
     try:
-        # Route through CognitiveEngine (default-on) for multi-criteria ranking
+        # response_format forces a top-level JSON object; the prompt asks for
+        # the rankings array wrapped under "rankings" so _extract_json_array
+        # unwraps it.
         from shared.agents import cognitive_llm_call
         raw = cognitive_llm_call(
             task=prompt,
             domain="paper_ranking",
             stakes="medium",
+            response_format={"type": "json_object"},
         )
         if raw is None:
             return _fallback()
@@ -230,17 +241,18 @@ def extract_themes(papers: list[Paper]) -> list[str]:
     prompt = (
         "Given these AI research paper titles and categories, extract 3-5 overarching themes.\n"
         f"{titles_and_cats}\n\n"
-        'Return a JSON array of strings, e.g. ["Theme 1", "Theme 2"].\n'
-        "Return ONLY the JSON array."
+        'Return ONLY valid JSON: {"themes": ["Theme 1", "Theme 2", ...]}\n'
     )
 
     try:
-        # Route through CognitiveEngine (default-on) for theme extraction
+        # response_format wraps the array under "themes"; _extract_json_array
+        # unwraps single-key dict-with-list to the inner list.
         from shared.agents import cognitive_llm_call
         raw = cognitive_llm_call(
             task=prompt,
             domain="paper_themes",
             stakes="low",
+            response_format={"type": "json_object"},
         )
         if raw is None:
             return []
