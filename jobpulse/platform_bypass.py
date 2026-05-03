@@ -217,7 +217,19 @@ class PlatformBypass:
         return None
 
     def _try_ats_patterns(self, company: str) -> str | None:
-        """Try known ATS board URL patterns with the company slug."""
+        """Try known ATS board URL patterns with the company slug.
+
+        Verifies the URL is REAL, not a catch-all placeholder. Many ATS
+        boards (notably Ashby + SmartRecruiters) return 200 OK for any slug
+        but serve a generic catch-all page, not a company-specific board.
+
+        Verification (in order):
+        1. Reject obvious empty placeholders by body size (Ashby: ~6KB).
+        2. Reject SmartRecruiters/etc. catch-all pages whose H1/title says
+           "SmartRecruiters Jobs", "Job Search", or just "Jobs".
+        3. Require the company name (or a meaningful token) to appear in
+           the page body — proves the slug actually maps to this company.
+        """
         try:
             import httpx
         except ImportError:
@@ -225,15 +237,81 @@ class PlatformBypass:
 
         slug = company.lower().replace(" ", "").replace("'", "").replace("&", "and")
         slug = "".join(c for c in slug if c.isalnum() or c == "-")
+        if not slug:
+            return None
+
+        # Tokens to check for: company name parts (whole + first significant word)
+        company_lower = company.lower()
+        company_tokens = [t for t in company_lower.split() if len(t) >= 4 and t not in ("the", "and", "ltd", "inc", "llc", "limited", "company", "group")]
 
         for ats_name, pattern in _ATS_BOARD_PATTERNS.items():
             url = f"https://{pattern.format(slug=slug)}"
             try:
-                resp = httpx.head(url, timeout=5, follow_redirects=True)
-                if resp.status_code < 400:
-                    logger.info("platform_bypass: ATS pattern hit — %s → %s", company, url)
-                    return url
-            except Exception:
+                # GET (not HEAD) — we need the body to verify it's real.
+                resp = httpx.get(url, timeout=10, follow_redirects=True)
+                if resp.status_code >= 400:
+                    continue
+                body = resp.text or ""
+                body_lower = body.lower()
+                body_size = len(body)
+
+                # Heuristic 1: body size — real boards are large.
+                # Empty Ashby placeholder is ~6KB. Real boards 100KB+.
+                if body_size < 15000:
+                    logger.debug(
+                        "platform_bypass: ATS slug %r at %s returned 200 but body is %dB — "
+                        "treating as placeholder, skipping",
+                        slug, url, body_size,
+                    )
+                    continue
+
+                # Heuristic 2: H1 / title must NOT match catch-all markers.
+                # SmartRecruiters returns "SmartRecruiters Jobs" / "Job Search"
+                # for unknown slugs (a 31KB generic page, passes size threshold).
+                import re
+                catch_all_markers = (
+                    "smartrecruiters jobs", "smartrecruiters job search",
+                    "job search", "jobs at smartrecruiters",
+                )
+                # Extract H1 + title text
+                h1_match = re.search(r"<h1[^>]*>([^<]{1,120})</h1>", body, re.I)
+                title_match = re.search(r"<title[^>]*>([^<]{1,200})</title>", body, re.I)
+                h1_text = (h1_match.group(1).strip().lower() if h1_match else "")
+                title_text = (title_match.group(1).strip().lower() if title_match else "")
+                page_id_text = f"{h1_text} | {title_text}"
+                if any(m in page_id_text for m in catch_all_markers):
+                    logger.debug(
+                        "platform_bypass: ATS URL %s has catch-all H1/title %r — skipping",
+                        url, page_id_text[:80],
+                    )
+                    continue
+                # Title alone of just "Jobs" is also a catch-all (Ashby empty)
+                if title_text in ("jobs", "job search", ""):
+                    logger.debug(
+                        "platform_bypass: ATS URL %s has generic title %r — skipping",
+                        url, title_text,
+                    )
+                    continue
+
+                # Heuristic 3: H1 / title should reference the company.
+                # The h1 is the strongest signal — real boards put the company
+                # name in the page title (e.g. <h1>HP</h1>, <h1>Air Apps</h1>).
+                slug_in_id = slug in page_id_text
+                token_in_id = any(t in page_id_text for t in company_tokens)
+                if not (slug_in_id or token_in_id):
+                    logger.debug(
+                        "platform_bypass: ATS URL %s — H1/title %r doesn't reference company — skipping",
+                        url, page_id_text[:80],
+                    )
+                    continue
+
+                logger.info(
+                    "platform_bypass: ATS pattern VERIFIED — %s → %s (body=%dKB, h1=%r)",
+                    company, url, body_size // 1000, h1_text[:60],
+                )
+                return url
+            except Exception as exc:
+                logger.debug("ATS probe failed for %s: %s", url, exc)
                 continue
         return None
 
