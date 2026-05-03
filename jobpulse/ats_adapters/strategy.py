@@ -25,15 +25,37 @@ def register_strategy(cls: type["BasePlatformStrategy"]) -> type["BasePlatformSt
     return cls
 
 
-def get_strategy(platform: str | None) -> "BasePlatformStrategy":
-    """Return the strategy for a platform, or GenericStrategy as fallback."""
+def get_strategy(
+    platform: str | None,
+    url: str | None = None,
+) -> "BasePlatformStrategy":
+    """Return the strategy for a platform.
+
+    Resolution order:
+    1. Hand-coded strategy registered by name (greenhouse, workday, etc.)
+    2. LearnedStrategy synthesized from FormExperienceDB if URL's domain
+       has ≥3 successful applications (only when url is provided)
+    3. GenericStrategy as final fallback
+    """
     key = (platform or "generic").lower()
     cls = _STRATEGY_REGISTRY.get(key)
-    if cls is None:
-        from jobpulse.ats_adapters.generic import GenericStrategy
+    if cls is not None:
+        return cls()
 
-        return GenericStrategy()
-    return cls()
+    # Synthesis path — runtime-generated strategy from accumulated FE data
+    if url:
+        try:
+            from jobpulse.ats_adapters._strategy_synthesis import (
+                synthesize_strategy_for_domain,
+            )
+            learned = synthesize_strategy_for_domain(url)
+            if learned is not None:
+                return learned
+        except Exception as exc:
+            logger.debug("get_strategy: synthesis failed: %s", exc)
+
+    from jobpulse.ats_adapters.generic import GenericStrategy
+    return GenericStrategy()
 
 
 def list_registered_strategies() -> list[str]:

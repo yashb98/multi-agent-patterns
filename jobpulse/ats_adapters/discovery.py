@@ -25,11 +25,57 @@ _URL_PATTERNS: dict[str, list[str]] = {
     "linkedin": ["linkedin.com/jobs"],
 }
 
-# DOM-based patterns (slower, used when URL is ambiguous)
+# DOM-based patterns (slower, used when URL is ambiguous).
+# Catches white-label / clone instances hosted at customer domains.
 _DOM_PATTERNS: dict[str, list[str]] = {
-    "greenhouse": ["data-mosaic-component-name", "greenhouse"],
-    "workday": ["data-automation-id", "workday"],
-    "smartrecruiters": ["spl-", "smartrecruiters"],
+    "greenhouse": [
+        "data-mosaic-component-name",
+        "greenhouse",
+        "boards-greenhouse",
+        "powered by greenhouse",
+        "greenhouse-app",
+    ],
+    "workday": [
+        "data-automation-id",
+        "workday",
+        "myworkdayjobs",
+        "wd-popup",
+    ],
+    "smartrecruiters": [
+        "spl-",
+        "smartrecruiters",
+        "spl-application",
+        "spl-form",
+    ],
+    "lever": [
+        "lever.co",
+        "jobs.lever",
+        "powered by lever",
+    ],
+    "ashby": [
+        "ashbyhq",
+        "ashby-application",
+        "ashby-jobs",
+    ],
+    "icims": [
+        "icims_content",
+        "icims-jobs",
+        "icims",
+    ],
+    "linkedin": [
+        "jobs-easy-apply",
+        "easy-apply-button",
+        "linkedin.com/jobs",
+    ],
+    "indeed": [
+        "indeed-apply",
+        "icl-AppliedFilter",
+        "indeed.com",
+    ],
+    "reed": [
+        "reed-apply",
+        "reed.co.uk",
+    ],
 }
 
 
