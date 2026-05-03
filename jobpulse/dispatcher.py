@@ -730,18 +730,6 @@ def _handle_reject_job(cmd: ParsedCommand) -> str:
     return reject_job(cmd.args)
 
 
-def _handle_submit_draft(cmd: ParsedCommand) -> str:
-    return "Draft submit commands are disabled. Use `apply <n>` and then reply `yes` when the live form is ready."
-
-
-def _handle_skip_draft(cmd: ParsedCommand) -> str:
-    return "Draft skip commands are disabled. Use `apply <n>` and then reply `no` to keep the job pending."
-
-
-def _handle_show_drafts(cmd: ParsedCommand) -> str:
-    return "Draft review is disabled. Use `show jobs` to see pending jobs and `apply <n>` to open one live application."
-
-
 def _handle_job_stats(cmd: ParsedCommand) -> str:
     from jobpulse.job_analytics import get_enhanced_job_stats
     return get_enhanced_job_stats()

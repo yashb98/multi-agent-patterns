@@ -653,8 +653,10 @@ def generate_materials(
     except Exception as exc:
         logger.warning("scan_pipeline: synthetic CV / ATS failed for %s: %s", listing.job_id[:8], exc)
 
-    # Generate CV PDF
-    if cv_text and not cv_path:
+    # Generate CV PDF only for jobs that will proceed to review or auto-apply
+    # (ats_score >= 85). Jobs below threshold are skipped by route_and_apply, so
+    # generating a PDF for them wastes ~100ms + disk without ever being used.
+    if cv_text and not cv_path and ats_score >= 85:
         try:
             from jobpulse.cv_templates.generate_cv import generate_cv_pdf
             cv_path = generate_cv_pdf(
