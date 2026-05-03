@@ -67,11 +67,11 @@ def count_databases() -> int:
 
 
 def count_dashboards() -> int:
-    """Count HTML dashboards served by the app (frontend + static)."""
+    """Count HTML dashboards served by the app (static)."""
     count = 0
-    for d in [ROOT / "frontend", ROOT / "static"]:
-        if d.exists():
-            count += len(list(d.glob("*.html")))
+    static_dir = ROOT / "static"
+    if static_dir.exists():
+        count += len(list(static_dir.glob("*.html")))
     return count
 
 

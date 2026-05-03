@@ -160,7 +160,7 @@ Config: `shared/logging_config.py`. All loggers via `get_logger(__name__)`.
 Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 
 ## Stats
-~161,000 LOC | 763 Python files | 49 databases | 4162 tests | 5 dashboards | 5 Telegram bots | 3 platforms
+~162,000 LOC | 763 Python files | 49 databases | 4163 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
@@ -174,4 +174,4 @@ Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requ
 - `shared/adversarial/CLAUDE.md` — Adversarial evaluation framework, red-teaming, robustness testing
 - `shared/execution/CLAUDE.md` — Durable execution, event sourcing, checkpointing
 - `shared/governance/CLAUDE.md` — Security, score validation, policy engine, API auth
-- `.claude/rules/` — Domain-specific rules (jobs, jobpulse, jobpulse-agents, orchestration-agents, patterns, shared, testing, frontend, error-handling, pii-policy, seven-principles)
+- `.claude/rules/` — Domain-specific rules (jobs, jobpulse, jobpulse-agents, orchestration-agents, patterns, shared, testing, error-handling, pii-policy, seven-principles)

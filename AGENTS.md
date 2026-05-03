@@ -198,4 +198,4 @@ Critical: `OPENAI_API_KEY` | `TELEGRAM_BOT_TOKEN`/`CHAT_ID` | `NOTION_API_KEY` |
 - `pattern-explorer.md` — Explores and compares orchestration patterns (sonnet)
 - `reviewer.md` — Reviews code changes against project rules (opus)
 
-Rules: `.claude/rules/` — `seven-principles.md`, `pii-policy.md`, `jobs.md`, `jobpulse.md`, `jobpulse-agents.md`, `orchestration-agents.md`, `patterns.md`, `shared.md`, `testing.md`, `frontend.md`, `error-handling.md`
+Rules: `.claude/rules/` — `seven-principles.md`, `pii-policy.md`, `jobs.md`, `jobpulse.md`, `jobpulse-agents.md`, `orchestration-agents.md`, `patterns.md`, `shared.md`, `testing.md`, `error-handling.md`

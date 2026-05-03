@@ -2,7 +2,7 @@
 
 Production autonomous agent system: 6 orchestration patterns, 15+ daily automation agents, knowledge graph with 3D visualization, Enhanced Swarm with RLM, multi-platform remote control, Claude Code Telegram approval, NLP intent classification, AI research pipeline with multi-source enrichment.
 
-**~161,000 LOC** | **763 Python files** | **49 databases** | **4162 tests** | **5 dashboards** | **5 Telegram bots** | **3 platforms**
+**~162,000 LOC** | **763 Python files** | **49 databases** | **4163 tests** | **4 dashboards** | **5 Telegram bots** | **3 platforms**
 
 > Stats auto-updated via `scripts/update_stats.py`. Source of truth: [CLAUDE.md](CLAUDE.md).
 
@@ -99,7 +99,7 @@ AST-based code graph powering risk-aware review and developer tooling via 20 MCP
 - **Extraction**: LLM-based entity/relation extraction (14 types each)
 - **Storage**: SQLite knowledge graph (entities, relations, simulation events)
 - **Retrieval**: GraphRAG — local search, multi-hop traversal, temporal, RLM deep query
-- **Visualization**: Three.js 3D neural/galaxy visualization (React frontend)
+- **Visualization**: D3.js dashboards served from `static/` (analytics, calibration, health, processes)
 
 ## Remote Control via Telegram
 
@@ -193,10 +193,6 @@ python -m jobpulse.runner daemon
 python -m mindgraph_app.main
 # Open http://localhost:8000
 
-# Start Three.js 3D version
-cd frontend && npm install && npm run dev
-# Open http://localhost:3000
-
 # Run tests
 python -m pytest tests/ -v
 
@@ -283,7 +279,6 @@ RLM_MAX_BUDGET=0.10
 | http://localhost:8000/health.html | Daemon status, agent success rates, API rate limits, errors, data export |
 | http://localhost:8000/analytics.html | GRPO scores, persona drift, cost estimates, daily trends (Chart.js) |
 | http://localhost:8000/processes.html | Agent process trail viewer (step-by-step audit) |
-| http://localhost:3000 | Three.js 3D neural/galaxy visualization (primary frontend) |
 
 ## Test Suite
 

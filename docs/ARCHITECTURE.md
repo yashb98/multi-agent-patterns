@@ -102,7 +102,6 @@ deep_query("What's my history with AI companies?")
 |------|---------|-----------|
 | Brain Neural | < 300 nodes | D3.js + Canvas (curved dendrites, synaptic pulses, neuron glow) |
 | Multi-Galaxy | >= 300 nodes | D3.js (galaxies per entity type, orbit rings, nebula) |
-| 3D Neural | frontend/ | Three.js + React (WebGL bloom, orbit camera, particle edges) |
 
 ## Scheduling
 
@@ -143,8 +142,7 @@ multi_agent_patterns/
 │   └── retriever.py        #   GraphRAG + RLM deep query
 ├── patterns/               # 4 orchestration patterns
 ├── shared/                 # 9 files — agent infrastructure
-├── static/                 # D3.js frontend (index.html, processes.html)
-├── frontend/               # React + Three.js 3D frontend
+├── static/                 # D3.js dashboards (analytics, calibration, health, processes)
 ├── scripts/                # 11 automation scripts
 ├── .github/workflows/      # 5 backup CI workflows
 └── data/                   # 4 SQLite databases
