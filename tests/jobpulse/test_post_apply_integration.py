@@ -44,7 +44,8 @@ def test_apply_job_triggers_hook(
         limiter.get_platform_count.return_value = 1
 
         # Patch the anti-detection sleep to avoid slow test
-        with patch("jobpulse.applicator.time.sleep"):
+        with patch("jobpulse.applicator.time.sleep"), \
+             patch("jobpulse.applicator.is_first_encounter", return_value=False):
             from jobpulse.applicator import apply_job
 
             # Patch the form experience DB path inside the hook

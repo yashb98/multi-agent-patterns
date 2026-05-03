@@ -33,6 +33,27 @@ _fill_lock = system_lock("jobpulse_fill_submit")
 from jobpulse.config import APPLICANT_PROFILE as PROFILE, WORK_AUTH
 
 
+def is_first_encounter(url: str | None) -> bool:
+    """Return True if this domain has no FormExperienceDB record yet.
+
+    Used by apply_job to force extra safety on never-seen domains:
+    - dry_run is forced True regardless of caller
+    - logged with FIRST_ENCOUNTER marker so the human notices
+    - vision-DOM gate threshold lowered (caller responsibility)
+
+    Defensive: any error or empty URL is treated as first encounter.
+    """
+    if not url:
+        return True
+    try:
+        from jobpulse.form_experience_db import FormExperienceDB
+        record = FormExperienceDB().lookup(url)
+        return record is None
+    except Exception as exc:
+        logger.debug("is_first_encounter: lookup failed for %s: %s", url[:60], exc)
+        return True
+
+
 def classify_action(ats_score: float, easy_apply: bool) -> str:
     """Classify what action to take based on ATS score and application complexity.
 
@@ -248,6 +269,17 @@ def apply_job(
 
     platform_key = (ats_platform or "generic").lower()
     total = 0  # fallback when dry_run skips the rate limiter section
+
+    # First-encounter safety: never-seen domains force dry_run regardless of caller.
+    # The system can't verify fills properly without a FormExperienceDB record, so we
+    # require human review for the first application to a new domain. Future runs to
+    # the same domain (now with FE rows) get normal behavior.
+    if not dry_run and is_first_encounter(url):
+        logger.warning(
+            "FIRST_ENCOUNTER: %s is a never-seen domain — forcing dry_run=True for safety",
+            url[:80],
+        )
+        dry_run = True
 
     if not dry_run:
         # Acquire mutex — prevents TOCTOU race between can_apply() and record()

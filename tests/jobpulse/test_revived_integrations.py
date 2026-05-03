@@ -313,7 +313,8 @@ def test_apply_job_loads_gotchas_into_merged_answers(tmp_path):
     db.store("greenhouse.io", "#submit", "button disabled", "scroll to bottom first")
 
     with patch("jobpulse.rate_limiter.RateLimiter") as mock_rl, \
-         patch("jobpulse.form_engine.gotchas.GotchasDB", return_value=db):
+         patch("jobpulse.form_engine.gotchas.GotchasDB", return_value=db), \
+         patch("jobpulse.applicator.is_first_encounter", return_value=False):
         # Make rate limiter deny to abort before anti-detection sleep
         mock_rl.return_value.can_apply.return_value = False
 
