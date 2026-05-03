@@ -669,8 +669,38 @@ class NativeFormFiller:
                     break
 
         if not await locator.count():
-            logger.warning("No field found for label '%s'", base_label)
-            return {"success": False, "error": f"No field for '{base_label}'"}
+            # Intent-healing fallback: re-resolve via a11y snapshot + optional LLM
+            try:
+                from jobpulse.form_engine.intent_healing import FieldIntent, heal_locator
+                from jobpulse.form_engine.field_scanner import scan_fields
+                _snapshot_fields = await scan_fields(
+                    self._page,
+                    strategy=getattr(self, "_strategy", None),
+                    form_experience_db=getattr(self, "_fe_db", None),
+                    container_selector=getattr(self, "_container_selector", None),
+                )
+                _intent = FieldIntent(
+                    label=base_label,
+                    role="textbox",
+                    field_type="text",
+                )
+                _healed = await heal_locator(
+                    self._page,
+                    stored_selector=None,
+                    intent=_intent,
+                    snapshot_fields=_snapshot_fields or None,
+                )
+                if _healed is not None and await _healed.count():
+                    locator = _healed
+                    _from_role_fallback = False
+                    logger.info("intent_healing: healed locator for '%s'", base_label)
+                else:
+                    logger.warning("No field found for label '%s'", base_label)
+                    return {"success": False, "error": f"No field for '{base_label}'"}
+            except Exception as _heal_err:
+                logger.debug("intent_healing error for '%s': %s", base_label, _heal_err)
+                logger.warning("No field found for label '%s'", base_label)
+                return {"success": False, "error": f"No field for '{base_label}'"}
 
         _FILLABLE_TAGS = {"input", "textarea", "select"}
         el = None
