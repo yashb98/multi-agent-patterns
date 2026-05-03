@@ -98,18 +98,37 @@ class NavigationActionExecutor:
 
     async def _dismiss_overlays(self, overlay_buttons: list[str]) -> None:
         url_before = self._page.url
-        # Try standard close buttons first, regardless of LLM suggestion
-        for close_text in ("Not now", "No thanks", "Dismiss", "Close", "Got it", "Maybe later", "Skip"):
-            try:
-                for role in ("button", "link"):
-                    loc = self._page.get_by_role(role, name=close_text, exact=False)
-                    if await loc.count() and await loc.first.is_visible():
-                        await loc.first.click()
-                        logger.info("Dismissed overlay via standard close: '%s'", close_text)
-                        await asyncio.sleep(0.5)
-                        return
-            except Exception:
-                continue
+        # Run the greedy substring close-button search ONLY when a real overlay
+        # exists, AND only inside the dialog container. Without these guards
+        # "Skip" matches "Skip section" / "Skip questionnaire" on multi-step
+        # forms and "Close" matches "Close my application" — clicking those
+        # submits/navigates the form. Even within a modal (e.g. LinkedIn Easy
+        # Apply), scope to the dialog so a stray "Skip optional questions"
+        # button on the underlying form doesn't get clicked by accident.
+        dialog_loc = self._page.locator(
+            '[role="dialog"], [aria-modal="true"], dialog'
+        ).first
+        try:
+            has_dialog = await dialog_loc.count() > 0
+        except Exception:
+            has_dialog = False
+        if has_dialog:
+            for close_text in ("Not now", "No thanks", "Dismiss", "Close", "Got it", "Maybe later", "Skip"):
+                try:
+                    for role in ("button", "link"):
+                        loc = dialog_loc.get_by_role(role, name=close_text, exact=False)
+                        if await loc.count() and await loc.first.is_visible():
+                            await loc.first.click()
+                            await asyncio.sleep(0.5)
+                            if self._page.url != url_before:
+                                logger.warning("Standard-close click navigated away — going back")
+                                await self._page.goto(url_before, wait_until="domcontentloaded")
+                                await asyncio.sleep(1)
+                                return
+                            logger.info("Dismissed overlay via standard close: '%s'", close_text)
+                            return
+                except Exception:
+                    continue
         # Try aria-label close/dismiss button (X icon)
         try:
             loc = self._page.locator("[aria-label*=close i], [aria-label*=dismiss i]").first

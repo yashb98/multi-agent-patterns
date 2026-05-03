@@ -5,7 +5,7 @@ React + Three.js for 3D neural/galaxy visualization.
 npm run dev starts on localhost:3000.
 
 ## Rules
-- No direct API calls in components — use api/ client layer
+- API calls use fetch() via Vite proxy — `/api` routes proxy to FastAPI backend at localhost:8000 (configured in vite.config.js)
 - Three.js scenes must dispose geometries/materials on unmount to prevent memory leaks
 - All data fetched from FastAPI backend at localhost:8000
 - Simplicity first — no abstractions for single-use components, no speculative configurability

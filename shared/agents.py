@@ -88,7 +88,7 @@ logger = get_logger(__name__)
 
 _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 _OLLAMA_BASE_URL = _OLLAMA_HOST.rstrip("/") + "/v1"
-_LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gemma4:31b")
+_LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "qwen3.6:35b-a3b")
 
 # Cloud fallback model map: current → older/cheaper equivalent
 _FALLBACK_MODELS = {
@@ -108,7 +108,8 @@ _PROVIDER_FALLBACK_CHAIN = ["openai", "anthropic", "gemini"]
 
 
 def _probe_ollama() -> bool:
-    """Check if Ollama is reachable (fast 2s timeout)."""
+    """Check if Ollama is reachable AND the target model is loaded."""
+    import json as _json
     import urllib.request
     import urllib.error
     try:
@@ -116,8 +117,17 @@ def _probe_ollama() -> bool:
             _OLLAMA_HOST.rstrip("/") + "/api/tags",
             method="GET",
         )
-        with urllib.request.urlopen(req, timeout=2):
-            return True
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = _json.loads(resp.read())
+        models = [m.get("name", "") for m in data.get("models", [])]
+        if not models:
+            logger.info("Ollama reachable but no models loaded")
+            return False
+        target = _LOCAL_MODEL.split(":")[0]
+        if not any(target in m for m in models):
+            logger.info("Ollama reachable but model %s not found (available: %s)", _LOCAL_MODEL, models[:5])
+            return False
+        return True
     except (urllib.error.URLError, OSError, TimeoutError):
         return False
 
@@ -324,6 +334,9 @@ class _InstrumentedLLM:
         return getattr(self._llm, name)
 
 
+_LOCAL_TIMEOUT_MULTIPLIER = float(os.environ.get("LOCAL_TIMEOUT_MULTIPLIER", "3.0"))
+
+
 def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
             timeout: float = 30.0, max_tokens: int = 4096,
             agent_name: str = "unknown"):
@@ -342,12 +355,14 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     When falling back to cloud via auto-detection, builds a provider chain:
       OpenAI → Anthropic → Gemini (whichever have API keys configured).
 
-    timeout: seconds before the HTTP request is aborted (default 30s).
+    timeout: seconds before the HTTP request is aborted (default 30s for
+    cloud, auto-scaled by LOCAL_TIMEOUT_MULTIPLIER for local Ollama).
     """
     _ensure_provider()
     if _is_local:
+        local_timeout = timeout * _LOCAL_TIMEOUT_MULTIPLIER
         return _InstrumentedLLM(
-            _make_local_llm(temperature, model, timeout, max_tokens),
+            _make_local_llm(temperature, model, local_timeout, max_tokens),
             model_hint=model,
             agent_name=agent_name,
         )
@@ -791,7 +806,7 @@ def cognitive_llm_call(
     scorer=None,
     fallback_llm=None,
     fallback_messages=None,
-) -> str:
+) -> str | None:
     """Route LLM calls through CognitiveEngine when available (default-on).
 
     This is the preferred way to invoke LLMs for all medium+ stakes tasks.
@@ -808,7 +823,7 @@ def cognitive_llm_call(
         fallback_messages: Optional messages list for direct fallback.
 
     Returns:
-        The generated text answer.
+        The generated text answer, or None if all fallbacks fail.
     """
     import os
 
@@ -826,7 +841,7 @@ def cognitive_llm_call(
         return _direct_llm_call(task, fallback_llm, fallback_messages)
 
 
-def _direct_llm_call(task: str, fallback_llm=None, fallback_messages=None) -> str:
+def _direct_llm_call(task: str, fallback_llm=None, fallback_messages=None) -> str | None:
     """Direct LLM fallback when cognitive engine is unavailable."""
     if fallback_llm and fallback_messages:
         try:
@@ -849,4 +864,4 @@ def _direct_llm_call(task: str, fallback_llm=None, fallback_messages=None) -> st
         return response.choices[0].message.content.strip()
     except Exception as exc:
         logger.error("Direct LLM fallback failed: %s", exc)
-        return ""
+        return None

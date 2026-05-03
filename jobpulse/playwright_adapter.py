@@ -56,6 +56,7 @@ class PlaywrightAdapter(BaseATSAdapter):
                 custom_answers=custom_answers,
                 overrides=overrides,
                 dry_run=dry_run,
+                job=kwargs.get("job"),
             )
             if result.get("success") and driver.page:
                 try:

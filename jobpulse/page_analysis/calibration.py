@@ -231,6 +231,7 @@ def _dict_to_features(d: dict[str, Any]) -> PageFeatures:
         session_expired_signals=d.get("session_expired_signals", []),
         consent_signals=d.get("consent_signals", []),
         dialog_present=d.get("dialog_present", False),
+        dialog_is_site_prompt=d.get("dialog_is_site_prompt", False),
         field_count=d.get("field_count", 0),
         button_count=d.get("button_count", 0),
         url_path=d.get("url_path", ""),

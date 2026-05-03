@@ -118,6 +118,19 @@ class FormExperienceDB:
             );
             CREATE INDEX IF NOT EXISTS idx_neg_content_hash
             ON negative_exemplars (content_hash);
+            CREATE TABLE IF NOT EXISTS signal_corrections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                field_label TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                original_value TEXT NOT NULL,
+                corrected_value TEXT NOT NULL,
+                transform TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sc_domain_field
+            ON signal_corrections (domain, field_label);
         """
 
     def _init_db_heal(self):
@@ -265,6 +278,23 @@ class FormExperienceDB:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_neg_content_hash
                 ON negative_exemplars (content_hash)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS signal_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    field_label TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    original_value TEXT NOT NULL,
+                    corrected_value TEXT NOT NULL,
+                    transform TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sc_domain_field
+                ON signal_corrections (domain, field_label)
             """)
 
     @property
@@ -925,4 +955,52 @@ class FormExperienceDB:
                 "SELECT * FROM negative_exemplars WHERE content_hash = ? ORDER BY updated_at DESC",
                 (content_hash,),
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    def store_signal_correction(
+        self,
+        domain: str,
+        field_label: str,
+        signal_type: str,
+        error_message: str,
+        original_value: str,
+        corrected_value: str,
+        transform: str,
+    ) -> None:
+        domain = self.normalize_domain(domain)
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO signal_corrections
+                   (domain, field_label, signal_type, error_message,
+                    original_value, corrected_value, transform, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (domain, field_label, signal_type, error_message,
+                 original_value, corrected_value, transform, now),
+            )
+        logger.info(
+            "signal_correction: stored %s/%s type=%s transform=%s",
+            domain, field_label, signal_type, transform,
+        )
+
+    def get_signal_corrections(
+        self, domain: str, field_label: str | None = None,
+    ) -> list[dict]:
+        domain = self.normalize_domain(domain)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if field_label:
+                rows = conn.execute(
+                    """SELECT * FROM signal_corrections
+                       WHERE domain = ? AND field_label = ?
+                       ORDER BY created_at DESC LIMIT 5""",
+                    (domain, field_label),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM signal_corrections
+                       WHERE domain = ?
+                       ORDER BY created_at DESC LIMIT 20""",
+                    (domain,),
+                ).fetchall()
         return [dict(r) for r in rows]

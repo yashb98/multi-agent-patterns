@@ -55,7 +55,6 @@ class PreSubmitGate:
         )
 
         try:
-            # Route through CognitiveEngine (default-on) for recruiter-quality review
             from shared.agents import cognitive_llm_call
             raw = cognitive_llm_call(
                 task=prompt,
@@ -63,8 +62,8 @@ class PreSubmitGate:
                 stakes="high",
             )
             if raw is None:
-                logger.warning("PreSubmitGate: cognitive engine returned None — passing by default")
-                return GateResult(passed=True, score=0.0)
+                logger.warning("PreSubmitGate: LLM returned None — blocking for human review")
+                return GateResult(passed=False, score=0.0, weaknesses=["LLM review unavailable"])
             cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
             data = json.loads(cleaned)
             score = float(data.get("score", 0))
@@ -75,5 +74,5 @@ class PreSubmitGate:
                 suggestions=data.get("suggestions", []),
             )
         except Exception as exc:
-            logger.warning("PreSubmitGate review failed: %s — passing by default", exc)
-            return GateResult(passed=True, score=0.0)
+            logger.warning("PreSubmitGate review failed: %s — blocking for human review", exc)
+            return GateResult(passed=False, score=0.0, weaknesses=[f"Review error: {exc}"])

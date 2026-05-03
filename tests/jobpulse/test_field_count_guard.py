@@ -82,3 +82,69 @@ class TestFieldCountGuard:
         # abort action should pass through untouched
         assert guarded.confidence >= 0.9
         assert guarded.action == "abort"
+
+
+class TestZeroFieldsGuard:
+    """Guard against LLM hallucinating fill_form on pages with 0 fields."""
+
+    def test_fill_form_with_zero_fields_apply_button_present(self, tmp_path):
+        pr = PageReasoner(db_path=str(tmp_path / "rc.db"))
+        # LLM hallucinated fill_form on a Workday job description page
+        action = _action([], action="fill_form")
+        snap_fields: list[dict] = []
+        snap_buttons = [
+            {"text": "Apply"},
+            {"text": "Sign In"},
+            {"text": "Save Job"},
+        ]
+        guarded = pr._apply_zero_fields_guard(action, snap_fields, snap_buttons)
+        # Should override to click_element targeting Apply
+        assert guarded.action == "click_element"
+        assert guarded.target_text == "Apply"
+        assert guarded.page_type == "job_description"
+        assert guarded.expected_outcome == "url_changes"
+
+    def test_fill_form_with_zero_fields_only_signin(self, tmp_path):
+        pr = PageReasoner(db_path=str(tmp_path / "rc.db"))
+        action = _action([], action="fill_form")
+        snap_buttons = [{"text": "Sign In"}, {"text": "Cancel"}]
+        guarded = pr._apply_zero_fields_guard(action, [], snap_buttons)
+        assert guarded.action == "click_element"
+        assert guarded.target_text == "Sign In"
+
+    def test_fill_form_with_zero_fields_no_apply_button(self, tmp_path):
+        pr = PageReasoner(db_path=str(tmp_path / "rc.db"))
+        action = _action([], action="fill_form")
+        snap_buttons = [{"text": "Cancel"}, {"text": "Back"}]
+        guarded = pr._apply_zero_fields_guard(action, [], snap_buttons)
+        # No Apply or Sign In → abort with low confidence
+        assert guarded.action == "abort"
+        assert guarded.confidence < 0.5
+
+    def test_fill_form_with_real_fields_passes_through(self, tmp_path):
+        pr = PageReasoner(db_path=str(tmp_path / "rc.db"))
+        action = _action([{"label": "Email", "value": "x@y.com", "method": "fill"}],
+                         action="fill_form")
+        snap_fields = [{"label": "Email", "input_type": "email"}]
+        snap_buttons = [{"text": "Submit"}]
+        guarded = pr._apply_zero_fields_guard(action, snap_fields, snap_buttons)
+        # Has real fields → pass through unchanged
+        assert guarded.action == "fill_form"
+        assert guarded.confidence == 0.9
+
+    def test_honeypot_only_fields_treated_as_zero(self, tmp_path):
+        pr = PageReasoner(db_path=str(tmp_path / "rc.db"))
+        action = _action([], action="fill_form")
+        snap_fields = [{"label": "honeypot_field"}]
+        snap_buttons = [{"text": "Apply Now"}]
+        guarded = pr._apply_zero_fields_guard(action, snap_fields, snap_buttons)
+        # Only honeypot → treat as 0 fields → override
+        assert guarded.action == "click_element"
+        assert "Apply Now" in guarded.target_text
+
+    def test_non_fill_action_unchanged(self, tmp_path):
+        pr = PageReasoner(db_path=str(tmp_path / "rc.db"))
+        action = _action([], action="click_element")
+        guarded = pr._apply_zero_fields_guard(action, [], [{"text": "Apply"}])
+        # click_element already → pass through
+        assert guarded.action == "click_element"

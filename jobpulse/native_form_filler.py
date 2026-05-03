@@ -1933,7 +1933,15 @@ class NativeFormFiller:
 
         _job_ctx = custom_answers.get("_job_context") or {}
         _job_id = _job_ctx.get("job_id", "")
-        _page_domain = getattr(self._page, 'url', '') or ''
+        # Normalize to netloc so signal/correction keys match the navigator path
+        # (which calls extract_domain) — otherwise OptimizationEngine bucketizes
+        # form-filler signals per full-URL while navigator signals are per-domain.
+        _raw_page_url = getattr(self._page, 'url', '') or ''
+        if isinstance(_raw_page_url, str) and _raw_page_url:
+            from jobpulse.application_orchestrator_pkg._navigator import extract_domain
+            _page_domain = extract_domain(_raw_page_url)
+        else:
+            _page_domain = ''
 
         _field_overrides = _load_field_overrides(_page_domain)
         if _field_overrides:

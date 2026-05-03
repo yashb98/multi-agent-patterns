@@ -9,7 +9,7 @@ You are a memory system debugger for this multi-agent project.
 
 Read @docs/hooks.md for the 5-tier memory architecture table and tool permission model.
 
-When debugging `shared/memory_layer.py`:
+When debugging `shared/memory_layer/` (package: `_manager.py`, `_stores.py`, `_entries.py`, `_pattern.py`, `_router.py`, `_sqlite_store.py`, `_qdrant_store.py`, `_neo4j_store.py`):
 - Check `MemoryManager.get_context_for_agent()` for injection logic
 - Verify memory is PUSHED to agents (agents should never query memory directly)
 - Check retrieval scoring and relevance filtering

@@ -32,6 +32,9 @@ def mock_page():
         loc = AsyncMock()
         loc.count = AsyncMock(return_value=1 if matches else 0)
         loc.first = AsyncMock()
+        # _dismiss_overlays now scopes the standard-close search inside the
+        # dialog container — `dialog_loc.count()` reads from `.first.count`.
+        loc.first.count = AsyncMock(return_value=1 if matches else 0)
         loc.first.is_visible = AsyncMock(return_value=matches)
         loc.first.click = AsyncMock()
         loc.first.is_checked = AsyncMock(return_value=False)
@@ -57,6 +60,9 @@ def mock_page():
             return empty_locator
         return matching_locator
 
+    # Mirror the page-level filter inside the dialog scope so dialog-scoped
+    # standard-close lookups also return empty for STANDARD_CLOSE names.
+    matching_locator.first.get_by_role = MagicMock(side_effect=get_by_role)
     page.get_by_role = MagicMock(side_effect=get_by_role)
     page.get_by_label = MagicMock(return_value=matching_locator)
     page.get_by_text = MagicMock(return_value=matching_locator)
@@ -83,6 +89,44 @@ class TestOverlayDismissal:
         await executor.execute(action, profile={})
         calls = mock_page.get_by_role.call_args_list
         assert any("Agree" in str(c) for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_no_greedy_close_when_no_dialog_present(self, mock_page):
+        """bug_009 regression: when there's no `[role="dialog"]` on the page,
+        the standard-close substring loop ("Skip"/"Close"/"Got it") must NOT
+        run on the page at large — otherwise it matches "Skip section" or
+        "Close my application" buttons that live in real form pages.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        # Force the dialog locator's count to 0 so has_dialog=False.
+        empty_dialog = AsyncMock()
+        empty_dialog.count = AsyncMock(return_value=0)
+        empty_dialog.first = AsyncMock()
+        empty_dialog.first.count = AsyncMock(return_value=0)
+        empty_dialog.first.is_visible = AsyncMock(return_value=False)
+
+        original_locator = mock_page.locator.side_effect
+
+        def locator_with_no_dialog(selector):
+            if "role=\"dialog\"" in str(selector) or "aria-modal" in str(selector):
+                return empty_dialog
+            return original_locator(selector)
+
+        mock_page.locator.side_effect = locator_with_no_dialog
+        executor = NavigationActionExecutor(mock_page)
+        action = _make_action(
+            overlays_to_dismiss=["Subscribe to newsletter"],
+            field_fills=[{"label": "Email", "value": "test@test.com", "method": "fill"}],
+        )
+        await executor.execute(action, profile={})
+        # No standard-close name should have been queried via get_by_role.
+        STANDARD_CLOSE = {"Not now", "No thanks", "Dismiss", "Close", "Got it", "Maybe later", "Skip"}
+        for call in mock_page.get_by_role.call_args_list:
+            queried_name = call.kwargs.get("name") if call.kwargs else None
+            assert queried_name not in STANDARD_CLOSE, (
+                f"Standard-close substring '{queried_name}' was queried even "
+                "though no dialog is present — would misclick form buttons"
+            )
 
 
 class TestFieldFilling:

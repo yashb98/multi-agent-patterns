@@ -1,9 +1,10 @@
 """Multi-bot Telegram setup — routes messages to the right bot based on category.
 
-4 bots, each with its own chat:
+5 bots, each with its own chat:
   Main Bot:     All commands, conversation, remote control
   Budget Bot:   Budget-only commands (spend, earn, save, undo, recurring, budget)
   Research Bot: Papers, arXiv digest, knowledge queries
+  Jobs Bot:     Job scanning, application status, approval/reject
   Alert Bot:    Send-only — recruiter emails, calendar reminders, budget alerts
 """
 

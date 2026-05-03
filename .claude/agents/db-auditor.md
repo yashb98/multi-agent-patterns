@@ -1,6 +1,6 @@
 ---
 description: "Scans test files for accidental production database references. Prevents the 2026-03-25 incident."
-tools: Read, Grep, Glob, LS
+tools: Read, Grep, Glob
 disallowedTools: Write, Edit, Bash
 model: haiku
 maxTurns: 10

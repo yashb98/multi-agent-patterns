@@ -1,6 +1,6 @@
 ---
 description: "Reviews code changes against project rules, checks dispatch sync, verifies DB safety in tests."
-tools: Read, Grep, Glob, LS
+tools: Read, Grep, Glob
 disallowedTools: Write, Edit, Bash
 model: opus
 maxTurns: 15

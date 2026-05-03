@@ -18,5 +18,7 @@ Key patterns in this project:
 - **Peer Debate** (`patterns/peer_debate.py`): Sequential pipeline then cross-critique debate rounds
 - **Dynamic Swarm** (`patterns/dynamic_swarm.py`): Task analyzer + priority queue + executor dispatch
 - **Enhanced Swarm** (`patterns/enhanced_swarm.py`): Dynamic swarm + factory + GRPO + persona evolution
+- **Plan and Execute** (`patterns/plan_and_execute.py`): Upfront planning then sequential step execution
+- **Map Reduce** (`patterns/map_reduce.py`): Parallel map across sub-tasks then reduce/merge results
 
 Always ground explanations in the actual code. Quote specific functions and line numbers.

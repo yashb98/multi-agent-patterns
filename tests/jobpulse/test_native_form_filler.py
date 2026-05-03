@@ -897,11 +897,10 @@ async def test_review_form_pass():
     page.screenshot = AsyncMock(return_value=b"\x89PNG fake")
 
     mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = '{"pass": true}'
+    mock_response.output_text = '{"pass": true}'
 
     with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
-        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        mock_openai.return_value.responses.create.return_value = mock_response
         result, _ = await review_form(page)
 
     assert result["pass"] is True
@@ -915,13 +914,10 @@ async def test_review_form_fail_with_issues():
     page.screenshot = AsyncMock(return_value=b"\x89PNG fake")
 
     mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = (
-        '{"pass": false, "issues": ["Phone empty", "Wrong country"]}'
-    )
+    mock_response.output_text = '{"pass": false, "issues": ["Phone empty", "Wrong country"]}'
 
     with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
-        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        mock_openai.return_value.responses.create.return_value = mock_response
         result, _ = await review_form(page)
 
     assert result["pass"] is False
@@ -930,24 +926,23 @@ async def test_review_form_fail_with_issues():
 
 @pytest.mark.asyncio
 async def test_review_form_sends_image():
-    """Screenshot is sent as base64 image_url in the LLM message."""
+    """Screenshot is sent as base64 input_image in the Responses API call."""
     from jobpulse.form_engine.field_mapper import review_form
 
     page = MagicMock()
     page.screenshot = AsyncMock(return_value=b"\x89PNG test")
 
     mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = '{"pass": true}'
+    mock_response.output_text = '{"pass": true}'
 
     with patch("jobpulse.form_engine.field_mapper.get_openai_client") as mock_openai:
-        mock_openai.return_value.chat.completions.create.return_value = mock_response
+        mock_openai.return_value.responses.create.return_value = mock_response
         await review_form(page)
 
-    messages = mock_openai.return_value.chat.completions.create.call_args[1]["messages"]
-    content = messages[0]["content"]
+    call_kwargs = mock_openai.return_value.responses.create.call_args[1]
+    content = call_kwargs["input"][0]["content"]
     assert isinstance(content, list)
-    image_parts = [p for p in content if p.get("type") == "image_url"]
+    image_parts = [p for p in content if p.get("type") == "input_image"]
     assert len(image_parts) == 1
 
 
@@ -1641,12 +1636,22 @@ async def test_stuck_detection_aborts_after_two_identical_pages():
          patch.object(filler, "_is_confirmation_page", new_callable=AsyncMock, return_value=False), \
          patch.object(filler, "_is_submit_page", new_callable=AsyncMock, return_value=False), \
          patch.object(filler, "_resolve_page_context", new_callable=AsyncMock), \
+         patch.object(filler, "_try_cognitive_unstuck", new_callable=AsyncMock, return_value=False), \
          patch("jobpulse.native_form_filler.map_fields", new_callable=AsyncMock,
+               return_value=({"First Name": "Test", "Email": "test@test.com"}, 0)), \
+         patch("jobpulse.native_form_filler.vision_map_unlabeled_fields", new_callable=AsyncMock,
+               return_value=({}, 0)), \
+         patch("jobpulse.native_form_filler.screen_questions", new_callable=AsyncMock,
+               return_value=({}, 0)), \
+         patch("jobpulse.native_form_filler.recover_failed_fields_with_llm", new_callable=AsyncMock,
+               return_value=({}, 0)), \
+         patch("jobpulse.native_form_filler.recover_failed_fields_with_vision", new_callable=AsyncMock,
                return_value=({}, 0)), \
          patch("jobpulse.native_form_filler.handle_modal_cv_upload", new_callable=AsyncMock), \
          patch("jobpulse.native_form_filler.upload_files", new_callable=AsyncMock), \
          patch("jobpulse.native_form_filler.check_consent", new_callable=AsyncMock), \
          patch("jobpulse.native_form_filler.asyncio.sleep", new_callable=AsyncMock), \
+         patch("shared.profile_store.get_profile_store", return_value=None), \
          patch("jobpulse.form_experience_db.FormExperienceDB", mock_fe_db):
 
         result = await filler.fill(

@@ -122,6 +122,45 @@ class ActionVerification:
         return self.url_changed or self.pre_hash != self.post_hash or self.pre_dialog != self.post_dialog
 
 
+def _maybe_reflect_on_failure(
+    verification: "ActionVerification",
+    snapshot: dict[str, Any],
+    trigger: str,
+    context_extra: dict[str, Any] | None = None,
+) -> Any:
+    """Invoke PageReasoner.reason_with_failure and return the fresh PageAction.
+
+    Centralizes reflection so all failure-mode triggers (ghost_click,
+    expected_outcome_violation, vision_disagreement, persistent_fill_failure)
+    use the same construction. Returns None on any failure — caller's existing
+    plan continues unmodified.
+    """
+    try:
+        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+
+        ctx_lines = [f"trigger={trigger}"]
+        if context_extra:
+            for k, v in context_extra.items():
+                ctx_lines.append(f"{k}={str(v)[:100]}")
+        ctx_lines.append(f"pre_url={verification.pre_url}")
+        ctx_lines.append(f"post_url={verification.post_url}")
+        ctx_lines.append(f"ghost_click={verification.ghost_click}")
+        ctx_lines.append(f"expected_outcome_met={verification.expected_outcome_met}")
+
+        failure_context = " | ".join(ctx_lines)
+        reflected = get_page_reasoner().reason_with_failure(
+            snapshot, failure_context=failure_context,
+        )
+        logger.info(
+            "Reflection (trigger=%s) produced: %s (confidence=%.2f)",
+            trigger, reflected.action, reflected.confidence,
+        )
+        return reflected
+    except Exception as exc:
+        logger.debug("Reflection failed for trigger=%s: %s", trigger, exc)
+        return None
+
+
 TERMINAL_ACTIONS = frozenset({"fill_form", "done", "abort"})
 
 MAX_NAVIGATION_STEPS = 10
@@ -727,6 +766,10 @@ class FormNavigator:
         if verification.ghost_click:
             logger.warning("ACT: ghost click detected for action '%s'", act)
             page = getattr(self.driver, "page", None)
+            retry_recovered = False
+            # Retry needs an explicit target string, so we only run it when
+            # action.target_text is set. Learned-replay actions hardcode this
+            # to "" — they fall straight through to the recovery block below.
             if page is not None and action.target_text:
                 for role in ("button", "link"):
                     try:
@@ -740,48 +783,62 @@ class FormNavigator:
                             if not self._detect_ghost_click(pre_url, pre_hash, pre_dialog,
                                                              post_snap.get("url", ""), retry_hash,
                                                              bool(post_snap.get("has_dialog"))):
+                                retry_recovered = True
                                 break
                     except Exception:
                         continue
-                else:
-                    ctx.ghost_click = True
-                    try:
-                        from shared.optimization import get_optimization_engine
-                        from datetime import UTC, datetime
-                        get_optimization_engine().emit(
-                            signal_type="failure",
-                            source_loop="navigator",
-                            domain=extract_domain(pre_url),
-                            agent_name="navigator",
-                            payload={"param": "ghost_click", "action": act, "target": action.target_text[:40]},
-                            session_id=f"gc_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
-                        removed = get_page_reasoner().invalidate(ctx.snapshot)
-                        if removed:
-                            logger.info("Invalidated cached reasoning for ghost-click page")
-                    except Exception:
-                        pass
-                    try:
-                        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
-                        reflected = get_page_reasoner().reason_with_failure(
-                            ctx.snapshot,
-                            failure_context=(
-                                f"ghost_click on action={act}, "
-                                f"target='{action.target_text[:60]}', "
-                                f"pre_url={pre_url}, post_url={post_url}"
-                            ),
-                        )
-                        ctx.reflected_action = reflected
-                        logger.info(
-                            "Reflection produced: %s (confidence=%.2f)",
-                            reflected.action, reflected.confidence,
-                        )
-                    except Exception as exc:
-                        logger.debug("Reflection failed: %s", exc)
+            if not retry_recovered:
+                ctx.ghost_click = True
+                _target_safe = (action.target_text or "")[:40]
+                try:
+                    from shared.optimization import get_optimization_engine
+                    from datetime import UTC, datetime
+                    get_optimization_engine().emit(
+                        signal_type="failure",
+                        source_loop="navigator",
+                        domain=extract_domain(pre_url),
+                        agent_name="navigator",
+                        payload={"param": "ghost_click", "action": act, "target": _target_safe},
+                        session_id=f"gc_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
+                    )
+                except Exception:
+                    pass
+                try:
+                    from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                    removed = get_page_reasoner().invalidate(ctx.snapshot)
+                    if removed:
+                        logger.info("Invalidated cached reasoning for ghost-click page")
+                except Exception:
+                    pass
+                try:
+                    from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                    reflected = get_page_reasoner().reason_with_failure(
+                        ctx.snapshot,
+                        failure_context=(
+                            f"ghost_click on action={act}, "
+                            f"target='{(action.target_text or '')[:60]}', "
+                            f"pre_url={pre_url}, post_url={post_url}"
+                        ),
+                    )
+                    ctx.reflected_action = reflected
+                    logger.info(
+                        "Reflection produced: %s (confidence=%.2f)",
+                        reflected.action, reflected.confidence,
+                    )
+                except Exception as exc:
+                    logger.debug("Reflection failed: %s", exc)
+
+            # Re-verify against the (possibly retry-updated) post_snap so
+            # _check_expected_outcome and the post_url comparison below see the
+            # current URL/hash/dialog state, not the pre-retry stale values.
+            verification = await self._verify_action(
+                pre_snapshot=ctx.snapshot,
+                post_snapshot=post_snap,
+                action_kind=act,
+            )
+            post_url = verification.post_url
+            post_hash = verification.post_hash
+            post_dialog = verification.post_dialog
 
         verification = self._check_expected_outcome(action, verification)
         if verification.expected_outcome_met is False:
@@ -789,6 +846,22 @@ class FormNavigator:
                 "ACT: expected_outcome '%s' not met for action '%s'",
                 action.expected_outcome, act,
             )
+            try:
+                from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                get_page_reasoner().invalidate(ctx.snapshot)
+            except Exception:
+                pass
+            reflected = _maybe_reflect_on_failure(
+                verification=verification,
+                snapshot=ctx.snapshot,
+                trigger="expected_outcome_violation",
+                context_extra={
+                    "expected": action.expected_outcome,
+                    "action": act,
+                },
+            )
+            if reflected is not None:
+                ctx.reflected_action = reflected
 
         intelligence = getattr(self.driver, "intelligence", None)
         if intelligence and post_url != pre_url:
@@ -816,6 +889,17 @@ class FormNavigator:
                             get_page_reasoner().invalidate(ctx.snapshot)
                         except Exception:
                             pass
+                        reflected = _maybe_reflect_on_failure(
+                            verification=verification,
+                            snapshot=ctx.snapshot,
+                            trigger="vision_disagreement",
+                            context_extra={
+                                "reasoner_type": action.page_type,
+                                "vision_type": vision_type,
+                            },
+                        )
+                        if reflected is not None:
+                            ctx.reflected_action = reflected
             except Exception as exc:
                 logger.debug("Vision gate failed: %s", exc)
 

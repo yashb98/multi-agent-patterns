@@ -10,9 +10,11 @@ When adding a new command/intent, multiple files must be updated in sync. This c
 4. Ask: What agent function will handle it? (existing file or needs new agent)
 
 Then update ALL of these files:
-- `jobpulse/dispatcher.py` — add to AGENT_MAP + correct *_INTENTS set
-- `jobpulse/swarm_dispatcher.py` — add to AGENT_MAP + correct *_INTENTS set
-- `shared/nlp_classifier.py` — add regex patterns + embedding examples for the new intent
+- `jobpulse/handler_registry.py` — add handler to the shared handler map
+- `jobpulse/intent_registry.py` — add intent to the correct intent group
+- `jobpulse/command_router.py` — add to Intent enum + classification logic
+- Verify both `jobpulse/dispatcher.py` AND `jobpulse/swarm_dispatcher.py` pick it up via `get_handler_map()`
+- `jobpulse/nlp_classifier.py` — add embedding examples for the new intent (do NOT add regex — regex tier is legacy)
 - Create test in `tests/` for dispatch routing (both dispatchers) + NLP classification
 
 Finally, run `/check-dispatch` to verify everything is in sync.

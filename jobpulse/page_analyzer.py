@@ -19,6 +19,23 @@ _VISION_THRESHOLD = 0.6
 
 _classifier = PageTypeClassifier()
 
+_REASONER_TYPE_MAP = {
+    "job_description": PageType.JOB_DESCRIPTION,
+    "application_form": PageType.APPLICATION_FORM,
+    "login_form": PageType.LOGIN_FORM,
+    "signup_form": PageType.SIGNUP_FORM,
+    "email_verification": PageType.EMAIL_VERIFICATION,
+    "confirmation": PageType.CONFIRMATION,
+    "verification_wall": PageType.VERIFICATION_WALL,
+    "consent_gate": PageType.CONSENT_GATE,
+    "session_expired": PageType.SESSION_EXPIRED,
+    "site_prompt": PageType.JOB_DESCRIPTION,
+}
+
+
+def _map_reasoner_type(page_type_str: str) -> PageType | None:
+    return _REASONER_TYPE_MAP.get(page_type_str)
+
 
 def _dom_detect(snapshot: dict | Any) -> tuple[PageType, float]:
     """Classify page type from DOM snapshot. Returns (PageType, confidence 0.0-1.0)."""
@@ -36,12 +53,18 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
         logger.warning("OpenAI not available for vision detection")
         return PageType.UNKNOWN, 0.0
 
-    client = get_openai_client()
+    vision_model = "gpt-4o-mini"
+    if is_local_llm():
+        from openai import OpenAI as _OpenAI
+        client = _OpenAI()
+    else:
+        client = get_openai_client()
+        vision_model = get_model_name("gpt-4o-mini")
     b64 = base64.b64encode(screenshot_bytes).decode()
 
     try:
         response = client.chat.completions.create(
-            model=get_model_name(),
+            model=vision_model,
             messages=[
                 {
                     "role": "system",
@@ -67,12 +90,12 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
                     ],
                 },
             ],
-            **_token_limit_kwargs(get_model_name(), 300 if is_local_llm() else 100),
+            **_token_limit_kwargs(vision_model, 100),
             temperature=0,
         )
         try:
             from shared.cost_tracker import record_openai_usage
-            record_openai_usage(response, agent_name="page_analyzer", model_hint=get_model_name())
+            record_openai_usage(response, agent_name="page_analyzer", model_hint=vision_model)
         except Exception:
             pass
 
@@ -106,7 +129,7 @@ class PageAnalyzer:
         self.form_experience = form_experience
 
     async def detect(self, snapshot: dict) -> PageType:
-        """Detect page type. Uses DOM analysis first; falls back to vision if unsure."""
+        """Detect page type: DOM → semantic reasoning → vision (ascending cost)."""
         page_type, confidence = _dom_detect(snapshot)
 
         # Stability wait for APPLICATION_FORM/UNKNOWN when platform data predicts more fields
@@ -119,12 +142,27 @@ class PageAnalyzer:
             logger.debug("DOM detection: %s (confidence=%.2f)", page_type, confidence)
             return page_type
 
-        # Low confidence — try vision
+        # Mid confidence — try semantic reasoning (~$0.001, text-only, cached)
         logger.info(
-            "DOM detection low confidence (%.2f for %s) — trying vision",
-            confidence,
-            page_type,
+            "DOM detection low confidence (%.2f for %s) — trying semantic reasoning",
+            confidence, page_type,
         )
+        try:
+            from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+            reasoner = get_page_reasoner()
+            action = await reasoner.reason(snapshot)
+            if action.confidence > confidence and action.page_type != "unknown":
+                semantic_type = _map_reasoner_type(action.page_type)
+                if semantic_type is not None:
+                    logger.info(
+                        "Semantic reasoning: %s (confidence=%.2f) — %s",
+                        semantic_type, action.confidence, action.page_understanding[:80],
+                    )
+                    return semantic_type
+        except Exception as exc:
+            logger.debug("Semantic reasoning fallback failed: %s", exc)
+
+        # Low confidence — try vision (expensive, screenshot-based)
         try:
             screenshot_bytes = await self.bridge.screenshot()
             if not screenshot_bytes:

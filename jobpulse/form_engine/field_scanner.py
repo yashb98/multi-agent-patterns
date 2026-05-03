@@ -223,7 +223,23 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 }
                 const parent = el.closest('label');
                 if (parent) return parent.textContent.trim();
-                return el.getAttribute('aria-label') || el.placeholder || el.name || '';
+                const ariaOrPh = el.getAttribute('aria-label') || el.placeholder || '';
+                if (ariaOrPh) return ariaOrPh;
+                // Walk up DOM to find the nearest question/label text
+                let node = el;
+                for (let depth = 0; node && depth < 6; depth++) {
+                    node = node.parentElement;
+                    if (!node) break;
+                    for (const sel of [':scope > label', ':scope > legend', ':scope > h3', ':scope > h4',
+                                       ':scope > p', ':scope > span', ':scope > div > label']) {
+                        for (const c of node.querySelectorAll(sel)) {
+                            if (c.contains(el)) continue;
+                            const t = c.textContent.trim();
+                            if (t.length > 3 && t.length < 200) return t;
+                        }
+                    }
+                }
+                return el.name || '';
             }
 
             function fieldType(el) {
@@ -330,6 +346,35 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 seen.add(ddKey);
                 fields.push({label, type: 'custom_dropdown', value: currentValue, testId, ddIndex: di});
             }
+            // Button-based custom dropdowns (Workday questionnaire pattern)
+            const btnDDs = document.querySelectorAll('button');
+            for (const btn of btnDDs) {
+                const btnText = btn.textContent.trim();
+                if (!btnText || !/^select\\s*(one|an?\\s*option)?$/i.test(btnText)) continue;
+                if (btn.offsetParent === null) continue;
+                const btnId = btn.id || '';
+                const btnKey = 'btn_dd:' + (btnId || btnText + btn.getBoundingClientRect().y);
+                if (seen.has(btnKey)) continue;
+                seen.add(btnKey);
+                let label = '';
+                let node = btn;
+                for (let depth = 0; node && depth < 6; depth++) {
+                    node = node.parentElement;
+                    if (!node) break;
+                    for (const sel of [':scope > legend', ':scope > label', ':scope > h3',
+                                       ':scope > h4', ':scope > p', ':scope > span', ':scope > div > label']) {
+                        for (const c of node.querySelectorAll(sel)) {
+                            if (c.contains(btn)) continue;
+                            const t = c.textContent.trim().replace(/[*]$/, '').trim();
+                            if (t.length > 5 && t.length < 300 && !/^select/i.test(t)) { label = t; break; }
+                        }
+                        if (label) break;
+                    }
+                    if (label) break;
+                }
+                if (!label) label = 'Dropdown ' + fields.length;
+                fields.push({label, type: 'custom_dropdown', value: btnText, buttonId: btnId, required: true});
+            }
             return fields;
         }""")
     except Exception as exc:
@@ -340,7 +385,10 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
     for item in (raw or []):
         label = item.get("label", "")
         ftype = item.get("type", "text")
-        if label:
+        button_id = item.get("buttonId", "")
+        if button_id:
+            locator = page.locator(f"#{button_id}")
+        elif label:
             locator = page.get_by_label(label, exact=False).first
         else:
             locator = None
@@ -357,6 +405,8 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
             entry["testId"] = item["testId"]
         if "ddIndex" in item:
             entry["ddIndex"] = item["ddIndex"]
+        if button_id:
+            entry["buttonId"] = button_id
         if item.get("question"):
             entry["label"] = item["question"]
             entry["name"] = item.get("name", "")

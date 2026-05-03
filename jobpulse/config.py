@@ -117,12 +117,18 @@ APPLICANT_POSTCODE = os.getenv("APPLICANT_POSTCODE", "")
 APPLICANT_COUNTRY = os.getenv("APPLICANT_COUNTRY", "")
 APPLICANT_TITLE = os.getenv("APPLICANT_TITLE", "Mr")
 
+APPLICANT_PHONE_CODE = os.getenv("APPLICANT_PHONE_CODE", "+44")
+APPLICANT_PHONE_DEVICE = os.getenv("APPLICANT_PHONE_DEVICE", "Mobile")
+
 APPLICANT_PROFILE: dict[str, str] = {
     "first_name": APPLICANT_FIRST_NAME,
     "last_name": APPLICANT_LAST_NAME,
     "title": APPLICANT_TITLE,
     "email": APPLICANT_EMAIL,
     "phone": APPLICANT_PHONE,
+    "phone_code": APPLICANT_PHONE_CODE,
+    "phone_extension": "",
+    "phone_device_type": APPLICANT_PHONE_DEVICE,
     "linkedin": APPLICANT_LINKEDIN,
     "github": APPLICANT_GITHUB,
     "portfolio": APPLICANT_PORTFOLIO,

@@ -1,14 +1,16 @@
 # Orchestration Patterns
 
-4 LangGraph patterns for multi-agent coordination, all sharing CodeGraph-powered review and SQLite-backed experiential learning.
+6 LangGraph patterns for multi-agent coordination, all sharing CodeGraph-powered review and SQLite-backed experiential learning.
 
 ## Patterns
 - hierarchical.py — Supervisor routes to workers + fact-checker
 - peer_debate.py — Agents cross-critique each round + fact-check + experiential learning
 - dynamic_swarm.py — Task queue + runtime re-analysis + experiential learning
 - enhanced_swarm.py — GRPO + persona + parallel candidates + experiential learning (production)
+- map_reduce.py — Parallel map phase + reduce synthesis. Uses reviewer_node, fact_check_node, ExperienceMemory.
+- plan_and_execute.py — Plan decomposition + sequential execution. Uses reviewer_node, fact_check_node, ExperienceMemory.
 
-## Cross-Cutting Infrastructure (all 4 patterns)
+## Cross-Cutting Infrastructure (all 6 patterns)
 
 | Feature | Module | What |
 |---------|--------|------|
@@ -18,7 +20,7 @@
 | Streaming Output | `shared/streaming.py:smart_llm_call()` | Token-by-token output when `STREAM_LLM_OUTPUT=1` |
 | Structured Logging | `shared/logging_config.py` | Run IDs correlate all logs per execution |
 | LLM Retry | `shared/llm_retry.py` | Exponential backoff on 429/5xx/timeout |
-| Visualization | `shared/graph_visualizer.py` | Mermaid/DOT topology diagrams for all 4 patterns |
+| Visualization | `shared/graph_visualizer.py` | Mermaid/DOT topology diagrams for all 6 patterns |
 ## Cognitive Reasoning (shared/cognitive/)
 Pattern nodes can use CognitiveEngine for self-improving reasoning inside their execution:
 ```python

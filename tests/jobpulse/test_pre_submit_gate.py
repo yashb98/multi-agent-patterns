@@ -63,8 +63,8 @@ def test_gate_blocks_low_score(mock_llm, gate, company):
 
 
 @patch("shared.agents.cognitive_llm_call")
-def test_gate_cognitive_failure_passes_by_default(mock_llm, gate, company):
-    """Cognitive engine failure => gate passes (fail-open)."""
+def test_gate_cognitive_failure_blocks_for_review(mock_llm, gate, company):
+    """Cognitive engine failure => gate blocks (fail-closed for human review)."""
     mock_llm.return_value = None
 
     result = gate.review(
@@ -72,8 +72,9 @@ def test_gate_cognitive_failure_passes_by_default(mock_llm, gate, company):
         jd_keywords=[],
         company_research=company,
     )
-    assert result.passed is True
+    assert result.passed is False
     assert result.score == 0.0
+    assert "LLM review unavailable" in result.weaknesses
 
 
 def test_gate_result_model():

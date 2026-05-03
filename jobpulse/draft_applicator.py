@@ -343,6 +343,7 @@ class DraftSession:
             custom_answers=self.merged_answers,
             overrides=None,
             dry_run=True,  # MANDATORY — AI never submits before human approval
+            job=self.job,
         )
         return result
 

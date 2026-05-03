@@ -964,7 +964,7 @@ class LiveReviewSession:
                 from jobpulse.job_notion_sync import update_application_page
                 update_application_page(
                     notion_page_id,
-                    status="Withdrawn",
+                    status="Expired",
                     notes="Job expired / no longer available",
                 )
             except Exception as exc:

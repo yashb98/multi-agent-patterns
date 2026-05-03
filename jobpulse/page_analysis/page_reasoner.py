@@ -209,6 +209,82 @@ class PageReasoner:
             return 0
 
     @staticmethod
+    def _apply_zero_fields_guard(
+        action: "PageAction",
+        snapshot_fields: list[dict],
+        snapshot_buttons: list[dict],
+    ) -> "PageAction":
+        """If LLM says fill_form but page has zero fields, override.
+
+        The LLM sometimes hallucinates 'application_form' on pages that are
+        actually job listings or pre-application landing pages (e.g. Workday
+        job descriptions). The page text mentions the role and has an Apply
+        button, but no actual form inputs. Trusting the LLM here causes the
+        form filler to spin in a hydration loop.
+
+        Override logic:
+        - If a button/link contains "apply" → click_element with that target
+        - If a button/link contains "sign in"/"login" → click_element with that target
+        - Otherwise → unknown with low confidence (forces re-classification)
+        """
+        if action.action not in ("fill_and_advance", "fill_form"):
+            return action
+        # Count fillable fields (not honeypots, not display-only)
+        fillable = [
+            f for f in snapshot_fields
+            if f.get("label") and "honeypot" not in (f.get("label") or "").lower()
+        ]
+        if fillable:
+            return action
+
+        button_texts = [
+            (b.get("text") or "").strip()
+            for b in snapshot_buttons
+            if b.get("text")
+        ]
+        apply_btn = next(
+            (t for t in button_texts if "apply" in t.lower()), "",
+        )
+        login_btn = next(
+            (t for t in button_texts
+             if any(kw in t.lower() for kw in ("sign in", "log in", "login"))), "",
+        )
+        target = apply_btn or login_btn
+
+        if target:
+            return PageAction(
+                page_understanding=action.page_understanding,
+                action="click_element",
+                target_text=target,
+                reasoning=(
+                    f"Override: LLM said {action.action} but page has 0 fillable "
+                    f"fields. Falling back to click '{target}' to navigate to "
+                    "the actual form."
+                ),
+                confidence=0.7,
+                page_type="job_description",
+                field_fills=[],
+                advance_button="",
+                overlays_to_dismiss=action.overlays_to_dismiss,
+                expected_outcome="url_changes",
+            )
+        return PageAction(
+            page_understanding=action.page_understanding,
+            action="abort",
+            target_text="",
+            reasoning=(
+                f"Override: LLM said {action.action} but page has 0 fillable "
+                "fields and no Apply/Sign In button found. Cannot proceed."
+            ),
+            confidence=0.2,
+            page_type="unknown",
+            field_fills=[],
+            advance_button="",
+            overlays_to_dismiss=action.overlays_to_dismiss,
+            expected_outcome="unknown",
+        )
+
+    @staticmethod
     def _apply_field_count_guard(
         action: "PageAction", snapshot_fields: list[dict],
     ) -> "PageAction":
@@ -297,6 +373,7 @@ class PageReasoner:
         prompt = self._build_prompt(url, page_text, dialog_text, button_summary, field_summary, wall_info)
         action = self._call_llm(prompt)
 
+        action = self._apply_zero_fields_guard(action, fields, buttons)
         action = self._apply_field_count_guard(action, fields)
         self._set_cache(cache_key, action)
         logger.info(
@@ -348,6 +425,7 @@ class PageReasoner:
               "Is there an overlay you missed? Should this escalate to wait_human?"
         )
         action = self._call_llm(prompt)
+        action = self._apply_zero_fields_guard(action, fields, buttons)
         # Do not cache reflection results — they are situational.
         logger.info(
             "PageReasoner.reflect: %s → action=%s, type=%s, confidence=%.2f",

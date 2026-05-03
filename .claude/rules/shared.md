@@ -24,7 +24,7 @@ All new LLM calls should use smart_llm_call() from shared/streaming.py (re-expor
 It auto-switches between streaming and non-streaming based on STREAM_LLM_OUTPUT env var.
 Do NOT use resilient_llm_call() in new code.
 
-## CodeGraph (shared/code_graph.py)
+## CodeGraph (shared/code_graph/)
 AST-based code intelligence used by risk_aware_reviewer_node:
 - Index Python files into SQLite graph (nodes + edges)
 - Risk scoring: security keywords, fan-in, test coverage, function size
@@ -46,7 +46,7 @@ SQLite-backed ExperienceMemory shared across all 4 patterns:
 - LRU eviction: quality * 0.6 + recency * 0.4
 - All patterns inject learned experiences into prompts and extract from high-scoring runs
 
-## NLP Classifier (shared/nlp_classifier.py)
+## NLP Classifier (jobpulse/nlp_classifier.py)
 3-tier pipeline: regex (instant) → semantic embeddings (5ms) → LLM fallback ($0.001).
 - When adding intents: add embedding examples first (preferred), then LLM gets it for free. Regex tier is legacy — do NOT add new regex patterns. Migrate existing regex patterns to embedding examples when touching this file.
 - 250+ examples across 41 intents.
@@ -60,6 +60,9 @@ Regex MUST NOT be used for classification, intent routing, question categorizati
 
 ## Real Data + Wiring Verification (MANDATORY)
 New shared features: test with real data (real embeddings, real DB queries, real API calls — never mocks or stale fixtures). Verify downstream consumers actually receive signals/data. If `OptimizationEngine` emits a signal, confirm the aggregator consumed it. If `MemoryManager` stores a fact, confirm retrieval returns it. Not wired = not done.
+
+## OPRAL Error Loop (MANDATORY)
+On every error in shared modules: **Observe** → **Plan** → **Reason** → **Act** → **Learn**. Trace root cause, fix with real data, route learning to the correct system (MemoryManager, OptimizationEngine, CognitiveEngine), verify the fix persists and prevents recurrence. Every error makes the system smarter.
 
 ## Memory Layer (shared/memory_layer/)
 All memory access goes through MemoryManager — never query SQLite/Qdrant/Neo4j directly.

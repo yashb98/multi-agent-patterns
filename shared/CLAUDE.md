@@ -7,7 +7,7 @@ Cross-cutting utilities used by all systems. Dependency flows ONE WAY: systems i
 | Module | Purpose |
 |--------|---------|
 | `agents.py` | get_llm(), agent nodes (researcher, writer, reviewer, risk_aware_reviewer, fact_checker), smart_llm_call() |
-| `code_graph.py` | AST-based CodeGraph — index Python, build call graph, compute risk scores (0-1) |
+| `code_graph/` | AST-based CodeGraph package — index Python, build call graph, compute risk scores (0-1). Submodules: `_algorithms.py`, `_indexer.py`, `_risk.py` |
 | `graph_visualizer.py` | Mermaid/DOT export for CodeGraph + LangGraph pattern topologies |
 | `streaming.py` | Streaming LLM output — StreamCallback protocol, smart_llm_call() auto-switch |
 | `llm_retry.py` | Exponential backoff retry for 429/5xx/timeout (3 retries, 2s base) |
@@ -18,9 +18,9 @@ Cross-cutting utilities used by all systems. Dependency flows ONE WAY: systems i
 | `state.py` | AgentState TypedDict + prune_state() for iteration hygiene |
 | `experiential_learning.py` | SQLite-backed ExperienceMemory + Training-Free GRPO |
 | `fact_checker.py` | 3-level verification (research notes → web search → cache) |
-| `nlp_classifier.py` | 3-tier intent classification (regex → embeddings → LLM fallback) |
+| ~~`nlp_classifier.py`~~ | Lives in `jobpulse/nlp_classifier.py`, NOT shared/ |
 | `logging_config.py` | Structured logging with run IDs (RunIdFilter) |
-| `prompts.py` | System prompt constants for all agents |
+| `prompts/` | Prompt registry package — PromptRegistry system (get_prompt, list_prompts, reload_registry) with YAML templates |
 
 ## CodeGraph System
 
@@ -70,6 +70,42 @@ Continuous learning & optimization — Pillar 3 of 6.
 - DomainStats feeds CognitiveEngine's EscalationClassifier with success rates
 - Kill switch: `OPTIMIZATION_ENABLED=false` makes engine full no-op
 - Full docs: `shared/optimization/CLAUDE.md`
+
+## Additional Modules (not in table above)
+
+| Module | Purpose |
+|--------|---------|
+| `code_intelligence/` | Unified code intelligence facade wrapping CodeGraph + HybridSearch (MCP backend). Submodules: `_indexer.py`, `_queries.py`, `_search.py`, `_analytics.py` |
+| `tools/` | Tool implementations: WebSearchTool, GmailTool, TelegramTool, DiscordTool, LinkedInTool, BrowserTool, TerminalTool |
+| `evals/` | Deterministic agent evaluation harness (CanonicalFlowCase, run_canonical_flow_evals) |
+| `model_costs/` | JSON-based model pricing data for cost tracking |
+| `hybrid_search.py` | FTS5 + vector similarity merged via Reciprocal Rank Fusion |
+| `circuit_breaker.py` | Prevents cascading external service failures |
+| `safe_fetch.py` | HTTP fetch with SSRF guardrails |
+| `prompt_defense.py` | Prompt injection defense with XML markers |
+| `pii.py` | PII wrappers for prompt construction and leak auditing |
+| `profile_store.py` | ProfileStore for applicant profile data |
+| `convergence.py` | Unified convergence controller for all patterns |
+| `dynamic_agent_factory.py` | DynamicAgentFactory + AgentTemplate for runtime agent creation |
+| `persona_evolution.py` | PersonaEvolver for prompt evolution |
+| `prompt_optimizer.py` | DSPy + GEPA prompt optimization |
+| `reranker.py` | Cross-encoder reranker (ms-marco-MiniLM) |
+| `explainability.py` | DecisionExplainer for human-readable decision audit |
+| `self_healing.py` | Database health and memory desync detection |
+| `searxng_client.py` | SearXNG self-hosted metasearch client |
+| `telegram_client.py` | Centralized Telegram Bot API client |
+| `alerting.py` | Pipeline alerting via Telegram |
+| `llm_fallback.py` | Multi-provider LLM fallback chain |
+| `db.py` | Shared SQLite connection utility (get_pooled_db_conn) |
+| `paths.py` | Project-level path constants (DATA_DIR) |
+
+## Sub-Module Documentation
+- `shared/cognitive/CLAUDE.md` — 4-level cognitive engine
+- `shared/memory_layer/CLAUDE.md` — 5-tier memory with 3 storage engines
+- `shared/optimization/CLAUDE.md` — Continuous learning & optimization
+- `shared/adversarial/CLAUDE.md` — Adversarial evaluation framework, red-teaming
+- `shared/execution/CLAUDE.md` — Durable execution, event sourcing, checkpointing
+- `shared/governance/CLAUDE.md` — Security, score validation, policy engine, API auth
 
 ## Rules
 - NEVER import from patterns/, jobpulse/, or mindgraph_app/

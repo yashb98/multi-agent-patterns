@@ -196,11 +196,17 @@ class PlaywrightDriver:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._intelligence: "BrowserIntelligence | None" = None
 
     @property
     def page(self) -> "Page | None":
         """Expose the Playwright Page for native locator access."""
         return self._page
+
+    @property
+    def intelligence(self) -> "BrowserIntelligence | None":
+        """Expose the BrowserIntelligence instance for signal capture."""
+        return self._intelligence
 
     async def _move_mouse_to(self, el) -> None:
         """Move mouse to element along a Bezier curve."""
@@ -273,8 +279,22 @@ class PlaywrightDriver:
         self._page = pages[-1] if pages else await self._context.new_page()
         logger.info("PlaywrightDriver connected to Chrome at %s (tab: %s)", url, self._page.url[:80])
 
+        try:
+            from jobpulse.browser_intelligence import BrowserIntelligence
+            self._intelligence = BrowserIntelligence()
+            await self._intelligence.attach(self._page)
+        except Exception as exc:
+            logger.debug("BrowserIntelligence attach failed (non-critical): %s", exc)
+            self._intelligence = None
+
     async def close(self) -> None:
         """Disconnect from Chrome without closing the user's tab."""
+        if self._intelligence:
+            try:
+                await self._intelligence.detach()
+            except Exception:
+                pass
+            self._intelligence = None
         self._page = None
         self._browser = None
         self._context = None
@@ -366,12 +386,57 @@ class PlaywrightDriver:
                 });
             });
 
-            // 3. Page text preview
+            // 3. Page text preview + dialog text
             const textRoot = dialog || document.body;
             const page_text_preview = textRoot ? textRoot.innerText.substring(0, 3000) : '';
+            const dialog_text = dialog ? dialog.innerText.substring(0, 1000) : '';
 
             // 4. File inputs
             const has_file_inputs = root.querySelectorAll('input[type="file"]').length > 0;
+
+            // 5. Verification wall detection (Cloudflare, reCAPTCHA, hCaptcha)
+            let verification_wall = null;
+            const vwSelectors = [
+                ['#challenge-running', 'cloudflare'],
+                ['.cf-turnstile', 'cloudflare'],
+                ['#cf-challenge-running', 'cloudflare'],
+                ['.g-recaptcha', 'recaptcha'],
+                ['#recaptcha-anchor', 'recaptcha'],
+                ['.h-captcha', 'hcaptcha'],
+            ];
+            for (const [sel, wtype] of vwSelectors) {
+                if (document.querySelector(sel)) {
+                    verification_wall = {type: wtype, selector: sel};
+                    break;
+                }
+            }
+            if (!verification_wall) {
+                const bodyLower = (document.body?.innerText || '').toLowerCase();
+                const vwTexts = [
+                    ['verify you are human', 'text_challenge'],
+                    ['unusual traffic', 'text_challenge'],
+                    ['access denied', 'http_block'],
+                    ['403 forbidden', 'http_block'],
+                    ['you have been blocked', 'http_block'],
+                    ['troubleshooting cloudflare', 'cloudflare'],
+                    ['checking your browser', 'cloudflare'],
+                    ['just a moment', 'cloudflare'],
+                ];
+                for (const [txt, wtype] of vwTexts) {
+                    if (bodyLower.includes(txt)) {
+                        verification_wall = {type: wtype, text: txt};
+                        break;
+                    }
+                }
+            }
+            if (!verification_wall) {
+                for (const frame of document.querySelectorAll('iframe')) {
+                    const src = (frame.src || '').toLowerCase();
+                    if (src.includes('challenges.cloudflare.com')) { verification_wall = {type: 'cloudflare', iframe: src}; break; }
+                    if (src.includes('google.com/recaptcha')) { verification_wall = {type: 'recaptcha', iframe: src}; break; }
+                    if (src.includes('hcaptcha.com')) { verification_wall = {type: 'hcaptcha', iframe: src}; break; }
+                }
+            }
 
             return {
                 url: location.href,
@@ -379,8 +444,10 @@ class PlaywrightDriver:
                 fields,
                 buttons,
                 page_text_preview,
+                dialog_text,
                 has_file_inputs,
                 has_dialog: !!dialog,
+                verification_wall,
             };
         }""")
 

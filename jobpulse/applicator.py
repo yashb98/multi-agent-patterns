@@ -128,24 +128,18 @@ def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
 
 
 def _infer_platform_from_url(url: str) -> str | None:
-    """Return an ATS platform key inferred from *url* (or None)."""
-    if "linkedin.com" in url:
-        return "linkedin"
-    if "indeed.com" in url:
-        return "indeed"
-    if "greenhouse.io" in url or "boards.greenhouse" in url:
-        return "greenhouse"
-    if "lever.co" in url or "jobs.lever" in url:
-        return "lever"
-    if "myworkdayjobs.com" in url:
-        return "workday"
-    if "smartrecruiters.com" in url:
-        return "smartrecruiters"
-    if "ashbyhq.com" in url:
-        return "ashby"
-    if "icims.com" in url:
-        return "icims"
-    return None
+    """Return an ATS platform key inferred from *url* (or None).
+
+    Delegates to ats_adapters.discovery.detect_platform_from_url which has
+    a richer pattern table (Reed, additional Workday domains, etc.). Kept
+    as a wrapper because callers import this name; new callers should use
+    detect_platform(url, snapshot) directly to also get DOM-based detection.
+    """
+    from jobpulse.ats_adapters.discovery import detect_platform_from_url
+    result = detect_platform_from_url(url)
+    # detect_platform_from_url returns "generic" on no match; preserve the
+    # original None contract for callers that branch on falsy.
+    return result if result and result != "generic" else None
 
 
 def prepare_application_inputs(
@@ -371,6 +365,7 @@ def apply_job(
             custom_answers=merged_answers,
             overrides=overrides,
             dry_run=dry_run,
+            job=job_context,
         )
 
         # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
@@ -401,6 +396,7 @@ def apply_job(
                 custom_answers=merged_answers,
                 overrides=overrides,
                 dry_run=dry_run,
+                job=job_context,
             )
             result["external_redirect"] = True
             result["external_url"] = external_url

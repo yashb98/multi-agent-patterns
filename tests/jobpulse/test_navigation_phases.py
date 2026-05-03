@@ -966,6 +966,72 @@ class TestPhaseAct:
         assert result.ghost_click is True
 
     @pytest.mark.asyncio
+    async def test_ghost_click_recovery_fires_with_empty_target_text(self, mock_navigator):
+        """Learned-replay actions hardcode target_text='' (see _phase_plan).
+        When such an action ghost-clicks, the for/else recovery used to be
+        nested inside `if action.target_text:` and silently skipped — emitting
+        no failure signal, no cache invalidation, no reflection. Regression
+        test for bug_008: recovery must fire when target_text is empty.
+        """
+        nav, driver, page, context = mock_navigator
+        same_snapshot = {
+            "url": "https://example.com/jobs/1",
+            "page_text_preview": "Same content",
+            "buttons": [{"text": "Apply Now"}],
+            "fields": [],
+            "has_dialog": False,
+        }
+        driver.get_snapshot = AsyncMock(return_value=same_snapshot)
+
+        with patch("jobpulse.application_orchestrator_pkg._navigator.NavigationActionExecutor") as MockExec, \
+             patch("shared.optimization.get_optimization_engine") as mock_get_opt, \
+             patch("jobpulse.page_analysis.page_reasoner.get_page_reasoner") as mock_get_reasoner:
+            MockExec.return_value.execute = AsyncMock()
+            mock_engine = MagicMock()
+            mock_engine.emit = MagicMock()
+            mock_get_opt.return_value = mock_engine
+            mock_reasoner = MagicMock()
+            mock_reasoner.invalidate = MagicMock(return_value=True)
+            mock_reasoner.reason_with_failure = MagicMock(
+                return_value=PageAction(
+                    page_understanding="recover", action="click_apply",
+                    target_text="", reasoning="reflected", confidence=0.6,
+                    page_type="job_description",
+                )
+            )
+            mock_get_reasoner.return_value = mock_reasoner
+
+            ctx = StepContext(
+                snapshot=same_snapshot,
+                url="https://example.com/jobs/1",
+                tab_state=TabState.NORMAL,
+                planned_action=PageAction(
+                    page_understanding="Replay learned",
+                    action="click_element",
+                    target_text="",
+                    reasoning="learned",
+                    confidence=0.9,
+                    page_type="job_description",
+                ),
+                plan_source="learned_verified",
+                page_fingerprint=PageFingerprint(
+                    field_count=0, button_texts=("Apply Now",), content_hash="abc",
+                    has_dialog=False, has_file_inputs=False,
+                    page_type="job_description", dom_confidence=0.8,
+                    url_path_pattern="/jobs/{id}",
+                ),
+            )
+            result = await nav._phase_act(ctx, "greenhouse", [], 0)
+
+        assert result.ghost_click is True, "ctx.ghost_click must be set for learned-replay ghost clicks"
+        assert mock_engine.emit.called, "OptimizationEngine.emit must fire on ghost-click recovery"
+        emit_kwargs = mock_engine.emit.call_args.kwargs
+        assert emit_kwargs.get("signal_type") == "failure"
+        assert emit_kwargs.get("payload", {}).get("param") == "ghost_click"
+        assert mock_reasoner.invalidate.called, "PageReasoner.invalidate must run on ghost-click recovery"
+        assert mock_reasoner.reason_with_failure.called, "reason_with_failure must run on ghost-click recovery"
+
+    @pytest.mark.asyncio
     async def test_step_appended_with_fingerprint(self, mock_navigator):
         nav, driver, page, context = mock_navigator
         driver.get_snapshot = AsyncMock(return_value={"url": "https://ats.com/apply", "page_text_preview": "New page", "buttons": [], "fields": [{"label": "Name"}], "has_dialog": False})

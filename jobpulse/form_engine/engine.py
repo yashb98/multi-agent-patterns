@@ -442,7 +442,7 @@ class FormFillEngine:
         # Generic role-based search
         button_groups = [
             ("submit", ["Submit Application", "Submit", "Apply"]),
-            ("next", ["Review", "Save & Continue", "Continue", "Next", "Proceed"]),
+            ("next", ["Review", "Save and Continue", "Save & Continue", "Continue", "Next", "Proceed"]),
         ]
 
         for action, names in button_groups:
