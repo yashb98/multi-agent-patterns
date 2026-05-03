@@ -360,8 +360,10 @@ class ApplicationOrchestrator:
     ):
         """Run PreSubmitGate on the filled answers.
 
-        Fail-closed on import/setup errors (blocks submission).
-        Pass-open only on transient runtime errors during review (with score=0).
+        Fail-closed on every error path: import failures, constructor errors,
+        filled-dict comprehension errors, and any exception escaping
+        gate.review() all return passed=False so the application is held for
+        human review rather than silently submitted with no quality check.
         """
         try:
             from jobpulse.pre_submit_gate import PreSubmitGate, GateResult
@@ -387,8 +389,8 @@ class ApplicationOrchestrator:
                 company_research=company_research,
             )
         except Exception as exc:
-            logger.warning("PreSubmitGate runtime error — passing with score=0: %s", exc)
-            return GateResult(passed=True, score=0.0, weaknesses=[f"Gate error: {exc}"])
+            logger.warning("PreSubmitGate setup error — blocking for human review: %s", exc)
+            return GateResult(passed=False, score=0.0, weaknesses=[f"Gate setup error: {exc}"])
 
     @staticmethod
     def _run_semantic_correctness_check(

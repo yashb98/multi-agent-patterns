@@ -218,47 +218,46 @@ class TestReflectWithLLM:
 
 
 class TestFeedExperienceMemory:
-    def test_stores_high_score(self):
-        mock_em = MagicMock()
-        mock_exp_cls = MagicMock(side_effect=lambda **kw: MagicMock(**kw))
+    """Real ExperienceMemory on :memory: SQLite — no MagicMock for the store."""
 
+    def _real_em(self, monkeypatch):
+        """Build a real ExperienceMemory on :memory: and patch the lazy
+        accessor inside strategy_reflector to return it."""
+        from shared.experiential_learning import ExperienceMemory
+        em = ExperienceMemory(db_path=":memory:")
+        monkeypatch.setattr(
+            "shared.experiential_learning.get_shared_experience_memory",
+            lambda: em,
+        )
+        return em
+
+    def test_stores_high_score(self, monkeypatch):
+        em = self._real_em(monkeypatch)
         strategy = _make_strategy(fields_total=10, fields_pattern=8,
                                   fields_corrected=0, total_time_seconds=30)
-        heuristics = [{"trigger": "t", "action": "a"}]
+        _feed_experience_memory(strategy, [{"trigger": "t", "action": "a"}])
+        # Real DB row was written
+        assert len(em) == 1
 
-        with patch.dict("sys.modules", {
-            "shared.experiential_learning": MagicMock(
-                get_shared_experience_memory=MagicMock(return_value=mock_em),
-                Experience=mock_exp_cls,
-            ),
-        }):
-            _feed_experience_memory(strategy, heuristics)
-        mock_em.store.assert_called_once()
-
-    def test_skips_below_threshold(self):
-        """Score 6.0 strategies should NOT be stored (threshold is 7.5)."""
-        mock_em = MagicMock()
-
+    def test_skips_below_threshold(self, monkeypatch):
+        """Score < 7.5 strategies must NOT be stored."""
+        em = self._real_em(monkeypatch)
         strategy = _make_strategy(fields_total=10, fields_pattern=5,
                                   fields_corrected=1, total_time_seconds=90)
-        score = _compute_strategy_score(strategy)
-        assert score < 7.5
+        assert _compute_strategy_score(strategy) < 7.5
+        _feed_experience_memory(strategy, [{"trigger": "t", "action": "a"}])
+        assert len(em) == 0
 
-        with patch.dict("sys.modules", {
-            "shared.experiential_learning": MagicMock(
-                get_shared_experience_memory=MagicMock(return_value=mock_em),
-                Experience=MagicMock(),
-            ),
-        }):
-            _feed_experience_memory(strategy, [{"trigger": "t", "action": "a"}])
-        mock_em.store.assert_not_called()
-
-    def test_skips_failed_strategy(self):
+    def test_skips_failed_strategy(self, monkeypatch):
+        em = self._real_em(monkeypatch)
         strategy = _make_strategy(success=False)
         _feed_experience_memory(strategy, [{"trigger": "t", "action": "a"}])
+        assert len(em) == 0
 
-    def test_skips_empty_heuristics(self):
+    def test_skips_empty_heuristics(self, monkeypatch):
+        em = self._real_em(monkeypatch)
         _feed_experience_memory(_make_strategy(), [])
+        assert len(em) == 0
 
 
 class TestReflectOnApplication:

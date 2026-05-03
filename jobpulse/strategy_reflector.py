@@ -339,7 +339,7 @@ def _feed_experience_memory(
             score=score,
             domain="job_application",
         )
-        em.store(exp)
+        em.add(exp)
         logger.info(
             "strategy_reflector: stored experience (score=%.1f) for %s",
             score, strategy.domain,

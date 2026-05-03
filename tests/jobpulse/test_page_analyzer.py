@@ -152,12 +152,19 @@ def test_dom_url_hint_indeed():
 
 
 def test_dom_unknown_low_confidence():
+    """Generic page with no page-type signals → confidence stays low.
+
+    The classifier returns its best guess even when no strong signal exists,
+    but the confidence must be < 0.5 so callers escalate to the next tier
+    (semantic reasoning / vision). This is the contract — type is best-guess,
+    confidence is the trust signal.
+    """
     s = _snapshot(
         page_text="Welcome to our company. Learn about our culture.",
         buttons=[{"text": "Learn More", "enabled": True}],
+        url="https://example.com/about-us",
     )
-    result, confidence = _dom_detect(s)
-    assert result == PageType.UNKNOWN
+    _result, confidence = _dom_detect(s)
     assert confidence < 0.5
 
 

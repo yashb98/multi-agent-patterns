@@ -430,91 +430,6 @@ class TestNetworkErrorExtraction:
         assert result == {}
 
 
-# ── Check After Fill (Integration) ────────────────────────────────────
-
-
-class TestCheckAfterFill:
-    @pytest.mark.asyncio
-    async def test_no_signals_returns_none(self):
-        interpreter = SignalInterpreter()
-        intelligence = BrowserIntelligence()
-        intelligence._mutation_injected = True
-        intelligence._page = MagicMock()
-        intelligence._page.evaluate = AsyncMock(return_value=[])
-
-        locator = MagicMock()
-        page = MagicMock()
-
-        result = await interpreter.check_after_fill(
-            intelligence, "Email", locator, time.monotonic() * 1000, page,
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_stale_signal_filtered(self):
-        interpreter = SignalInterpreter()
-        intelligence = BrowserIntelligence()
-        intelligence._mutation_injected = True
-        intelligence._page = MagicMock()
-        intelligence._page.evaluate = AsyncMock(return_value=[])
-
-        old_ts = time.monotonic() * 1000 - 5000
-        intelligence._buffer.append(CapturedSignal(
-            source="console", level="error", text="Email is required",
-            timestamp_ms=old_ts, url="", metadata={},
-        ))
-
-        fill_ts = time.monotonic() * 1000
-        result = await interpreter.check_after_fill(
-            intelligence, "Email", MagicMock(), fill_ts, MagicMock(),
-        )
-        assert result is None
-
-
-# ── Check After Submit ────────────────────────────────────────────────
-
-
-class TestCheckAfterSubmit:
-    @pytest.mark.asyncio
-    async def test_network_422_produces_errors(self):
-        interpreter = SignalInterpreter()
-        intelligence = BrowserIntelligence()
-        intelligence._mutation_injected = True
-        intelligence._page = MagicMock()
-        intelligence._page.evaluate = AsyncMock(return_value=[])
-
-        intelligence._buffer.append(CapturedSignal(
-            source="network", level="error",
-            text='{"errors": {"email": "already registered"}}',
-            timestamp_ms=100.0, url="",
-            metadata={"status_code": 422},
-        ))
-
-        page = MagicMock()
-        errors = await interpreter.check_after_submit(intelligence, page)
-        assert len(errors) == 1
-        assert errors[0].field_label == "email"
-        assert errors[0].signal_type == SignalType.DUPLICATE.value
-
-    @pytest.mark.asyncio
-    async def test_submission_blocked_signal(self):
-        interpreter = SignalInterpreter()
-        intelligence = BrowserIntelligence()
-        intelligence._mutation_injected = True
-        intelligence._page = MagicMock()
-        intelligence._page.evaluate = AsyncMock(return_value=[])
-
-        intelligence._buffer.append(CapturedSignal(
-            source="console", level="error",
-            text="Please correct the errors below",
-            timestamp_ms=100.0, url="", metadata={},
-        ))
-
-        errors = await interpreter.check_after_submit(intelligence, MagicMock())
-        assert len(errors) == 1
-        assert errors[0].signal_type == SignalType.SUBMISSION_BLOCKED.value
-
-
 # ── FormExperienceDB signal_corrections ───────────────────────────────
 
 
@@ -635,78 +550,16 @@ class TestCDPLogListener:
         assert len(bi._buffer) == 0
 
 
-# ── Mutation Observer Polling ─────────────────────────────────────────
 
 
-class TestMutationPolling:
-    @pytest.mark.asyncio
-    async def test_poll_captures_dom_errors(self):
-        bi = BrowserIntelligence()
-        bi._mutation_injected = True
-        bi._page = MagicMock()
-        bi._page.url = "https://example.com/apply"
-        bi._page.evaluate = AsyncMock(return_value=[
-            {"type": "dom_error", "text": "Email is required", "label": "email", "selector": "SPAN.error"},
-        ])
-
-        await bi.poll_mutations()
-        assert len(bi._buffer) == 1
-        assert bi._buffer[0].source == "mutation"
-        assert bi._buffer[0].text == "Email is required"
-        assert bi._buffer[0].metadata["field_label"] == "email"
-
-    @pytest.mark.asyncio
-    async def test_poll_skips_when_not_injected(self):
-        bi = BrowserIntelligence()
-        bi._mutation_injected = False
-        bi._page = MagicMock()
-
-        await bi.poll_mutations()
-        assert len(bi._buffer) == 0
-
-    @pytest.mark.asyncio
-    async def test_poll_handles_error_gracefully(self):
-        bi = BrowserIntelligence()
-        bi._mutation_injected = True
-        bi._page = MagicMock()
-        bi._page.evaluate = AsyncMock(side_effect=Exception("page crashed"))
-
-        await bi.poll_mutations()
-        assert len(bi._buffer) == 0
-
-
-# ── Verify Correction ────────────────────────────────────────────────
-
-
-class TestVerifyCorrection:
-    @pytest.mark.asyncio
-    async def test_verification_passes_when_no_errors(self):
-        interpreter = SignalInterpreter()
-        locator = MagicMock()
-        locator.element_handle = AsyncMock(return_value=MagicMock())
-        page = MagicMock()
-        page.evaluate = AsyncMock(return_value={"invalid": False, "hasErrorEl": False})
-
-        result = await interpreter.verify_correction(locator, page)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_verification_fails_when_still_invalid(self):
-        interpreter = SignalInterpreter()
-        locator = MagicMock()
-        locator.element_handle = AsyncMock(return_value=MagicMock())
-        page = MagicMock()
-        page.evaluate = AsyncMock(return_value={"invalid": True, "hasErrorEl": True})
-
-        result = await interpreter.verify_correction(locator, page)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_verification_degrades_gracefully_on_exception(self):
-        """When DOM check fails, verify_correction returns False (can't confirm fix)."""
-        interpreter = SignalInterpreter()
-        locator = MagicMock()
-        page = MagicMock()
-        with patch.object(interpreter, "_dom_cross_check", new_callable=AsyncMock, side_effect=Exception("crash")):
-            result = await interpreter.verify_correction(locator, page)
-        assert result is False
+# ---------------------------------------------------------------------------
+# Removed 2026-05-03: Playwright-bridge orchestration tests
+#   - TestCheckAfterFill (2 tests) — required MagicMock for intelligence._page
+#   - TestCheckAfterSubmit (2 tests) — same
+#   - TestMutationPolling (3 tests) — MagicMock for bi._page.evaluate
+#   - TestVerifyCorrection (3 tests) — MagicMock for locator + page
+# All required mocking the Playwright Page (Category B per project policy).
+# Real check-after-fill / check-after-submit / verify behavior is exercised
+# end-to-end in tests/jobpulse/integration/test_pipeline_live.py against
+# real Chrome via CDP.
+# ---------------------------------------------------------------------------
