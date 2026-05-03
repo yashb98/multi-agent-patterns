@@ -63,6 +63,14 @@ class SSOHandler:
                     break
 
         if not candidates:
+            # Fallback: generic SSO patterns (Okta, Auth0, corporate, etc.)
+            try:
+                from jobpulse.sso_auto_discovery import detect_sso_button_patterns
+                generic = detect_sso_button_patterns(buttons)
+                if generic:
+                    return generic
+            except Exception as exc:
+                logger.debug("Generic SSO discovery failed: %s", exc)
             return None
 
         # Return highest priority SSO option
