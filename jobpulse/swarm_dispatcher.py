@@ -607,6 +607,7 @@ def _llm_judge_score(result: str, intent: str, grounding: dict | None) -> float 
             task=prompt,
             domain="swarm_judge",
             stakes="medium",
+            response_format={"type": "json_object"},
         )
         if not raw:
             return None

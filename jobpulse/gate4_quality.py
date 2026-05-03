@@ -276,11 +276,14 @@ def scrutinize_cv_llm(
         f'"verdict": "shortlist"|"maybe"|"reject"}}'
     )
 
-    # Route through CognitiveEngine for reflexion + tree-of-thought (L3)
+    # JSON mode bypasses cognitive engine (response_format would interfere
+    # with multi-step reflexion / tree-of-thought intermediate text). The
+    # gate is well-suited to single-shot LLM with structured output.
     response = cognitive_llm_call(
         task=prompt,
         domain="cv_scrutiny",
         stakes="high",
+        response_format={"type": "json_object"},
     )
 
     if not response:

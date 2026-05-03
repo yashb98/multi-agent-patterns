@@ -471,6 +471,7 @@ class ScanLearningEngine:
             task=prompt,
             domain="scan_learning",
             stakes="medium",
+            response_format={"type": "json_object"},
         )
 
         if not response:

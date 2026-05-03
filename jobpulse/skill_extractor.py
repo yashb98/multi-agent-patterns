@@ -386,6 +386,7 @@ def _extract_skills_llm(jd_text: str) -> dict:
         domain="skill_extraction",
         stakes="medium",
         fallback_messages=fallback_messages,
+        response_format={"type": "json_object"},
     )
 
     # Wrap the response in a choices-like structure for downstream parsing

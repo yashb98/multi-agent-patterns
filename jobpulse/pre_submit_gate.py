@@ -141,6 +141,7 @@ class PreSubmitGate:
                 task=prompt,
                 domain="pre_submit_review",
                 stakes="high",
+                response_format={"type": "json_object"},
             )
             if raw is None:
                 logger.warning("PreSubmitGate: LLM returned None — blocking for human review")

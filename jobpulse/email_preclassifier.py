@@ -486,6 +486,7 @@ Respond in JSON only."""
             task=prompt,
             domain="email_preclassifier",
             stakes="medium",
+            response_format={"type": "json_object"},
         )
         if response_text:
             return json.loads(response_text)
