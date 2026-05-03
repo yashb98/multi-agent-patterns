@@ -238,22 +238,22 @@ class TestHappyPath:
 
 class TestFailureModes:
     @pytest.mark.asyncio
-    async def test_malformed_json_from_llm_returns_skipped(self, monkeypatch):
-        """LLM returning malformed JSON → _call_llm_for_actions returns [] → skipped."""
+    async def test_llm_call_raises_returns_failed(self, monkeypatch):
+        """If _call_llm_for_actions raises (unexpected), public fn returns failed."""
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         page = _make_page()
 
-        # _call_llm_for_actions swallows JSON errors and returns []
         with patch(
             "jobpulse.form_engine.widget_llm_recovery._call_llm_for_actions",
-            return_value=[],
+            side_effect=RuntimeError("network error"),
         ):
             result = await recover_widget_via_llm(
                 page=page, label="Skills", value="Python",
                 html_snippet=_SAMPLE_HTML,
             )
 
-        assert result["status"] == "skipped"
+        assert result["status"] == "failed"
+        assert "LLM call error" in result["reason"]
         assert result["actions_executed"] == 0
 
     @pytest.mark.asyncio
@@ -293,36 +293,52 @@ class TestFailureModes:
 # ── LLM helper unit tests ──
 
 class TestCallLlmForActions:
-    def test_returns_empty_list_on_llm_exception(self):
-        """_call_llm_for_actions swallows exceptions and returns []."""
-        with patch(
-            "jobpulse.form_engine.widget_llm_recovery._call_llm_for_actions",
-            side_effect=Exception("network error"),
-        ):
-            # We're testing the contract: the public function should never raise
-            pass  # verified via the happy/failure path tests above
-
-    def test_json_parse_malformed_returns_empty(self):
-        """Directly test _call_llm_for_actions with mocked LLM returning bad JSON."""
+    def test_swallows_exception_returns_empty_list(self):
+        """_call_llm_for_actions must return [] even when smart_llm_call raises."""
         try:
-            from shared.agents import get_llm, smart_llm_call
-            from langchain_core.messages import HumanMessage
+            from shared.agents import get_llm  # noqa: F401
         except ImportError:
-            pytest.skip("LangChain not installed")
+            pytest.skip("shared.agents not available")
 
         mock_response = MagicMock()
         mock_response.content = "not valid json at all !!!"
 
+        # Patch the lazy imports at their source (shared.agents) so the
+        # function's `from shared.agents import ...` picks up the mock.
         with (
-            patch("jobpulse.form_engine.widget_llm_recovery.get_llm",
-                  return_value=MagicMock(), create=True),
-            patch("jobpulse.form_engine.widget_llm_recovery.smart_llm_call",
-                  return_value=mock_response, create=True),
+            patch("shared.agents.get_llm", return_value=MagicMock()),
+            patch("shared.agents.smart_llm_call", return_value=mock_response),
         ):
-            # Even with bad JSON, _call_llm_for_actions returns []
             result = _call_llm_for_actions(
                 label="Test", value="val",
                 html_snippet="<div/>", field_role="textbox",
             )
-            # Either [] (parse failed) or a list (json parse succeeded somehow)
-            assert isinstance(result, list)
+
+        # Malformed JSON → json.loads raises → except swallows → returns []
+        assert result == []
+
+    def test_valid_json_array_returned_as_list(self):
+        """_call_llm_for_actions parses a valid JSON array response correctly."""
+        try:
+            from shared.agents import get_llm  # noqa: F401
+        except ImportError:
+            pytest.skip("shared.agents not available")
+
+        mock_response = MagicMock()
+        mock_response.content = (
+            '[{"type": "click", "selector": ".btn"}, '
+            '{"type": "fill", "selector": "#inp", "value": "hello"}]'
+        )
+
+        with (
+            patch("shared.agents.get_llm", return_value=MagicMock()),
+            patch("shared.agents.smart_llm_call", return_value=mock_response),
+        ):
+            result = _call_llm_for_actions(
+                label="Test", value="hello",
+                html_snippet="<div/>", field_role="textbox",
+            )
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["type"] == "click"
