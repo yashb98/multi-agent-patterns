@@ -270,36 +270,62 @@ class ApplicationOrchestrator:
                 company_research=_company_research,
             )
 
+            # Semantic-correctness check (LLM-as-judge + deterministic checks).
+            # Different from gate_result above which is the recruiter-quality
+            # score. This catches values that passed read-back but are
+            # semantically wrong (e.g. visa/sponsor contradiction, name/email
+            # mismatching the actual profile, placeholder values).
+            sem_result = self._run_semantic_correctness_check(
+                custom_answers=custom_answers,
+                jd_keywords=jd_keywords or [],
+                profile=profile,
+            )
+
             try:
                 if _tid and _opt_engine:
                     _opt_engine.log_step(_tid, TrajectoryStep(
                         step_index=_step_idx, action="pre_submit_gate",
-                        target=url, input_value=f"score={gate_result.score:.1f}",
-                        output_value="passed" if gate_result.passed else "blocked",
-                        outcome="success" if gate_result.passed else "failure",
+                        target=url,
+                        input_value=f"recruiter={gate_result.score:.1f} semantic={sem_result.score:.1f}",
+                        output_value=(
+                            "passed" if gate_result.passed and sem_result.passed
+                            else "blocked"
+                        ),
+                        outcome=(
+                            "success" if gate_result.passed and sem_result.passed
+                            else "failure"
+                        ),
                         duration_ms=(_time.monotonic() - _gate_t0) * 1000, metadata={},
                     ))
                     _step_idx += 1
             except Exception:
                 pass
 
-            if not gate_result.passed:
+            # Block if EITHER gate fails — both must pass to submit
+            if not gate_result.passed or not sem_result.passed:
+                combined_weaknesses = list(gate_result.weaknesses) + list(sem_result.weaknesses)
+                combined_suggestions = list(gate_result.suggestions)
                 logger.warning(
-                    "PreSubmitGate blocked submission (score=%.1f): %s",
-                    gate_result.score,
-                    gate_result.weaknesses,
+                    "PreSubmitGate blocked submission "
+                    "(recruiter=%.1f, semantic=%.1f): %s",
+                    gate_result.score, sem_result.score, combined_weaknesses,
                 )
-                self._complete_trajectory(_tid, _opt_engine, "failure_gate_blocked", gate_result.score, _t0)
+                self._complete_trajectory(
+                    _tid, _opt_engine, "failure_gate_blocked",
+                    min(gate_result.score, sem_result.score), _t0,
+                )
                 return {
                     "success": False,
                     "needs_human_review": True,
                     "gate_score": gate_result.score,
-                    "gate_weaknesses": gate_result.weaknesses,
-                    "gate_suggestions": gate_result.suggestions,
+                    "semantic_score": sem_result.score,
+                    "gate_weaknesses": combined_weaknesses,
+                    "gate_suggestions": combined_suggestions,
                     "screenshot": result.get("screenshot"),
                     "pages_filled": result.get("pages_filled"),
                 }
             result["gate_score"] = gate_result.score
+            result["semantic_score"] = sem_result.score
 
         # Save successful navigation for future replay
         if result.get("success"):
@@ -363,6 +389,50 @@ class ApplicationOrchestrator:
         except Exception as exc:
             logger.warning("PreSubmitGate runtime error — passing with score=0: %s", exc)
             return GateResult(passed=True, score=0.0, weaknesses=[f"Gate error: {exc}"])
+
+    @staticmethod
+    def _run_semantic_correctness_check(
+        custom_answers: dict,
+        jd_keywords: list[str],
+        profile: dict | None,
+    ):
+        """Run PreSubmitGate.check_semantic_correctness.
+
+        Verifies values that PASSED read-back are also semantically correct:
+        cross-field consistency (visa/sponsor), profile alignment (name/email),
+        placeholder detection, plus optional LLM-as-judge for JD relevance.
+
+        Fail-open on import/runtime errors (passing-with-warning) — semantic
+        check is additive to the existing recruiter gate; blocking on its
+        own failures would be too aggressive while it's unproven in production.
+        """
+        try:
+            from jobpulse.pre_submit_gate import PreSubmitGate, GateResult
+        except ImportError as exc:
+            logger.warning("Semantic correctness check unavailable: %s", exc)
+            class _PassResult:
+                passed = True
+                score = 10.0
+                weaknesses: list[str] = []
+                suggestions: list[str] = []
+            return _PassResult()
+
+        try:
+            filled = {
+                k: str(v)
+                for k, v in custom_answers.items()
+                if not k.startswith("_") and isinstance(v, (str, int, float, bool))
+            }
+            gate = PreSubmitGate()
+            return gate.check_semantic_correctness(
+                filled_answers=filled,
+                jd_keywords=jd_keywords,
+                profile=profile or {},
+                run_llm_judge=True,
+            )
+        except Exception as exc:
+            logger.warning("Semantic correctness check error — passing with score=10: %s", exc)
+            return GateResult(passed=True, score=10.0, weaknesses=[f"Semantic check error: {exc}"])
 
     @staticmethod
     def _to_page_snapshot(snapshot: dict) -> PageSnapshot:

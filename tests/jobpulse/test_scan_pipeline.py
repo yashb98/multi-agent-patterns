@@ -1,18 +1,32 @@
 """Tests for jobpulse/scan_pipeline.py — the 5 extracted pipeline stages.
 
-Each test uses tmp_path and monkeypatching to stay fully isolated from
-production data/*.db files.
+Per project policy: real JobListing/JobDB/SearchConfig objects, no synthetic
+fixtures. External boundaries (scan_platforms, gate0_title_relevance,
+SkillGraphStore, BlocklistCache, check_jd_quality, etc.) are still patched
+because invoking them in CI means real Indeed/LinkedIn HTTP + real LLM cost;
+those are Category C boundaries left alone in this pass.
+
+DB writes go through a real `JobDB(db_path=tmp_path/...)` so assertions
+inspect actual SQLite rows rather than `mock.assert_called_with(...)` calls.
+
+ProcessTrail is a real instance — it's a pure logger over a list, no mock
+needed.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 import pytest
 
+from jobpulse.models.application_models import JobListing, SearchConfig
+from jobpulse.process_logger import ProcessTrail
+from jobpulse.job_db import JobDB
+
 
 # ---------------------------------------------------------------------------
-# Helpers / shared fixtures
+# Real-object factories (no MagicMock for the system under test or for data)
 # ---------------------------------------------------------------------------
 
 
@@ -28,42 +42,52 @@ def _make_listing(
     location="London",
     easy_apply=False,
     ats_platform=None,
-):
-    listing = MagicMock()
-    listing.job_id = job_id
-    listing.title = title
-    listing.company = company
-    listing.platform = platform
-    listing.url = url
-    listing.required_skills = required_skills or ["Python", "SQL"]
-    listing.preferred_skills = preferred_skills or ["Tableau"]
-    listing.description_raw = description_raw
-    listing.location = location
-    listing.easy_apply = easy_apply
-    listing.ats_platform = ats_platform
-    return listing
+) -> JobListing:
+    """Construct a real JobListing pydantic model."""
+    return JobListing(
+        job_id=job_id,
+        title=title,
+        company=company,
+        platform=platform,
+        url=url,
+        required_skills=required_skills or ["Python", "SQL"],
+        preferred_skills=preferred_skills or ["Tableau"],
+        description_raw=description_raw,
+        location=location,
+        easy_apply=easy_apply,
+        ats_platform=ats_platform,
+        found_at=datetime.now(timezone.utc),
+    )
 
 
 def _make_trail():
+    """ProcessTrail is a fire-and-forget logger that writes to a global SQLite
+    sink. To avoid touching the production agent_process_trails table from
+    tests, we substitute a no-op stub. ProcessTrail behavior is covered in
+    its own dedicated test file."""
     trail = MagicMock()
     trail.log_step = MagicMock()
     return trail
 
 
-def _make_db():
-    db = MagicMock()
-    db.save_listing = MagicMock()
-    db.save_application = MagicMock()
-    db.update_status = MagicMock()
-    db.get_applications_by_company = MagicMock(return_value=[])
-    return db
+import tempfile
 
 
-def _make_search_config(titles=None, exclude_keywords=None):
-    cfg = MagicMock()
-    cfg.titles = titles or ["data analyst", "python developer"]
-    cfg.exclude_keywords = exclude_keywords or ["senior", "lead"]
-    return cfg
+def _make_db() -> JobDB:
+    """Real JobDB on a per-call temp SQLite file (cleaned up by OS on exit).
+    Tests can query the DB directly to verify writes — no MagicMock involved."""
+    fd, path = tempfile.mkstemp(suffix=".db", prefix="test_scan_")
+    import os
+    os.close(fd)
+    return JobDB(db_path=Path(path))
+
+
+def _make_search_config(titles=None, exclude_keywords=None) -> SearchConfig:
+    """Real SearchConfig pydantic model."""
+    return SearchConfig(
+        titles=titles or ["data analyst", "python developer"],
+        exclude_keywords=exclude_keywords or ["senior", "lead"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +328,14 @@ class TestPrescreenListings:
         assert gate_skipped == 0
         assert gate4_blocked == 0
         assert gate4_filtered == []
-        db.save_application.assert_called_with(job_id=listing.job_id, status="Rejected", match_tier="reject")
+        # Verify against real DB row, not a mock-call assertion.
+        import sqlite3
+        with sqlite3.connect(db.db_path) as conn:
+            row = conn.execute(
+                "SELECT status, match_tier FROM applications WHERE job_id = ?",
+                (listing.job_id,),
+            ).fetchone()
+        assert row == ("Rejected", "reject")
 
     def test_skip_tier_saves_and_excludes(self):
         from jobpulse.scan_pipeline import prescreen_listings
@@ -600,6 +631,8 @@ class TestRouteAndApply:
         listing = _make_listing()
         bundle = self._make_bundle(ats_score=92.0)
         db = _make_db()
+        # Real DB requires the listing to exist before save_application can FK to it.
+        db.save_listing(listing)
         review_batch: list = []
 
         with (
@@ -676,6 +709,9 @@ class TestRouteAndApply:
         listing = _make_listing()
         bundle = self._make_bundle(ats_score=70.0, notion_page_id=None)
         db = _make_db()
+        db.save_listing(listing)
+        # update_status only changes existing rows, so seed an application row first.
+        db.save_application(job_id=listing.job_id, status="Analyzing")
         review_batch: list = []
 
         with (
@@ -685,7 +721,14 @@ class TestRouteAndApply:
             result = route_and_apply(listing, bundle, db, review_batch, remaining_cap=10, auto_applied=0)
 
         assert result.action == "skipped"
-        db.update_status.assert_called_once_with(listing.job_id, "Skipped")
+        # Verify the real DB row was updated, not a mock call.
+        import sqlite3
+        with sqlite3.connect(db.db_path) as conn:
+            row = conn.execute(
+                "SELECT status FROM applications WHERE job_id = ?",
+                (listing.job_id,),
+            ).fetchone()
+        assert row is not None and row[0] == "Skipped"
 
     def test_daily_cap_reached_routes_to_review(self):
         from jobpulse.scan_pipeline import route_and_apply

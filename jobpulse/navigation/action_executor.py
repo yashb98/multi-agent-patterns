@@ -203,6 +203,16 @@ class NavigationActionExecutor:
                 loc = self._page.get_by_label(label, exact=False)
                 if not await loc.count():
                     loc = self._page.get_by_placeholder(label, exact=False)
+
+                # Intent-based self-healing: when both label and placeholder
+                # locators return 0, hand the field to heal_locator (3-tier
+                # resolution including LLM-against-live-a11y-tree). Closes
+                # the DOM-rotation gap.
+                if not await loc.count():
+                    healed = await self._heal_via_intent(label)
+                    if healed is not None:
+                        loc = healed
+
                 if await loc.count():
                     await loc.first.fill(value)
                     if await self._verify_fill(loc.first, value):
@@ -231,10 +241,44 @@ class NavigationActionExecutor:
                                 label[:30], retry_exc,
                             )
                 else:
-                    logger.warning("No locator for fill: %s", label[:40])
+                    logger.warning("No locator for fill: %s (intent healing exhausted)", label[:40])
+                    result.record_fill_failure(label, value, "")
 
         except Exception as exc:
             logger.warning("Fill failed for '%s' (%s): %s", label[:30], method, exc)
+
+    async def _heal_via_intent(self, label: str) -> Any | None:
+        """Last-resort selector resolution via intent_healing.heal_locator.
+
+        Called when get_by_label and get_by_placeholder both return 0.
+        Builds a FieldIntent from the label and tries the 3-tier resolution
+        (stored selector → role/label fallback → LLM against live a11y tree).
+        Returns the resolved Playwright Locator, or None if all paths fail.
+        """
+        try:
+            from jobpulse.form_engine.intent_healing import (
+                FieldIntent, heal_locator,
+            )
+            intent = FieldIntent(
+                label=label,
+                role="textbox",
+                field_type="text",
+            )
+            # We don't have a stored selector here (the action_executor doesn't
+            # cache them) — pass None to skip path 1 and go straight to
+            # role-based fallback + LLM resolution.
+            healed = await heal_locator(
+                self._page,
+                stored_selector=None,
+                intent=intent,
+                snapshot_fields=None,
+            )
+            if healed is not None:
+                logger.info("intent_healing resolved label=%r", label[:40])
+            return healed
+        except Exception as exc:
+            logger.debug("_heal_via_intent failed for %r: %s", label[:40], exc)
+            return None
 
     @staticmethod
     async def _safe_input_value(locator: Any) -> str:
