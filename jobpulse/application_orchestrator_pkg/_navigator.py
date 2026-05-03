@@ -739,7 +739,18 @@ class FormNavigator:
 
             bypass_result = await self._bypass_verification_wall(ctx.snapshot, wall_info)
             ctx.action_executed = True
-            if bypass_result["solved"]:
+            # _bypass_verification_wall returns solved=True whenever the page
+            # is no longer a VERIFICATION_WALL — but for reflection-carryover
+            # wait_human on a non-wall page (e.g. login credentials rejected),
+            # the page was never a wall to begin with, so "solved" is a
+            # false positive. Detect that case via URL stability and treat
+            # it as not-solved.
+            bypass_post_url = (bypass_result.get("snapshot") or {}).get("url", "")
+            carryover_made_no_progress = (
+                ctx.plan_source == "reflection_carryover"
+                and bypass_post_url == pre_url
+            )
+            if bypass_result["solved"] and not carryover_made_no_progress:
                 post_snap = bypass_result["snapshot"]
             else:
                 if job:
@@ -747,6 +758,23 @@ class FormNavigator:
                     if pb_result is not None:
                         ctx.post_snapshot = pb_result
                         return ctx
+                # When wait_human came from a reflection carryover and the
+                # bypass didn't actually move the page, the primary reasoner
+                # would just return the same failed action next iteration.
+                # Escalate to abort via the same carryover machinery.
+                if ctx.plan_source == "reflection_carryover":
+                    logger.info(
+                        "ACT: wait_human via reflection_carryover did not resolve — "
+                        "escalating to abort"
+                    )
+                    ctx.reflected_action = PageAction(
+                        page_understanding="Reflection escalated to wait_human but no resolution within bypass window",
+                        action="abort",
+                        target_text="",
+                        reasoning="wait_human via reflection carryover did not resolve; primary reasoner would re-run the failed action",
+                        confidence=0.7,
+                        page_type=action.page_type if action else "unknown",
+                    )
                 ctx.post_snapshot = bypass_result["snapshot"]
                 return ctx
         elif act == "go_back":
