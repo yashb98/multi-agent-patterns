@@ -313,6 +313,11 @@ class PageReasoner:
         covered = required_labels & filled_labels
         coverage = len(covered) / len(required_labels) if required_labels else 1.0
 
+        logger.info(
+            "THRESHOLD_OBS: field_count_guard threshold=0.8 coverage=%.2f covered=%d/%d action=%s decision=%s",
+            coverage, len(covered), len(required_labels), action.action,
+            "lowered_confidence" if coverage < 0.8 else "passed",
+        )
         if coverage < 0.8:
             new_confidence = min(action.confidence, coverage)
             return PageAction(

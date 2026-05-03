@@ -148,6 +148,11 @@ class PreSubmitGate:
             cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
             data = json.loads(cleaned)
             score = float(data.get("score", 0))
+            logger.info(
+                "THRESHOLD_OBS: pre_submit_review threshold=%.1f score=%.1f decision=%s",
+                self.PASS_THRESHOLD, score,
+                "passed" if score >= self.PASS_THRESHOLD else "blocked",
+            )
             return GateResult(
                 passed=score >= self.PASS_THRESHOLD,
                 score=score,
@@ -192,6 +197,11 @@ class PreSubmitGate:
 
         # Score: each issue costs 2 points, floor at 0
         score = max(0.0, 10.0 - len(issues) * 2.0)
+        logger.info(
+            "THRESHOLD_OBS: pre_submit_semantic_correctness threshold=%.1f score=%.1f decision=%s",
+            self.PASS_THRESHOLD, score,
+            "passed" if score >= self.PASS_THRESHOLD else "blocked",
+        )
         return GateResult(
             passed=score >= self.PASS_THRESHOLD,
             score=score,

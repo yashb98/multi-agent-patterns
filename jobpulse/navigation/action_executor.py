@@ -222,6 +222,10 @@ class NavigationActionExecutor:
                         # one retry with a small wait — covers React controlled
                         # inputs that revert and autocompletes that need time
                         try:
+                            logger.info(
+                                "THRESHOLD_OBS: readback_retry threshold_ms=200 label=%s decision=retrying",
+                                label[:40],
+                            )
                             await asyncio.sleep(0.2)
                             await loc.first.fill(value)
                             if await self._verify_fill(loc.first, value):
@@ -304,6 +308,11 @@ class NavigationActionExecutor:
             return True
         # Substring arms are gated on length to prevent false positives like
         # "1" matching "10 years" or "no" matching "not applicable".
+        logger.debug(
+            "THRESHOLD_OBS: substring_guard threshold=3 expected_len=%d actual_len=%d decision=%s",
+            len(norm_e), len(norm_a),
+            "exact_only" if min(len(norm_e), len(norm_a)) < 3 else "substring_allowed",
+        )
         if len(norm_e) >= 3 and len(norm_a) >= 3:
             return norm_e in norm_a or norm_a in norm_e
         return False

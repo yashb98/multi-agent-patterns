@@ -868,6 +868,11 @@ class FormNavigator:
             intelligence.clear()
             await intelligence.inject_on_new_page()
 
+        logger.info(
+            "THRESHOLD_OBS: vision_gate threshold=0.7 confidence=%.2f decision=%s",
+            action.confidence,
+            "fired" if action.confidence < 0.7 and act not in ("done", "abort", "wait_human") else "skipped",
+        )
         if action.confidence < 0.7 and act not in ("done", "abort", "wait_human"):
             try:
                 from jobpulse.vision_tier import classify_page_type_from_screenshot

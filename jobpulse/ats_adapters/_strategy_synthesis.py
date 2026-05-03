@@ -39,6 +39,11 @@ def synthesize_strategy_for_domain(domain_or_url: str | None) -> LearnedStrategy
         return None
 
     apply_count = record.get("apply_count", 0) or 0
+    logger.info(
+        "THRESHOLD_OBS: synthesis threshold=%d apply_count=%d domain=%s decision=%s",
+        _MIN_APPLY_COUNT, apply_count, domain[:60],
+        "synthesized" if apply_count >= _MIN_APPLY_COUNT else "skipped",
+    )
     if apply_count < _MIN_APPLY_COUNT:
         return None
 

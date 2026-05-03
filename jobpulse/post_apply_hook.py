@@ -40,6 +40,11 @@ def post_apply_hook(
     """
     company = job_context.get("company", "Unknown")
     url = job_context.get("url", "")
+    # Netloc form for OptimizationEngine signals so they bucket per-domain,
+    # not per-job-URL (the FormExperienceDB writers self-normalize, but the
+    # signal emitters below need the netloc explicitly — same defect class
+    # as bug_010 in NativeFormFiller, fixed here for the post-apply path).
+    _domain = FormExperienceDB.normalize_domain(url) if url else ""
 
     if not result.get("success"):
         try:
@@ -69,7 +74,7 @@ def post_apply_hook(
             from shared.optimization import get_optimization_engine
             get_optimization_engine().emit(
                 signal_type="failure", source_loop="form_experience",
-                domain=url, agent_name="form_filler",
+                domain=_domain, agent_name="form_filler",
                 payload={"error": result.get("error", ""), "pages_reached": result.get("pages_filled", 0)},
                 session_id=f"fe_fail_{company}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
             )
@@ -94,7 +99,7 @@ def post_apply_hook(
             "time_seconds": result.get("time_seconds", 0.0),
         }
         opt_action_id = _engine.before_learning_action(
-            "post_apply", domain=url, metrics=_before,
+            "post_apply", domain=_domain, metrics=_before,
         )
     except Exception as exc:
         logger.debug("post_apply_hook: before_learning_action failed: %s", exc)
