@@ -549,6 +549,24 @@ class FormNavigator:
         return ctx
 
     def _phase_plan(self, ctx: StepContext, visited_states: dict[str, int], wall_bypass_attempts: int) -> StepContext:
+        # Carried reflection: if the previous iteration's action failed and the
+        # reasoner pivoted (e.g. fill_and_advance → wait_human), use that
+        # pivoted action this iteration instead of re-asking the primary
+        # reasoner. Without this, the primary returns the same failed action,
+        # the reflection pivots again, and we burn 3 LLM calls before the
+        # loop detector aborts.
+        if ctx.reflected_action is not None:
+            ctx.planned_action = ctx.reflected_action
+            ctx.plan_source = "reflection_carryover"
+            ra = ctx.reflected_action
+            logger.info(
+                "PLAN: reflection carryover → %s (type=%s, conf=%.2f)",
+                ra.action, ra.page_type, ra.confidence,
+            )
+            # Clear so it doesn't carry across more than one iteration.
+            ctx.reflected_action = None
+            return ctx
+
         if ctx.wall_detected:
             ctx.planned_action = PageAction(
                 page_understanding="Verification wall detected",
@@ -975,9 +993,14 @@ class FormNavigator:
         visited_states: dict[str, int] = {}
         wall_bypass_attempts = 0
         prev_url = snapshot.get("url", "")
+        # Carry the reflection's pivoted action from one iteration to the next
+        # so _phase_plan can act on it before the primary reasoner runs again.
+        pending_reflected_action: Any = None
 
         for step_idx in range(MAX_NAVIGATION_STEPS):
             ctx = StepContext(snapshot=snapshot, url=prev_url, tab_state=TabState.NORMAL)
+            ctx.reflected_action = pending_reflected_action
+            pending_reflected_action = None
 
             ctx = await self._phase_observe(ctx)
             if ctx.tab_state == TabState.CLOSED:
@@ -999,6 +1022,11 @@ class FormNavigator:
                 wall_bypass_attempts += 1
             else:
                 wall_bypass_attempts = 0
+
+            # Capture the reflection (if _phase_act produced one) for the next
+            # iteration's plan. The primary reasoner's cache returns the same
+            # failed action otherwise — the pivot is lost.
+            pending_reflected_action = ctx.reflected_action
 
             snapshot = ctx.post_snapshot or ctx.snapshot
             prev_url = snapshot.get("url", "")
