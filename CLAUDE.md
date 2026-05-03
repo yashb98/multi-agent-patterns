@@ -115,6 +115,7 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 ## Dispatch
 Enhanced Swarm (default). `JOBPULSE_SWARM=false` for flat dispatcher.
 
+
 ## Infrastructure
 
 ### Docker Services
@@ -159,7 +160,7 @@ Config: `shared/logging_config.py`. All loggers via `get_logger(__name__)`.
 Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 
 ## Stats
-~162,500 LOC | 756 Python files | 49 databases | 4207 tests | 5 dashboards | 5 Telegram bots | 3 platforms
+~161,500 LOC | 753 Python files | 49 databases | 4204 tests | 5 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)

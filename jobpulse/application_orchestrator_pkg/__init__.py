@@ -158,6 +158,22 @@ class ApplicationOrchestrator:
         )
         page_type = nav_result["page_type"]
 
+        # DOM-pattern platform discovery — catches white-label clones at unknown
+        # URLs (e.g. Greenhouse hosted at careers.acme.com). Augments the URL-only
+        # path that ran in prepare_application_inputs.
+        if platform in (None, "", "generic"):
+            try:
+                from jobpulse.ats_adapters.discovery import detect_platform
+                detected = detect_platform(url, snapshot=nav_result.get("snapshot"))
+                if detected and detected != "generic":
+                    logger.info(
+                        "DOM platform discovery: %s detected on %s",
+                        detected, url[:60],
+                    )
+                    platform = detected
+            except Exception as exc:
+                logger.debug("DOM platform discovery failed: %s", exc)
+
         try:
             if _tid and _opt_engine:
                 _opt_engine.log_step(_tid, TrajectoryStep(
