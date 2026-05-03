@@ -14,6 +14,7 @@ from jobpulse.cv_tailor import (
     TailoredCV,
     TailoredCoverLetter,
     TailoredHeader,
+    _parse_llm_json,
     _send_validation_alert,
     tailor_all_sections,
     tailor_cover_letter_prose,
@@ -824,3 +825,88 @@ class TestTailorAllSections:
         assert result.tagline is not None
         assert result.projects is not None
         assert result.cover_letter is not None
+
+
+# ---------------------------------------------------------------------------
+# _parse_llm_json — robust JSON extraction (regression for Tier-2 fix)
+# ---------------------------------------------------------------------------
+
+class TestParseLlmJson:
+    def test_clean_object(self):
+        assert _parse_llm_json('{"a": 1}') == {"a": 1}
+
+    def test_clean_array(self):
+        assert _parse_llm_json('[1, 2, 3]') == [1, 2, 3]
+
+    def test_markdown_fenced_json(self):
+        raw = '```json\n{"tagline": "x", "summary": "y"}\n```'
+        assert _parse_llm_json(raw) == {"tagline": "x", "summary": "y"}
+
+    def test_markdown_fenced_no_lang(self):
+        raw = '```\n[{"a": 1}]\n```'
+        assert _parse_llm_json(raw) == [{"a": 1}]
+
+    def test_prose_prefix_then_object(self):
+        raw = 'Here is the JSON:\n{"intro": "hello"}'
+        assert _parse_llm_json(raw) == {"intro": "hello"}
+
+    def test_prose_prefix_then_array(self):
+        raw = 'Sure! [{"title": "x", "bullets": []}]'
+        assert _parse_llm_json(raw) == [{"title": "x", "bullets": []}]
+
+    def test_empty_string_raises_decode_error(self):
+        # Caller handles JSONDecodeError specifically — must keep that contract.
+        with pytest.raises(json.JSONDecodeError):
+            _parse_llm_json("")
+
+    def test_none_raises_decode_error(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_llm_json(None)
+
+    def test_whitespace_only_raises_decode_error(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_llm_json("   \n  ")
+
+    def test_no_json_in_string_raises(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_llm_json("the model refused to answer")
+
+
+class TestTailorParsesMarkdownFencedJson:
+    """Regression: 4 cv_tailor functions used to fail every run because the
+    cognitive engine wraps JSON in markdown fences. Now they tolerate fences,
+    prose prefixes, and a few other realistic shapes from the LLM.
+    """
+    def test_summary_and_tagline_accepts_markdown_fence(self, monkeypatch):
+        wrapped = '```json\n{"tagline": "MSc CS | 3+ YOE | Data Engineer", "summary": "Strong data engineer with experience in Python and SQL."}\n```'
+        monkeypatch.setattr(
+            "jobpulse.cv_tailor.cognitive_llm_call",
+            lambda **kwargs: wrapped,
+        )
+        result = tailor_summary_and_tagline(
+            jd_title="Data Engineer",
+            jd_description="Build data pipelines",
+            company="Acme",
+            required_skills=["python", "sql"],
+            preferred_skills=[],
+        )
+        assert result is not None
+        assert result.tagline.startswith("MSc CS")
+        assert "Acme" not in result.summary or "data" in result.summary.lower()
+
+    def test_summary_and_tagline_returns_none_on_empty_response(self, monkeypatch):
+        # Empty response from cognitive engine used to crash json.loads with
+        # "Expecting value: line 1 column 1 (char 0)". Now we return None
+        # cleanly so the caller can fall back to defaults.
+        monkeypatch.setattr(
+            "jobpulse.cv_tailor.cognitive_llm_call",
+            lambda **kwargs: "",
+        )
+        result = tailor_summary_and_tagline(
+            jd_title="Data Engineer",
+            jd_description="Build data pipelines",
+            company="Acme",
+            required_skills=["python"],
+            preferred_skills=[],
+        )
+        assert result is None

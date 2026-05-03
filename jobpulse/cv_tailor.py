@@ -17,6 +17,54 @@ from shared.profile_store import ExperienceEntry
 logger = get_logger(__name__)
 
 
+def _parse_llm_json(raw: str | None) -> object:
+    """Parse JSON from an LLM response, tolerating markdown fences and
+    prefix/suffix prose. Raises json.JSONDecodeError if no JSON found
+    (so callers can keep their existing except-and-log path).
+
+    Cognitive engine + raw OpenAI fallback both occasionally return one of:
+        - empty string (engine failure)
+        - ```json\\n{...}\\n``` (markdown-wrapped)
+        - "Here is the JSON: {...}" (prose prefix)
+    Plain `json.loads(raw)` fails on every one of these. This helper unifies
+    handling so all four cv_tailor functions get the same robustness.
+    """
+    if not raw or not raw.strip():
+        raise json.JSONDecodeError("Empty LLM response", raw or "", 0)
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    cleaned = re.sub(r"```\s*$", "", cleaned).strip()
+    if not cleaned:
+        raise json.JSONDecodeError("Empty after stripping markdown fences", raw, 0)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    # Fall back: find whichever opener comes first ('{' or '['), then take
+    # everything up to the matching closer. Picking the earlier opener handles
+    # prose prefixes like 'Sure! [{...}]' correctly — naive first-{/last-}
+    # would slice the inner object out of the array.
+    obj_start = cleaned.find("{")
+    arr_start = cleaned.find("[")
+    candidates: list[tuple[int, str]] = []
+    if obj_start != -1:
+        candidates.append((obj_start, "}"))
+    if arr_start != -1:
+        candidates.append((arr_start, "]"))
+    candidates.sort(key=lambda c: c[0])
+    for start, closer in candidates:
+        last = cleaned.rfind(closer)
+        if last > start:
+            try:
+                return json.loads(cleaned[start:last + 1])
+            except json.JSONDecodeError:
+                continue
+    raise json.JSONDecodeError(
+        f"No valid JSON object or array found in response: {cleaned[:120]!r}",
+        raw,
+        0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -168,11 +216,14 @@ def tailor_summary_and_tagline(
         return None
 
     try:
-        data = json.loads(raw)
+        data = _parse_llm_json(raw)
         tagline = data["tagline"]
         summary = data["summary"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        logger.warning("cv_tailor: JSON parse failure in tailor_summary_and_tagline: %s", exc)
+        logger.warning(
+            "cv_tailor: JSON parse failure in tailor_summary_and_tagline: %s — raw=%r",
+            exc, (raw or "")[:200],
+        )
         return None
 
     error = validate_summary(summary)
@@ -215,7 +266,7 @@ def tailor_experience_bullets(
         return None
 
     try:
-        data = json.loads(raw)
+        data = _parse_llm_json(raw)
         if not isinstance(data, list) or len(data) != len(experience):
             logger.warning(
                 "cv_tailor: experience count mismatch: expected %d got %d",
@@ -233,7 +284,10 @@ def tailor_experience_bullets(
             for i, item in enumerate(data)
         ]
     except (json.JSONDecodeError, KeyError, TypeError, IndexError) as exc:
-        logger.warning("cv_tailor: JSON parse failure in tailor_experience_bullets: %s", exc)
+        logger.warning(
+            "cv_tailor: JSON parse failure in tailor_experience_bullets: %s — raw=%r",
+            exc, (raw or "")[:200],
+        )
         return None
 
     error = validate_experience(experience, tailored)
@@ -275,7 +329,7 @@ def tailor_project_bullets(
         return None
 
     try:
-        data = json.loads(raw)
+        data = _parse_llm_json(raw)
         if not isinstance(data, list) or len(data) != len(projects):
             logger.warning(
                 "cv_tailor: project count mismatch: expected %d got %d",
@@ -289,7 +343,10 @@ def tailor_project_bullets(
             merged["bullets"] = item["bullets"]
             tailored.append(merged)
     except (json.JSONDecodeError, KeyError, TypeError, IndexError) as exc:
-        logger.warning("cv_tailor: JSON parse failure in tailor_project_bullets: %s", exc)
+        logger.warning(
+            "cv_tailor: JSON parse failure in tailor_project_bullets: %s — raw=%r",
+            exc, (raw or "")[:200],
+        )
         return None
 
     error = validate_projects(projects, tailored)
@@ -327,14 +384,17 @@ def tailor_cover_letter_prose(
         return None
 
     try:
-        data = json.loads(raw)
+        data = _parse_llm_json(raw)
         cl = TailoredCoverLetter(
             intro=data["intro"],
             hook=data["hook"],
             closing=data["closing"],
         )
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        logger.warning("cv_tailor: JSON parse failure in tailor_cover_letter_prose: %s", exc)
+        logger.warning(
+            "cv_tailor: JSON parse failure in tailor_cover_letter_prose: %s — raw=%r",
+            exc, (raw or "")[:200],
+        )
         return None
 
     error = validate_cover_letter(cl, company)
