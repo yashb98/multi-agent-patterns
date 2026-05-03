@@ -246,14 +246,14 @@ class BrowserIntelligence:
             return
         if response.status < 400:
             return
-        try:
-            body = response.text()
-        except Exception:
-            body = ""
+        # response.text() is async in Playwright; this is a sync event handler,
+        # so body fetch would return an un-awaitable coroutine. Downstream
+        # consumers (signal_interpreter) only read status_code + source, so
+        # capture metadata and leave text empty rather than crash on slicing.
         self._buffer.append(CapturedSignal(
             source="network",
             level="error",
-            text=body[:2000],
+            text="",
             timestamp_ms=time.monotonic() * 1000,
             url=response.url,
             metadata={
