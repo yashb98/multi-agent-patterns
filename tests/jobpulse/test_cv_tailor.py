@@ -871,6 +871,33 @@ class TestParseLlmJson:
         with pytest.raises(json.JSONDecodeError):
             _parse_llm_json("the model refused to answer")
 
+    def test_unwraps_single_key_object_wrapping_array(self):
+        """OpenAI's response_format={"type":"json_object"} forces a top-level
+        object even when the prompt asks for an array — the LLM wraps with a
+        single key like {"experience": [...]}. Unwrap when the only value is
+        a list so callers expecting arrays see them directly.
+        """
+        wrapped = '{"experience": [{"title": "Engineer", "bullets": ["b1"]}]}'
+        result = _parse_llm_json(wrapped)
+        assert isinstance(result, list)
+        assert result == [{"title": "Engineer", "bullets": ["b1"]}]
+
+    def test_does_not_unwrap_multi_key_object(self):
+        """Multi-key dicts (e.g. {"intro":..., "hook":..., "closing":...} for
+        cover letters) must be returned as-is — only single-key objects get
+        unwrapped.
+        """
+        multi = '{"intro": "hi", "hook": "there", "closing": "bye"}'
+        result = _parse_llm_json(multi)
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"intro", "hook", "closing"}
+
+    def test_does_not_unwrap_when_value_is_not_list(self):
+        single_scalar = '{"answer": "yes"}'
+        result = _parse_llm_json(single_scalar)
+        assert isinstance(result, dict)
+        assert result == {"answer": "yes"}
+
 
 class TestTailorParsesMarkdownFencedJson:
     """Regression: 4 cv_tailor functions used to fail every run because the

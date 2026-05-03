@@ -806,6 +806,7 @@ def cognitive_llm_call(
     scorer=None,
     fallback_llm=None,
     fallback_messages=None,
+    response_format: dict | None = None,
 ) -> str | None:
     """Route LLM calls through CognitiveEngine when available (default-on).
 
@@ -821,11 +822,27 @@ def cognitive_llm_call(
         scorer: Optional scoring function for cognitive self-improvement.
         fallback_llm: Optional LangChain LLM for direct fallback.
         fallback_messages: Optional messages list for direct fallback.
+        response_format: Optional OpenAI response_format constraint, e.g.
+            ``{"type": "json_object"}``. When set, bypasses the cognitive
+            engine (whose multi-step strategies — reflexion, tree-of-thought —
+            don't all return well-formed JSON) and goes straight to a single
+            OpenAI call with the constraint applied. Per
+            ``.claude/rules/orchestration-agents.md``: prefer this over
+            markdown stripping for any task that expects JSON.
 
     Returns:
         The generated text answer, or None if all fallbacks fail.
     """
     import os
+
+    # JSON mode bypasses cognitive engine: L2 reflexion / L3 tree-of-thought
+    # produce intermediate text that isn't necessarily a JSON object, so
+    # response_format constraints aren't compatible with them. Single-call
+    # OpenAI with the constraint is both simpler and the canonical pattern.
+    if response_format is not None:
+        return _direct_llm_call(
+            task, fallback_llm, fallback_messages, response_format=response_format,
+        )
 
     if os.getenv("COGNITIVE_ENABLED", "true").lower() == "false":
         return _direct_llm_call(task, fallback_llm, fallback_messages)
@@ -841,9 +858,23 @@ def cognitive_llm_call(
         return _direct_llm_call(task, fallback_llm, fallback_messages)
 
 
-def _direct_llm_call(task: str, fallback_llm=None, fallback_messages=None) -> str | None:
-    """Direct LLM fallback when cognitive engine is unavailable."""
-    if fallback_llm and fallback_messages:
+def _direct_llm_call(
+    task: str,
+    fallback_llm=None,
+    fallback_messages=None,
+    response_format: dict | None = None,
+) -> str | None:
+    """Direct LLM fallback when cognitive engine is unavailable.
+
+    When ``response_format`` is set (e.g. ``{"type": "json_object"}``), the
+    raw OpenAI path is preferred because LangChain's ``llm.invoke`` doesn't
+    surface ``response_format`` cleanly across all LLM providers — going
+    direct keeps the constraint applied.
+    """
+    # Skip the LangChain fallback when caller wants JSON mode — a raw OpenAI
+    # call with response_format gives a stronger guarantee than retrying the
+    # bound LangChain LLM and stripping markdown afterwards.
+    if not response_format and fallback_llm and fallback_messages:
         try:
             from shared.llm_retry import resilient_llm_call
             response = resilient_llm_call(fallback_llm, fallback_messages)
@@ -855,12 +886,15 @@ def _direct_llm_call(task: str, fallback_llm=None, fallback_messages=None) -> st
     try:
         client = get_openai_client()
         model = get_model_name()
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": task}],
-            temperature=0.4,
+        kwargs: dict = {
+            "model": model,
+            "messages": [{"role": "user", "content": task}],
+            "temperature": 0.4,
             **_token_limit_kwargs(model, 2000),
-        )
+        }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        response = client.chat.completions.create(**kwargs)
         return response.choices[0].message.content.strip()
     except Exception as exc:
         logger.error("Direct LLM fallback failed: %s", exc)

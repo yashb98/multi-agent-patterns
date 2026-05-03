@@ -35,34 +35,49 @@ def _parse_llm_json(raw: str | None) -> object:
     cleaned = re.sub(r"```\s*$", "", cleaned).strip()
     if not cleaned:
         raise json.JSONDecodeError("Empty after stripping markdown fences", raw, 0)
+    parsed: object
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
     except json.JSONDecodeError:
-        pass
-    # Fall back: find whichever opener comes first ('{' or '['), then take
-    # everything up to the matching closer. Picking the earlier opener handles
-    # prose prefixes like 'Sure! [{...}]' correctly — naive first-{/last-}
-    # would slice the inner object out of the array.
-    obj_start = cleaned.find("{")
-    arr_start = cleaned.find("[")
-    candidates: list[tuple[int, str]] = []
-    if obj_start != -1:
-        candidates.append((obj_start, "}"))
-    if arr_start != -1:
-        candidates.append((arr_start, "]"))
-    candidates.sort(key=lambda c: c[0])
-    for start, closer in candidates:
-        last = cleaned.rfind(closer)
-        if last > start:
-            try:
-                return json.loads(cleaned[start:last + 1])
-            except json.JSONDecodeError:
-                continue
-    raise json.JSONDecodeError(
-        f"No valid JSON object or array found in response: {cleaned[:120]!r}",
-        raw,
-        0,
-    )
+        # Fall back: find whichever opener comes first ('{' or '['), then take
+        # everything up to the matching closer. Picking the earlier opener
+        # handles prose prefixes like 'Sure! [{...}]' correctly — naive
+        # first-{/last-} would slice the inner object out of the array.
+        obj_start = cleaned.find("{")
+        arr_start = cleaned.find("[")
+        candidates: list[tuple[int, str]] = []
+        if obj_start != -1:
+            candidates.append((obj_start, "}"))
+        if arr_start != -1:
+            candidates.append((arr_start, "]"))
+        candidates.sort(key=lambda c: c[0])
+        parsed = _SENTINEL = object()
+        for start, closer in candidates:
+            last = cleaned.rfind(closer)
+            if last > start:
+                try:
+                    parsed = json.loads(cleaned[start:last + 1])
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if parsed is _SENTINEL:
+            raise json.JSONDecodeError(
+                f"No valid JSON object or array found in response: {cleaned[:120]!r}",
+                raw,
+                0,
+            )
+
+    # OpenAI's response_format={"type":"json_object"} forces a top-level object,
+    # so prompts that conceptually want an array end up wrapped (e.g. the LLM
+    # returns {"experience": [...]} instead of [...]). Unwrap when the result
+    # is a single-key dict whose value is a list — callers expecting arrays
+    # then see them directly. Multi-key dicts (summary+tagline, intro/hook/
+    # closing) are returned as-is.
+    if isinstance(parsed, dict) and len(parsed) == 1:
+        only_value = next(iter(parsed.values()))
+        if isinstance(only_value, list):
+            return only_value
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +225,7 @@ def tailor_summary_and_tagline(
         f"Respond ONLY with valid JSON: {{\"tagline\": \"...\", \"summary\": \"...\"}}"
     )
     try:
-        raw = cognitive_llm_call(task=prompt, domain="cv_tailoring", stakes="medium")
+        raw = cognitive_llm_call(task=prompt, domain="cv_tailoring", stakes="medium", response_format={"type": "json_object"})
     except Exception as exc:
         logger.warning("cv_tailor: LLM failure in tailor_summary_and_tagline: %s", exc)
         return None
@@ -256,11 +271,11 @@ def tailor_experience_bullets(
         f"- Start each bullet with a strong action verb\n"
         f"- Preserve ALL quantified metrics exactly (numbers, percentages, currencies)\n"
         f"- Each bullet must be under 200 characters\n\n"
-        f"Respond ONLY with valid JSON array: "
-        f"[{{\"title\": \"...\", \"company\": \"...\", \"dates\": \"...\", \"bullets\": [...]}}]"
+        f"Respond ONLY with valid JSON: "
+        f"{{\"experience\": [{{\"title\": \"...\", \"company\": \"...\", \"dates\": \"...\", \"bullets\": [...]}}]}}"
     )
     try:
-        raw = cognitive_llm_call(task=prompt, domain="cv_tailoring", stakes="medium")
+        raw = cognitive_llm_call(task=prompt, domain="cv_tailoring", stakes="medium", response_format={"type": "json_object"})
     except Exception as exc:
         logger.warning("cv_tailor: LLM failure in tailor_experience_bullets: %s", exc)
         return None
@@ -320,10 +335,10 @@ def tailor_project_bullets(
         f"- Preserve ALL quantified metrics exactly (numbers, percentages, currencies)\n"
         f"- 3-4 bullets per project — no more, no less\n"
         f"- First bullet must lead with the strongest JD-relevant skill\n\n"
-        f"Respond ONLY with valid JSON array: [{{\"title\": \"...\", \"bullets\": [...]}}]"
+        f"Respond ONLY with valid JSON: {{\"projects\": [{{\"title\": \"...\", \"bullets\": [...]}}]}}"
     )
     try:
-        raw = cognitive_llm_call(task=prompt, domain="cv_tailoring", stakes="medium")
+        raw = cognitive_llm_call(task=prompt, domain="cv_tailoring", stakes="medium", response_format={"type": "json_object"})
     except Exception as exc:
         logger.warning("cv_tailor: LLM failure in tailor_project_bullets: %s", exc)
         return None
@@ -378,7 +393,7 @@ def tailor_cover_letter_prose(
         f"Respond ONLY with valid JSON: {{\"intro\": \"...\", \"hook\": \"...\", \"closing\": \"...\"}}"
     )
     try:
-        raw = cognitive_llm_call(task=prompt, domain="cv_tailoring", stakes="medium")
+        raw = cognitive_llm_call(task=prompt, domain="cv_tailoring", stakes="medium", response_format={"type": "json_object"})
     except Exception as exc:
         logger.warning("cv_tailor: LLM failure in tailor_cover_letter_prose: %s", exc)
         return None
