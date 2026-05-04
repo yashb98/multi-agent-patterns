@@ -17,6 +17,29 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _application_dir(company: str | None) -> Path:
+    """Canonical per-company materials directory.
+
+    All CV/CL/screenshot artefacts for a company live under
+    ``DATA_DIR/applications/<safe_company>/``. This matches:
+      • cv_templates.generate_cv default (line 469)
+      • cv_templates.generate_cover_letter default (line 355)
+      • drive_uploader read path (looks for Yash_Bishnoi_<Company>.pdf)
+      • post_apply_hook attachment lookup
+
+    Pre-2026-05-04 application_materials wrote to ``applications/<job_id>/``
+    (sha-named), causing drive_uploader to silently fail "file not found"
+    because it expected the company-named dir. Live regression confirmed
+    on Contentful — files split across two dirs, Drive upload failed.
+
+    For multi-job-per-company collisions (rare for a single applicant),
+    cv_templates' filename naming ``{name}_{company}.pdf`` is sufficient
+    because the file would simply be overwritten by the latest run.
+    """
+    safe = (company or "Company").replace(" ", "_").replace("/", "_")
+    return DATA_DIR / "applications" / safe
+
+
 def _parse_skill_list(raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -107,7 +130,7 @@ def ensure_tailored_cv_for_job(job_id: str, db: "JobDB | None" = None) -> Path |
             for e in tailored.experience
         ]
 
-    out_dir = str(DATA_DIR / "applications" / job_id)
+    out_dir = str(_application_dir(row.get("company")))
 
     try:
         cv_path = generate_cv_pdf(
@@ -149,7 +172,7 @@ def build_lazy_cover_letter_generator(
         required = _parse_skill_list(row.get("required_skills"))
         preferred = _parse_skill_list(row.get("preferred_skills"))
         matched = get_best_projects_for_jd(required, preferred)
-        out_dir = str(DATA_DIR / "applications" / job_id)
+        out_dir = str(_application_dir(row.get("company")))
 
         cl_prose = None
         try:
