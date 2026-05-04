@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -199,6 +200,20 @@ class LiveReviewSession:
         self.session_id = session_id or str(uuid.uuid4())[:8]
         self.url: str = job["url"]
 
+        # Reuse an in-progress ATS apply tab if Chrome already has one for
+        # this company. Without this, every invocation re-runs the listing
+        # → "Apply on company site" → new-tab chain, stacking duplicate ATS
+        # tabs (3-4 deep on JPMC was confirmed 2026-05-04). Critically: if
+        # the user has manually logged into a prior tab, attaching there
+        # avoids losing that auth on the listing-driven re-navigation.
+        existing_tab_url = self._find_in_progress_apply_tab()
+        if existing_tab_url:
+            logger.info(
+                "live_review_applicator: reusing in-progress tab %s "
+                "(was %s)", existing_tab_url[:100], self.url[:80],
+            )
+            self.url = existing_tab_url
+
         jid = str(job.get("job_id") or "")
         cv_candidate: Path | None = (
             Path(job["cv_path"]) if job.get("cv_path") else None
@@ -247,6 +262,108 @@ class LiveReviewSession:
 
         self._action: str | None = None
         self._action_event = threading.Event()
+
+    def _find_in_progress_apply_tab(self) -> str | None:
+        """Look for an existing Chrome tab on an in-progress ATS apply page
+        for this job's company.
+
+        Returns the tab URL to attach to, or None to fall through to the
+        normal listing-URL navigation.
+
+        Why: each ``job-apply-next`` invocation is a fresh process. With no
+        cross-invocation tab tracking, the agent re-runs the listing →
+        "Apply on company site" → new-tab chain every time, stacking
+        duplicate ATS tabs. Worse, when JPMC's Oracle Cloud (or any
+        re-auth-required ATS) opens a fresh tab it loses the user's
+        manual login from a prior tab.
+
+        Heuristic: scan Chrome tabs (CDP `/json`), filter to NOT the
+        listing host, require a path matching the in-progress apply
+        patterns, require the company name in the host or page title,
+        and return the most-progressed (deepest path) candidate.
+        """
+        import json
+        import urllib.request
+        from urllib.parse import urlparse
+
+        listing_host = ""
+        try:
+            listing_host = urlparse(self.url).netloc.lower().removeprefix("www.")
+        except Exception:
+            listing_host = ""
+        company_raw = (self.job.get("company") or "").lower()
+        title_raw = (self.job.get("title") or "").lower()
+        if not listing_host or (not company_raw and not title_raw):
+            return None
+        # Strip non-alphanumerics so we can match against host/title text
+        # that may use different casings or remove spaces.
+        company_norm = "".join(c for c in company_raw if c.isalnum())
+        # Distinctive job-title tokens (≥4 chars, no stopwords). Used as a
+        # secondary matcher because company abbreviations may not match
+        # cleanly: e.g. "JPMorganChase" vs host "jpmc.fa.oraclecloud.com" —
+        # but the page title carries the role name "Applied AIML
+        # Associate- Python & Data Science Engineering", which makes for
+        # strong title-vs-title overlap.
+        _stop = {"the", "and", "for", "with", "from", "into", "junior",
+                 "senior", "graduate", "associate", "analyst", "engineer",
+                 "developer", "manager"}
+        title_tokens = {
+            t for t in re.findall(r"[a-z0-9]+", title_raw)
+            if len(t) >= 4 and t not in _stop
+        }
+
+        try:
+            with urllib.request.urlopen("http://localhost:9222/json", timeout=3) as r:
+                tabs = json.load(r)
+        except Exception as exc:
+            logger.debug("live_review: in-progress tab scan failed: %s", exc)
+            return None
+
+        # Path-pattern indicating in-progress application. Structural URL
+        # validation is permitted (per .claude/rules/jobpulse.md / shared.md
+        # — regex OK for URL structure, not for classification).
+        apply_path_rx = re.compile(
+            r"/apply(/|$|\?)|/section/|/application(/|$|\?)|/candidate/|"
+            r"/jobs/[^/]+/apply|/job/[^/]+/apply",
+            re.IGNORECASE,
+        )
+
+        candidates: list[str] = []
+        for t in tabs:
+            if t.get("type") != "page":
+                continue
+            url = (t.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                host = urlparse(url).netloc.lower().removeprefix("www.")
+            except Exception:
+                continue
+            # Skip the listing source — we want the ATS, not Indeed/LinkedIn/etc.
+            if host == listing_host:
+                continue
+            if not apply_path_rx.search(url):
+                continue
+            host_clean = "".join(c for c in host if c.isalnum())
+            tab_title = (t.get("title") or "").lower()
+            title_clean = "".join(c for c in tab_title if c.isalnum())
+            # Match by company name (strict) OR ≥2 title tokens in page title
+            # (loose). 2 is enough to be confident — random tabs won't share
+            # 2 distinctive technical tokens with a specific job title.
+            company_match = (
+                len(company_norm) >= 3
+                and (company_norm in host_clean or company_norm in title_clean)
+            )
+            tab_title_tokens = set(re.findall(r"[a-z0-9]+", tab_title))
+            title_match = len(title_tokens & tab_title_tokens) >= 2
+            if company_match or title_match:
+                candidates.append(url)
+
+        if not candidates:
+            return None
+        # Prefer the deepest path (most progressed: e.g. /apply/section/3 over /apply)
+        candidates.sort(key=lambda u: u.count("/"), reverse=True)
+        return candidates[0]
 
     def _persist_state(self, status: str, **extra: Any) -> None:
         """Persist the current review state so approval can survive restarts."""
