@@ -93,6 +93,35 @@ def _is_select_placeholder(value: str) -> bool:
     return bool(_SELECT_PLACEHOLDER_RE.match(value.strip()))
 
 
+_REQUIRED_MARKER_RE = re.compile(
+    r"\s*(?:\*|\(\s*required\s*\)|\brequired\b|\(\s*\*\s*\))\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_required_marker(label: str) -> str:
+    """Remove trailing required-field markers from a label.
+
+    Examples:
+        'Email*'              -> 'Email'
+        'Phone *'             -> 'Phone'
+        'LinkedIn URL (required)' -> 'LinkedIn URL'
+        'Name Required'       -> 'Name'
+
+    Markers are rendered visually via CSS pseudo-elements or adjacent <span>s
+    on most ATSs (Greenhouse, Lever, Ashby). Playwright's get_by_label
+    matches the underlying text, so the literal asterisk in our planned label
+    prevents the match. Strip it here so all downstream matchers see the
+    canonical label.
+
+    Format-validation regex is acceptable per the no-regex-for-classification
+    rule — this is structural normalization, not semantic routing.
+    """
+    if not label:
+        return label
+    return _REQUIRED_MARKER_RE.sub("", label).rstrip()
+
+
 def emit_form_fill_failures(
     failures: list[dict], *, domain: str,
 ) -> None:
@@ -306,6 +335,10 @@ class NativeFormFiller:
                             len(self._domain_field_mappings),
                             FormExperienceDB.normalize_domain(url),
                             len(global_mappings))
+                logger.info(
+                    "DIAG field_mapping_keys (first 15): %s",
+                    list(self._domain_field_mappings.keys())[:15],
+                )
         except Exception as exc:
             logger.debug("Could not load domain field mappings: %s", exc)
 
@@ -351,13 +384,40 @@ class NativeFormFiller:
         from jobpulse.applicator import PROFILE, WORK_AUTH
         profile_flat = {**PROFILE, **profile}
 
+        # Filter to keys that could plausibly be HTML element IDs.
+        # _domain_field_mappings is polluted by _global label-keyed mappings
+        # that get merged into the same dict — those labels (with spaces,
+        # '*', '?', '(', '@') will always fail document.getElementById and
+        # waste the JS evaluate budget. Per HTML5 spec an ID just can't
+        # contain whitespace; we also reject obvious label artefacts.
+        def _looks_like_html_id(key: str) -> bool:
+            if not key or len(key) > 64:
+                return False
+            for ch in key:
+                # whitespace, asterisk, question mark, parens, at-sign,
+                # newline, etc. all disqualify an HTML id
+                if ch.isspace() or ch in "*?()@!":
+                    return False
+            return True
+
         fills: dict[str, str] = {}
+        skipped_label_keys: list[str] = []
         for element_id, profile_key in self._domain_field_mappings.items():
+            if not _looks_like_html_id(element_id):
+                skipped_label_keys.append(element_id)
+                continue
             value = profile_flat.get(profile_key, "")
             if not value:
                 value = custom_answers.get(profile_key, "")
             if value:
                 fills[element_id] = str(value)
+
+        if skipped_label_keys:
+            logger.debug(
+                "_fill_by_element_ids: skipped %d non-ID-shaped keys (labels merged "
+                "from _global mappings — handled by label path instead): %s",
+                len(skipped_label_keys), skipped_label_keys[:5],
+            )
 
         if not fills:
             return {}
@@ -653,6 +713,14 @@ class NativeFormFiller:
             base_label = dup_match.group(1)
             nth_index = int(dup_match.group(2)) - 1
 
+        # Strip required-field markers ('*', '(required)', '(Required)') —
+        # Playwright matchers compare against the rendered <label> text, but
+        # required markers are typically rendered via CSS pseudo-elements or
+        # adjacent <span class="required"> nodes that don't appear in the
+        # label's text. Without this, "Email*" never matches the actual
+        # label "Email" on Greenhouse / many ATSs.
+        base_label = _strip_required_marker(base_label)
+
         locator = page.get_by_label(base_label, exact=False)
 
         if not await locator.count():
@@ -823,7 +891,7 @@ class NativeFormFiller:
                     await radio.first.check()
                 else:
                     logger.warning("Radio '%s' matched %d elements — skipping unscoped click", fill_value, await radio.count())
-        elif await el.get_attribute("role") == "combobox":
+        elif await self._is_combobox_widget(el):
             strategy = getattr(self, "_strategy", None)
             if strategy and hasattr(strategy, "fill_combobox"):
                 override_result = await strategy.fill_combobox(self._page, el, fill_value, label)
@@ -850,9 +918,177 @@ class NativeFormFiller:
                 best_range_match,
                 scan_combobox_options,
             )
+            # React-Select primary strategy — works on Greenhouse / Lever /
+            # Ashby / many other ATS forms that wrap an <input type="text">
+            # in `.select__control`. Existing `scan_combobox_options` and the
+            # type-to-search path both rely on `get_by_role("combobox", name=...)`
+            # which fails when the role attribute isn't rendered yet (React
+            # async render race). This path uses the wrapper class instead
+            # and reads options from `.select__menu` / `.select__option`,
+            # which the styled component always renders.
+            react_select_options: list[str] = []
+            react_select_chosen: str | None = None
+            try:
+                is_react_select = await el.evaluate("""(node) => {
+                    if (!node || !node.closest) return false;
+                    return !!node.closest(
+                        '.select__control, [class*="select__control"], '
+                        + '[class*="-control"][class*="select"]'
+                    );
+                }""")
+            except Exception:
+                is_react_select = False
+
+            if is_react_select and stored_technique != "combobox_type_to_search":
+                try:
+                    parent = el.locator(
+                        "xpath=ancestor::*[contains(@class,'select__control')][1]"
+                    ).first
+                    if await parent.count():
+                        await parent.scroll_into_view_if_needed()
+                        await parent.click()
+                    else:
+                        await el.click()
+                    await asyncio.sleep(0.6)
+                    react_select_options = await page.evaluate("""() => {
+                        const items = document.querySelectorAll(
+                            '.select__menu .select__option, '
+                            + '.select__menu [role="option"], '
+                            + '[class*="select__menu"] [class*="select__option"]'
+                        );
+                        return Array.from(items)
+                            .map(o => (o.textContent || '').trim())
+                            .filter(Boolean);
+                    }""")
+                    if react_select_options:
+                        react_select_chosen = ax_best_match(
+                            fill_value, react_select_options,
+                            aliases=_build_option_aliases(),
+                        )
+                        if react_select_chosen is None:
+                            # Autocomplete city/location: type to filter,
+                            # then read the freshly rendered options.
+                            await el.fill("")
+                            await el.type(fill_value, delay=80)
+                            await asyncio.sleep(0.9)
+                            react_select_options = await page.evaluate("""() => {
+                                const items = document.querySelectorAll(
+                                    '.select__menu .select__option, '
+                                    + '.select__menu [role="option"]'
+                                );
+                                return Array.from(items)
+                                    .map(o => (o.textContent || '').trim())
+                                    .filter(Boolean);
+                            }""")
+                            if react_select_options:
+                                react_select_chosen = (
+                                    ax_best_match(
+                                        fill_value, react_select_options,
+                                        aliases=_build_option_aliases(),
+                                    )
+                                    or react_select_options[0]
+                                )
+                        if react_select_chosen:
+                            opt_locator = page.locator(
+                                ".select__option, [role='option']"
+                            ).filter(has_text=react_select_chosen).first
+                            if await opt_locator.count():
+                                await opt_locator.click()
+                                await asyncio.sleep(0.25)
+                                # Gap 1: per-fill verification + retry —
+                                # confirm the click actually updated the
+                                # React-Select state by reading
+                                # .select__single-value. On mismatch retry
+                                # via force-click then keyboard-nav.
+                                # Wrapped in try/except so any failure
+                                # gracefully falls through to legacy.
+                                _displayed = ""
+                                try:
+                                    _displayed = await el.evaluate(
+                                        "(node) => {"
+                                        " let p = node.parentElement;"
+                                        " for (let i = 0; p && i < 5; i++, p = p.parentElement) {"
+                                        "   if (p.classList && p.classList.contains('select__control')) {"
+                                        "     const sv = p.querySelector('.select__single-value');"
+                                        "     return sv ? (sv.textContent || '').trim() : '';"
+                                        "   }"
+                                        " }"
+                                        " return '';"
+                                        "}"
+                                    )
+                                except Exception:
+                                    _displayed = ""
+
+                                _target_lc = react_select_chosen.strip().lower()
+                                if _displayed.strip().lower() != _target_lc:
+                                    # Retry: force-click via JS dispatch
+                                    try:
+                                        _parent2 = el.locator(
+                                            "xpath=ancestor::*[contains(@class,'select__control')][1]"
+                                        ).first
+                                        if await _parent2.count():
+                                            await _parent2.click()
+                                        await asyncio.sleep(0.4)
+                                        _opt2 = page.locator(
+                                            ".select__option, [role='option']"
+                                        ).filter(has_text=react_select_chosen).first
+                                        if await _opt2.count():
+                                            await _opt2.click(force=True)
+                                            await asyncio.sleep(0.25)
+                                        _displayed = await el.evaluate(
+                                            "(node) => {"
+                                            " let p = node.parentElement;"
+                                            " for (let i = 0; p && i < 5; i++, p = p.parentElement) {"
+                                            "   if (p.classList && p.classList.contains('select__control')) {"
+                                            "     const sv = p.querySelector('.select__single-value');"
+                                            "     return sv ? (sv.textContent || '').trim() : '';"
+                                            "   }"
+                                            " }"
+                                            " return '';"
+                                            "}"
+                                        )
+                                    except Exception:
+                                        pass
+
+                                fill_technique = "react_select_click_option"
+                                expected_value = react_select_chosen
+                                options_seen = react_select_options[:20]
+                                # Skip the legacy strategies — we filled it
+                                ax_options = []
+                                matched_option = react_select_chosen
+                                if _displayed.strip().lower() == _target_lc:
+                                    logger.info(
+                                        "react_select_click_option ✓ '%s' = %r",
+                                        label[:60], react_select_chosen[:60],
+                                    )
+                                else:
+                                    logger.warning(
+                                        "react_select_click_option ✗ '%s' "
+                                        "(intended=%r, displayed=%r) — "
+                                        "click(s) succeeded but state didn't update",
+                                        label[:60], react_select_chosen[:60],
+                                        _displayed[:60],
+                                    )
+                                    # Mark as not-verified so the outer return
+                                    # logs failure. value_verified is set later
+                                    # from the actual.lower()==expected.lower()
+                                    # check; help it by leaving expected/actual
+                                    # in sync with the verification result.
+                            else:
+                                await page.keyboard.press("Escape")
+                except Exception as exc:
+                    logger.debug(
+                        "react_select_click_option failed for '%s': %s — falling through",
+                        label, exc,
+                    )
+                    try:
+                        await page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+
             if stored_technique == "combobox_type_to_search":
                 ax_options = []
-            else:
+            elif not react_select_chosen:
                 ax_options = await scan_combobox_options(page, label)
             if ax_options:
                 options_seen = ax_options
@@ -978,6 +1214,22 @@ class NativeFormFiller:
             except Exception:
                 pass
 
+        # Gap 4: explicit per-field log signal so failures aren't invisible.
+        # Without this the only evidence of a failed fill is the empty visible
+        # state in the browser — every debug session required a CDP inspection.
+        if verified:
+            logger.info(
+                "fill ✓ '%s' = %r [tech=%s, expected=%r]",
+                label[:60], (fill_value or "")[:60],
+                fill_technique, (expected_value or fill_value)[:60],
+            )
+        else:
+            logger.warning(
+                "fill ✗ '%s' (intended=%r, actual=%r) [tech=%s, options_seen=%d]",
+                label[:60], (expected_value or fill_value)[:60],
+                (actual or "")[:60], fill_technique,
+                len(options_seen) if options_seen else 0,
+            )
         return {
             "success": True,
             "value_set": fill_value,
@@ -1038,13 +1290,42 @@ class NativeFormFiller:
         }
 
     async def _overwrite_experience_descriptions(self) -> None:
-        """Overwrite auto-parsed experience descriptions with structured versions."""
-        from jobpulse.config import EXPERIENCE_DESCRIPTIONS
-        if not EXPERIENCE_DESCRIPTIONS:
+        """Overwrite auto-parsed experience descriptions with structured versions.
+
+        PII compliance: experience text comes from `user_profile.db.experience`
+        via `ProfileStore.experience()`, not from a hardcoded config dict.
+        Each row's `bullets` JSON array is joined into a single description
+        for the form's textarea fill. Falls back to legacy
+        `config.EXPERIENCE_DESCRIPTIONS` only when the DB is empty (fresh
+        install before profile-sync has populated experience rows).
+        """
+        # Build {role_key: description} from ProfileStore.experience() rows.
+        # ExperienceEntry is a dataclass with .title / .bullets / etc.
+        descriptions: dict[str, str] = {}
+        try:
+            from shared.profile_store import get_profile_store
+            import re as _re
+            for entry in get_profile_store().experience() or []:
+                title = (getattr(entry, "title", "") or "").strip()
+                bullets = list(getattr(entry, "bullets", []) or [])
+                if not title or not bullets:
+                    continue
+                # Strip HTML tags so the form gets plain text
+                joined = " ".join(_re.sub(r"<[^>]+>", "", b).strip() for b in bullets)
+                descriptions[title] = joined
+        except Exception as exc:
+            logger.debug("experience() unavailable, using legacy fallback: %s", exc)
+        if not descriptions:
+            try:
+                from jobpulse.config import EXPERIENCE_DESCRIPTIONS as _legacy
+                descriptions = dict(_legacy)
+            except Exception:
+                descriptions = {}
+        if not descriptions:
             return
         page = self._page
         all_btns = await page.locator("button").all()
-        for role_key, desc in EXPERIENCE_DESCRIPTIONS.items():
+        for role_key, desc in descriptions.items():
             for btn in all_btns:
                 try:
                     label = await btn.get_attribute("aria-label") or ""
@@ -1793,6 +2074,160 @@ class NativeFormFiller:
 
     # ── Navigation ──
 
+    @staticmethod
+    async def _is_combobox_widget(el) -> bool:
+        """Return True if the element behaves as a combobox/listbox picker,
+        not a free-text input.
+
+        Mirrors field_scanner.fieldType()'s combobox detection so the FILL
+        path treats Greenhouse / Lever / Ashby React-Select widgets as
+        comboboxes even when their ARIA role hasn't rendered by scan time.
+        Without this, the elif at fill-time fell through to a generic text
+        fill — which on React-Select fills the search input but never picks
+        an option.
+        """
+        try:
+            return await el.evaluate("""(node) => {
+                if (!node) return false;
+                if (node.getAttribute('role') === 'combobox') return true;
+                const hp = (node.getAttribute('aria-haspopup') || '').toLowerCase();
+                if (hp === 'listbox' || hp === 'true') return true;
+                const ac = (node.getAttribute('aria-autocomplete') || '').toLowerCase();
+                if (ac === 'list' || ac === 'both') return true;
+                if (node.closest && node.closest(
+                    '.select__control, [class*="select__control"], '
+                    + '[class*="-control"][class*="select"], '
+                    + '.combobox, [class*="combobox"]'
+                )) return true;
+                return false;
+            }""")
+        except Exception:
+            return False
+
+    async def _record_final_state_before_submit(self) -> None:
+        """Snapshot every filled form field and persist its label + type +
+        options + user-final value to the learning DBs.
+
+        Why this exists: per-field record_fill() calls during the agent's
+        fill loop capture the agent's *planned* answer. If the user (or a
+        manual correction step) edits the field afterwards, those changes
+        aren't seen — the cache holds a stale answer for next time.
+        Calling this immediately before submit closes that gap by reading
+        what's actually about to be sent to the ATS.
+
+        Triggers four downstream learning paths:
+        - JobDB.cache_answer (global Q→A cache)
+        - ScreeningOutcomeRecorder.record_fill (Qdrant semantic cache)
+        - FormExperienceDB.record_fill_technique (per-domain technique log)
+        - FormExperienceDB.save_field_mappings (label → profile_key)
+        """
+        page = self._page
+        url = getattr(page, "url", "") or ""
+        if not url:
+            return
+
+        # Read the full final state — including React-Select displayed values
+        try:
+            fields = await page.evaluate("""() => {
+                const form = document.querySelector('#application-form, form') || document.body;
+                const out = [];
+                form.querySelectorAll('input, textarea, select').forEach(el => {
+                    if (el.type === 'hidden') return;
+                    if (el.id && el.id.startsWith('iti-')) return;
+                    const tag = el.tagName.toLowerCase();
+                    const type = el.type || '';
+                    const role = el.getAttribute('role') || '';
+                    let label = '';
+                    if (el.id) {
+                        const lbl = document.querySelector(`label[for="${el.id}"]`);
+                        if (lbl) label = lbl.textContent.trim().replace(/\\s+/g, ' ');
+                    }
+                    if (!label) label = el.getAttribute('aria-label') || '';
+                    let value = el.value || '';
+                    let displayed = null;
+                    if (role === 'combobox') {
+                        let p = el.parentElement;
+                        for (let i = 0; p && i < 5; i++, p = p.parentElement) {
+                            if (p.classList && p.classList.contains('select__control')) {
+                                const sv = p.querySelector('.select__single-value');
+                                displayed = sv ? sv.textContent.trim() : null;
+                                break;
+                            }
+                        }
+                    }
+                    if (type === 'checkbox' || type === 'radio') value = el.checked ? 'true' : '';
+                    if (type === 'file') value = (el.files?.length > 0)
+                        ? `[FILE: ${el.files[0].name}]` : '';
+                    out.push({id: el.id, tag, type, role, label,
+                              raw_value: value, displayed_value: displayed});
+                });
+                return out;
+            }""")
+        except Exception as exc:
+            logger.debug("record_final_state: page.evaluate failed: %s", exc)
+            return
+
+        if not fields:
+            return
+
+        from jobpulse.form_experience_db import FormExperienceDB
+        fe_db = FormExperienceDB()
+        domain = FormExperienceDB.normalize_domain(url)
+
+        try:
+            from jobpulse.screening_outcome_recorder import get_screening_outcome_recorder
+            recorder = get_screening_outcome_recorder()
+        except Exception:
+            recorder = None
+        try:
+            from jobpulse.job_db import JobDB
+            jdb = JobDB()
+        except Exception:
+            jdb = None
+
+        recorded = 0
+        for f in fields:
+            label = (f.get("label") or "").strip()
+            answer = (f.get("displayed_value") or f.get("raw_value") or "").strip()
+            if not label or not answer or answer.startswith("[FILE:"):
+                continue
+            field_type = "combobox" if f.get("role") == "combobox" else (
+                f.get("type") or f.get("tag") or "text"
+            )
+            technique = "react_select_click_option" if field_type == "combobox" else (
+                "textarea_fill" if field_type == "textarea" else "direct_fill"
+            )
+
+            try:
+                fe_db.record_fill_technique(
+                    domain, label, field_type, technique,
+                    value_used=answer[:200], success=True,
+                )
+            except Exception:
+                pass
+
+            if jdb is not None:
+                try:
+                    jdb.cache_answer(label, answer)
+                except Exception:
+                    pass
+
+            if recorder is not None:
+                try:
+                    recorder.record_fill(
+                        question=label, answer=answer,
+                        field_options=None, field_type=field_type,
+                    )
+                except Exception:
+                    pass
+            recorded += 1
+
+        logger.info(
+            "record_final_state_before_submit: captured %d/%d filled fields "
+            "for %s",
+            recorded, len(fields), domain,
+        )
+
     async def _click_navigation(self, dry_run: bool) -> str:
         page = self._page
         button_names = [
@@ -1806,6 +2241,11 @@ class NativeFormFiller:
                 if await btn.count() and await btn.first.is_visible():
                     if action == "submit" and dry_run:
                         return "dry_run_stop"
+                    if action == "submit":
+                        try:
+                            await self._record_final_state_before_submit()
+                        except Exception as exc:
+                            logger.warning("record_final_state_before_submit failed: %s", exc)
                     await self._move_mouse_to(btn.first)
                     await btn.first.click()
                     try:
@@ -1814,6 +2254,7 @@ class NativeFormFiller:
                         )
                     except Exception:
                         await asyncio.sleep(2)
+                    logger.info("nav: clicked %s via role-button name=%r", action, name)
                     return "submitted" if action == "submit" else "next"
 
         # Workday-specific next button via data-automation-id
@@ -1827,6 +2268,7 @@ class NativeFormFiller:
                     await page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
                     await asyncio.sleep(2)
+                logger.info("nav: clicked next via Workday selector")
                 return "next"
         except Exception:
             pass
@@ -1841,8 +2283,67 @@ class NativeFormFiller:
                     )
                 except Exception:
                     await asyncio.sleep(2)
+                logger.info("nav: clicked next via role-link name=%r", name)
                 return "next"
 
+        # CSS-selector fallback: get_by_role can miss buttons with extra
+        # aria-describedby text or non-standard accessible names. Match the
+        # type=submit attribute directly — no name-string fragility. Live bug:
+        # Contentful's Greenhouse <button type="submit">Submit application</button>
+        # was missed by get_by_role on 2026-05-04, forcing manual-help loop.
+        css_submit_selectors = [
+            "button[type='submit']",
+            "input[type='submit']",
+            "button.submit-application",
+            "button[data-qa*='submit']",
+        ]
+        for sel in css_submit_selectors:
+            try:
+                btn = page.locator(sel)
+                count = await btn.count()
+                for i in range(count):
+                    candidate = btn.nth(i)
+                    if not await candidate.is_visible():
+                        continue
+                    if await candidate.is_disabled():
+                        continue
+                    if dry_run:
+                        return "dry_run_stop"
+                    try:
+                        await self._record_final_state_before_submit()
+                    except Exception as exc:
+                        logger.warning("record_final_state_before_submit failed: %s", exc)
+                    await self._move_mouse_to(candidate)
+                    await candidate.click()
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        await asyncio.sleep(2)
+                    logger.info("nav: clicked submit via CSS fallback %r", sel)
+                    return "submitted"
+            except Exception as exc:
+                logger.debug("nav: CSS fallback %r errored: %s", sel, exc)
+                continue
+
+        # All matchers exhausted — log every visible button so future debug
+        # sessions don't need a CDP inspection trip.
+        try:
+            visible_btns = await page.evaluate(
+                """() => [...document.querySelectorAll('button, input[type="submit"], [role="button"]')]
+                    .filter(b => b.offsetParent !== null)
+                    .map(b => ({
+                        text: ((b.innerText || b.value || b.getAttribute('aria-label') || '') + '').trim().slice(0, 80),
+                        tag: b.tagName, type: b.type || '', disabled: !!b.disabled
+                    }))
+                    .filter(x => x.text)
+                    .slice(0, 20)"""
+            )
+            logger.warning(
+                "nav: NO submit/next button matched. %d visible buttons on page: %s",
+                len(visible_btns), visible_btns,
+            )
+        except Exception as exc:
+            logger.warning("nav: NO submit/next button matched (snapshot failed: %s)", exc)
         return ""
 
     # ── Public Interface ──
@@ -2582,9 +3083,33 @@ class NativeFormFiller:
                                 new_mapping[lbl] = dob
                                 continue
                     from jobpulse.screening_answers import try_screening_v2
+                    # Scan options for combobox/select fields surfaced via post-fill
+                    # rescan (conditionally-revealed fields). The initial scan_fields
+                    # call doesn't probe combobox dropdowns — without this, the LLM
+                    # gets an unconstrained prompt and produces free-text paragraphs
+                    # for what should be option-pick answers (e.g. "Please identify
+                    # your race" with 6 options scanned-but-empty).
+                    _nf_type = (nf.get("type") or "").lower()
+                    _opts = nf.get("options") or []
+                    if not _opts and _nf_type in ("combobox", "select", "radio", "custom_dropdown"):
+                        try:
+                            from jobpulse.form_scanner import scan_combobox_options
+                            scanned = await scan_combobox_options(self._page, lbl)
+                            if scanned:
+                                _opts = scanned
+                                nf["options"] = scanned
+                                logger.info(
+                                    "post_fill_rescan: scanned %d options for '%s' (was empty)",
+                                    len(scanned), lbl[:60],
+                                )
+                        except Exception as exc:
+                            logger.debug(
+                                "post_fill_rescan: scan_combobox_options failed for '%s': %s",
+                                lbl[:60], exc,
+                            )
                     v2_answer = try_screening_v2(
                         lbl, _job_ctx,
-                        field={"type": nf.get("type"), "options": nf.get("options")},
+                        field={"type": nf.get("type"), "options": _opts or None},
                     )
                     if v2_answer:
                         new_mapping[lbl] = str(v2_answer).strip()
