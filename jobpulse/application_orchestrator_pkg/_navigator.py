@@ -460,6 +460,38 @@ class FormNavigator:
         return ctx
 
     @staticmethod
+    def _domain_has_prior_success(url: str) -> bool:
+        """Has this domain had at least one successful application fill?
+
+        Used by `_phase_plan` to decide whether the DOM-only fast path to
+        fill_form is safe. Trust comes from FormExperienceDB: any record
+        with `success=1` means the agent has previously navigated this site
+        end-to-end, so the DOM classifier's confidence is well-calibrated
+        for it. New/unknown domains fall through to PageReasoner regardless
+        of DOM confidence.
+
+        Resolved at runtime via FormExperienceDB lookup — no hardcoded
+        domain allow-list, fully dynamic.
+        """
+        from urllib.parse import urlparse
+        try:
+            domain = urlparse(url or "").netloc.lower().removeprefix("www.")
+        except Exception:
+            return False
+        if not domain:
+            return False
+        try:
+            from jobpulse.form_experience_db import FormExperienceDB
+            fe = FormExperienceDB()
+            record = fe.lookup(domain)
+            if not record:
+                return False
+            return bool(record.get("success", 0)) and int(record.get("apply_count") or 0) >= 1
+        except Exception as exc:
+            logger.debug("_domain_has_prior_success: lookup failed for %s: %s", domain, exc)
+            return False
+
+    @staticmethod
     def _clear_stale_plan_on_host_change(
         ctx: StepContext, prev_url: str, new_url: str, reason: str,
     ) -> None:
@@ -623,7 +655,21 @@ class FormNavigator:
             ctx.plan_source = "fast_path"
             return ctx
 
-        if ctx.dom_confidence >= 0.8 and ctx.dom_type == PageType.APPLICATION_FORM:
+        # DOM-fast-path to fill_form is only safe on domains we've successfully
+        # filled before. The DOM classifier mis-labels job-description pages
+        # with embedded contact/search forms as APPLICATION_FORM at high
+        # confidence — verified live on pls-solicitors.co.uk where the listing
+        # URL had visible form elements but the actual apply form was behind
+        # an "Apply Now" button further down. Untrusted domains: skip the
+        # fast path and let PageReasoner re-evaluate. Trusted domains
+        # (has at least one successful fill in FormExperienceDB): keep
+        # fast path for speed.
+        domain_trusted = FormNavigator._domain_has_prior_success(ctx.url)
+        if (
+            ctx.dom_confidence >= 0.8
+            and ctx.dom_type == PageType.APPLICATION_FORM
+            and domain_trusted
+        ):
             ctx.planned_action = PageAction(
                 page_understanding="Application form detected",
                 action="fill_form",
