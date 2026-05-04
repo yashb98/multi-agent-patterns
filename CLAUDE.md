@@ -138,8 +138,9 @@ Failover layer on top of local daemon + cron:
 - `morning-briefing.yml` + `failover-briefing.yml` — Backup morning briefing
 - `agent-readiness.yml` — Daily regression suite + PR checks
 
-### Cron Schedule (16 tasks via `scripts/install_cron.py`)
-2 AM overnight scan | 3 AM profile sync | 7/1/7 PM full job scan | 7:57 AM arXiv | 8:03 AM briefing | 9 AM follow-ups | 9/12/3 PM calendar | 10 AM/4:30 PM quick scan | 1/3/5 PM Gmail | Sun 7 AM archive | Sun 8 PM weekly report | Mon 8:33 AM papers | Every 10 min health | Every 3 hrs daemon restart
+### Cron Schedule (15 distinct task types, 22 cron entries via `scripts/install_cron.py`)
+3 AM profile sync | 7/1/7 PM full job scan (Reed + LinkedIn + Indeed) | 7:57 AM arXiv | 8:03 AM briefing | 9 AM follow-ups | 9/12/3 PM calendar | 10 AM/4:30 PM quick scan (same 3 platforms) | 1/3/5 PM Gmail | Hourly :15 optimize cycle | Sun 7 AM archive | Sun 8 PM weekly report | Sun 9 PM learning-maintenance | Mon 8:33 AM papers | Every 10 min health | Every 3 hrs daemon restart
+> 2 AM overnight scan (Glassdoor + TotalJobs) removed 2026-05-04 — both platform scanners were deleted from `PLATFORM_SCANNERS` and the runner has no `job-scan-slow` handler. Added 2026-05-04: hourly `optimize` and Sunday-night `learning-maintenance` per `shared/optimization/CLAUDE.md`.
 
 ### Data Directory (`data/`)
 62 SQLite databases, JSON configs, fonts, locks, and runtime artifacts. Key files:
@@ -160,7 +161,7 @@ Config: `shared/logging_config.py`. All loggers via `get_logger(__name__)`.
 Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 
 ## Stats
-~162,000 LOC | 763 Python files | 49 databases | 4163 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~163,000 LOC | 764 Python files | 52 databases | 4165 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)
