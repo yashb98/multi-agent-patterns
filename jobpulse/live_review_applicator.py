@@ -962,10 +962,18 @@ class LiveReviewSession:
         if notion_page_id:
             try:
                 from jobpulse.job_notion_sync import update_application_page
+                # Notion's Status property only accepts the canonical lifecycle
+                # values (Found / Analyzing / Ready / Pending Approval / Applied
+                # / Interview / Offer / Rejected / Withdrawn). "Expired" is NOT
+                # in the schema — sending it triggers a 400 that the retry loop
+                # strips, leaving the job at Status=Found and re-pulled forever.
+                # Map to "Withdrawn" (closest semantic — we're withdrawing the
+                # job from the queue, not the recruiter rejecting us). The note
+                # preserves the actual reason.
                 update_application_page(
                     notion_page_id,
-                    status="Expired",
-                    notes="Job expired / no longer available",
+                    status="Withdrawn",
+                    notes="Job expired / no longer available (auto-withdrawn)",
                 )
             except Exception as exc:
                 logger.warning("_mark_expired: Notion update failed: %s", exc)
