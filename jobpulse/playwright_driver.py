@@ -238,7 +238,7 @@ class PlaywrightDriver:
             delay = _scroll_delay(dist)
             await asyncio.sleep(delay)
 
-    async def connect(self, cdp_url: str | None = None) -> None:
+    async def connect(self, cdp_url: str | None = None, *, prefer_url: str | None = None) -> None:
         """Connect to Chrome via CDP. Call before any other method."""
         url = cdp_url or CDP_URL
 
@@ -276,7 +276,45 @@ class PlaywrightDriver:
             ) from last_exc
         self._context = self._browser.contexts[0]
         pages = self._context.pages
-        self._page = pages[-1] if pages else await self._context.new_page()
+        self._attached_existing_url = False  # set True when prefer_url match keeps the page intact
+        # When `prefer_url` is supplied, pick the tab whose URL matches —
+        # otherwise we'd grab pages[-1] (whatever was opened last) and then
+        # navigate it away, destroying any in-progress session (e.g. the
+        # user's manually-logged-in JPMC tab). Match by exact URL, then by
+        # URL-prefix, then by host+path-prefix as a fallback.
+        self._page = None
+        if prefer_url and pages:
+            from urllib.parse import urlparse
+            try:
+                want = urlparse(prefer_url)
+            except Exception:
+                want = None
+            for p in pages:
+                if (p.url or "") == prefer_url:
+                    self._page = p
+                    break
+            if self._page is None:
+                for p in pages:
+                    if (p.url or "").startswith(prefer_url):
+                        self._page = p
+                        break
+            if self._page is None and want and want.netloc:
+                for p in pages:
+                    try:
+                        got = urlparse(p.url or "")
+                    except Exception:
+                        continue
+                    if got.netloc == want.netloc and got.path.startswith(want.path):
+                        self._page = p
+                        break
+            if self._page is not None:
+                self._attached_existing_url = True
+                logger.info(
+                    "PlaywrightDriver attached to existing tab %s (prefer_url match)",
+                    self._page.url[:100],
+                )
+        if self._page is None:
+            self._page = pages[-1] if pages else await self._context.new_page()
         logger.info("PlaywrightDriver connected to Chrome at %s (tab: %s)", url, self._page.url[:80])
 
         try:

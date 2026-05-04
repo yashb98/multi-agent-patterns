@@ -414,6 +414,10 @@ class FormNavigator:
             ctx.tab_state = TabState.CLOSED
             return ctx
 
+        # Capture pre-observe URL so we can detect cross-domain transitions
+        # below and clear stale reflection state planned against the old host.
+        prev_url = ctx.url
+
         browser_ctx = getattr(page, "context", None)
         if browser_ctx is not None:
             pages = browser_ctx.pages
@@ -434,6 +438,7 @@ class FormNavigator:
                         await intelligence.inject_on_new_page()
                     ctx.snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
                     ctx.url = ctx.snapshot.get("url", "")
+                    self._clear_stale_plan_on_host_change(ctx, prev_url, ctx.url, "new_tab")
                     return ctx
 
         current_url = page.url or ""
@@ -447,11 +452,38 @@ class FormNavigator:
             if intelligence:
                 intelligence.clear()
                 await intelligence.inject_on_new_page()
+            self._clear_stale_plan_on_host_change(ctx, prev_url, ctx.url, "redirect")
             return ctx
 
         ctx.snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
         ctx.url = ctx.snapshot.get("url", "")
         return ctx
+
+    @staticmethod
+    def _clear_stale_plan_on_host_change(
+        ctx: StepContext, prev_url: str, new_url: str, reason: str,
+    ) -> None:
+        """Drop carried reflection state when navigating to a different host.
+
+        Without this, an action planned against the previous host (e.g. clicking
+        a LinkedIn premium-overlay close button) gets executed against a new
+        host (e.g. Greenhouse), which produces guaranteed ghost clicks because
+        the target element doesn't exist on the new page. Forcing a fresh plan
+        on host transitions breaks that loop.
+        """
+        try:
+            from urllib.parse import urlparse
+            prev_host = urlparse(prev_url or "").netloc.lower().removeprefix("www.")
+            new_host = urlparse(new_url or "").netloc.lower().removeprefix("www.")
+        except Exception:
+            return
+        if prev_host and new_host and prev_host != new_host:
+            if ctx.reflected_action is not None:
+                logger.info(
+                    "OBSERVE: host change %s→%s (%s) — clearing stale reflected_action",
+                    prev_host, new_host, reason,
+                )
+                ctx.reflected_action = None
 
     async def _phase_analyze(self, ctx: StepContext) -> StepContext:
         dom_type, dom_confidence = self._classifier.classify(ctx.snapshot)
@@ -1004,12 +1036,33 @@ class FormNavigator:
             except Exception:
                 pass
 
-        if not skip_initial_navigate:
+        # When the driver attached to an existing tab matching the target URL
+        # (set via PlaywrightDriver.connect(prefer_url=...)), the page is
+        # already loaded. Calling driver.navigate(url) here would force a
+        # page.goto re-load, destroying any in-progress SPA state — exactly
+        # what wiped the user's manually-logged-in JPMC tab on 2026-05-04.
+        # Skip the initial navigate when the current URL already matches.
+        already_on_target = False
+        try:
+            current_url = (current_page.url or "") if current_page is not None else ""
+            if current_url and (current_url == url or current_url.startswith(url) or url.startswith(current_url)):
+                already_on_target = True
+            elif getattr(self.driver, "_attached_existing_url", False):
+                already_on_target = True
+        except Exception:
+            already_on_target = False
+
+        if not skip_initial_navigate and not already_on_target:
             try:
                 await self.driver.navigate(url)
             except (TimeoutError, ConnectionError):
                 logger.info("Navigate lost (MV3 restart) — waiting for extension to reconnect")
                 await wait_for_page_stable(self.driver.page, timeout_ms=8000)
+        elif already_on_target:
+            logger.info(
+                "navigate_to_form: skipping initial navigate — already on %s",
+                (current_page.url if current_page else url)[:100],
+            )
         snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
         if not snapshot or not snapshot.get("url"):
             # Still no snapshot — wait longer
@@ -1024,6 +1077,12 @@ class FormNavigator:
         # Carry the reflection's pivoted action from one iteration to the next
         # so _phase_plan can act on it before the primary reasoner runs again.
         pending_reflected_action: Any = None
+        # Cap consecutive ghost-clicks at GHOST_LOOP_BUDGET (3). After that,
+        # additional reflection on the same page is futile — it just burns
+        # LLM cost cycling between dismiss_overlay and click_element on a page
+        # whose Apply button doesn't change URL (e.g. Greenhouse inline forms).
+        consecutive_ghost_clicks = 0
+        GHOST_LOOP_BUDGET = 3
 
         for step_idx in range(MAX_NAVIGATION_STEPS):
             ctx = StepContext(snapshot=snapshot, url=prev_url, tab_state=TabState.NORMAL)
@@ -1035,6 +1094,11 @@ class FormNavigator:
                 logger.warning("Page closed during navigation — aborting")
                 return {"page_type": PageType.UNKNOWN, "snapshot": ctx.snapshot}
 
+            # Tab/redirect transitions reveal genuinely new pages — the prior
+            # ghost-click streak no longer applies.
+            if ctx.tab_recovered:
+                consecutive_ghost_clicks = 0
+
             ctx = await self._phase_analyze(ctx)
 
             ctx = self._phase_match(ctx, domain, platform, len(steps))
@@ -1045,6 +1109,20 @@ class FormNavigator:
                 return self._make_result(ctx)
 
             ctx = await self._phase_act(ctx, platform, steps, wall_bypass_attempts, job=job)
+
+            if ctx.ghost_click:
+                consecutive_ghost_clicks += 1
+                if consecutive_ghost_clicks >= GHOST_LOOP_BUDGET:
+                    logger.warning(
+                        "ACT: ghost-click budget exhausted (%d consecutive) — "
+                        "page state isn't changing on click. URL=%s. Aborting "
+                        "navigation; caller should retry via platform handoff "
+                        "or human bypass.",
+                        consecutive_ghost_clicks, (ctx.url or "")[:80],
+                    )
+                    return {"page_type": PageType.UNKNOWN, "snapshot": ctx.snapshot}
+            else:
+                consecutive_ghost_clicks = 0
 
             if ctx.planned_action and ctx.planned_action.action == "wait_human":
                 wall_bypass_attempts += 1

@@ -503,12 +503,21 @@ class LiveReviewSession:
             raise FileNotFoundError(f"CV not found: {self.cv_path}")
 
         driver = PlaywrightDriver()
-        await driver.connect()
-        # Clear stale state from previous runs — navigate to blank page first
-        try:
-            await driver.page.goto("about:blank", wait_until="load", timeout=5000)
-        except Exception:
-            pass
+        # Pass self.url so the driver attaches to the user's in-progress
+        # tab (set by _find_in_progress_apply_tab) instead of pages[-1].
+        # Without this, the driver picks whatever Chrome opened last and
+        # then navigates it to about:blank below — wiping the user's
+        # manually-logged-in session. Confirmed live on JPMC 2026-05-04.
+        await driver.connect(prefer_url=self.url)
+        # Skip the stale-state reset if we attached to the right tab —
+        # about:blank would destroy the in-progress page state we just
+        # found. Only reset when we picked a fallback (pages[-1]) tab
+        # whose state is unrelated to this job.
+        if not getattr(driver, "_attached_existing_url", False):
+            try:
+                await driver.page.goto("about:blank", wait_until="load", timeout=5000)
+            except Exception:
+                pass
         self._driver = driver
         self._page = driver.page
 
