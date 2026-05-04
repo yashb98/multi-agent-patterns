@@ -72,6 +72,7 @@ def semantic_option_match(
     field_label: str = "",
     aliases: dict[str, tuple[str, ...]] | None = None,
     numeric_value: float | None = None,
+    prefer_substrings: tuple[str, ...] = (),
 ) -> str | None:
     """Match a desired value to available options via 6-tier cascade.
 
@@ -83,6 +84,13 @@ def semantic_option_match(
     5. Token overlap (Jaccard similarity, threshold >= 2 shared tokens)
     6. Substring containment (for values >= 4 chars)
 
+    Args:
+        prefer_substrings: case-insensitive substrings that bias selection
+            when multiple options would match (e.g., user's country name to
+            disambiguate "Dundee, Florida" vs "Dundee, Dundee City, United
+            Kingdom"). Applied to substring + token-overlap tiers; embedding
+            tier already handles this implicitly via cosine similarity.
+
     Returns the exact option text to use, or None if no match.
     """
     if not available_options or not desired_value:
@@ -90,6 +98,7 @@ def semantic_option_match(
 
     desired_norm = _normalize(desired_value)
     opts_norm = {_normalize(o): o for o in available_options}
+    prefer_norm = tuple(_normalize(p) for p in prefer_substrings if p)
 
     # Tier 1: Exact match
     if desired_norm in opts_norm:
@@ -148,21 +157,36 @@ def semantic_option_match(
 
     if desired_tokens:
         best_opt = None
-        best_score = 0
+        best_score = 0.0
         for opt_norm, opt_original in opts_norm.items():
             opt_tokens = {t for t in opt_norm.split() if len(t) > 1 and t not in stop_words}
-            overlap = len(desired_tokens & opt_tokens)
+            overlap = float(len(desired_tokens & opt_tokens))
+            # Country-suffix preference: when user's country (or other prefer
+            # substring) appears in the option, boost it. Resolves ties like
+            # "Dundee, Florida" vs "Dundee, Dundee City, United Kingdom".
+            if prefer_norm and any(p in opt_norm for p in prefer_norm):
+                overlap += 0.5
             if overlap > best_score:
                 best_score = overlap
                 best_opt = opt_original
         if best_opt is not None and best_score >= 2:
             return best_opt
 
-    # Tier 6: Substring containment (for values >= 4 chars)
+    # Tier 6: Substring containment (for values >= 4 chars). When multiple
+    # options contain the desired_norm as substring (e.g., five "Dundee,..."
+    # cities), prefer one whose option text also contains a prefer_substring.
     if len(desired_norm) >= 4:
-        for opt_norm, opt_original in opts_norm.items():
-            if desired_norm in opt_norm:
-                return opt_original
+        substring_matches = [
+            opt_original for opt_norm, opt_original in opts_norm.items()
+            if desired_norm in opt_norm
+        ]
+        if substring_matches and prefer_norm:
+            for opt in substring_matches:
+                opt_norm = _normalize(opt)
+                if any(p in opt_norm for p in prefer_norm):
+                    return opt
+        if substring_matches:
+            return substring_matches[0]
 
     return None
 

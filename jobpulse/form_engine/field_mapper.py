@@ -155,7 +155,22 @@ _DIVERSITY_KEYWORDS: dict[tuple[str, ...], str] = {
 
 
 def _fuzzy_custom_answer(label_lower: str, custom_answers: dict) -> str | None:
-    """Try to match a field label to a custom_answers key fuzzily."""
+    """Try to match a field label to a custom_answers key fuzzily.
+
+    Same correctness rule as `fuzzy_label_to_profile_key`: substring / keyword
+    matching does NOT fire on sentence-shaped questions. Without this, a
+    custom_answers entry like {"country": "United Kingdom"} would substring-
+    match into any long question containing the word "country" (e.g.
+    "Are you eligible to work in the country..." → returns "United Kingdom"
+    as the answer to a Yes/No).
+    """
+    from jobpulse.form_engine.field_resolver import _is_sentence_question
+    import re as _re
+
+    tokens_list = _re.sub(r"[^a-z0-9]+", " ", label_lower).split()
+    if _is_sentence_question(label_lower, tokens_list):
+        return None
+
     # Exact match already tried by caller — do substring / keyword matching here
     for key, value in custom_answers.items():
         if key.startswith("_"):
@@ -177,10 +192,18 @@ def _fuzzy_custom_answer(label_lower: str, custom_answers: dict) -> str | None:
                 if isinstance(val, str) and val.strip():
                     return val.strip()
 
-    # Embedding similarity fallback
+    # Embedding similarity fallback.
+    # Skip for very short labels (< 5 chars): the embedding model can't
+    # reliably compare single short words and produces false positives like
+    # "stream" → "name" (score 0.83). The substring + diversity tiers above
+    # already cover the legitimate short-label cases.
+    if len(label_lower.strip()) < 5:
+        return None
     try:
         from shared.semantic_utils import best_semantic_match
         candidate_keys = [k for k in custom_answers if not k.startswith("_") and isinstance(custom_answers[k], str) and custom_answers[k].strip()]
+        # Apply the same length floor to candidate keys.
+        candidate_keys = [k for k in candidate_keys if len(k.strip()) >= 5]
         if candidate_keys:
             match, score = best_semantic_match(label_lower, candidate_keys, min_score=0.70)
             if match is not None:
@@ -204,10 +227,32 @@ def _resolve_with_options(value: str, field: dict) -> str:
     except (ValueError, AttributeError):
         numeric = None
 
+    # Country-suffix preference: option lists like Greenhouse's location
+    # autocomplete return ambiguous matches ("Dundee, Florida" vs
+    # "Dundee, Dundee City, United Kingdom"). When the user's country is
+    # known via ProfileStore, pass it as a tiebreaker so the option in the
+    # right country wins. Falls back gracefully if ProfileStore unavailable.
+    prefer: tuple[str, ...] = ()
+    try:
+        from shared.profile_store import get_profile_store
+        store = get_profile_store()
+        country = (store.sensitive("country") or "").strip()
+        if not country:
+            location = (store.identity().location or "").strip()
+            if "," in location:
+                country = location.rsplit(",", 1)[-1].strip()
+            elif location:
+                country = location
+        if country:
+            prefer = (country,)
+    except Exception:
+        prefer = ()
+
     matched = semantic_option_match(
         value, options,
         field_label=field.get("label", ""),
         numeric_value=numeric,
+        prefer_substrings=prefer,
     )
     return matched if matched is not None else value
 

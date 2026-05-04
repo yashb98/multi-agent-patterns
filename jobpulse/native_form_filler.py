@@ -913,6 +913,25 @@ class NativeFormFiller:
                                 break
             except Exception:
                 pass
+            # Country-suffix preference for ambiguous option lists. When the
+            # user lives in the UK and Greenhouse's autocomplete returns
+            # multiple "Dundee, ..." cities, prefer the one with "United
+            # Kingdom" in the option text — without this, the picker silently
+            # picked Dundee, Florida or Dundee, Michigan based on render order.
+            _prefer_country: tuple[str, ...] = ()
+            try:
+                if self._profile_store:
+                    _country = (self._profile_store.sensitive("country") or "").strip()
+                    if not _country:
+                        _loc = (self._profile_store.identity().location or "").strip()
+                        if "," in _loc:
+                            _country = _loc.rsplit(",", 1)[-1].strip()
+                        elif _loc:
+                            _country = _loc
+                    if _country:
+                        _prefer_country = (_country,)
+            except Exception:
+                _prefer_country = ()
             from jobpulse.form_scanner import (
                 best_option_match as ax_best_match,
                 best_range_match,
@@ -964,6 +983,7 @@ class NativeFormFiller:
                         react_select_chosen = ax_best_match(
                             fill_value, react_select_options,
                             aliases=_build_option_aliases(),
+                            prefer_substrings=_prefer_country,
                         )
                         if react_select_chosen is None:
                             # Autocomplete city/location: type to filter,
@@ -985,6 +1005,7 @@ class NativeFormFiller:
                                     ax_best_match(
                                         fill_value, react_select_options,
                                         aliases=_build_option_aliases(),
+                                        prefer_substrings=_prefer_country,
                                     )
                                     or react_select_options[0]
                                 )
@@ -1095,6 +1116,7 @@ class NativeFormFiller:
                 matched_option = ax_best_match(
                     fill_value, ax_options,
                     aliases=_build_option_aliases(),
+                    prefer_substrings=_prefer_country,
                 )
                 if matched_option is None:
                     try:
