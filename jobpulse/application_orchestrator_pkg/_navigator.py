@@ -421,9 +421,9 @@ class FormNavigator:
         browser_ctx = getattr(page, "context", None)
         if browser_ctx is not None:
             pages = browser_ctx.pages
-            if len(pages) > 1:
-                newest = pages[-1]
-                if newest != page and not (hasattr(newest, "is_closed") and newest.is_closed()):
+            if len(pages) > 1 and self._should_auto_switch_tab(page):
+                newest = self._pick_target_tab(pages, page)
+                if newest is not None:
                     try:
                         await newest.wait_for_load_state("domcontentloaded", timeout=10000)
                     except Exception:
@@ -458,6 +458,82 @@ class FormNavigator:
         ctx.snapshot = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
         ctx.url = ctx.snapshot.get("url", "")
         return ctx
+
+    @staticmethod
+    def _is_apply_path_url(url: str) -> bool:
+        """Does this URL look like an in-progress ATS application page?
+
+        Mirrors the path patterns used by
+        `live_review_applicator._find_in_progress_apply_tab` so the
+        navigator's tab-switch heuristic agrees with the session's
+        explicit tab pick. Structural URL validation only — regex is
+        appropriate here per `.claude/rules/jobpulse.md`.
+        """
+        if not url:
+            return False
+        return bool(re.search(
+            r"/apply(/|$|\?)|/section/|/application(/|$|\?)|/candidate/|"
+            r"/jobs/[^/]+/apply|/job/[^/]+/apply",
+            url, re.IGNORECASE,
+        ))
+
+    def _should_auto_switch_tab(self, current_page: Any) -> bool:
+        """Decide whether `_phase_observe` may switch to a different tab.
+
+        Bug 2026-05-05 (regression): with multiple tabs open (Indeed JD +
+        ATS JD + ATS apply form), the original heuristic blindly switched
+        to `pages[-1]`, clobbering the tab the session had deliberately
+        attached to via `_find_in_progress_apply_tab` + `prefer_url`.
+
+        Two locks:
+          1. If the driver attached via `prefer_url` match
+             (`_attached_existing_url`), don't auto-switch — the
+             attachment was intentional.
+          2. If the current page is already on an apply-path URL, don't
+             auto-switch — we're already on the right page.
+
+        Auto-switch is still allowed when current is on a non-apply page
+        (e.g., Indeed JD that just opened a new ATS tab via "Apply on
+        company site") so we can follow the SSO/redirect chain.
+        """
+        if getattr(self.driver, "_attached_existing_url", False):
+            return False
+        try:
+            current_url = current_page.url or ""
+        except Exception:
+            current_url = ""
+        if self._is_apply_path_url(current_url):
+            return False
+        return True
+
+    def _pick_target_tab(self, pages: list[Any], current: Any) -> Any | None:
+        """Pick the right tab to switch to from candidate `pages`.
+
+        Prefer: a tab on an apply-path URL, then the newest non-current,
+        non-closed page. This ensures that when "Apply on company site"
+        opens a new ATS tab while leaving the original Indeed JD tab in
+        the list, we pick the ATS tab — not whichever happens to be at
+        `pages[-1]`.
+        """
+        candidates: list[Any] = []
+        for p in pages:
+            if p is current:
+                continue
+            try:
+                if hasattr(p, "is_closed") and p.is_closed():
+                    continue
+            except Exception:
+                continue
+            candidates.append(p)
+        if not candidates:
+            return None
+        for p in reversed(candidates):
+            try:
+                if self._is_apply_path_url(p.url or ""):
+                    return p
+            except Exception:
+                continue
+        return candidates[-1]
 
     @staticmethod
     def _domain_has_prior_success(url: str) -> bool:
