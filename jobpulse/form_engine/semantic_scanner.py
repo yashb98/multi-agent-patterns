@@ -129,3 +129,118 @@ async def extract_visible_questions(page: Any) -> list[Question]:
             dom_path=item.get("dom_path") or "",
         ))
     return qs
+
+
+async def match_question_to_widget(
+    question: Question, page: Any
+) -> dict | None:
+    """Find the nearest interactive element to a question.
+
+    Two-tier search:
+      1. Ancestor match — find the question's text node, walk up to a
+         <fieldset>/<section>/[role=group]. If that ancestor contains an
+         interactive element (input/select/textarea/[role]), use it.
+      2. Pixel proximity — visible interactive element within 400px below
+         the question's bounding box. Tie-break by smallest distance.
+
+    Returns a dict with selector + match metadata, or None.
+    """
+    result = await page.evaluate(
+        """(args) => {
+            const { questionText, questionY } = args;
+
+            // 1. Ancestor match
+            const xpath = `//*[contains(text(), ${JSON.stringify(questionText.slice(0, 50))})]`;
+            const all = document.evaluate(
+                xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null,
+            ).singleNodeValue;
+
+            function widgetIn(scope) {
+                return scope.querySelector(
+                    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]),' +
+                    'select, textarea,' +
+                    '[role="combobox"], [role="switch"], [role="radio"],' +
+                    '[role="checkbox"], [role="listbox"], [role="button"][aria-haspopup]'
+                );
+            }
+
+            function selectorOf(el) {
+                if (!el) return '';
+                if (el.id) return `#${el.id}`;
+                if (el.name) return `${el.tagName.toLowerCase()}[name="${el.name}"]`;
+                if (el.getAttribute('data-qa')) return `[data-qa="${el.getAttribute('data-qa')}"]`;
+                const parts = [];
+                let n = el;
+                for (let i = 0; n && n.nodeType === 1 && i < 5; i++, n = n.parentElement) {
+                    let p = n.tagName.toLowerCase();
+                    if (n.className && typeof n.className === 'string') {
+                        const cls = n.className.split(/\\s+/).filter(c => c).slice(0, 2).join('.');
+                        if (cls) p += '.' + cls;
+                    }
+                    parts.unshift(p);
+                }
+                return parts.join(' > ');
+            }
+
+            if (all) {
+                let scope = all.parentElement;
+                for (let i = 0; scope && i < 4; i++, scope = scope.parentElement) {
+                    if (['FIELDSET', 'SECTION'].includes(scope.tagName) ||
+                        ['group', 'region'].includes(scope.getAttribute('role'))) {
+                        const w = widgetIn(scope);
+                        if (w && w.offsetParent !== null) {
+                            return {
+                                matched: true,
+                                y: w.getBoundingClientRect().top + window.scrollY,
+                                tag: w.tagName,
+                                role: w.getAttribute('role') || '',
+                                aria_haspopup: w.getAttribute('aria-haspopup') || '',
+                                aria_pressed: w.getAttribute('aria-pressed'),
+                                aria_checked: w.getAttribute('aria-checked'),
+                                selector: selectorOf(w),
+                                ancestor_classes: scope.className || '',
+                                match_kind: 'ancestor',
+                                distance_px: 0,
+                            };
+                        }
+                    }
+                }
+            }
+
+            // 2. Pixel proximity within 400px below
+            const candidates = [...document.querySelectorAll(
+                'input:not([type="hidden"]):not([type="submit"]):not([type="button"]),' +
+                'select, textarea,' +
+                '[role="combobox"], [role="switch"], [role="radio"],' +
+                '[role="checkbox"], [role="listbox"]'
+            )].filter(el => el.offsetParent !== null);
+
+            let best = null;
+            for (const w of candidates) {
+                const r = w.getBoundingClientRect();
+                const wy = r.top + window.scrollY;
+                const dy = wy - questionY;
+                if (dy < 0 || dy > 400) continue;
+                if (!best || dy < best.distance_px) {
+                    best = {
+                        matched: true,
+                        y: wy,
+                        tag: w.tagName,
+                        role: w.getAttribute('role') || '',
+                        aria_haspopup: w.getAttribute('aria-haspopup') || '',
+                        aria_pressed: w.getAttribute('aria-pressed'),
+                        aria_checked: w.getAttribute('aria-checked'),
+                        selector: selectorOf(w),
+                        ancestor_classes: (w.parentElement && w.parentElement.className) || '',
+                        match_kind: 'proximity',
+                        distance_px: dy,
+                    };
+                }
+            }
+            return best || { matched: false };
+        }""",
+        {"questionText": question.text, "questionY": question.y},
+    )
+    if not result or not result.get("matched"):
+        return None
+    return result
