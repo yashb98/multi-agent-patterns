@@ -276,3 +276,41 @@ def classify_widget(meta: dict) -> str:
     if tag == "INPUT":
         return "text"
     return "text"
+
+
+async def scan_semantic(page: Any) -> list[dict]:
+    """Strategy entry: extract questions -> match widgets -> classify.
+
+    Returns field dicts with `semantic_match=True` so downstream code
+    can treat them with appropriate care (the locator is built from a
+    selector string, may need re-resolution if the SPA re-renders).
+    """
+    qs = await extract_visible_questions(page)
+    if not qs:
+        return []
+    fields: list[dict] = []
+    for q in qs:
+        meta = await match_question_to_widget(q, page)
+        if not meta or not meta.get("matched"):
+            continue
+        widget_type = classify_widget(meta)
+        fields.append({
+            "label": q.text,
+            "type": widget_type,
+            "value": "",
+            "selector": meta.get("selector", ""),
+            "semantic_match": True,
+            "ancestor_classes": meta.get("ancestor_classes", ""),
+            "match_kind": meta.get("match_kind", ""),
+            "distance_px": meta.get("distance_px", 0),
+        })
+    if fields:
+        try:
+            url_preview = (page.url or "")[:80]
+        except Exception:
+            url_preview = "?"
+        logger.info(
+            "scan_semantic: matched %d/%d questions to widgets on %s",
+            len(fields), len(qs), url_preview,
+        )
+    return fields

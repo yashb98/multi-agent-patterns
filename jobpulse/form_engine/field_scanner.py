@@ -22,7 +22,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-STRATEGIES = ("learned_patterns", "a11y_tree", "dom_query", "playwright_locators")
+STRATEGIES = (
+    "learned_patterns", "a11y_tree", "dom_query",
+    "playwright_locators", "semantic",
+)
 
 _HYDRATION_RETRY_MS = 2000
 _MAX_HYDRATION_RETRIES = 2
@@ -988,6 +991,9 @@ async def _run_strategy(
             return await _scan_dom_query(page)
         elif strategy_name == "playwright_locators":
             return await scan_fields_locator_fallback(page)
+        elif strategy_name == "semantic":
+            from jobpulse.form_engine.semantic_scanner import scan_semantic
+            return await scan_semantic(page)
     except Exception as exc:
         logger.debug("Scan strategy %s failed: %s", strategy_name, exc)
     return []
