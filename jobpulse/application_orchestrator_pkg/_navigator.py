@@ -874,6 +874,18 @@ class FormNavigator:
 
         act = action.action
 
+        # Stamp reasoner hints on the page so downstream scanners can consult
+        # them without an import cycle. Cheap — these are plain attributes,
+        # not Playwright-managed state. Used by field_scanner.scan_fields to
+        # decide whether to force a vision augment on sparse scans.
+        try:
+            _page = getattr(self.driver, "page", None)
+            if _page is not None:
+                _page._jp_page_type_hint = action.page_type
+                _page._jp_reasoner_confidence = float(getattr(action, "confidence", 0.9))
+        except Exception:
+            pass
+
         if act in ("click_apply", "click_apply_guess", "linkedin_direct_apply"):
             post_snap = await self.click_apply_button(ctx.snapshot)
             ctx.action_executed = True

@@ -913,8 +913,49 @@ async def scan_fields(
         except Exception as exc:
             logger.debug("Failed to store scan strategy: %s", exc)
 
+    # Vision-augment when the scan looks sparse on a confident form.
+    # Reasoner state is read from orchestrator-provided hints stamped on
+    # the page object in _phase_act; defaults to assuming
+    # application_form @ 0.9 (matches what _phase_act passes).
+    page_type_hint = getattr(page, "_jp_page_type_hint", None)
+    confidence_hint = getattr(page, "_jp_reasoner_confidence", None)
+    extras = await _maybe_augment_with_vision(
+        page, best_fields, page_type_hint, confidence_hint,
+    )
+    if extras:
+        best_fields = list(best_fields) + extras
+        final_count = _fillable_count(best_fields)
+        logger.info(
+            "scan_fields: vision augment added %d fields → %d total",
+            len(extras), final_count,
+        )
+
     _emit_scan_signal(domain, "success", winner=winner, field_count=final_count)
     return best_fields
+
+
+async def _maybe_augment_with_vision(
+    page: "Page",
+    existing_fields: list[dict],
+    page_type_hint: str | None,
+    confidence_hint: float | None,
+) -> list[dict]:
+    """Returns vision-augmented field list (or [] if not triggered).
+
+    Caller is responsible for merging into the primary scan result.
+    """
+    from jobpulse.form_engine.vision_gate import (
+        should_force_vision, vision_augment_scan,
+    )
+    page_type = page_type_hint or "application_form"
+    confidence = confidence_hint if confidence_hint is not None else 0.9
+    if not should_force_vision(
+        scanner_field_count=len(existing_fields),
+        page_type=page_type,
+        reasoner_confidence=confidence,
+    ):
+        return []
+    return await vision_augment_scan(page, existing_fields)
 
 
 async def _run_strategy(
