@@ -650,7 +650,14 @@ class NativeFormFiller:
         if hasattr(self._driver, '_smart_scroll'):
             await self._driver._smart_scroll(el)
         else:
-            await el.scroll_into_view_if_needed()
+            # 5s timeout (was Playwright default 30s). When element is
+            # technically visible but obscured (cookie modal, sticky
+            # header, off-viewport honeypot), 30s blocks the entire fill
+            # chain. 5s is enough for any legitimate scroll animation.
+            try:
+                await el.scroll_into_view_if_needed(timeout=5000)
+            except Exception as exc:
+                logger.debug("_smart_scroll: scroll timeout — proceeding anyway: %s", exc)
 
     async def _move_mouse_to(self, el: Any) -> None:
         if hasattr(self._driver, '_move_mouse_to'):
