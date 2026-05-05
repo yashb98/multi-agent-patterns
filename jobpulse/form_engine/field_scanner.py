@@ -155,6 +155,79 @@ async def _detect_form_container(page: "Page") -> str | None:
             if (!hasSubmitButton(commonAncestor)) return null;
             return selectorFor(commonAncestor);
         }""")
+        if selector:
+            return selector
+
+        # Fallback: multi-form pages where common-ancestor walks up to <body>
+        # because the page has separate <form>s for page-header search,
+        # cookie consent, honeypot, AND the actual apply form. Common ancestor
+        # = <body>, function returns null. Confirmed live on pls-solicitors.
+        # Strategy: enumerate every <form> that has a submit-like button,
+        # pick the one with the most visible input/textarea fields. The apply
+        # form has 5+ text inputs vs header search (1) or cookie modal (mostly
+        # checkboxes). Fully dynamic — no hardcoded site selectors.
+        selector = await page.evaluate("""() => {
+            function selectorFor(el) {
+                if (el.id) return '#' + CSS.escape(el.id);
+                if (el === document.body) return 'body';
+                const tag = el.tagName.toLowerCase();
+                const parent = el.parentElement;
+                if (!parent) return tag;
+                const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+                if (siblings.length === 1) return selectorFor(parent) + ' > ' + tag;
+                const idx = siblings.indexOf(el) + 1;
+                return selectorFor(parent) + ' > ' + tag + ':nth-of-type(' + idx + ')';
+            }
+            function hasSubmitButton(el) {
+                const buttons = el.querySelectorAll('button, [role="button"], input[type="submit"]');
+                return Array.from(buttons).some(b => {
+                    const text = (b.textContent || b.value || b.getAttribute('aria-label') || '').toLowerCase();
+                    return ['submit', 'apply', 'next', 'continue', 'review', 'proceed', 'send'].some(s => text.includes(s));
+                });
+            }
+            function countMeaningfulInputs(el) {
+                // Text-style inputs are stronger apply-form signal than checkboxes
+                // (cookie modals are mostly checkboxes; apply forms are mostly text/email/tel).
+                const textInputs = el.querySelectorAll(
+                    'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], ' +
+                    'input[type="number"], input[type="search"]:not([role="search"]), textarea, ' +
+                    'input:not([type]), [role="textbox"], [role="combobox"]'
+                );
+                let count = 0;
+                for (const inp of textInputs) {
+                    if (inp.type === 'hidden') continue;
+                    if (inp.offsetParent === null) continue;
+                    if (inp.disabled || inp.readOnly) continue;
+                    // Skip honeypot pattern (name contains "honeypot" or "hp" suffix)
+                    const name = (inp.name || inp.id || '').toLowerCase();
+                    if (name.includes('honeypot') || name.endsWith('-hp') || name.endsWith('_hp')) continue;
+                    count += 1;
+                }
+                return count;
+            }
+
+            const allForms = [...document.querySelectorAll('form')]
+                .filter(f => f.offsetParent !== null && hasSubmitButton(f));
+            if (allForms.length === 0) return null;
+
+            // Score each form by meaningful input count, pick the top
+            let best = null;
+            let bestScore = 0;
+            for (const f of allForms) {
+                const score = countMeaningfulInputs(f);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = f;
+                }
+            }
+            // Require at least 2 meaningful inputs to qualify (otherwise it's
+            // probably a search bar or single-input newsletter signup, not an
+            // apply form).
+            if (!best || bestScore < 2) return null;
+            return selectorFor(best);
+        }""")
+        if selector:
+            logger.info("_detect_form_container: multi-form fallback picked %s", selector)
         return selector
     except Exception as exc:
         logger.debug("Auto-detect form container failed: %s", exc)
@@ -250,8 +323,28 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 if (type === 'file') return 'file';
                 if (type === 'checkbox') return 'checkbox';
                 if (type === 'radio') return 'radio';
+                // Combobox detection — covers four widely-used patterns:
+                //   1. Native role="combobox" (correct ARIA)
+                //   2. Greenhouse / many React-Select wrappers — input nested
+                //      inside .select__control, css-*-control, or similar.
+                //      The role attribute is set asynchronously; if the scan
+                //      races React's render the role check fails. The wrapper
+                //      class is set during render so it's a more stable signal.
+                //   3. aria-haspopup="listbox" or "true" — declared by widgets
+                //      that pop up a list of options.
+                //   4. aria-autocomplete="list" or "both" — explicitly tells
+                //      assistive tech this input filters a list of options.
                 const role = el.getAttribute('role');
                 if (role === 'combobox') return 'combobox';
+                const haspopup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+                if (haspopup === 'listbox' || haspopup === 'true') return 'combobox';
+                const autocomplete = (el.getAttribute('aria-autocomplete') || '').toLowerCase();
+                if (autocomplete === 'list' || autocomplete === 'both') return 'combobox';
+                if (el.closest && el.closest(
+                    '.select__control, [class*="select__control"], '
+                    + '[class*="-control"][class*="select"], '
+                    + '.combobox, [class*="combobox"]'
+                )) return 'combobox';
                 return 'text';
             }
 
