@@ -244,3 +244,35 @@ async def match_question_to_widget(
     if not result or not result.get("matched"):
         return None
     return result
+
+
+def classify_widget(meta: dict) -> str:
+    """Map the matched element's tag/role/aria to a fill-handler input_type.
+
+    Returns one of: text, textarea, select, combobox, switch, radio_group,
+    checkbox. The dispatcher in NativeFormFiller._fill_by_label has handlers
+    for all of these.
+    """
+    tag = (meta.get("tag") or "").upper()
+    role = (meta.get("role") or "").lower()
+    haspopup = (meta.get("aria_haspopup") or "").lower()
+
+    if role == "switch":
+        return "switch"
+    if role == "checkbox":
+        return "checkbox"
+    if role == "radio":
+        return "radio_group"
+    if role == "combobox":
+        return "combobox"
+    if role == "listbox":
+        return "combobox"
+    if tag == "SELECT":
+        return "select"
+    if tag == "TEXTAREA":
+        return "textarea"
+    if tag == "BUTTON" and haspopup in ("listbox", "true", "menu"):
+        return "combobox"
+    if tag == "INPUT":
+        return "text"
+    return "text"
