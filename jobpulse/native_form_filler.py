@@ -3053,7 +3053,11 @@ class NativeFormFiller:
             custom_dd_filled = await self._fill_custom_dropdowns(mapping, custom_answers, fields)
             total_fields_filled += custom_dd_filled
 
-            # 6. File uploads
+            # 6. File uploads (always run — page may have file inputs even
+            # when scan returned 0 form fields, e.g. CV-only landing pages
+            # like Revolut welovealfa.com /apply/upload-cv).
+            logger.info("native_form_filler: invoking upload_files (cv_path=%s)",
+                        bool(cv_path))
             await upload_files(self._page, cv_path, cl_path, custom_answers, self._get_accessible_name)
 
             # 7. Consent boxes

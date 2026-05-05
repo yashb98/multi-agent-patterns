@@ -15,16 +15,77 @@ logger = get_logger(__name__)
 
 
 async def upload_pdf(locator: Any, file_path: str) -> None:
+    """Upload a PDF to a file input.
+
+    Robust against React drop-zone widgets (react-dropzone, custom
+    dropzones) where set_input_files attaches the file but the page's
+    component doesn't notice because it listens for `drop` on the zone
+    wrapper rather than `change` on the input. We do three things, in
+    order:
+
+      1. set_input_files (Playwright dispatches input + change on the
+         input automatically — sufficient for plain HTML forms).
+      2. After the set, also fire `input` + `change` events bubbling up
+         from the input. React-dropzones with onInputChange handlers
+         pick this up.
+      3. Re-fire `change` on each ancestor with a class matching
+         drop|upload (the dropzone wrapper). Some widgets bind their
+         listener there, not on the input.
+      4. Verify by reading el.files.length — if zero, log a warning so
+         the next stuck-detection cycle has signal to recover.
+    """
     from pathlib import Path
     p = Path(file_path)
     if not p.is_file():
-        logger.error("PDF upload failed — file not found: %s", file_path)
+        logger.error("upload_pdf: file not found: %s", file_path)
         return
-    await locator.set_input_files({
-        "name": p.name,
-        "mimeType": "application/pdf",
-        "buffer": p.read_bytes(),
-    })
+    try:
+        await locator.set_input_files({
+            "name": p.name,
+            "mimeType": "application/pdf",
+            "buffer": p.read_bytes(),
+        })
+    except Exception as exc:
+        logger.error("upload_pdf: set_input_files failed for %s: %s", p.name, exc)
+        raise
+
+    # Belt-and-braces re-dispatch — many React drop-zones don't observe
+    # the synthetic events Playwright fires from set_input_files alone.
+    try:
+        files_attached = await locator.evaluate(
+            r"""el => {
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                let node = el.parentElement;
+                for (let i = 0; node && i < 6; i++, node = node.parentElement) {
+                    const cls = (node.className || '') + '';
+                    if (/drop|upload|cv|resume|file/i.test(cls)) {
+                        node.dispatchEvent(new Event('change', {bubbles: true}));
+                        node.dispatchEvent(new Event('input', {bubbles: true}));
+                    }
+                }
+                return el.files ? el.files.length : 0;
+            }"""
+        )
+    except Exception as exc:
+        files_attached = -1
+        logger.debug("upload_pdf: post-set event re-dispatch failed: %s", exc)
+
+    if files_attached and files_attached > 0:
+        logger.info(
+            "upload_pdf: ✓ uploaded %s (%d bytes, files.length=%d)",
+            p.name, p.stat().st_size, files_attached,
+        )
+    else:
+        # set_input_files reported success but the input has no files —
+        # likely the React component replaced/cleared the input. Surface
+        # a warning so OPRAL learn / stuck recovery picks it up.
+        logger.warning(
+            "upload_pdf: set_input_files returned without files attached "
+            "for %s (files.length=%s) — page widget may have rejected or "
+            "swapped the input; downstream nav may not advance",
+            p.name, files_attached,
+        )
 
 
 async def page_has_cover_letter_file_input(page: "Page") -> bool:
@@ -107,6 +168,10 @@ async def upload_files(
     custom_answers: dict | None,
     get_accessible_name: Any,
 ) -> None:
+    logger.info(
+        "upload_files: entry — cv=%s cl=%s",
+        (cv_path or "(none)")[-80:], (cl_path or "(none)")[-80:],
+    )
     await enable_optional_cover_letter_checkbox(page, get_accessible_name)
     cl_path = await resolve_lazy_cover_letter_path(page, cl_path, custom_answers)
 
@@ -127,6 +192,7 @@ async def upload_files(
             };
         });
     }""")
+    logger.info("upload_files: scanned %d file input(s) on page", len(file_meta))
     cv_uploaded = False
     cl_uploaded = False
 
