@@ -133,7 +133,16 @@ async def upload_files(
     for meta in file_meta:
         identifiers = f"{meta['label']} {meta['id']} {meta['name']}".lower()
 
-        if "autofill" in identifiers or "drag and drop" in identifiers:
+        # Skip LinkedIn's autofill-profile widget (separate file input that
+        # imports profile JSON, not a CV). DON'T skip drag-and-drop zones —
+        # the *visible* drop zone is usually a <label> wrapping a hidden
+        # <input type="file"> whose label text reads "Upload CV / or drag
+        # and drop your cv here". set_input_files works on the hidden input
+        # regardless of visibility (Playwright accepts hidden file inputs
+        # by design). Live regression on Revolut welovealfa.com 2026-05-05:
+        # the agent skipped the only CV upload field because the label
+        # contained "drag and drop".
+        if "autofill" in identifiers:
             continue
 
         if meta["id"]:
