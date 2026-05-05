@@ -1,4 +1,9 @@
-"""CV and Cover Letter PDF generators matching Yash's template style."""
+"""CV and Cover Letter PDF generators.
+
+All applicant data (identity, experience, projects, skills) is read from
+`data/user_profile.db` at render time via `shared.profile_store.ProfileStore`.
+No personal information is hardcoded in this package — see pii-policy.md.
+"""
 
 import json
 from pathlib import Path
@@ -72,11 +77,27 @@ def normalize_linkedin_url(url: str) -> str:
 
 
 def build_applicant_identity() -> dict[str, str]:
-    """Load the applicant identity from ProfileStore (config fallback)."""
+    """Load the applicant identity from ProfileStore, with config backfill for empty fields.
+
+    ProfileStore can return rows with blank columns (DB partially populated).
+    Config (.env) is the source of truth for identity fields, so any blank
+    coming back from ProfileStore is filled from `APPLICANT_PROFILE` rather
+    than rendered as an empty string in CVs / forms.
+    """
+    from jobpulse.config import APPLICANT_PROFILE as cfg
+    cfg_name = f"{cfg['first_name']} {cfg['last_name']}".strip()
+    cfg_ident = {
+        "name": cfg_name,
+        "phone": cfg["phone"],
+        "email": cfg["email"],
+        "linkedin": normalize_linkedin_url(cfg["linkedin"]),
+        "github": cfg["github"],
+        "portfolio": cfg["portfolio"],
+    }
     try:
         from shared.profile_store import get_profile_store
         ident = get_profile_store().identity()
-        return {
+        store_ident = {
             "name": ident.full_name,
             "phone": ident.phone,
             "email": ident.email,
@@ -84,28 +105,40 @@ def build_applicant_identity() -> dict[str, str]:
             "github": ident.github,
             "portfolio": ident.portfolio,
         }
+        return {k: (store_ident.get(k) or cfg_ident.get(k, "")) for k in cfg_ident}
     except Exception as _exc:
         import logging
         logging.getLogger(__name__).debug("ProfileStore unavailable: %s", _exc)
-        from jobpulse.config import APPLICANT_PROFILE as profile
-        return {
-            "name": f"{profile['first_name']} {profile['last_name']}".strip(),
-            "phone": profile["phone"],
-            "email": profile["email"],
-            "linkedin": normalize_linkedin_url(profile["linkedin"]),
-            "github": profile["github"],
-            "portfolio": profile["portfolio"],
-        }
+        return cfg_ident
 
 
 def _get_author_name() -> str:
+    """Read the applicant's full name from ProfileStore. Falls back to env-var
+    config (`config.APPLICANT_FIRST_NAME`/`APPLICANT_LAST_NAME`) so PII never
+    needs to be hardcoded. Returns an empty string as a last resort — callers
+    treat that as "no author metadata" and proceed without crashing.
+    """
+    import logging
+    log = logging.getLogger(__name__)
     try:
         from shared.profile_store import get_profile_store
-        return get_profile_store().identity().full_name or "Yash Bishnoi"
+        name = (get_profile_store().identity().full_name or "").strip()
+        if name:
+            return name
     except Exception as _exc:
-        import logging
-        logging.getLogger(__name__).debug("ProfileStore unavailable for author name: %s", _exc)
-        return "Yash Bishnoi"
+        log.debug("ProfileStore unavailable for author name: %s", _exc)
+    try:
+        from jobpulse.config import APPLICANT_FIRST_NAME, APPLICANT_LAST_NAME
+        fallback = f"{APPLICANT_FIRST_NAME} {APPLICANT_LAST_NAME}".strip()
+        if fallback:
+            return fallback
+    except Exception:
+        pass
+    log.warning(
+        "_get_author_name: no name in ProfileStore or config — "
+        "PDF metadata 'author' will be blank"
+    )
+    return ""
 
 
 def sanitize_pdf(pdf_path: Path) -> None:

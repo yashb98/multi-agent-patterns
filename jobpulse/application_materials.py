@@ -40,6 +40,46 @@ def _application_dir(company: str | None) -> Path:
     return DATA_DIR / "applications" / safe
 
 
+_LOCATION_BLEED_TOKENS = (
+    "provided", "required", "subject to", "depending", "consistently", "reliable",
+    "wifi", "hours", "benefit", "equipment", "setup", "set-up", "available",
+    "preferred", "ideally", "must", "willing", "able to", "reliable", "based in",
+    "candidates", "applicants", "essential", "expected",
+)
+
+
+def _sanitize_location(raw: str | None, *, remote: bool = False) -> str:
+    """Reject JD prose bleed and return a clean location string.
+
+    The Indeed/aggregator scrapers occasionally extract the first 1-3 words
+    after "remote, " from prose like "remote, provided the working location
+    has consistently reliable Wifi". That junk then bleeds into the CV
+    contact line. This guard rejects strings that:
+      • exceed 60 chars (real locations are short),
+      • contain JD-prose markers (provided, required, wifi, …),
+      • start with a non-capitalised word and aren't a known short token,
+      • are an obvious sentence fragment (>5 tokens, no commas → prose).
+
+    Falls back to ``"Remote (UK)"`` when ``remote=True`` else
+    ``"United Kingdom"``.
+    """
+    fallback = "Remote (UK)" if remote else "United Kingdom"
+    if not raw:
+        return fallback
+    s = raw.strip()
+    if not s:
+        return fallback
+    low = s.lower()
+    if len(s) > 60:
+        return fallback
+    if any(tok in low for tok in _LOCATION_BLEED_TOKENS):
+        return fallback
+    tokens = s.replace(",", " ").split()
+    if len(tokens) > 5 and "," not in s:
+        return fallback
+    return s
+
+
 def _parse_skill_list(raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -135,7 +175,7 @@ def ensure_tailored_cv_for_job(job_id: str, db: "JobDB | None" = None) -> Path |
     try:
         cv_path = generate_cv_pdf(
             company=row.get("company") or "Company",
-            location=row.get("location") or "United Kingdom",
+            location=_sanitize_location(row.get("location"), remote=bool(row.get("remote"))),
             tagline=tagline,
             summary=summary,
             projects=projects,
@@ -189,7 +229,7 @@ def build_lazy_cover_letter_generator(
             return generate_cover_letter_pdf(
                 company=row.get("company") or "Company",
                 role=row.get("title") or "Role",
-                location=row.get("location") or "United Kingdom",
+                location=_sanitize_location(row.get("location"), remote=bool(row.get("remote"))),
                 intro=cl_prose.intro if cl_prose else None,
                 hook=cl_prose.hook if cl_prose else None,
                 closing=cl_prose.closing if cl_prose else None,

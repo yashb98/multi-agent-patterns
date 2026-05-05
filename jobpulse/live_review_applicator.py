@@ -733,7 +733,15 @@ class LiveReviewSession:
         )
 
     async def _capture_final_mapping_async(self, filler: Any) -> dict[str, str]:
-        """Read live page values right before click-submit."""
+        """Read live page values right before click-submit.
+
+        Layers, oldest first (later writes win):
+          1. Per-page snapshots from NativeFormFiller (captured right before
+             each Next/Continue click — preserves user mid-flow edits on
+             screening pages whose inputs are gone by review time).
+          2. Pulled AI-assist fixes (`ai_assist_logger`).
+          3. Live read of the current (review) page.
+        """
         page = self._page
         if page is None:
             return dict(self._agent_mapping)
@@ -742,6 +750,19 @@ class LiveReviewSession:
         self.pull_ai_assist_data()
 
         final: dict[str, str] = {}
+
+        # Layer 1: per-page snapshots taken right before each Next/Continue
+        per_page = list(getattr(filler, "_per_page_live_snapshots", []) or [])
+        for snap in per_page:
+            for label, value in (snap or {}).items():
+                if label and value:
+                    final[label] = value
+        if per_page:
+            logger.info(
+                "_capture_final_mapping_async: merged %d per-page snapshots "
+                "(%d fields) before review-page read",
+                len(per_page), len(final),
+            )
 
         async def _read(loc: Any, label: str, kind: str) -> None:
             if not label:

@@ -296,6 +296,11 @@ class NativeFormFiller:
         self._fe_db: Any = None
         self._container_selector: str | None = None
         self._platform: str = ""
+        # Per-page live form state captured right before each Next/Continue click.
+        # Surfaces user mid-flow edits to live_review_applicator for correction
+        # capture. Without this, only the read-only review page is scanned and
+        # screening-page edits are lost (live regression on Forge 2026-05-05).
+        self._per_page_live_snapshots: list[dict[str, str]] = []
         self._intelligence: Any = getattr(driver, "intelligence", None)
         self._signal_interpreter: Any = None
         if self._intelligence:
@@ -2257,6 +2262,88 @@ class NativeFormFiller:
             recorded, len(fields), domain,
         )
 
+    async def _snapshot_live_form_state(self) -> dict[str, str]:
+        """Snapshot every visible form input's current value.
+
+        Used right before clicking Next/Continue so user mid-flow edits
+        on screening pages survive into the correction-capture diff.
+        Indeed's review-module is read-only — without this, screening-page
+        edits are lost (live regression on Forge 2026-05-05). The reader
+        mirrors live_review_applicator._capture_final_mapping_async.
+        """
+        page = self._page
+        if page is None:
+            return {}
+        snapshot: dict[str, str] = {}
+
+        async def _read(loc: Any, label: str, kind: str) -> None:
+            if not label:
+                return
+            try:
+                if kind in ("text", "textarea"):
+                    snapshot[label] = (await loc.input_value()) or ""
+                elif kind == "select":
+                    snapshot[label] = await loc.evaluate(
+                        "el => el.options[el.selectedIndex]?.text?.trim() || ''"
+                    )
+                elif kind == "combobox":
+                    snapshot[label] = await loc.evaluate(
+                        """el => {
+                            const own = (el.value || '').trim();
+                            if (own) return own;
+                            let node = el.parentElement;
+                            for (let i = 0; node && i < 5; i += 1, node = node.parentElement) {
+                                const display = node.querySelector('.select__single-value, [class*="singleValue"]');
+                                const text = display?.textContent?.trim();
+                                if (text) return text;
+                            }
+                            return '';
+                        }"""
+                    )
+                elif kind == "checkbox":
+                    snapshot[label] = "true" if await loc.is_checked() else "false"
+                elif kind == "radio_group":
+                    selected = ""
+                    for radio in await loc.get_by_role("radio").all():
+                        try:
+                            if await radio.is_checked():
+                                selected = await self._get_accessible_name(radio)
+                                break
+                        except Exception:
+                            continue
+                    snapshot[label] = selected
+            except Exception as exc:
+                logger.debug(
+                    "_snapshot_live_form_state: read failed for %r: %s",
+                    label, exc,
+                )
+
+        try:
+            for loc in await page.get_by_role("textbox").all():
+                label = await self._get_accessible_name(loc)
+                await _read(loc, label, "text")
+            for loc in await page.get_by_role("combobox").all():
+                label = await self._get_accessible_name(loc)
+                try:
+                    tag = await loc.evaluate("el => el.tagName.toLowerCase()")
+                except Exception:
+                    tag = "combobox"
+                await _read(loc, label, "select" if tag == "select" else "combobox")
+            for loc in await page.get_by_role("radiogroup").all():
+                label = await self._get_accessible_name(loc)
+                await _read(loc, label, "radio_group")
+            for loc in await page.get_by_role("checkbox").all():
+                label = await self._get_accessible_name(loc)
+                await _read(loc, label, "checkbox")
+            for loc in await page.locator("textarea:visible").all():
+                label = await self._get_accessible_name(loc)
+                await _read(loc, label, "textarea")
+        except Exception as exc:
+            logger.warning("_snapshot_live_form_state: crashed: %s", exc)
+            return {}
+
+        return {k: v for k, v in snapshot.items() if k and v}
+
     async def _click_navigation(self, dry_run: bool) -> str:
         page = self._page
         button_names = [
@@ -3179,7 +3266,19 @@ class NativeFormFiller:
                             "Pre-submit review failed: %s", review_result.get("issues"),
                         )
 
-            # 10. Click next/submit
+            # 10. Snapshot live state — user mid-flow edits survive correction capture
+            try:
+                pre_nav_snapshot = await self._snapshot_live_form_state()
+                if pre_nav_snapshot:
+                    self._per_page_live_snapshots.append(pre_nav_snapshot)
+                    logger.debug(
+                        "snapshot_live_form_state: captured %d fields on page %d",
+                        len(pre_nav_snapshot), page_num,
+                    )
+            except Exception as exc:
+                logger.debug("snapshot_live_form_state: skipped: %s", exc)
+
+            # 11. Click next/submit
             clicked = await self._click_navigation(dry_run)
             if clicked == "submitted":
                 return _result({"success": True, "pages_filled": page_num})
