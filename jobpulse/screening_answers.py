@@ -168,17 +168,17 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # EDUCATION (4 patterns) — specific before general
     # ===================================================================
-    r"highest.*education|level.*education|highest.*qualification|completed.*education|highest.*degree": "Master's Degree",
-    r"degree.*subject|field.*study|what.*degree|degree.*type|what.*major|degree.*classification": "MSc Computer Science",
+    r"highest.*education|level.*education|highest.*qualification|completed.*education|highest.*degree": "SENSITIVE:highest_qualification",
+    r"degree.*subject|field.*study|what.*degree|degree.*type|what.*major|degree.*classification": "SENSITIVE:degree_subject",
     r"currently.*study|currently.*enrolled|enrolled.*education": "No",
     r"stem.*degree|computer.*science.*degree|related.*field|relevant.*degree": "Yes",
 
     # ===================================================================
     # LANGUAGES (3 patterns) — specific before general
     # ===================================================================
-    r"proficiency.*english|fluent.*english|english.*proficiency|level.*english": "Native or bilingual",
-    r"proficiency.*hindi|fluent.*hindi|hindi.*proficiency": "Native or bilingual",
-    r"languages.*speak|what.*languages|language.*skills|other.*language|do.*you.*speak": "English (Native), Hindi (Native)",
+    r"proficiency.*english|fluent.*english|english.*proficiency|level.*english": "SENSITIVE:second_language_proficiency",
+    r"proficiency.*hindi|fluent.*hindi|hindi.*proficiency": "SENSITIVE:second_language_proficiency",
+    r"languages.*speak|what.*languages|language.*skills|other.*language|do.*you.*speak": "SENSITIVE:languages_summary",
 
     # ===================================================================
     # DRIVING, TRAVEL & AVAILABILITY (4 patterns)
@@ -238,13 +238,13 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # NATIONALITY & IDENTITY (2 patterns)
     # ===================================================================
-    r"what.*nationality|country.*citizen|country.*birth": "Indian",
-    r"\btitle\b.*mr|salutation|honorific": "Mr",
+    r"what.*nationality|country.*citizen|country.*birth": "SENSITIVE:nationality",
+    r"\btitle\b.*mr|salutation|honorific": "SENSITIVE:title",
 
     # ===================================================================
     # TEAM & MANAGEMENT (2 patterns) — specific before general
     # ===================================================================
-    r"direct.*report|how.*many.*managed|people.*managed|team.*size|largest.*team": "8",
+    r"direct.*report|how.*many.*managed|people.*managed|team.*size|largest.*team": "SENSITIVE:largest_team_managed",
     r"managing.*team|line.*management|managed.*people|leadership.*experience|management.*experience": "Yes",
 
     # ===================================================================
@@ -322,18 +322,68 @@ def _resolve_skill_experience(skill: str | None, *, input_type: str | None) -> s
     return str(int(years))
 
 
+def lookup_user_salary(job_title: str) -> int:
+    """Look up the user's salary expectation for a job title.
+
+    Two-pass match against the role_salary DB:
+      1. Substring match — pick the longest role key contained in the title.
+      2. Token-overlap fallback — when no substring match (e.g. title
+         "Data Analytics" doesn't substring-match the role key "data
+         analyst" because analytics≠analyst), use shared-token Jaccard
+         similarity ≥0.5 to find the closest role.
+
+    Live regression on Revolut welovealfa.com 2026-05-05: the title
+    "Software Engineer (Data)" had no exact substring match and the
+    agent fell back to LLM, which then read the JD's listed range
+    £85,500-£118,000 from the page and used those as the user's salary
+    expectation. The token fallback now matches on "software engineer"
+    or "engineer" → £35-38k from role_salary.
+    """
+    title = (job_title or "").lower()
+    role_salaries = _ensure_role_salary()
+    default_salary = role_salaries.get("default", 30000)
+    if not title:
+        return default_salary
+    salary = default_salary
+    best_len = 0
+    for role_key, role_salary in role_salaries.items():
+        if role_key == "default":
+            continue
+        if role_key in title and len(role_key) > best_len:
+            salary = role_salary
+            best_len = len(role_key)
+    if best_len > 0:
+        return salary
+    # Token fallback
+    import re as _re
+    title_tokens = {t for t in _re.findall(r"[a-z]{3,}", title)}
+    if not title_tokens:
+        return default_salary
+    best_score = 0.0
+    for role_key, role_salary in role_salaries.items():
+        if role_key == "default":
+            continue
+        role_tokens = {t for t in _re.findall(r"[a-z]{3,}", role_key)}
+        if not role_tokens:
+            continue
+        overlap = len(title_tokens & role_tokens)
+        union = len(title_tokens | role_tokens)
+        score = overlap / union if union else 0.0
+        # Boost for distinctive role tokens (analyst/scientist/engineer)
+        if overlap and role_tokens & {"analyst", "scientist", "engineer", "developer", "designer"}:
+            score += 0.1
+        if score > best_score and score >= 0.25:
+            best_score = score
+            salary = role_salary
+    return salary
+
+
 def _resolve_role_salary(
     job_context: dict | None, *, input_type: str | None
 ) -> str:
     """Return salary expectation based on job title and input type."""
-    title = ((job_context or {}).get("job_title") or "").lower()
-    role_salaries = _ensure_role_salary()
-    salary = role_salaries.get("default", 30000)
-    best_len = 0
-    for role_key, role_salary in role_salaries.items():
-        if role_key != "default" and role_key in title and len(role_key) > best_len:
-            salary = role_salary
-            best_len = len(role_key)
+    title = ((job_context or {}).get("job_title") or "")
+    salary = lookup_user_salary(title)
 
     if input_type == "number":
         return str(salary)
@@ -365,17 +415,41 @@ def _generate_hiring_message(job_context: dict | None) -> str:
     company = ctx.get("company", "the company")
     role = ctx.get("title", "this role")
 
-    _CORE_PROJECTS = (
-        "- Built a production multi-agent AI system (github.com/yashb98/multi-agent-patterns) "
-        "with 10+ autonomous agents using LangGraph, 4 orchestration topologies, and a "
-        "3-engine memory layer (SQLite + Qdrant + Neo4j) with self-improving reinforcement learning.\n"
-        "- Evaluates GenAI vs simpler approaches: rule-based filters first (zero cost), "
-        "semantic embeddings second, LLM fallback only when needed — saving 70-85% of API costs.\n"
-        "- Designs experiments with measurable outcomes: A/B-tested thresholds, conversion "
-        "funnels, statistical correlation engines with clear success metrics.\n"
-        "- Builds responsibly: structured error handling, cost tracking on every LLM call, "
-        "prompt injection defence, dry-run-first safety workflows."
-    )
+    # Build the project highlights from cv_projects in user_profile.db so the
+    # narrative reflects the user's actual portfolio rather than a hardcoded
+    # snapshot for one specific applicant. Falls back to a generic skill-shape
+    # narrative when the DB is empty (e.g. fresh install).
+    _CORE_PROJECTS = ""
+    try:
+        from shared.profile_store import get_profile_store
+        store = get_profile_store()
+        bullets: list[str] = []
+        for proj in (store.cv_projects() or [])[:4]:
+            title = (proj.get("title") or "").strip()
+            url = (proj.get("url") or "").strip()
+            proj_bullets = proj.get("bullets") or []
+            first_bullet = (proj_bullets[0] if proj_bullets else "").strip()
+            if title and first_bullet:
+                # Strip HTML tags from bullet for plaintext narrative
+                import re as _re
+                clean = _re.sub(r"<[^>]+>", "", first_bullet)
+                url_part = f" ({url})" if url else ""
+                bullets.append(f"- {title}{url_part}: {clean}")
+        _CORE_PROJECTS = "\n".join(bullets)
+    except Exception:
+        pass
+
+    if not _CORE_PROJECTS:
+        # Generic skill-shape fallback (no PII) — still useful for prompt
+        # context when the project DB hasn't been populated.
+        _CORE_PROJECTS = (
+            "- Production engineering with measurable outcomes (A/B tests, "
+            "conversion funnels, error handling, cost tracking).\n"
+            "- Pragmatic GenAI: rule-based first, embeddings second, LLM only "
+            "when needed — saves 70-85% of API costs vs. LLM-first designs.\n"
+            "- Builds safely: structured error handling, prompt-injection "
+            "defence, dry-run-first workflows."
+        )
 
     prompt = (
         f"Write a short message (150-200 words, plain text, NO greeting/sign-off/subject) "
@@ -466,14 +540,32 @@ def _resolve_placeholder(
 
     if answer.startswith("SCREENING:"):
         key = answer[len("SCREENING:"):]
+        resolved = ""
         try:
             from shared.profile_store import get_profile_store
             val = get_profile_store().screening_default(key)
             if val:
-                return val
+                resolved = val
         except Exception:
             pass
-        return ""
+        # Date adaptation: notice_period returns strings like "Immediately"
+        # or "1 month" — convert to YYYY-MM-DD when the form wants a date.
+        if input_type == "date" and resolved:
+            today = datetime.now()
+            lower = resolved.strip().lower()
+            if lower in ("immediately", "asap", "now"):
+                target = today + timedelta(days=14)
+            elif "week" in lower:
+                # "2 weeks" / "1 week"
+                weeks = next((int(s) for s in lower.split() if s.isdigit()), 2)
+                target = today + timedelta(weeks=weeks)
+            elif "month" in lower:
+                months = next((int(s) for s in lower.split() if s.isdigit()), 1)
+                target = today + timedelta(days=months * 30)
+            else:
+                target = today + timedelta(days=14)
+            return target.strftime("%Y-%m-%d")
+        return resolved
 
     if answer == "HIRING_MESSAGE":
         return _generate_hiring_message(job_context)
@@ -486,7 +578,15 @@ def _resolve_placeholder(
                 return f"{int(val):,}" if input_type == "text" else val
         except Exception:
             pass
-        return "22000"
+        # No hardcoded fallback — current_salary is PII and must be set in DB.
+        # Return empty so the caller treats this as a screening miss and either
+        # skips the field, prompts the user, or escalates to LLM with options.
+        logger.warning(
+            "screening_answers: CURRENT_SALARY placeholder requested but "
+            "sensitive_fields.current_salary is empty — set it via "
+            "ProfileStore.set_sensitive('current_salary', ...) or skip the field"
+        )
+        return ""
 
     # Input-type adaptations for non-placeholder answers
     if answer == "Immediately" and input_type == "date":
@@ -533,25 +633,19 @@ def get_answer(
 
     normalised = question.strip()
 
-    # --- Tier 1: pattern match -------------------------------------------
-    for pattern, answer in COMMON_ANSWERS.items():
-        if re.search(pattern, normalised, re.IGNORECASE):
-            if answer is not None:
-                resolved = _resolve_placeholder(
-                    answer, normalised, job_context,
-                    input_type=input_type, platform=platform, db=db,
-                )
-                logger.debug("Pattern match for '%s' -> '%s'", normalised[:60], resolved[:80])
-                _strategy_local.last = AnswerResult(resolved, "pattern_match", 0.95)
-                return with_tone_filter(resolved, normalised, None)
-            # Matched but needs LLM (answer is None) — cache result for reuse
-            logger.debug("Pattern match (LLM-required) for '%s'", normalised[:60])
-            llm_answer = _generate_answer(normalised, job_context)
-            logger.info("Generated Tier 1 LLM answer for '%s'", normalised[:60])
-            _strategy_local.last = AnswerResult(llm_answer, "llm_tier3", 0.6)
-            return with_tone_filter(llm_answer, normalised, None)
+    # --- Tier 1: V2 pipeline (semantic cache + intent classifier + LLM) ---
+    # Primary path. Embedding similarity over 175 prototype questions across
+    # 31 intents survives paraphrase/typo/multilingual drift. Regex tiers
+    # below remain as safety nets for cases the embeddings haven't learned.
+    v2_answer = try_screening_v2(normalised, job_context)
+    if v2_answer:
+        logger.debug("Screening V2 answer for '%s' -> '%s'", normalised[:60], v2_answer[:80])
+        _strategy_local.last = AnswerResult(v2_answer, "screening_v2", 0.75)
+        return with_tone_filter(v2_answer, normalised, None)
 
-    # --- Tier 1.5: agent rules (learned from corrections) -----------------
+    # --- Tier 2: agent rules (learned from user corrections) -------------
+    # User-stored regex patterns (not hardcoded) — these are learned signals,
+    # genuinely dynamic, retained as-is.
     try:
         from jobpulse.agent_rules import AgentRulesDB
         import re as _re
@@ -567,12 +661,34 @@ def get_answer(
     except Exception:
         pass
 
-    # --- Tier 1.6: V2 pipeline (semantic cache → intent → regex → rules → LLM)
-    v2_answer = try_screening_v2(normalised, job_context)
-    if v2_answer:
-        logger.debug("Screening V2 answer for '%s' -> '%s'", normalised[:60], v2_answer[:80])
-        _strategy_local.last = AnswerResult(v2_answer, "screening_v2", 0.75)
-        return with_tone_filter(v2_answer, normalised, None)
+    # --- Tier 3: COMMON_ANSWERS regex fallback (legacy heuristic) --------
+    # Only fires when the V2 embedding pipeline has nothing useful. Regex
+    # patterns are brittle on paraphrase but provide a cheap last-resort
+    # for known-shape questions (yes/no, work auth, salary). Each match
+    # logs that the dynamic path missed — those should be added as
+    # prototype questions in screening_intent.py to retire the regex
+    # over time.
+    for pattern, answer in COMMON_ANSWERS.items():
+        if re.search(pattern, normalised, re.IGNORECASE):
+            if answer is not None:
+                resolved = _resolve_placeholder(
+                    answer, normalised, job_context,
+                    input_type=input_type, platform=platform, db=db,
+                )
+                logger.info(
+                    "screening_answers: regex fallback hit for '%s' (V2 missed) "
+                    "— consider adding to screening_intent prototypes",
+                    normalised[:60],
+                )
+                _strategy_local.last = AnswerResult(resolved, "regex_fallback", 0.7)
+                return with_tone_filter(resolved, normalised, None)
+            llm_answer = _generate_answer(normalised, job_context)
+            logger.info(
+                "screening_answers: regex-triggered LLM fallback for '%s'",
+                normalised[:60],
+            )
+            _strategy_local.last = AnswerResult(llm_answer, "llm_tier3", 0.6)
+            return with_tone_filter(llm_answer, normalised, None)
 
     # --- Tier 4: LLM generation → cache in V2 ----------------------------
     answer = _generate_answer(normalised, job_context)

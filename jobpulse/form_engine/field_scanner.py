@@ -525,6 +525,123 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                     required: true,
                 });
             }
+            // ARIA toggle switches — <button role="switch" aria-checked="…">.
+            // Revolut welovealfa.com 2026-05-05: 5 screening Qs each render
+            // as a single switch (no Yes/No pair). The Q label is in a
+            // *sibling* heading or paragraph (not aria-label / aria-labelledby
+            // / wrapper label, which are all empty on this widget). We walk
+            // the previous siblings + ancestors looking for question-shaped
+            // text (ends with '?', under 300 chars, not "Yes"/"No"/"On"/"Off").
+            const switches = document.querySelectorAll('button[role="switch"], [role="switch"]');
+            for (const sw of switches) {
+                if (sw.offsetParent === null) continue;
+                const swKey = 'switch:' + (sw.id || sw.getBoundingClientRect().y);
+                if (seen.has(swKey)) continue;
+                seen.add(swKey);
+
+                let qLabel = sw.getAttribute('aria-label') || '';
+                if (!qLabel && sw.getAttribute('aria-labelledby')) {
+                    const ids = sw.getAttribute('aria-labelledby').split(/\s+/);
+                    qLabel = ids.map(id => document.getElementById(id)?.innerText || '').join(' ').trim();
+                }
+                // Walk up to 4 ancestors looking for a question-shaped sibling
+                if (!qLabel) {
+                    let node = sw;
+                    for (let depth = 0; node && depth < 4 && !qLabel; depth++) {
+                        for (let prev = node.previousElementSibling; prev; prev = prev.previousElementSibling) {
+                            const t = (prev.innerText || prev.textContent || '').trim();
+                            if (t.length > 5 && t.length < 300 && !/^(yes|no|on|off|true|false)$/i.test(t)) {
+                                qLabel = t;
+                                break;
+                            }
+                        }
+                        if (!qLabel) {
+                            // Try first significant text in the parent BEFORE the switch
+                            const parent = node.parentElement;
+                            if (parent) {
+                                for (const child of parent.childNodes) {
+                                    if (child === node) break;
+                                    const t = ((child.innerText || child.textContent) || '').trim();
+                                    if (t.length > 5 && t.length < 300 && !/^(yes|no|on|off|true|false)$/i.test(t)) {
+                                        qLabel = t;
+                                        // Don't break — later siblings may have the actual question
+                                    }
+                                }
+                            }
+                        }
+                        node = node.parentElement;
+                    }
+                }
+                if (!qLabel) qLabel = 'Toggle ' + fields.length;
+                const checked = sw.getAttribute('aria-checked') === 'true' ||
+                                sw.getAttribute('aria-pressed') === 'true';
+                fields.push({
+                    label: qLabel.slice(0, 250),
+                    type: 'switch',
+                    value: checked ? 'true' : 'false',
+                    checked,
+                    required: true,
+                });
+            }
+            // Salary-context number inputs — number inputs without a label
+            // whose surrounding text mentions salary/compensation/GBP/USD.
+            // Revolut welovealfa.com regression: the agent filled both Min
+            // and Max GBP fields with the JD's listed range £85,500-£118,000
+            // because there was no label and the LLM saw only those numbers
+            // on the page. Tag these explicitly so the filler routes them
+            // through role_salary DB instead of LLM-from-JD-prose.
+            const salaryRx = /salary|compensation|gbp|usd|gross|annual|per year|per annum/i;
+            const numInputs = document.querySelectorAll('input[type="number"]');
+            for (const inp of numInputs) {
+                if (inp.offsetParent === null) continue;
+                if (inp.disabled || inp.readOnly) continue;
+                // Already covered by another scan?
+                const inpKey = 'num:' + (inp.id || inp.name || inp.getBoundingClientRect().y);
+                if (seen.has(inpKey)) continue;
+                // Look up to 4 ancestors for "salary" context
+                let salaryCtx = '';
+                let node = inp.parentElement;
+                for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+                    const t = (node.innerText || '').trim();
+                    if (salaryRx.test(t)) {
+                        salaryCtx = t.slice(0, 300);
+                        break;
+                    }
+                }
+                if (!salaryCtx) continue;
+                // Existing label?
+                let label = '';
+                if (inp.id) {
+                    label = document.querySelector(`label[for="${inp.id}"]`)?.innerText?.trim() || '';
+                }
+                if (!label) label = inp.getAttribute('aria-label') || inp.placeholder || '';
+                // Determine min/max/single from context tokens above the input
+                let role = 'salary';
+                const ctxLow = salaryCtx.toLowerCase();
+                // Inspect the input's preceding text within the parent
+                const parent = inp.parentElement;
+                let preceding = '';
+                if (parent) {
+                    for (const child of parent.childNodes) {
+                        if (child === inp) break;
+                        preceding += ((child.innerText || child.textContent) || '') + ' ';
+                    }
+                }
+                preceding = (label + ' ' + preceding).toLowerCase();
+                if (/\bmin/.test(preceding) || /minimum/.test(preceding)) role = 'min_salary';
+                else if (/\bmax/.test(preceding) || /maximum/.test(preceding)) role = 'max_salary';
+                seen.add(inpKey);
+                if (!label) label = role === 'min_salary' ? 'Min salary' : role === 'max_salary' ? 'Max salary' : 'Salary expectation';
+                fields.push({
+                    label: label.slice(0, 200),
+                    type: 'salary_number',
+                    value: inp.value || '',
+                    salary_role: role,
+                    id: inp.id || '',
+                    name: inp.name || '',
+                    required: inp.required || false,
+                });
+            }
             return fields;
         }""")
     except Exception as exc:

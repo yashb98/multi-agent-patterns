@@ -903,6 +903,73 @@ class NativeFormFiller:
                     await radio.first.check()
                 else:
                     logger.warning("Radio '%s' matched %d elements — skipping unscoped click", fill_value, await radio.count())
+        elif input_type == "switch":
+            # ARIA toggle switches — <button role="switch" aria-checked="…">.
+            # User answer "Yes"/"true" → click to flip OFF→ON. "No"/"false"
+            # → leave as-is (these widgets default to OFF). If already in
+            # the desired state, no-op.
+            target_on = (fill_value or "").strip().lower() in {
+                "yes", "true", "on", "agreed", "1", "y",
+            }
+            try:
+                state = await el.evaluate(
+                    "el => el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true'"
+                )
+            except Exception:
+                state = False
+            if bool(state) == target_on:
+                return {"success": True, "value_set": "yes" if target_on else "no",
+                        "value_verified": True}
+            try:
+                await el.scroll_into_view_if_needed(timeout=3000)
+                await el.click(timeout=5000)
+            except Exception as exc:
+                return {"success": False, "value_verified": False,
+                        "error": f"switch click failed: {exc}"}
+            await asyncio.sleep(0.4)
+            try:
+                new_state = await el.evaluate(
+                    "el => el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-pressed') === 'true'"
+                )
+            except Exception:
+                new_state = state
+            return {"success": bool(new_state) == target_on,
+                    "value_set": "yes" if new_state else "no",
+                    "value_verified": True}
+        elif input_type == "salary_number":
+            # Salary number input — never let LLM read JD prose for these.
+            # Always pull from role_salary DB by job title (substring +
+            # token Jaccard fallback). For min_salary use lookup as-is;
+            # for max_salary add a 5k buffer; otherwise use lookup.
+            from jobpulse.screening_answers import lookup_user_salary
+            job_title = ""
+            try:
+                job_title = (self._job_context or {}).get("title") or ""
+            except Exception:
+                job_title = ""
+            base = lookup_user_salary(job_title)
+            salary_role = "salary"
+            try:
+                # The field metadata is on the matched field dict; read it
+                # back via DOM in a best-effort way (label hint).
+                lower = (label or "").lower()
+                if "min" in lower or "minimum" in lower:
+                    salary_role = "min_salary"
+                elif "max" in lower or "maximum" in lower:
+                    salary_role = "max_salary"
+            except Exception:
+                pass
+            if salary_role == "max_salary":
+                value_to_set = str(base + 5000)
+            else:
+                value_to_set = str(base)
+            try:
+                await el.fill(value_to_set, timeout=5000)
+                return {"success": True, "value_set": value_to_set,
+                        "value_verified": True}
+            except Exception as exc:
+                return {"success": False, "value_verified": False,
+                        "error": f"salary_number fill failed: {exc}"}
         elif input_type == "list_button_radio":
             # Oracle HCM ul[role=list]+li[role=listitem]+button widget.
             # Locator points to the <ul>; find the option button whose text
@@ -2515,6 +2582,12 @@ class NativeFormFiller:
         custom_answers: dict,
         dry_run: bool,
     ) -> dict:
+        # Stash job context so per-input handlers (e.g. salary_number)
+        # can consult it without needing custom_answers passed through
+        # every sub-method signature.
+        _job_ctx_raw = (custom_answers or {}).get("_job_context")
+        self._job_context = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+
         # 0. Build correction warning from form hints
         hints = custom_answers.get("_form_hints")
         if hints and hints.get("correction_accuracy") is not None:
