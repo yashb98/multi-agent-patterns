@@ -59,10 +59,41 @@ BACKOFF_FACTOR = 2.0
 # HTTP status codes that are retryable
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
+# Permanent-failure patterns within otherwise-retryable HTTP 5xx errors.
+# When matched, retries are SKIPPED so the caller can fall back immediately
+# (e.g. to a cloud provider when local Ollama can't load the model).
+# These are server-side conditions that won't resolve on retry within the
+# same session — retrying just wastes 30-60s before the inevitable fallback.
+PERMANENT_FAILURE_PATTERNS = (
+    "requires more system memory",  # Ollama: model too big for available RAM
+    "model not found",              # Ollama: model wasn't pulled
+    "context length",               # Token limit exceeded (resolved by truncation, not retry)
+    "context_length_exceeded",
+    "invalid_request_error",        # OpenAI: malformed request — won't fix by retry
+    "permission_denied",
+    "authentication",               # Bad API key — needs operator action
+    "invalid api key",
+    "model_not_found",
+    "billing_hard_limit_reached",
+)
+
 
 def is_retryable_error(error: Exception) -> bool:
-    """Determine if an error is transient and worth retrying."""
+    """Determine if an error is transient and worth retrying.
+
+    Returns False for permanent failures even when the HTTP status code
+    looks retryable — e.g., Ollama 500 with "requires more system memory"
+    means the local model can't load, retrying won't help, the caller
+    should fall back to cloud immediately.
+    """
     error_str = str(error).lower()
+
+    # Fast-fail on permanent failures (checked FIRST so they win over
+    # the retryable-status-code path below). Otherwise an Ollama OOM
+    # 500 burns 4 retries × ~5-15s = 30-60s before the fallback layer
+    # sees the error.
+    if any(p in error_str for p in PERMANENT_FAILURE_PATTERNS):
+        return False
 
     # OpenAI-specific errors
     try:
