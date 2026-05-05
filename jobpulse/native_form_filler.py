@@ -475,12 +475,18 @@ class NativeFormFiller:
     # ── Field Scanning (delegates to field_scanner) ──
 
     async def _scan_fields(self) -> list[dict]:
-        return await scan_fields(
+        fields = await scan_fields(
             self._page,
             strategy=self._strategy,
             form_experience_db=self._fe_db,
             container_selector=self._container_selector,
         )
+        # Stash per-label metadata so _fill_by_label can consult e.g.
+        # semantic-scanner attached selectors without re-scanning.
+        self._fields_by_label = {
+            f["label"]: f for f in (fields or []) if f.get("label")
+        }
+        return fields
 
     # ── Auto-Gotcha Learning ──
 
@@ -733,7 +739,32 @@ class NativeFormFiller:
         # label "Email" on Greenhouse / many ATSs.
         base_label = _strip_required_marker(base_label)
 
-        locator = page.get_by_label(base_label, exact=False)
+        # Semantic-scanner short-circuit: when the matched field came from
+        # scan_semantic with a selector attached, use it directly. Avoids
+        # label-string resolution that fails when the label is a free-form
+        # question without a paired <label> (e.g. Revolut visa-sponsorship
+        # custom React combobox).
+        _semantic_meta = getattr(self, "_fields_by_label", {}).get(label) \
+            or getattr(self, "_fields_by_label", {}).get(base_label)
+        if (_semantic_meta and _semantic_meta.get("semantic_match")
+                and _semantic_meta.get("selector")):
+            try:
+                _sem_loc = page.locator(_semantic_meta["selector"]).first
+                if await _sem_loc.count():
+                    locator = _sem_loc
+                    logger.debug(
+                        "_fill_by_label: using semantic selector %s for %r",
+                        _semantic_meta["selector"], label,
+                    )
+                else:
+                    locator = page.get_by_label(base_label, exact=False)
+            except Exception as exc:
+                logger.debug(
+                    "semantic selector resolve failed for %r: %s", label, exc,
+                )
+                locator = page.get_by_label(base_label, exact=False)
+        else:
+            locator = page.get_by_label(base_label, exact=False)
 
         if not await locator.count():
             locator = page.get_by_placeholder(base_label, exact=False)
