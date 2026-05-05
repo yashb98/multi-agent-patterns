@@ -326,6 +326,7 @@ class AIAssistLogger:
         reasoning: str = "",
         fix_category: str = "value_correction",
         confidence: float = 1.0,
+        dom_signature: dict | None = None,
     ) -> AIAssistFix:
         """Record a single field fix made by the AI assistant.
 
@@ -337,6 +338,10 @@ class AIAssistLogger:
             reasoning: Explanation of why this fix was needed.
             fix_category: Category of fix (see VALID_FIX_CATEGORIES).
             confidence: 0.0-1.0 confidence in the fix.
+            dom_signature: Optional {selector, widget_type, ancestor_classes,
+                aria_label} captured from the live page. When provided, the
+                signature is stored in GotchasDB.widget_patterns keyed by
+                domain so future visits learn from this fix.
 
         Returns:
             The created AIAssistFix record.
@@ -373,6 +378,28 @@ class AIAssistLogger:
             fix_category,
             session_id,
         )
+
+        if dom_signature:
+            try:
+                from jobpulse.form_engine.gotchas import GotchasDB
+                with self._connect() as conn:
+                    row = conn.execute(
+                        "SELECT domain FROM ai_sessions WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone()
+                domain = row[0] if row else ""
+                if domain:
+                    GotchasDB().record_widget_pattern(
+                        domain=domain,
+                        label=field_label,
+                        selector=dom_signature.get("selector", ""),
+                        widget_type=dom_signature.get("widget_type", "unknown"),
+                        ancestor_classes=dom_signature.get("ancestor_classes", ""),
+                        aria_label=dom_signature.get("aria_label", ""),
+                    )
+            except Exception as exc:
+                logger.debug("ai_assist: widget pattern capture failed: %s", exc)
+
         return fix
 
     def record_strategy(
