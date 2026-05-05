@@ -468,6 +468,63 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 if (!label) label = 'Dropdown ' + fields.length;
                 fields.push({label, type: 'custom_dropdown', value: btnText, buttonId: btnId, required: true});
             }
+            // Oracle HCM Yes/No widgets — <ul role="list"> + <li role="listitem"> + <button>.
+            // The question label sits on the <ul> as aria-label (or aria-labelledby).
+            // Selected state is NOT exposed via aria-checked/role=radio — detect via
+            // CSS class (selected/active/is-selected/chosen) or fallback to non-
+            // transparent computed background-color.
+            // Live regression on JPMC 2026-05-05: agent missed all 4 Yes/No questions
+            // on the 'Job Application Questions' page because no scan strategy queried
+            // this widget pattern.
+            const ulLists = document.querySelectorAll('ul[role="list"]');
+            for (const ul of ulLists) {
+                if (ul.offsetParent === null) continue;
+                const ulLabel =
+                    ul.getAttribute('aria-label') ||
+                    document.getElementById(ul.getAttribute('aria-labelledby') || '')?.innerText || '';
+                if (!ulLabel) continue;
+                const lis = [...ul.querySelectorAll('li[role="listitem"]')];
+                if (lis.length === 0 || lis.length > 8) continue;
+                const buttons = lis.map(li => li.querySelector('button')).filter(Boolean);
+                if (buttons.length !== lis.length) continue;
+                const optionTexts = buttons.map(b => (b.innerText || '').trim()).filter(Boolean);
+                if (optionTexts.length === 0) continue;
+                const ulKey = 'oracle_listbtn:' + ulLabel.slice(0, 60);
+                if (seen.has(ulKey)) continue;
+                seen.add(ulKey);
+                // Detect selected button
+                let selected = '';
+                for (const btn of buttons) {
+                    const cls = (btn.className || '').toLowerCase();
+                    const liCls = (btn.parentElement?.className || '').toLowerCase();
+                    const ariaPressed = btn.getAttribute('aria-pressed');
+                    const ariaCurrent = btn.getAttribute('aria-current');
+                    const dataSel = btn.getAttribute('data-selected') ||
+                                    btn.parentElement?.getAttribute('data-selected') || '';
+                    if (ariaPressed === 'true' || ariaCurrent === 'true' ||
+                        ariaCurrent === 'page' || dataSel === 'true' ||
+                        /selected|active|is-selected|chosen|current/.test(cls + ' ' + liCls)) {
+                        selected = (btn.innerText || '').trim();
+                        break;
+                    }
+                }
+                if (!selected) {
+                    for (const btn of buttons) {
+                        const bg = window.getComputedStyle(btn).backgroundColor || '';
+                        if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+                            selected = (btn.innerText || '').trim();
+                            break;
+                        }
+                    }
+                }
+                fields.push({
+                    label: ulLabel.trim().slice(0, 200),
+                    type: 'list_button_radio',
+                    options: optionTexts,
+                    value: selected,
+                    required: true,
+                });
+            }
             return fields;
         }""")
     except Exception as exc:

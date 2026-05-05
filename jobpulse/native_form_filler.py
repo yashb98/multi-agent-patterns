@@ -903,6 +903,28 @@ class NativeFormFiller:
                     await radio.first.check()
                 else:
                     logger.warning("Radio '%s' matched %d elements — skipping unscoped click", fill_value, await radio.count())
+        elif input_type == "list_button_radio":
+            # Oracle HCM ul[role=list]+li[role=listitem]+button widget.
+            # Locator points to the <ul>; find the option button whose text
+            # matches `fill_value` and click it. The widget toggles via class
+            # change, not aria-checked, so verification reads back the state
+            # via field_scanner's same detection logic on the next scan.
+            target = (fill_value or "").strip().lower()
+            if not target:
+                return {"success": False, "value_verified": False,
+                        "error": "list_button_radio: empty fill value"}
+            clicked = await el.evaluate(r"""(ul, target) => {
+                const buttons = [...ul.querySelectorAll('li[role="listitem"] > button')];
+                const match = buttons.find(b => (b.innerText || '').trim().toLowerCase() === target);
+                if (!match) return null;
+                match.scrollIntoView({block: 'center'});
+                match.click();
+                return (match.innerText || '').trim();
+            }""", target)
+            if clicked:
+                return {"success": True, "value_set": clicked, "value_verified": True}
+            return {"success": False, "value_verified": False,
+                    "error": f"list_button_radio: no option matches {fill_value!r}"}
         elif await self._is_combobox_widget(el):
             strategy = getattr(self, "_strategy", None)
             if strategy and hasattr(strategy, "fill_combobox"):
