@@ -556,6 +556,28 @@ def confirm_application(
                         )
                 except Exception as rules_exc:
                     logger.warning("confirm_application: agent rules generation: %s", rules_exc)
+
+            # Auto-capture widget pattern when final_mapping carries DOM
+            # signature alongside the corrected value. Convention:
+            # final_mapping[label + "__dom"] = {selector, widget_type,
+            # ancestor_classes, aria_label}. Closes the feedback loop —
+            # every correction becomes a permanent agent capability.
+            try:
+                from jobpulse.form_engine.gotchas import GotchasDB
+                gdb = GotchasDB()
+                for c in correction_result.get("corrections", []):
+                    sig = (final_mapping or {}).get(c["field"] + "__dom")
+                    if sig and isinstance(sig, dict):
+                        gdb.record_widget_pattern(
+                            domain=domain,
+                            label=c["field"],
+                            selector=sig.get("selector", ""),
+                            widget_type=sig.get("widget_type", "unknown"),
+                            ancestor_classes=sig.get("ancestor_classes", ""),
+                            aria_label=sig.get("aria_label", ""),
+                        )
+            except Exception as exc:
+                logger.debug("widget pattern capture: %s", exc)
         except Exception as exc:
             logger.warning("confirm_application: correction capture: %s", exc)
 

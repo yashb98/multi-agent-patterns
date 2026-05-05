@@ -2351,7 +2351,7 @@ class NativeFormFiller:
             recorded, len(fields), domain,
         )
 
-    async def _snapshot_live_form_state(self) -> dict[str, str]:
+    async def _snapshot_live_form_state(self) -> dict[str, Any]:
         """Snapshot every visible form input's current value.
 
         Used right before clicking Next/Continue so user mid-flow edits
@@ -2359,11 +2359,15 @@ class NativeFormFiller:
         Indeed's review-module is read-only — without this, screening-page
         edits are lost (live regression on Forge 2026-05-05). The reader
         mirrors live_review_applicator._capture_final_mapping_async.
+
+        Also emits per-field DOM signatures under ``"<label>__dom"`` keys
+        so downstream confirm_application can route them to
+        GotchasDB.widget_patterns when the user corrects the field.
         """
         page = self._page
         if page is None:
             return {}
-        snapshot: dict[str, str] = {}
+        snapshot: dict[str, Any] = {}
 
         async def _read(loc: Any, label: str, kind: str) -> None:
             if not label:
@@ -2430,6 +2434,54 @@ class NativeFormFiller:
         except Exception as exc:
             logger.warning("_snapshot_live_form_state: crashed: %s", exc)
             return {}
+
+        # Best-effort DOM signature capture — every visible field that
+        # has a stable selector contributes a "<label>__dom" entry. The
+        # filter below preserves these alongside the value entries.
+        try:
+            sigs = await page.evaluate(
+                """() => {
+                    const out = {};
+                    const els = document.querySelectorAll(
+                        'input, select, textarea, [role="switch"], [role="combobox"]'
+                    );
+                    els.forEach(el => {
+                        if (el.offsetParent === null && el.type !== 'radio') return;
+                        const lblNode = el.id
+                            ? document.querySelector(`label[for="${el.id}"]`)
+                            : null;
+                        const label = (
+                            (lblNode && lblNode.innerText) ||
+                            el.getAttribute('aria-label') || ''
+                        ).trim().slice(0, 200);
+                        if (!label) return;
+                        let sel = '';
+                        if (el.id) sel = `#${el.id}`;
+                        else if (el.name) sel = `${el.tagName.toLowerCase()}[name="${el.name}"]`;
+                        else if (el.getAttribute('data-qa')) sel = `[data-qa="${el.getAttribute('data-qa')}"]`;
+                        else return;
+                        const role = el.getAttribute('role');
+                        const tag = el.tagName.toLowerCase();
+                        let widget_type = 'text';
+                        if (role === 'switch') widget_type = 'switch';
+                        else if (tag === 'select') widget_type = 'select';
+                        else if (tag === 'textarea') widget_type = 'textarea';
+                        else if (el.type === 'number') widget_type = 'number';
+                        out[label] = {
+                            selector: sel,
+                            widget_type: widget_type,
+                            ancestor_classes: (el.parentElement && el.parentElement.className) || '',
+                            aria_label: el.getAttribute('aria-label') || '',
+                        };
+                    });
+                    return out;
+                }"""
+            )
+        except Exception:
+            sigs = {}
+        for label, sig in (sigs or {}).items():
+            if label and sig:
+                snapshot[label + "__dom"] = sig
 
         return {k: v for k, v in snapshot.items() if k and v}
 
