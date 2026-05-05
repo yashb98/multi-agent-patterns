@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-STRATEGIES = ("a11y_tree", "dom_query", "playwright_locators")
+STRATEGIES = ("learned_patterns", "a11y_tree", "dom_query", "playwright_locators")
 
 _HYDRATION_RETRY_MS = 2000
 _MAX_HYDRATION_RETRIES = 2
@@ -744,19 +744,36 @@ async def scan_fields_locator_fallback(page: "Page") -> list[dict]:
 
 
 def _merge_fields(primary: list[dict], secondary: list[dict]) -> list[dict]:
-    """Merge secondary fields into primary, adding fields not already present."""
-    seen = set()
+    """Merge secondary fields into primary, adding fields not already present.
+
+    Dedup key is (label, type). Same label + different type stays as two
+    entries (e.g., a Resume text input + Resume file input are distinct).
+
+    Learned-pattern fields (learned_pattern=True) take precedence on
+    (label, type) match — if a generic strategy also discovered the same
+    field, the learned version replaces it because its locator was
+    captured from prior corrections.
+    """
+    seen = {}  # (label, type) -> index in merged
+    merged: list[dict] = []
     for f in primary:
         key = (f.get("label", "").lower().strip(), f.get("type", ""))
         if key[0]:
-            seen.add(key)
+            seen[key] = len(merged)
+        merged.append(f)
 
-    merged = list(primary)
     for f in secondary:
         key = (f.get("label", "").lower().strip(), f.get("type", ""))
-        if key[0] and key not in seen:
-            seen.add(key)
-            merged.append(f)
+        if not key[0]:
+            continue
+        if key in seen:
+            existing_idx = seen[key]
+            existing = merged[existing_idx]
+            if f.get("learned_pattern") and not existing.get("learned_pattern"):
+                merged[existing_idx] = f
+            continue
+        seen[key] = len(merged)
+        merged.append(f)
     return merged
 
 
@@ -963,7 +980,9 @@ async def _run_strategy(
 ) -> list[dict]:
     """Run a single scan strategy, returning [] on failure."""
     try:
-        if strategy_name == "a11y_tree":
+        if strategy_name == "learned_patterns":
+            return await _scan_learned_patterns(page)
+        elif strategy_name == "a11y_tree":
             return await _scan_a11y_tree(page, container_node_id)
         elif strategy_name == "dom_query":
             return await _scan_dom_query(page)
@@ -972,6 +991,59 @@ async def _run_strategy(
     except Exception as exc:
         logger.debug("Scan strategy %s failed: %s", strategy_name, exc)
     return []
+
+
+async def _scan_learned_patterns(page: "Page") -> list[dict]:
+    """Strategy 0: per-domain widgets learned from prior corrections.
+
+    Queries GotchasDB.widget_patterns for the current domain, walks each
+    stored selector, returns matching elements as field dicts with the
+    locator pre-attached so the dispatcher uses it directly (no
+    label-string re-resolution).
+    """
+    from urllib.parse import urlparse
+    from jobpulse.form_engine.gotchas import GotchasDB
+
+    try:
+        domain = urlparse(page.url or "").netloc.lower().removeprefix("www.")
+    except Exception:
+        return []
+    if not domain:
+        return []
+
+    try:
+        patterns = GotchasDB().get_widget_patterns(domain)
+    except Exception as exc:
+        logger.debug("learned_patterns: GotchasDB read failed: %s", exc)
+        return []
+
+    if not patterns:
+        return []
+
+    out: list[dict] = []
+    for p in patterns:
+        selector = p["selector"]
+        try:
+            loc = page.locator(selector).first
+            if not await loc.count():
+                continue
+        except Exception:
+            continue
+        out.append({
+            "label": p["label"],
+            "type": p["widget_type"],
+            "value": "",
+            "locator": loc,
+            "selector": selector,
+            "learned_pattern": True,
+            "fix_count": p["fix_count"],
+        })
+    if out:
+        logger.info(
+            "learned_patterns: %d/%d known widgets matched on %s",
+            len(out), len(patterns), domain,
+        )
+    return out
 
 
 def _emit_scan_signal(
