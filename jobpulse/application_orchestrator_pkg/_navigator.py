@@ -161,7 +161,21 @@ def _maybe_reflect_on_failure(
         return None
 
 
-TERMINAL_ACTIONS = frozenset({"fill_form", "done", "abort"})
+# Actions that hand control back to the orchestrator's NativeFormFiller
+# pipeline (which scans + maps + fills + uploads CV/CL + clicks Continue).
+#
+# fill_and_advance was previously NON-terminal — the navigator handled it
+# inline via NavigationActionExecutor, which only executes the reasoner's
+# pre-planned `field_fills` (text-only). On pages where the reasoner's
+# field plan is empty (e.g. Revolut welovealfa.com /apply/upload-cv has
+# only a hidden file input + a Drop Zone, no text fields), the executor
+# did nothing — the verifier saw no change → reflection looped to
+# dismiss_overlay → wait_human → abort. CV never uploaded.
+#
+# Treating fill_and_advance as terminal hands control to NativeFormFiller
+# which always calls upload_files() regardless of scanned-field count, so
+# pages with only file inputs are now handled correctly.
+TERMINAL_ACTIONS = frozenset({"fill_form", "fill_and_advance", "done", "abort"})
 
 MAX_NAVIGATION_STEPS = 10
 
@@ -392,7 +406,7 @@ class FormNavigator:
         act = action.action if action else "abort"
         pt = action.page_type if action else "unknown"
 
-        if act == "fill_form":
+        if act in ("fill_form", "fill_and_advance"):
             result: dict[str, Any] = {"page_type": PageType.APPLICATION_FORM, "snapshot": ctx.snapshot}
         elif act == "done":
             result = {"page_type": PageType.CONFIRMATION, "snapshot": ctx.snapshot}
