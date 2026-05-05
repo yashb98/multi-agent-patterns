@@ -229,10 +229,30 @@ class PlaywrightDriver:
         self._mouse_y = target_y
 
     async def _smart_scroll(self, el) -> None:
-        """Scroll element into view and wait proportionally to distance."""
-        box_before = await el.bounding_box()
-        await el.scroll_into_view_if_needed()
-        box_after = await el.bounding_box()
+        """Scroll element into view and wait proportionally to distance.
+
+        5s timeout (was Playwright default 30s). When the element is
+        technically visible (offsetParent != null) but obscured —
+        sticky-header overlay, dismissed cookie modal still in DOM,
+        off-viewport honeypot — the 30s default blocks the entire
+        fill chain. Confirmed live on pls-solicitors.co.uk where the
+        page-header Search bar tripped this for full 30s before failure.
+        On timeout: log and proceed (caller may still interact via JS
+        even without the scroll).
+        """
+        try:
+            box_before = await el.bounding_box()
+        except Exception:
+            box_before = None
+        try:
+            await el.scroll_into_view_if_needed(timeout=5000)
+        except Exception as exc:
+            logger.debug("_smart_scroll: scroll timeout — proceeding: %s", exc)
+            return
+        try:
+            box_after = await el.bounding_box()
+        except Exception:
+            box_after = None
         if box_before and box_after:
             dist = abs(box_after["y"] - box_before["y"])
             delay = _scroll_delay(dist)
