@@ -715,6 +715,184 @@ class NativeFormFiller:
 
     # ── Fill By Label ──
 
+    async def _escalate_fill(
+        self, *, label: str, value: str, failure_tier: str,
+    ) -> dict:
+        """Plan E: route stuck-field cases through the CognitiveEngine.
+
+        Called when _fill_by_label has exhausted label-string lookup,
+        placeholder, role fallback, intent_healing, and LLM-recovery.
+        The engine sees the page snapshot, the label, the intended
+        value, and the failure tier; it returns a structured plan
+        which is executed via _fill_resolved_widget.
+
+        On success: the executed action's selector + widget_type land
+        in GotchasDB.widget_patterns (via ai_assist_logger.record_fix
+        with dom_signature) so future visits pick up the widget via
+        _scan_learned_patterns and skip escalation entirely.
+
+        On failure: the caller logs and returns; existing Telegram
+        approval-request bypass is the human floor (unchanged path).
+        """
+        try:
+            from urllib.parse import urlparse
+            from shared.agents import cognitive_llm_call
+
+            page = self._page
+            if page is None:
+                return {"success": False, "error": "no page"}
+            url = page.url or ""
+            domain = urlparse(url).netloc.lower().removeprefix("www.")
+
+            # Compact failure context for the engine. Cheap snapshot —
+            # the existing scan_fields cache should serve this.
+            try:
+                fields = await self._scan_fields()
+            except Exception:
+                fields = []
+            visible_buttons: list[dict] = []
+            try:
+                visible_buttons = await page.evaluate(
+                    """() => [...document.querySelectorAll('button, [role="button"]')]
+                        .filter(b => b.offsetParent !== null)
+                        .slice(0, 30)
+                        .map(b => ({
+                            text: ((b.innerText || b.getAttribute('aria-label') || '') + '').trim().slice(0, 60),
+                            id: b.id || null,
+                            role: b.getAttribute('role') || '',
+                            haspopup: b.getAttribute('aria-haspopup') || '',
+                        }))
+                        .filter(x => x.text)"""
+                )
+            except Exception:
+                pass
+
+            field_summary = "\n".join(
+                f"- {(f.get('label') or '')[:80]} ({f.get('type', '?')})"
+                for f in (fields or [])[:25]
+            )
+            button_summary = "\n".join(
+                f"- {b.get('text', '')[:60]} "
+                f"[role={b.get('role') or 'button'}, "
+                f"haspopup={b.get('haspopup') or 'none'}]"
+                for b in visible_buttons[:20]
+            )
+
+            prompt = (
+                f"You are recovering a stuck form-fill on {domain}. The agent "
+                f"could not find or fill the following field after exhausting "
+                f"label lookup, placeholder, role fallback, intent_healing, and "
+                f"LLM recovery.\n\n"
+                f"Field label: {label!r}\n"
+                f"Intended value: {value!r}\n"
+                f"Failure tier reached: {failure_tier!r}\n\n"
+                f"Visible fields on page ({len(fields or [])}):\n{field_summary}\n\n"
+                f"Visible buttons ({len(visible_buttons)}):\n{button_summary}\n\n"
+                f"Return ONLY a JSON object describing one executable action:\n"
+                f'{{"action": "click_then_select" | "click_toggle" | "fill_text",\n'
+                f'  "selector": "<CSS selector for the widget>",\n'
+                f'  "widget_type": "switch | combobox | select | text",\n'
+                f'  "option_text": "<exact option text to click after opening, '
+                f'   if click_then_select>",\n'
+                f'  "reasoning": "<one short sentence>"}}\n\n'
+                f"If no recovery is possible, return "
+                f'{{"action": "abort", "reasoning": "<why>"}}.'
+            )
+
+            raw = cognitive_llm_call(
+                task=prompt,
+                domain="form_recovery",
+                stakes="high",
+            )
+            if not raw:
+                return {"success": False, "error": "engine returned no plan"}
+            # Strip code fences if present
+            if raw.strip().startswith("```"):
+                raw = raw.strip().strip("`")
+                if raw.lower().startswith("json"):
+                    raw = raw[4:].lstrip()
+            import json as _json
+            try:
+                plan = _json.loads(raw)
+            except Exception as exc:
+                logger.debug("_escalate_fill: bad JSON from engine: %s", exc)
+                return {"success": False, "error": "engine plan unparseable"}
+
+            if plan.get("action") == "abort":
+                logger.info(
+                    "_escalate_fill: engine aborted on %r — %s",
+                    label, plan.get("reasoning", "?"),
+                )
+                return {"success": False, "error": "engine_abort"}
+
+            selector = (plan.get("selector") or "").strip()
+            widget_type = (plan.get("widget_type") or "text").strip()
+            option_text = plan.get("option_text") or value
+            if not selector:
+                return {"success": False, "error": "engine plan missing selector"}
+
+            try:
+                loc = page.locator(selector).first
+                if not await loc.count():
+                    return {"success": False, "error": "engine selector not on page"}
+            except Exception as exc:
+                return {"success": False, "error": f"engine selector errored: {exc}"}
+
+            # Reuse the per-widget dispatcher we already have so all
+            # click-based widget types share one execution path.
+            exec_result = await self._fill_resolved_widget(
+                loc, label, option_text, widget_type,
+            )
+
+            if exec_result.get("success"):
+                logger.info(
+                    "_escalate_fill: ✓ recovered %r via cognitive plan "
+                    "(widget=%s, selector=%s)",
+                    label, widget_type, selector[:80],
+                )
+                # Record back to ai_assist_logger so the fix lands in
+                # GotchasDB.widget_patterns (Plan C-2 wiring). Future
+                # visits hit _scan_learned_patterns and skip escalation.
+                try:
+                    sess_id = getattr(self, "_ai_assist_session_id", None)
+                    if not sess_id:
+                        from jobpulse.ai_assist_logger import get_ai_assist_logger
+                        sess = get_ai_assist_logger().start_session(
+                            "claude",
+                            domain=domain,
+                            platform=getattr(self, "_platform", "generic"),
+                        )
+                        self._ai_assist_session_id = sess.session_id
+                        sess_id = sess.session_id
+                    from jobpulse.ai_assist_logger import get_ai_assist_logger
+                    get_ai_assist_logger().record_fix(
+                        sess_id,
+                        field_label=label,
+                        old_value="",
+                        new_value=str(option_text),
+                        reasoning=plan.get("reasoning", "cognitive_escalation"),
+                        fix_category="value_correction",
+                        confidence=0.9,
+                        dom_signature={
+                            "selector": selector,
+                            "widget_type": widget_type,
+                            "ancestor_classes": "",
+                            "aria_label": "",
+                        },
+                    )
+                except Exception as exc:
+                    logger.debug("_escalate_fill: record_fix failed: %s", exc)
+                return exec_result
+
+            logger.info(
+                "_escalate_fill: plan executed but did not verify on %r — %s",
+                label, exec_result.get("error", "?"),
+            )
+            return exec_result
+        except Exception as exc:
+            logger.warning("_escalate_fill crashed for %r: %s", label, exc)
+            return {"success": False, "error": f"escalation crash: {exc}"}
+
     async def _fill_resolved_widget(
         self, loc: Any, label: str, value: str, input_type: str,
     ) -> dict:
@@ -968,10 +1146,22 @@ class NativeFormFiller:
                     logger.info("intent_healing: healed locator for '%s'", base_label)
                 else:
                     logger.warning("No field found for label '%s'", base_label)
+                    _esc = await self._escalate_fill(
+                        label=label, value=value,
+                        failure_tier="no_field_after_intent_healing",
+                    )
+                    if _esc.get("success"):
+                        return _esc
                     return {"success": False, "error": f"No field for '{base_label}'"}
             except Exception as _heal_err:
                 logger.debug("intent_healing error for '%s': %s", base_label, _heal_err)
                 logger.warning("No field found for label '%s'", base_label)
+                _esc = await self._escalate_fill(
+                    label=label, value=value,
+                    failure_tier="intent_healing_crash",
+                )
+                if _esc.get("success"):
+                    return _esc
                 return {"success": False, "error": f"No field for '{base_label}'"}
 
         _FILLABLE_TAGS = {"input", "textarea", "select"}
@@ -1003,6 +1193,12 @@ class NativeFormFiller:
             locator = page.get_by_placeholder(base_label, exact=False)
             if not await locator.count():
                 logger.warning("No fillable field found for label '%s'", base_label)
+                _esc = await self._escalate_fill(
+                    label=label, value=value,
+                    failure_tier="no_fillable_element",
+                )
+                if _esc.get("success"):
+                    return _esc
                 return {"success": False, "error": f"No fillable field for '{base_label}'"}
             el = locator.first
 
