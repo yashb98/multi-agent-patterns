@@ -715,6 +715,146 @@ class NativeFormFiller:
 
     # ── Fill By Label ──
 
+    async def _fill_resolved_widget(
+        self, loc: Any, label: str, value: str, input_type: str,
+    ) -> dict:
+        """Click-based dispatch for widgets the semantic scanner or
+        learned-patterns strategy resolved directly.
+
+        Routes by input_type rather than tag: Revolut-style React
+        comboboxes render as `<button role="combobox">` and switches as
+        `<button role="switch">` — both are click-only, so page.fill()
+        on the resolved locator errors out. This helper handles that
+        gap by clicking the button, scanning [role="option"] for a
+        match, then clicking the matching option (combobox/select), or
+        toggling on (switch/checkbox) when value implies "yes".
+        """
+        page = self._page
+        try:
+            await self._smart_scroll(loc)
+        except Exception:
+            pass
+
+        v_norm = (value or "").strip()
+        truthy = v_norm.lower() in ("yes", "true", "on", "1", "checked")
+        falsy = v_norm.lower() in ("no", "false", "off", "0", "unchecked")
+
+        if input_type == "switch":
+            try:
+                await loc.click(timeout=4000)
+                # Verify aria-checked / aria-pressed flipped to match intent
+                checked = await loc.evaluate(
+                    "el => el.getAttribute('aria-checked') === 'true' || "
+                    "el.getAttribute('aria-pressed') === 'true'"
+                )
+                if (truthy and checked) or (falsy and not checked):
+                    return {"success": True, "value_set": value,
+                            "value_verified": True, "actual_value": str(checked),
+                            "expected_value": value}
+                # Click again to flip if we landed on the wrong state
+                if (truthy and not checked) or (falsy and checked):
+                    await loc.click(timeout=4000)
+                    checked = await loc.evaluate(
+                        "el => el.getAttribute('aria-checked') === 'true' || "
+                        "el.getAttribute('aria-pressed') === 'true'"
+                    )
+                return {"success": (truthy == bool(checked)),
+                        "value_set": value, "actual_value": str(checked),
+                        "expected_value": value}
+            except Exception as exc:
+                return {"success": False, "error": f"switch click failed: {exc}"}
+
+        if input_type == "checkbox":
+            try:
+                state = await loc.is_checked()
+                if (truthy and not state) or (falsy and state):
+                    await loc.click(timeout=4000)
+                state2 = await loc.is_checked()
+                return {"success": (truthy == bool(state2)),
+                        "value_set": value, "actual_value": str(state2),
+                        "expected_value": value, "value_verified": True}
+            except Exception as exc:
+                return {"success": False, "error": f"checkbox click failed: {exc}"}
+
+        if input_type in ("combobox", "custom_select", "select",
+                          "multiselect", "radio_group"):
+            # Native <select> takes a different path
+            try:
+                tag = await loc.evaluate("el => el.tagName.toLowerCase()")
+            except Exception:
+                tag = ""
+            if tag == "select":
+                try:
+                    await loc.select_option(label=value, timeout=4000)
+                    return {"success": True, "value_set": value,
+                            "value_verified": True, "expected_value": value}
+                except Exception as exc:
+                    return {"success": False,
+                            "error": f"select_option failed: {exc}"}
+
+            # Click to open the dropdown / option list
+            try:
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.15)
+                await loc.click(timeout=4000)
+                await asyncio.sleep(0.5)
+            except Exception as exc:
+                return {"success": False, "error": f"open click failed: {exc}"}
+
+            options = await page.evaluate(
+                """() => {
+                    return Array.from(document.querySelectorAll(
+                        '[role="option"], [role="radio"], [role="menuitemcheckbox"], li[role="option"]'
+                    ))
+                        .filter(o => o.offsetParent !== null)
+                        .map(o => o.textContent.trim())
+                        .filter(t => t && !/^select\\s*(one|an?\\s*option)?$/i.test(t)
+                                       && !/^loading/i.test(t));
+                }"""
+            )
+            if not options:
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                return {"success": False, "error": "no options surfaced",
+                        "options_seen": []}
+
+            match = _best_option_match(
+                label, value, options, store=self._profile_store,
+            )
+            if not match:
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                return {"success": False, "error": "no option matched",
+                        "options_seen": options[:8]}
+
+            clicked = await page.evaluate(
+                """(target) => {
+                    const sel = '[role="option"], [role="radio"], [role="menuitemcheckbox"], li[role="option"]';
+                    for (const o of document.querySelectorAll(sel)) {
+                        if (o.offsetParent !== null && o.textContent.trim() === target) {
+                            o.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                match,
+            )
+            if not clicked:
+                return {"success": False, "error": "option click failed",
+                        "options_seen": options[:8]}
+
+            await asyncio.sleep(0.3)
+            return {"success": True, "value_set": match,
+                    "value_verified": True, "expected_value": value,
+                    "options_seen": options[:8]}
+
+        return {"success": False, "error": f"unsupported input_type {input_type!r}"}
+
     async def _fill_by_label(self, label: str, value: str) -> dict:
         page = self._page
         if not os.environ.get("FAST_FILL"):
@@ -739,28 +879,49 @@ class NativeFormFiller:
         # label "Email" on Greenhouse / many ATSs.
         base_label = _strip_required_marker(base_label)
 
-        # Semantic-scanner short-circuit: when the matched field came from
-        # scan_semantic with a selector attached, use it directly. Avoids
-        # label-string resolution that fails when the label is a free-form
-        # question without a paired <label> (e.g. Revolut visa-sponsorship
-        # custom React combobox).
-        _semantic_meta = getattr(self, "_fields_by_label", {}).get(label) \
+        # Semantic-scanner / learned-pattern short-circuit. When the
+        # matched field came from scan_semantic or _scan_learned_patterns
+        # with a selector + widget_type attached, dispatch directly to
+        # the per-widget handler — avoids label-string resolution that
+        # fails when the label is a free-form question without a paired
+        # <label>, AND avoids page.fill() on click-only widgets like
+        # <button role="switch"> or <button role="combobox">.
+        _meta = (
+            getattr(self, "_fields_by_label", {}).get(label)
             or getattr(self, "_fields_by_label", {}).get(base_label)
-        if (_semantic_meta and _semantic_meta.get("semantic_match")
-                and _semantic_meta.get("selector")):
+        )
+        _has_attached_selector = bool(_meta and (
+            (_meta.get("semantic_match") and _meta.get("selector"))
+            or (_meta.get("learned_pattern") and (
+                _meta.get("selector") or _meta.get("locator")
+            ))
+        ))
+        if _has_attached_selector:
+            _input_type = (_meta.get("type") or "text").lower()
             try:
-                _sem_loc = page.locator(_semantic_meta["selector"]).first
-                if await _sem_loc.count():
-                    locator = _sem_loc
-                    logger.debug(
-                        "_fill_by_label: using semantic selector %s for %r",
-                        _semantic_meta["selector"], label,
-                    )
+                _attached_loc = _meta.get("locator")
+                if _attached_loc is None:
+                    _attached_loc = page.locator(_meta["selector"]).first
+                if await _attached_loc.count():
+                    if _input_type in ("switch", "combobox", "select",
+                                        "multiselect", "custom_select",
+                                        "radio_group", "checkbox"):
+                        _dispatch = await self._fill_resolved_widget(
+                            _attached_loc, label, value, _input_type,
+                        )
+                        if _dispatch.get("success"):
+                            return _dispatch
+                        logger.debug(
+                            "_fill_resolved_widget for %r returned %s — falling through",
+                            label, _dispatch.get("error", "?"),
+                        )
+                    locator = _attached_loc
                 else:
                     locator = page.get_by_label(base_label, exact=False)
             except Exception as exc:
                 logger.debug(
-                    "semantic selector resolve failed for %r: %s", label, exc,
+                    "semantic/learned selector resolve failed for %r: %s",
+                    label, exc,
                 )
                 locator = page.get_by_label(base_label, exact=False)
         else:
