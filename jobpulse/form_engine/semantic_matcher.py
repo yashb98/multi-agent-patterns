@@ -65,6 +65,19 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
+_WB_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _word_boundary_pattern(token: str) -> re.Pattern[str]:
+    """Cached compile of \\b<token>\\b. Word-boundary match prevents
+    short aliases like "man" from matching inside "human"."""
+    pat = _WB_PATTERN_CACHE.get(token)
+    if pat is None:
+        pat = re.compile(r"\b" + re.escape(token) + r"\b")
+        _WB_PATTERN_CACHE[token] = pat
+    return pat
+
+
 def semantic_option_match(
     desired_value: str,
     available_options: list[str],
@@ -113,8 +126,13 @@ def semantic_option_match(
         alias_norm = _normalize(alias)
         if alias_norm in opts_norm:
             return opts_norm[alias_norm]
+        # Short aliases like "y"/"n"/"m"/"f" or even 3-char "man" leak
+        # into unrelated options when matched as raw substrings ("man"
+        # matches "human", "y" matches "yorkshire"). Require alias to
+        # appear at a word boundary in the option text.
+        wb_alias = _word_boundary_pattern(alias_norm)
         for opt_norm, opt_original in opts_norm.items():
-            if alias_norm in opt_norm or opt_norm in alias_norm:
+            if wb_alias.search(opt_norm) or opt_norm in alias_norm:
                 return opt_original
 
     # Also check if desired_value is itself an alias of something
