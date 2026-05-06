@@ -235,7 +235,7 @@ Documented in STEP 3 above. No fix this session per the audit prompt's STEP 6 ru
 - **Majors found:** 6 (M-1 family, M-2, M-3, M-4, M-5, M-6).
 - **Majors fixed:** 4 (M-1.c, M-1.d, M-1.e, M-2). 5 majors deferred.
 - **Tests added:** 3 source-level guards in `tests/jobpulse/test_form_fill_dispatch_audit.py`.
-- **Tests run:** 48/48 pass on the focused sweep. Wider `tests/jobpulse/` sweep was kicked off; if it surfaces a regression, will be addressed in the same commit.
+- **Tests run:** 48/48 pass on the focused sweep. Wider `tests/jobpulse/` sweep completed post-commit: **1981 passed, 70 skipped, 3 failed**. All 3 failures (`test_portfolio_variants::test_hero_project_has_all_archetypes`, `test_runner_real::test_no_args_exits_nonzero`, `test_runner_real::test_known_command_not_unknown[gmail]`) are in unrelated modules (portfolio + runner) — confirmed pre-existing, no regression from commit `1c36f16`.
 - **Live evidence:** test sweep only — `job-apply-next` was not triggered to keep this session inside the per-subsystem time/context budget.
 - **Pause point:** end of subsystem-1. Next: subsystem-2 (`form_fill_widgets`).
 
