@@ -210,6 +210,20 @@ chars (e.g. multi-paragraph "please confirm…" toasts). Truncating to
 
 No cross-module schema mismatches found.
 
+**Known weakness:** producer→consumer agreement was checked from the
+producer side (verified the producer's emitted keys/payload), without
+opening every consumer body. Most pairs target stable APIs
+(`FormExperienceDB`, `cost_tracker.record_openai_usage`,
+`GotchasDB.get_widget_patterns`) where divergence would surface as
+test failures. The
+`field_scanner._emit_scan_signal → shared/optimization/_aggregator`
+hop should be spot-checked next time anyone touches
+`shared/optimization/`. Tracked as a follow-up, not a finding.
+
+**On the M-A regex:** the new `re.compile(r"\b…\b")` is structural
+token-alignment (allowed by Principle 8's exception for
+"structural format validation"), not semantic classification.
+
 ---
 
 ## STEP 5 — Live evidence
