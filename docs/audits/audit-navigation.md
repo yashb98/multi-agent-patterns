@@ -518,3 +518,19 @@ All three deltas filed for the final-step doc update; not in this commit.
   `JOB_AUTOPILOT_AUTO_SUBMIT=false job-apply-next 1` is gated on the
   blockers being shipped first, which they now are.
 - **Pause point:** end of subsystem-3. Next: subsystem-4 (`screening_pipeline`).
+
+### Known limitations / next-session notes (advisor reconcile)
+
+1. **`CLAUDE.md:98`** lists "Cognitive Escalation" as one of the three
+   self-adaptation layers verified after every application. With B-1
+   shipped, that claim is **false at the navigator layer** — the code
+   that previously pretended to escalate is gone. The other two layers
+   (CorrectionCapture / strategy_reflector) still hold. Add this delta
+   to the final-step architecture-doc batch update.
+2. **Test guard scope:** `test_phase_plan_stuck_state_does_not_call_cognitive_engine`
+   patches `shared.cognitive.get_cognitive_engine` (public API path).
+   A future contributor who imports via the private path
+   `from shared.cognitive._engine import get_cognitive_engine` would
+   silently bypass the guard. The current removal in `_navigator.py`
+   makes this moot, but if cognitive escalation is ever revived, the
+   test patch list needs to cover both surfaces.
