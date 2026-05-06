@@ -5,6 +5,7 @@ polling during the application flow.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -134,7 +135,12 @@ class AuthHandler:
         domain = _extract_domain(snapshot.get("url", ""))
         logger.info("Waiting for verification email from %s", domain)
 
-        link = self.gmail.wait_for_verification(domain)
+        # `wait_for_verification` is a sync method that loops with
+        # `time.sleep` for up to 120 s. Calling it directly from this
+        # coroutine would block the event loop, starving the navigator's
+        # browser-intelligence pollers and per-step verification. Run on
+        # a worker thread so the loop keeps servicing the page.
+        link = await asyncio.to_thread(self.gmail.wait_for_verification, domain)
         if not link:
             logger.warning("Verification email not received for %s", domain)
             return snapshot

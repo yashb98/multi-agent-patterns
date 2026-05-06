@@ -849,19 +849,19 @@ class FormNavigator:
                 page_type="expired_job",
             )
 
+        # Stuck-state telemetry. The cognitive-escalation block previously
+        # here was silently broken: `engine.think(...)` is async, so calling
+        # it without `await` returned a coroutine, and `cog_result.get(...)`
+        # raised AttributeError on every trigger. Removed in S3 audit
+        # (2026-05-07) — there is no `ThinkResult` → `PageAction` translator
+        # yet, so reviving the call would only burn LLM cost without
+        # changing the planner output. Re-enable when a translator exists.
         if action.confidence < 0.3 and sum(1 for v in visited_states.values() if v >= 2) >= 2:
-            try:
-                from shared.cognitive import get_cognitive_engine
-                engine = get_cognitive_engine()
-                cog_result = engine.think(
-                    f"Navigation stuck: page_type={action.page_type}, action={action.action}, "
-                    f"confidence={action.confidence:.2f}, visited={visited_states}",
-                    domain="form_navigation",
-                )
-                if cog_result and cog_result.get("action"):
-                    logger.info("PLAN: CognitiveEngine escalation → %s", cog_result["action"])
-            except Exception as exc:
-                logger.debug("CognitiveEngine escalation failed: %s", exc)
+            logger.info(
+                "PLAN: stuck (conf=%.2f, visited=%s) — cognitive escalation "
+                "is not wired; the reasoner's action stands.",
+                action.confidence, dict(visited_states),
+            )
 
         ctx.planned_action = action
         ctx.plan_source = "reasoner"
