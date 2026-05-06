@@ -237,6 +237,45 @@ async def _detect_form_container(page: "Page") -> str | None:
         return None
 
 
+def _filter_noise_fields(fields: list[dict]) -> list[dict]:
+    """Drop scanner-output entries that aren't real fillable form fields.
+
+    Plan F4: live regression on Revolut welovealfa.com 2026-05-06 leaked
+    button text ("Back", "Apply now"), synthetic labels ("_unlabeled_0"),
+    placeholder fallbacks ("Type your answer here"), and browser-extension
+    UI ("Open Grammarly.") into _fill_by_label, triggering expensive
+    cognitive-engine escalation calls on non-fields.
+
+    Three noise classes:
+      1. tag is button/a — belongs in the buttons array, not fields
+      2. synthetic placeholder labels (_unlabeled_*) — labelFor() walker
+         gave up; nothing for the LLM to reason about
+      3. label equals the input's placeholder text — labelFor() fell back
+         to placeholder; a real <label>/heading would have been picked up
+         first
+      4. is_extension_injected=True — scanner flagged the field's
+         ancestor as detectably injected by a browser extension
+    """
+    out: list[dict] = []
+    for f in fields:
+        label = (f.get("label") or "").strip()
+        tag = (f.get("tag") or "").lower()
+
+        if tag in ("button", "a"):
+            continue
+        if not label:
+            continue
+        if label.startswith("_unlabeled_"):
+            continue
+        placeholder = (f.get("placeholder") or "").strip()
+        if placeholder and label == placeholder:
+            continue
+        if f.get("is_extension_injected"):
+            continue
+        out.append(f)
+    return out
+
+
 def validate_field_scan(
     fields: list[dict],
     strategy,
@@ -367,6 +406,48 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 const label = labelFor(el);
                 const ft = fieldType(el);
                 const entry = {label: label, type: ft, value: el.value || ''};
+
+                // Plan F4: surface metadata so the noise filter can drop
+                // garbage labels before they reach _fill_by_label.
+                entry.tag = el.tagName.toLowerCase();
+                entry.placeholder = el.getAttribute('placeholder') || '';
+                // Behavioral feature detection of extension injection —
+                // no hardcoded namespace list. Three signals:
+                //   (a) nearest positioned ancestor uses position:fixed
+                //       AND z-index >= 2147483647 (extensions use max
+                //       int32 to overlay everything else)
+                //   (b) the field's owning element tag has a hyphen
+                //       (custom element) AND isn't registered via
+                //       customElements.get()
+                //   (c) the field is inside a Shadow DOM whose host's
+                //       bounding box doesn't intersect the viewport's
+                //       form flow (extension-injected hosts often live
+                //       at body root with no normal layout flow)
+                let injected = false;
+                try {
+                    let pos = el;
+                    for (let i = 0; pos && i < 6; i++, pos = pos.parentElement) {
+                        const cs = window.getComputedStyle(pos);
+                        if (cs.position === 'fixed') {
+                            const z = parseInt(cs.zIndex, 10);
+                            if (z >= 2147483647) { injected = true; break; }
+                        }
+                    }
+                    if (!injected) {
+                        const ownerTag = (el.tagName || '').toLowerCase();
+                        if (ownerTag.includes('-') && !customElements.get(ownerTag)) {
+                            injected = true;
+                        }
+                    }
+                    if (!injected) {
+                        const root = el.getRootNode();
+                        if (root && root.host) {
+                            const r = root.host.getBoundingClientRect();
+                            if (r.width === 0 && r.height === 0) injected = true;
+                        }
+                    }
+                } catch (e) { /* fail open: if we can't determine, keep the field */ }
+                if (injected) entry.is_extension_injected = true;
 
                 if (el.hasAttribute('required') || el.getAttribute('aria-required') === 'true') {
                     entry.required = true;
@@ -919,6 +1000,19 @@ async def scan_fields(
     for strat, fields in results.items():
         if strat != winner:
             best_fields = _merge_fields(best_fields, fields)
+
+    # Plan F4: drop scanner noise (button/a tags, synthetic labels,
+    # placeholder-as-label, extension-injected) before downstream
+    # consumers see them. Without this filter, _fill_by_label gets
+    # called with garbage labels and triggers expensive escalation
+    # paths on non-fields.
+    pre_filter = len(best_fields)
+    best_fields = _filter_noise_fields(best_fields)
+    if len(best_fields) < pre_filter:
+        logger.info(
+            "scan_fields: noise filter dropped %d/%d entries",
+            pre_filter - len(best_fields), pre_filter,
+        )
 
     final_count = _fillable_count(best_fields)
     logger.info(
