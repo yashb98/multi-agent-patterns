@@ -125,15 +125,32 @@ def ensure_tailored_cv_for_job(job_id: str, db: "JobDB | None" = None) -> Path |
     matched_projects = get_best_projects_for_jd(required, preferred)
     extra = build_extra_skills(required, preferred)
 
-    # Boost extra_skills with user-corrected skill values
+    # Boost extra_skills with user-corrected skill values. Append to the
+    # existing "Also proficient in:" row rather than introducing a separate
+    # row whose label ("Corrected: …") would render as user-visible text in
+    # the CV's Technical Skills section.
     try:
         from jobpulse.correction_capture import CorrectionCapture
         user_skills = CorrectionCapture().get_skill_correction_values(min_occurrences=2)
-        if user_skills and extra is not None:
-            existing_lower = {v.lower() for v in extra.values()}
+        if user_skills:
+            label = "Also proficient in:"
+            existing_vals = extra.get(label, "") if extra else ""
+            existing_lower = {
+                s.strip().lower() for s in existing_vals.split("|") if s.strip()
+            }
+            additions: list[str] = []
             for skill in user_skills:
-                if skill.lower().strip() not in existing_lower:
-                    extra[f"Corrected: {skill}"] = skill
+                norm = skill.strip()
+                if norm and norm.lower() not in existing_lower:
+                    additions.append(norm)
+                    existing_lower.add(norm.lower())
+            if additions:
+                merged = " | ".join(
+                    [s for s in existing_vals.split(" | ") if s.strip()] + additions
+                )
+                if extra is None:
+                    extra = {}
+                extra[label] = merged
     except Exception as exc:
         logger.debug("application_materials: correction skill boost failed: %s", exc)
 

@@ -88,7 +88,13 @@ def build_dynamic_points(
 
 
 def _default_pad_points(points: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """Pad *points* to exactly 4 with generic education/certification entries."""
+    """Pad *points* to exactly 4 with generic technical entries.
+
+    Headers intentionally avoid the soft-skill words that `cv_tailor`'s
+    validator forbids (collaboration, communication, problem solving,
+    adaptability) so the cover-letter padding doesn't ship language the CV
+    pipeline is rejecting.
+    """
     pad = [
         (
             "Education & Continuous Learning:",
@@ -99,12 +105,12 @@ def _default_pad_points(points: list[tuple[str, str]]) -> list[tuple[str, str]]:
             "Completed advanced courses in cloud architecture, DevOps, and distributed systems.",
         ),
         (
-            "Collaboration & Communication:",
-            "Experienced working in cross-functional teams with agile delivery practices.",
+            "Production Engineering:",
+            "Shipped systems with CI/CD, monitoring, and rate-limited automation in real deployments.",
         ),
         (
-            "Problem Solving & Adaptability:",
-            "Track record of rapidly learning new frameworks and delivering under tight deadlines.",
+            "Rapid Delivery:",
+            "Track record of shipping new frameworks end-to-end under tight deadlines.",
         ),
     ]
     idx = 0
@@ -151,14 +157,13 @@ def polish_points_llm(
     if raw is None:
         return points
 
-    try:
-        # Strip markdown fences if present
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
-            cleaned = re.sub(r"\n?```$", "", cleaned)
+    # Reuse the shared LLM-JSON helper so we get the same robustness
+    # (markdown fences, prose prefixes, single-key-dict unwrapping) as
+    # cv_tailor without re-implementing it here.
+    from jobpulse.cv_tailor import _parse_llm_json
 
-        parsed = json.loads(cleaned)
+    try:
+        parsed = _parse_llm_json(raw)
         if not isinstance(parsed, list) or len(parsed) < 4:
             return points
         result = [(item["header"], item["detail"]) for item in parsed[:4]]

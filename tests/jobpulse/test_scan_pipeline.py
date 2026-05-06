@@ -497,7 +497,7 @@ class TestGenerateMaterials:
         with (
             patch("jobpulse.scan_pipeline.create_application_page", return_value="notion-page-id"),
             patch("jobpulse.scan_pipeline.build_extra_skills", return_value={"extra": "Spark"}),
-            patch("jobpulse.scan_pipeline.get_best_projects_for_jd", return_value=[{"title": "P1", "bullets": ["built X"]}]),
+            patch("jobpulse.scan_pipeline.get_best_projects_for_jd", return_value=[{"title": "P1", "bullets": ["built X"], "url": ""}]),
             patch("jobpulse.scan_pipeline.get_role_profile", return_value={"tagline": "t", "summary": "s"}),
             patch("jobpulse.scan_pipeline.score_ats", return_value=mock_ats),
             patch("jobpulse.scan_pipeline.BASE_SKILLS", {"a": "Python"}),
@@ -517,7 +517,11 @@ class TestGenerateMaterials:
         assert isinstance(bundle, MaterialsBundle)
         assert bundle.ats_score == 88.5
         assert bundle.notion_page_id == "notion-page-id"
-        assert bundle.cv_path is None
+        # ats_score 88.5 ≥ 85 triggers eager CV PDF generation in
+        # scan_pipeline.generate_materials. Pre-2026-05 this was masked by a
+        # KeyError on `proj["url"]` when projects lacked a url key — that
+        # bug is now fixed (see generate_cv.py:538), so cv_path is populated.
+        assert bundle.cv_path is not None
         assert bundle.cv_drive_link is None
         assert bundle.cover_letter_path is None
 
