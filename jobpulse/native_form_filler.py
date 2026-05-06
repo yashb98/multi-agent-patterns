@@ -1126,10 +1126,25 @@ class NativeFormFiller:
                 if not pair_ids or len(pair_ids) < 2 or not all(pair_ids):
                     return {"success": False,
                             "error": "no sibling number-input pair"}
-                await page.locator(pair_ids[0]).first.fill(min_val, timeout=4000)
-                await page.locator(pair_ids[1]).first.fill(max_val, timeout=4000)
-                return {"success": True, "value_set": f"{min_val}-{max_val}",
-                        "value_verified": True, "expected_value": value}
+                min_loc = page.locator(pair_ids[0]).first
+                max_loc = page.locator(pair_ids[1]).first
+                await min_loc.fill(min_val, timeout=4000)
+                await max_loc.fill(max_val, timeout=4000)
+                actual_min = ""
+                actual_max = ""
+                try:
+                    actual_min = await min_loc.input_value()
+                    actual_max = await max_loc.input_value()
+                except Exception:
+                    pass
+                verified = bool(actual_min) and bool(actual_max) and (
+                    actual_min == min_val and actual_max == max_val
+                )
+                return {"success": True,
+                        "value_set": f"{min_val}-{max_val}",
+                        "value_verified": verified,
+                        "actual_value": f"{actual_min}-{actual_max}",
+                        "expected_value": value}
             except Exception as exc:
                 return {"success": False, "error": f"range fill failed: {exc}"}
 
@@ -1186,15 +1201,24 @@ class NativeFormFiller:
                     actual = await loc.input_value()
                 except Exception:
                     pass
+                # When input_value() fails, we have no proof the value
+                # landed — default to NOT verified so the caller can
+                # re-fill rather than silently leaving the form empty.
                 return {"success": True, "value_set": value,
-                        "value_verified": (actual == value) if actual else True,
+                        "value_verified": (actual == value) if actual else False,
                         "actual_value": actual, "expected_value": value}
             except Exception:
                 try:
                     await loc.click(timeout=2000)
                     await loc.type(value, delay=20, timeout=4000)
+                    actual = ""
+                    try:
+                        actual = await loc.input_value()
+                    except Exception:
+                        pass
                     return {"success": True, "value_set": value,
-                            "value_verified": True, "expected_value": value}
+                            "value_verified": (actual == value) if actual else False,
+                            "actual_value": actual, "expected_value": value}
                 except Exception as exc:
                     return {"success": False, "error": f"text fill failed: {exc}"}
 
@@ -1434,7 +1458,7 @@ class NativeFormFiller:
             name_attr = await el.get_attribute("name") or ""
             if name_attr:
                 group = await page.query_selector_all(f'input[name="{name_attr}"]')
-                matched = False
+                radio_pairs: list[tuple[Any, str]] = []
                 for radio_el in group:
                     lbl = await radio_el.evaluate("""el => {
                         if (el.id) {
@@ -1445,13 +1469,30 @@ class NativeFormFiller:
                             || (el.parentElement ? el.parentElement.textContent.trim() : '')
                             || el.value || '';
                     }""")
-                    if lbl.strip().lower() == fill_value.strip().lower():
-                        await radio_el.scroll_into_view_if_needed()
-                        await radio_el.click()
-                        matched = True
-                        break
+                    radio_pairs.append((radio_el, (lbl or "").strip()))
+
+                radio_labels = [p[1] for p in radio_pairs if p[1]]
+                # Use the same 5-tier semantic matcher the dispatcher uses
+                # everywhere else. Exact-equality on lowercased text broke
+                # for free-form radio labels ("Asian / Indian" vs "Indian",
+                # "Yes — sponsored" vs "Yes") and silently left the radio
+                # group unfilled.
+                matched_label = _best_option_match(
+                    label, fill_value, radio_labels, store=self._profile_store,
+                )
+                matched = False
+                if matched_label:
+                    for radio_el, lbl in radio_pairs:
+                        if lbl == matched_label:
+                            await radio_el.scroll_into_view_if_needed()
+                            await radio_el.click()
+                            matched = True
+                            break
                 if not matched:
-                    logger.warning("No radio in group '%s' matches '%s'", name_attr, fill_value)
+                    logger.warning(
+                        "No radio in group '%s' matches '%s' (options: %s)",
+                        name_attr, fill_value, radio_labels[:8],
+                    )
             else:
                 radio = page.get_by_role("radio", name=fill_value, exact=True)
                 if await radio.count() == 1:
