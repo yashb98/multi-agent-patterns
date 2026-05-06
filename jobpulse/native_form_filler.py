@@ -778,7 +778,7 @@ class NativeFormFiller:
                 for b in visible_buttons[:20]
             )
 
-            prompt = (
+            base_prompt = (
                 f"You are recovering a stuck form-fill on {domain}. The agent "
                 f"could not find or fill the following field after exhausting "
                 f"label lookup, placeholder, role fallback, intent_healing, and "
@@ -791,7 +791,8 @@ class NativeFormFiller:
                 f"Return ONLY a JSON object describing one executable action:\n"
                 f'{{"action": "click_then_select" | "click_toggle" | "fill_text",\n'
                 f'  "selector": "<CSS selector for the widget>",\n'
-                f'  "widget_type": "switch | combobox | select | text",\n'
+                f'  "widget_type": "switch | combobox | select | text | '
+                f'rich_text | range | date_native",\n'
                 f'  "option_text": "<exact option text to click after opening, '
                 f'   if click_then_select>",\n'
                 f'  "reasoning": "<one short sentence>"}}\n\n'
@@ -799,114 +800,138 @@ class NativeFormFiller:
                 f'{{"action": "abort", "reasoning": "<why>"}}.'
             )
 
-            raw = cognitive_llm_call(
-                task=prompt,
-                domain="form_recovery",
-                stakes="high",
-            )
-            if not raw:
-                return {"success": False, "error": "engine returned no plan"}
-            # Strip code fences if present
-            if raw.strip().startswith("```"):
-                raw = raw.strip().strip("`")
-                if raw.lower().startswith("json"):
-                    raw = raw[4:].lstrip()
+            # Plan F6: retry loop. After each failed plan, re-prompt the
+            # engine with the failure context appended ("the previous
+            # selector returned 0 elements; try a different one"). Caps
+            # at 3 attempts so we don't burn cognitive-engine budget on
+            # an unsolvable case.
             import json as _json
-            try:
-                plan = _json.loads(raw)
-            except Exception as exc:
-                logger.debug("_escalate_fill: bad JSON from engine: %s", exc)
-                return {"success": False, "error": "engine plan unparseable"}
-
-            if plan.get("action") == "abort":
-                logger.info(
-                    "_escalate_fill: engine aborted on %r — %s",
-                    label, plan.get("reasoning", "?"),
-                )
-                return {"success": False, "error": "engine_abort"}
-
-            selector = (plan.get("selector") or "").strip()
-            widget_type = (plan.get("widget_type") or "text").strip()
-            option_text = plan.get("option_text") or value
-            logger.info(
-                "_escalate_fill: engine plan for %r — action=%s, widget=%s, "
-                "selector=%r, option_text=%r",
-                label, plan.get("action"), widget_type,
-                selector[:120], str(option_text)[:80],
-            )
-            if not selector:
-                logger.info(
-                    "_escalate_fill: plan for %r missing selector (action=%s)",
-                    label, plan.get("action"),
-                )
-                return {"success": False, "error": "engine plan missing selector"}
-
-            try:
-                loc = page.locator(selector).first
-                if not await loc.count():
-                    logger.info(
-                        "_escalate_fill: engine selector %r not on page for %r",
-                        selector[:120], label,
+            attempt_history: list[dict] = []
+            last_result: dict = {"success": False, "error": "no attempts"}
+            for attempt in range(3):
+                if attempt_history:
+                    history_summary = "\n".join(
+                        f"  attempt {i+1}: selector={h.get('selector','?')[:80]!r} "
+                        f"widget={h.get('widget_type','?')!r} "
+                        f"failed_with={h.get('error','?')[:80]!r}"
+                        for i, h in enumerate(attempt_history)
                     )
-                    return {"success": False, "error": "engine selector not on page"}
-            except Exception as exc:
-                logger.info(
-                    "_escalate_fill: engine selector %r errored for %r: %s",
-                    selector[:120], label, exc,
-                )
-                return {"success": False, "error": f"engine selector errored: {exc}"}
+                    prompt = (
+                        f"{base_prompt}\n\n"
+                        f"Previous attempts that failed:\n{history_summary}\n\n"
+                        f"Try a different selector or widget_type — the prior "
+                        f"plan did not work."
+                    )
+                else:
+                    prompt = base_prompt
 
-            # Reuse the per-widget dispatcher we already have so all
-            # click-based widget types share one execution path.
-            exec_result = await self._fill_resolved_widget(
-                loc, label, option_text, widget_type,
-            )
-
-            if exec_result.get("success"):
-                logger.info(
-                    "_escalate_fill: ✓ recovered %r via cognitive plan "
-                    "(widget=%s, selector=%s)",
-                    label, widget_type, selector[:80],
+                raw = cognitive_llm_call(
+                    task=prompt,
+                    domain="form_recovery",
+                    stakes="high",
                 )
-                # Record back to ai_assist_logger so the fix lands in
-                # GotchasDB.widget_patterns (Plan C-2 wiring). Future
-                # visits hit _scan_learned_patterns and skip escalation.
+                if not raw:
+                    last_result = {"success": False, "error": "engine returned no plan"}
+                    break
+                if raw.strip().startswith("```"):
+                    raw = raw.strip().strip("`")
+                    if raw.lower().startswith("json"):
+                        raw = raw[4:].lstrip()
                 try:
-                    sess_id = getattr(self, "_ai_assist_session_id", None)
-                    if not sess_id:
-                        from jobpulse.ai_assist_logger import get_ai_assist_logger
-                        sess = get_ai_assist_logger().start_session(
-                            "claude",
-                            domain=domain,
-                            platform=getattr(self, "_platform", "generic"),
-                        )
-                        self._ai_assist_session_id = sess.session_id
-                        sess_id = sess.session_id
-                    from jobpulse.ai_assist_logger import get_ai_assist_logger
-                    get_ai_assist_logger().record_fix(
-                        sess_id,
-                        field_label=label,
-                        old_value="",
-                        new_value=str(option_text),
-                        reasoning=plan.get("reasoning", "cognitive_escalation"),
-                        fix_category="value_correction",
-                        confidence=0.9,
-                        dom_signature={
-                            "selector": selector,
-                            "widget_type": widget_type,
-                            "ancestor_classes": "",
-                            "aria_label": "",
-                        },
-                    )
+                    plan = _json.loads(raw)
                 except Exception as exc:
-                    logger.debug("_escalate_fill: record_fix failed: %s", exc)
-                return exec_result
+                    logger.debug("_escalate_fill: bad JSON (attempt %d): %s", attempt + 1, exc)
+                    last_result = {"success": False, "error": "engine plan unparseable"}
+                    attempt_history.append({"error": "unparseable_json"})
+                    continue
 
-            logger.info(
-                "_escalate_fill: plan executed but did not verify on %r — %s",
-                label, exec_result.get("error", "?"),
-            )
-            return exec_result
+                if plan.get("action") == "abort":
+                    logger.info(
+                        "_escalate_fill: engine aborted on %r (attempt %d) — %s",
+                        label, attempt + 1, plan.get("reasoning", "?"),
+                    )
+                    return {"success": False, "error": "engine_abort"}
+
+                selector = (plan.get("selector") or "").strip()
+                widget_type = (plan.get("widget_type") or "text").strip()
+                option_text = plan.get("option_text") or value
+                logger.info(
+                    "_escalate_fill: attempt %d plan for %r — action=%s, "
+                    "widget=%s, selector=%r",
+                    attempt + 1, label, plan.get("action"), widget_type,
+                    selector[:120],
+                )
+                if not selector:
+                    last_result = {"success": False, "error": "engine plan missing selector"}
+                    attempt_history.append({"selector": "", "widget_type": widget_type,
+                                             "error": "missing_selector"})
+                    continue
+
+                try:
+                    loc = page.locator(selector).first
+                    if not await loc.count():
+                        last_result = {"success": False, "error": "engine selector not on page"}
+                        attempt_history.append({"selector": selector, "widget_type": widget_type,
+                                                 "error": "selector_not_on_page"})
+                        continue
+                except Exception as exc:
+                    last_result = {"success": False, "error": f"engine selector errored: {exc}"}
+                    attempt_history.append({"selector": selector, "widget_type": widget_type,
+                                             "error": f"selector_errored: {exc}"})
+                    continue
+
+                exec_result = await self._fill_resolved_widget(
+                    loc, label, option_text, widget_type,
+                )
+                last_result = exec_result
+
+                if exec_result.get("success"):
+                    logger.info(
+                        "_escalate_fill: ✓ recovered %r on attempt %d "
+                        "(widget=%s, selector=%s)",
+                        label, attempt + 1, widget_type, selector[:80],
+                    )
+                    try:
+                        from jobpulse.ai_assist_logger import get_ai_assist_logger
+                        sess_id = getattr(self, "_ai_assist_session_id", None)
+                        if not sess_id:
+                            sess = get_ai_assist_logger().start_session(
+                                "claude",
+                                domain=domain,
+                                platform=getattr(self, "_platform", "generic"),
+                            )
+                            self._ai_assist_session_id = sess.session_id
+                            sess_id = sess.session_id
+                        get_ai_assist_logger().record_fix(
+                            sess_id,
+                            field_label=label,
+                            old_value="",
+                            new_value=str(option_text),
+                            reasoning=plan.get("reasoning", "cognitive_escalation"),
+                            fix_category="value_correction",
+                            confidence=0.9,
+                            dom_signature={
+                                "selector": selector,
+                                "widget_type": widget_type,
+                                "ancestor_classes": "",
+                                "aria_label": "",
+                            },
+                        )
+                    except Exception as exc:
+                        logger.debug("_escalate_fill: record_fix failed: %s", exc)
+                    return exec_result
+
+                attempt_history.append({
+                    "selector": selector,
+                    "widget_type": widget_type,
+                    "error": str(exec_result.get("error", "unverified"))[:80],
+                })
+                logger.info(
+                    "_escalate_fill: attempt %d plan executed but didn't verify on %r — %s",
+                    attempt + 1, label, exec_result.get("error", "?"),
+                )
+
+            return last_result
         except Exception as exc:
             logger.warning("_escalate_fill crashed for %r: %s", label, exc)
             return {"success": False, "error": f"escalation crash: {exc}"}
