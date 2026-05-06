@@ -1049,6 +1049,91 @@ class NativeFormFiller:
                     "value_verified": True, "expected_value": value,
                     "options_seen": options[:8]}
 
+        if input_type in ("range", "split_numeric", "range_slider",
+                          "salary_range"):
+            # Plan F3-1: split a "min-max" string into two numeric
+            # inputs that share a parent. Pure feature detection — walk
+            # the locator's ancestors looking for a scope containing
+            # exactly two <input type=number> with aria-valuemin /
+            # aria-valuemax (the standard range-pair signal).
+            try:
+                parts = [
+                    p.strip()
+                    for p in v_norm.replace(",", "").split("-")
+                    if p.strip()
+                ]
+                if len(parts) < 2:
+                    return {"success": False,
+                            "error": f"range value not splittable: {v_norm!r}"}
+                min_val, max_val = parts[0], parts[-1]
+                pair_ids = await loc.evaluate(
+                    """(el) => {
+                        let scope = el.parentElement;
+                        for (let i = 0; scope && i < 4; i++, scope = scope.parentElement) {
+                            const inputs = Array.from(scope.querySelectorAll(
+                                'input[type="number"]'
+                            )).filter(x => x.offsetParent !== null);
+                            if (inputs.length >= 2) {
+                                return inputs.slice(0, 2).map(n => {
+                                    if (n.id) return '#' + n.id;
+                                    if (n.name) return `input[name="${n.name}"]`;
+                                    return null;
+                                });
+                            }
+                        }
+                        return null;
+                    }"""
+                )
+                if not pair_ids or len(pair_ids) < 2 or not all(pair_ids):
+                    return {"success": False,
+                            "error": "no sibling number-input pair"}
+                await page.locator(pair_ids[0]).first.fill(min_val, timeout=4000)
+                await page.locator(pair_ids[1]).first.fill(max_val, timeout=4000)
+                return {"success": True, "value_set": f"{min_val}-{max_val}",
+                        "value_verified": True, "expected_value": value}
+            except Exception as exc:
+                return {"success": False, "error": f"range fill failed: {exc}"}
+
+        if input_type in ("rich_text", "rich_text_editor", "contenteditable"):
+            # Plan F3-4: contenteditable widgets (TipTap, Lexical, Quill)
+            # ignore page.fill(). Use focus + pressSequentially so each
+            # input event fires individually — React/TipTap state updates
+            # require it.
+            try:
+                await loc.click(timeout=2000)
+                await loc.press_sequentially(value, delay=10, timeout=10000)
+                actual = await loc.evaluate(
+                    "el => (el.innerText || el.textContent || '').trim()"
+                )
+                return {"success": (value.strip() in actual),
+                        "value_set": value, "actual_value": actual[:200],
+                        "value_verified": (value.strip() in actual),
+                        "expected_value": value}
+            except Exception as exc:
+                return {"success": False,
+                        "error": f"rich_text fill failed: {exc}"}
+
+        if input_type in ("date_native", "date"):
+            # Plan F3-5: <input type=date> takes ISO YYYY-MM-DD via .fill().
+            # Format the incoming value if it's not already ISO.
+            try:
+                from jobpulse.form_engine.date_filler import (
+                    _format_date,
+                )
+                iso_value = _format_date(value, fmt="YYYY-MM-DD")
+            except Exception:
+                iso_value = value
+            try:
+                await loc.fill(iso_value, timeout=4000)
+                actual = await loc.input_value()
+                return {"success": (actual == iso_value),
+                        "value_set": iso_value, "actual_value": actual,
+                        "value_verified": (actual == iso_value),
+                        "expected_value": value}
+            except Exception as exc:
+                return {"success": False,
+                        "error": f"date_native fill failed: {exc}"}
+
         if input_type in ("text", "textarea", "number", "email", "tel", "url"):
             # Direct fill for text-class widgets. The cognitive engine
             # may classify a missed widget as text/textarea (e.g.
