@@ -66,6 +66,7 @@ class FormFiller:
     async def fill_application(
         self, platform, snapshot, cv_path, cover_letter_path, profile,
         custom_answers, overrides, dry_run, form_intelligence,
+        planned_action: dict | None = None,
     ) -> dict:
         page = self.driver.page
 
@@ -113,6 +114,7 @@ class FormFiller:
             profile=profile or {},
             custom_answers=custom_answers or {},
             dry_run=dry_run,
+            planned_action=planned_action,
         )
 
         if not result.get("success"):

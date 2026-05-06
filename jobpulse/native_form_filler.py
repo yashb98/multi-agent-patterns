@@ -2381,11 +2381,25 @@ class NativeFormFiller:
                 logger.debug("Dialog dismiss selector %s failed: %s", selector, exc)
 
     async def _is_submit_page(self) -> bool:
-        for name in ["Submit Application", "Submit", "Apply"]:
-            btn = self._page.get_by_role("button", name=name, exact=False)
-            if await btn.count() and await btn.first.is_visible():
-                return True
-        return False
+        """Plan D: a page is the final submit page iff the reasoner
+        emits action='done'. No string matching against button names —
+        every page on a job portal has an "Apply" or "Submit"-flavored
+        button somewhere (header, sidebar), so text-matching produces
+        constant false positives. The reasoner already classifies the
+        page intent; consume that.
+        """
+        pa = getattr(self, "_planned_action", None)
+        if pa and pa.get("action"):
+            return pa.get("action") == "done"
+        # Fallback: no planned_action threaded in (tests, cron path).
+        # Ask the reasoner now — its cache makes repeated calls cheap.
+        try:
+            from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+            snap = await self._driver.get_snapshot()
+            return get_page_reasoner().reason_sync(snap).action == "done"
+        except Exception as exc:
+            logger.debug("_is_submit_page fallback reasoner failed: %s", exc)
+            return False
 
     # ── Navigation ──
 
@@ -2679,34 +2693,63 @@ class NativeFormFiller:
 
     async def _click_navigation(self, dry_run: bool) -> str:
         page = self._page
-        button_names = [
-            ("submit", ["Submit Application", "Submit", "Apply"]),
-            ("next", ["Review", "Save and Continue", "Save & Continue", "Continue", "Next", "Proceed"]),
-        ]
+        # Plan D: consume the reasoner's PageAction. The reasoner's
+        # prompt produces `advance_button` (the exact text of the
+        # Continue/Submit button to click) and `action` (which is
+        # "done" iff this is the final submit page). No string-based
+        # button-text lists — that ran headlong into the
+        # "Apply" false-positive bug on welovealfa.com 2026-05-06.
+        pa = getattr(self, "_planned_action", None) or {}
+        target_text = (pa.get("advance_button") or "").strip()
+        is_submit = pa.get("action") == "done"
 
-        for action, names in button_names:
-            for name in names:
-                btn = page.get_by_role("button", name=name, exact=False)
-                if await btn.count() and await btn.first.is_visible():
-                    if action == "submit" and dry_run:
-                        return "dry_run_stop"
-                    if action == "submit":
-                        try:
-                            await self._record_final_state_before_submit()
-                        except Exception as exc:
-                            logger.warning("record_final_state_before_submit failed: %s", exc)
-                    await self._move_mouse_to(btn.first)
-                    await btn.first.click()
+        # Fallback: no PageAction threaded in (tests, cron, direct
+        # callers). Ask the reasoner with a fresh snapshot — it's
+        # cached so the next consumer reuses the result.
+        if not target_text:
+            try:
+                from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                snap = await self._driver.get_snapshot()
+                act = get_page_reasoner().reason_sync(snap)
+                target_text = (act.advance_button or "").strip()
+                is_submit = act.action == "done"
+            except Exception as exc:
+                logger.debug("_click_navigation reasoner fallback failed: %s", exc)
+
+        if target_text:
+            btn = page.get_by_role("button", name=target_text, exact=True)
+            if not await btn.count():
+                btn = page.get_by_role("button", name=target_text, exact=False)
+            if await btn.count() and await btn.first.is_visible():
+                if is_submit and dry_run:
+                    return "dry_run_stop"
+                if is_submit:
                     try:
-                        await page.wait_for_load_state(
-                            "networkidle", timeout=5000,
-                        )
-                    except Exception:
-                        await asyncio.sleep(2)
-                    logger.info("nav: clicked %s via role-button name=%r", action, name)
-                    return "submitted" if action == "submit" else "next"
+                        await self._record_final_state_before_submit()
+                    except Exception as exc:
+                        logger.warning("record_final_state_before_submit failed: %s", exc)
+                await self._move_mouse_to(btn.first)
+                await btn.first.click()
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    await asyncio.sleep(2)
+                logger.info(
+                    "nav: clicked %s via reasoner-named %r",
+                    "submit" if is_submit else "next", target_text,
+                )
+                return "submitted" if is_submit else "next"
+            else:
+                logger.debug(
+                    "nav: reasoner-named button %r not on page — "
+                    "trying structural-selector fallbacks",
+                    target_text,
+                )
 
-        # Workday-specific next button via data-automation-id
+        # Workday-specific next button via data-automation-id.
+        # Structural selector — allowed under "Dynamic Over Hardcoded"
+        # because it's a stable platform-defined attribute, not a
+        # user-input string heuristic.
         try:
             wd_btn = page.locator("button[data-automation-id='bottom-navigation-next-button']")
             if await wd_btn.count() and await wd_btn.first.is_visible():
@@ -2721,19 +2764,6 @@ class NativeFormFiller:
                 return "next"
         except Exception:
             pass
-
-        for name in ["Submit", "Apply Now", "Continue"]:
-            link = page.get_by_role("link", name=name, exact=False)
-            if await link.count() and await link.first.is_visible():
-                await link.first.click()
-                try:
-                    await page.wait_for_load_state(
-                        "networkidle", timeout=5000,
-                    )
-                except Exception:
-                    await asyncio.sleep(2)
-                logger.info("nav: clicked next via role-link name=%r", name)
-                return "next"
 
         # CSS-selector fallback: get_by_role can miss buttons with extra
         # aria-describedby text or non-standard accessible names. Match the
@@ -2825,12 +2855,22 @@ class NativeFormFiller:
         profile: dict,
         custom_answers: dict,
         dry_run: bool,
+        planned_action: dict | None = None,
     ) -> dict:
         # Stash job context so per-input handlers (e.g. salary_number)
         # can consult it without needing custom_answers passed through
         # every sub-method signature.
         _job_ctx_raw = (custom_answers or {}).get("_job_context")
         self._job_context = _job_ctx_raw if isinstance(_job_ctx_raw, dict) else None
+
+        # Plan D: stash the reasoner's PageAction (action +
+        # advance_button + expected_outcome) so _is_submit_page and
+        # _click_navigation can consume it instead of running their own
+        # hardcoded button-text lookups. The orchestrator passes this
+        # through; tests / cron / direct callers may omit it (None →
+        # _click_navigation falls back to a fresh reasoner call with
+        # the current snapshot).
+        self._planned_action = planned_action
 
         # 0. Build correction warning from form hints
         hints = custom_answers.get("_form_hints")

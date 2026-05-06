@@ -406,12 +406,42 @@ class FormNavigator:
         act = action.action if action else "abort"
         pt = action.page_type if action else "unknown"
 
-        if act in ("fill_form", "fill_and_advance"):
-            result: dict[str, Any] = {"page_type": PageType.APPLICATION_FORM, "snapshot": ctx.snapshot}
-        elif act == "done":
-            result = {"page_type": PageType.CONFIRMATION, "snapshot": ctx.snapshot}
+        # Surface the reasoner's PageAction so downstream consumers
+        # (NativeFormFiller._click_navigation, _is_submit_page) can
+        # consume advance_button + action='done' instead of running
+        # their own hardcoded button-text lookups. Defensive: tests
+        # may stub planned_action with a types.SimpleNamespace.
+        if action is None:
+            planned_action_dict = None
+        elif hasattr(action, "to_dict"):
+            planned_action_dict = action.to_dict()
         else:
-            result = {"page_type": PageType.UNKNOWN, "snapshot": ctx.snapshot}
+            planned_action_dict = {
+                "action": getattr(action, "action", "abort"),
+                "page_type": getattr(action, "page_type", "unknown"),
+                "advance_button": getattr(action, "advance_button", ""),
+                "confidence": getattr(action, "confidence", 0.0),
+                "expected_outcome": getattr(action, "expected_outcome", "unknown"),
+            }
+
+        if act in ("fill_form", "fill_and_advance"):
+            result: dict[str, Any] = {
+                "page_type": PageType.APPLICATION_FORM,
+                "snapshot": ctx.snapshot,
+                "planned_action": planned_action_dict,
+            }
+        elif act == "done":
+            result = {
+                "page_type": PageType.CONFIRMATION,
+                "snapshot": ctx.snapshot,
+                "planned_action": planned_action_dict,
+            }
+        else:
+            result = {
+                "page_type": PageType.UNKNOWN,
+                "snapshot": ctx.snapshot,
+                "planned_action": planned_action_dict,
+            }
 
         if pt == "expired_job":
             result["expired"] = True

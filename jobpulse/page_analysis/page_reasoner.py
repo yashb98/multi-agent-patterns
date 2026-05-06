@@ -337,6 +337,38 @@ class PageReasoner:
             )
         return action
 
+    @staticmethod
+    def _apply_advance_button_guard(action: "PageAction") -> "PageAction":
+        """Plan D: when action is fill_and_advance but advance_button is
+        empty, the consumer (NativeFormFiller._click_navigation) has
+        nothing to click. Lower confidence so the orchestrator either
+        re-plans or routes through human bypass — instead of silently
+        failing or falling back to a hardcoded button-text list.
+        """
+        if action.action != "fill_and_advance":
+            return action
+        if (action.advance_button or "").strip():
+            return action
+        logger.info(
+            "advance_button_guard: fill_and_advance with empty advance_button "
+            "→ confidence downgraded to 0.0 (forces re-plan)"
+        )
+        return PageAction(
+            page_understanding=action.page_understanding,
+            action=action.action,
+            target_text=action.target_text,
+            reasoning=(
+                f"{action.reasoning} | advance_button_missing — consumer "
+                f"has no button name to click"
+            ),
+            confidence=0.0,
+            page_type=action.page_type,
+            field_fills=action.field_fills,
+            advance_button="",
+            overlays_to_dismiss=action.overlays_to_dismiss,
+            expected_outcome=action.expected_outcome,
+        )
+
     def reason_sync(self, snapshot: dict[str, Any]) -> PageAction:
         """Synchronous page reasoning — primary entry point."""
         url = snapshot.get("url", "")
@@ -380,6 +412,7 @@ class PageReasoner:
 
         action = self._apply_zero_fields_guard(action, fields, buttons)
         action = self._apply_field_count_guard(action, fields)
+        action = self._apply_advance_button_guard(action)
         self._set_cache(cache_key, action)
         logger.info(
             "PageReasoner: %s → action=%s, type=%s, confidence=%.2f — %s",
@@ -461,6 +494,7 @@ class PageReasoner:
         )
         action = self._call_llm(prompt)
         action = self._apply_zero_fields_guard(action, fields, buttons)
+        action = self._apply_advance_button_guard(action)
         # Do not cache reflection results — they are situational.
         logger.info(
             "PageReasoner.reflect: %s → action=%s, type=%s, confidence=%.2f",
@@ -486,8 +520,14 @@ class PageReasoner:
                 from shared.agents import is_local_llm
                 if is_local_llm():
                     logger.warning("PageReasoner local LLM failed, falling back to cloud: %s", local_err)
-                    from langchain_openai import ChatOpenAI as _ChatOpenAI
-                    cloud_llm = _ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=500, timeout=30)
+                    cloud_llm = get_llm(
+                        model="gpt-4o-mini",
+                        temperature=0,
+                        max_tokens=500,
+                        timeout=30,
+                        agent_name="page_reasoner",
+                        force_cloud=True,
+                    )
                     response = smart_llm_call(cloud_llm, msgs)
                 else:
                     raise

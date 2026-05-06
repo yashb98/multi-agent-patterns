@@ -218,6 +218,7 @@ class ApplicationOrchestrator:
             overrides=overrides,
             dry_run=dry_run,
             form_intelligence=form_intelligence,
+            planned_action=nav_result.get("planned_action"),
         )
 
         # Re-auth retry on session expiry during form fill
@@ -231,6 +232,7 @@ class ApplicationOrchestrator:
                     profile=profile, custom_answers=custom_answers,
                     overrides=overrides, dry_run=dry_run,
                     form_intelligence=form_intelligence,
+                    planned_action=reauth.get("planned_action"),
                 )
                 result["_reauth_attempted"] = True
 
