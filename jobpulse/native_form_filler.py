@@ -828,14 +828,32 @@ class NativeFormFiller:
             selector = (plan.get("selector") or "").strip()
             widget_type = (plan.get("widget_type") or "text").strip()
             option_text = plan.get("option_text") or value
+            logger.info(
+                "_escalate_fill: engine plan for %r — action=%s, widget=%s, "
+                "selector=%r, option_text=%r",
+                label, plan.get("action"), widget_type,
+                selector[:120], str(option_text)[:80],
+            )
             if not selector:
+                logger.info(
+                    "_escalate_fill: plan for %r missing selector (action=%s)",
+                    label, plan.get("action"),
+                )
                 return {"success": False, "error": "engine plan missing selector"}
 
             try:
                 loc = page.locator(selector).first
                 if not await loc.count():
+                    logger.info(
+                        "_escalate_fill: engine selector %r not on page for %r",
+                        selector[:120], label,
+                    )
                     return {"success": False, "error": "engine selector not on page"}
             except Exception as exc:
+                logger.info(
+                    "_escalate_fill: engine selector %r errored for %r: %s",
+                    selector[:120], label, exc,
+                )
                 return {"success": False, "error": f"engine selector errored: {exc}"}
 
             # Reuse the per-widget dispatcher we already have so all
@@ -1030,6 +1048,31 @@ class NativeFormFiller:
             return {"success": True, "value_set": match,
                     "value_verified": True, "expected_value": value,
                     "options_seen": options[:8]}
+
+        if input_type in ("text", "textarea", "number", "email", "tel", "url"):
+            # Direct fill for text-class widgets. The cognitive engine
+            # may classify a missed widget as text/textarea (e.g.
+            # contenteditable divs that the shape detectors don't flag
+            # as fillable). Try fill() first; fall back to type() for
+            # widgets that synthesize input events differently.
+            try:
+                await loc.fill(value, timeout=4000)
+                actual = ""
+                try:
+                    actual = await loc.input_value()
+                except Exception:
+                    pass
+                return {"success": True, "value_set": value,
+                        "value_verified": (actual == value) if actual else True,
+                        "actual_value": actual, "expected_value": value}
+            except Exception:
+                try:
+                    await loc.click(timeout=2000)
+                    await loc.type(value, delay=20, timeout=4000)
+                    return {"success": True, "value_set": value,
+                            "value_verified": True, "expected_value": value}
+                except Exception as exc:
+                    return {"success": False, "error": f"text fill failed: {exc}"}
 
         return {"success": False, "error": f"unsupported input_type {input_type!r}"}
 
