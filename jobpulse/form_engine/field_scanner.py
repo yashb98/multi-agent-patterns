@@ -237,6 +237,111 @@ async def _detect_form_container(page: "Page") -> str | None:
         return None
 
 
+# Plan F2: option cache for closed comboboxes. Keyed by (url, label).
+# In-memory only — application_orchestrator's process lifetime matches
+# a single application run; a fresh scan per run is the correct
+# invalidation policy when options can change between site versions.
+_COMBOBOX_OPTION_CACHE: dict[tuple[str, str], list[str]] = {}
+
+
+async def _scan_combobox_options(
+    page: "Page", selector: str, timeout_ms: int = 1500,
+) -> list[str]:
+    """Open a closed combobox by selector, scan its option list, close.
+
+    Live regression context: on Revolut welovealfa.com 2026-05-06, the
+    screening pipeline received field={'options': []} for visa /
+    notice / country comboboxes (the DOM scanner only reads options
+    for native <select>, not custom React widgets). The LLM then
+    generated answer='Yes' but real options were 'Yes - I require
+    sponsorship' / 'No - I do not require sponsorship' — token-overlap
+    match couldn't bridge the wrapping. Pre-fill option scanning closes
+    that gap.
+
+    Returns [] on failure so the caller can transparently fall through
+    to the existing flow (no options is the current state).
+    """
+    try:
+        loc = page.locator(selector).first
+        if not await loc.count():
+            return []
+        await loc.click(timeout=2500)
+    except Exception as exc:
+        logger.debug("scan_combobox_options: click %r failed: %s", selector[:80], exc)
+        return []
+
+    try:
+        options = await page.evaluate(
+            """() => {
+                const sel = '[role="option"], [role="radio"], '
+                          + '[role="menuitemcheckbox"], li[role="option"]';
+                return Array.from(document.querySelectorAll(sel))
+                    .filter(o => o.offsetParent !== null)
+                    .map(o => (o.textContent || '').trim())
+                    .filter(t => t && !/^select\\s*(one|an?\\s*option)?$/i.test(t)
+                                   && !/^loading/i.test(t));
+            }"""
+        )
+    except Exception as exc:
+        logger.debug("scan_combobox_options: option read failed: %s", exc)
+        options = []
+
+    try:
+        await page.keyboard.press("Escape")
+    except Exception:
+        pass
+
+    return options or []
+
+
+async def _populate_combobox_options(
+    page: "Page", fields: list[dict],
+) -> None:
+    """For every combobox-class field with empty options, try to open it
+    and capture the option list. Mutates the field dicts in place.
+
+    Cached per (url, label). Failures are silent — the caller's existing
+    pipeline tolerates fields with empty options.
+    """
+    try:
+        url = (page.url or "").split("#")[0]
+    except Exception:
+        url = ""
+
+    eligible_types = {
+        "combobox", "custom_select", "multiselect", "select",
+    }
+
+    for f in fields:
+        ft = (f.get("type") or "").lower()
+        if ft not in eligible_types:
+            continue
+        if f.get("options"):
+            continue
+        label = (f.get("label") or "").strip()
+        selector = (f.get("selector") or "").strip()
+        if not label and not selector:
+            continue
+
+        cache_key = (url, label or selector)
+        if cache_key in _COMBOBOX_OPTION_CACHE:
+            f["options"] = list(_COMBOBOX_OPTION_CACHE[cache_key])
+            continue
+
+        if not selector:
+            # Nothing to click — skip
+            continue
+
+        opts = await _scan_combobox_options(page, selector)
+        if opts:
+            _COMBOBOX_OPTION_CACHE[cache_key] = list(opts)
+            f["options"] = opts
+            logger.info(
+                "scan_combobox_options: %r → %d options on %s",
+                label[:60], len(opts), url[:60],
+            )
+
+
 def _filter_noise_fields(fields: list[dict]) -> list[dict]:
     """Drop scanner-output entries that aren't real fillable form fields.
 
@@ -1000,6 +1105,16 @@ async def scan_fields(
     for strat, fields in results.items():
         if strat != winner:
             best_fields = _merge_fields(best_fields, fields)
+
+    # Plan F2: pre-fill option scanning. Open every closed combobox
+    # briefly, capture its option list, attach to the field dict so
+    # the screening pipeline's LLM sees the actual offered set when
+    # generating the answer. Avoids the "agent says 'Yes', real
+    # option is 'Yes - I require sponsorship'" mismatch.
+    try:
+        await _populate_combobox_options(page, best_fields)
+    except Exception as exc:
+        logger.debug("populate_combobox_options skipped: %s", exc)
 
     # Plan F4: drop scanner noise (button/a tags, synthetic labels,
     # placeholder-as-label, extension-injected) before downstream
