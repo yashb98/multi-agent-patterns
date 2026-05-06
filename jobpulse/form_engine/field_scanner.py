@@ -286,10 +286,27 @@ async def _scan_combobox_options(
         logger.debug("scan_combobox_options: option read failed: %s", exc)
         options = []
 
+    # Live regression on Revolut welovealfa.com 2026-05-06: pressing
+    # Escape returned immediately, but the next combobox.click() ran
+    # while the previous list was still rendering. Result: visa
+    # combobox returned 109 options (the country list bleeding through).
+    # Wait for [role=option] count to drop to 0 before returning.
     try:
         await page.keyboard.press("Escape")
+        await page.wait_for_function(
+            """() => document.querySelectorAll(
+                '[role="option"], [role="radio"], '
+                + '[role="menuitemcheckbox"], li[role="option"]'
+            ).length === 0""",
+            timeout=1000,
+        )
     except Exception:
-        pass
+        # Fallback: brief sleep if wait_for_function timed out
+        try:
+            import asyncio
+            await asyncio.sleep(0.3)
+        except Exception:
+            pass
 
     return options or []
 
@@ -365,8 +382,15 @@ def _filter_noise_fields(fields: list[dict]) -> list[dict]:
     for f in fields:
         label = (f.get("label") or "").strip()
         tag = (f.get("tag") or "").lower()
+        role = (f.get("role") or "").lower()
 
         if tag in ("button", "a"):
+            continue
+        # Live regression on Revolut welovealfa.com 2026-05-06: a
+        # <div role="button"> for "Apply now" / "Open Grammarly." was
+        # not caught by tag-only check. role check covers
+        # extension-injected and SPA-pattern buttons regardless of tag.
+        if role in ("button", "menuitem", "tab", "link"):
             continue
         if not label:
             continue
@@ -515,6 +539,7 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 // Plan F4: surface metadata so the noise filter can drop
                 // garbage labels before they reach _fill_by_label.
                 entry.tag = el.tagName.toLowerCase();
+                entry.role = el.getAttribute('role') || '';
                 entry.placeholder = el.getAttribute('placeholder') || '';
                 // Behavioral feature detection of extension injection —
                 // no hardcoded namespace list. Three signals:

@@ -767,14 +767,24 @@ class NativeFormFiller:
             except Exception:
                 pass
 
+            # Live regression on Revolut welovealfa.com 2026-05-06:
+            # the engine returned `select[name='visa_sponsorship']` on
+            # all 3 retry attempts — a hallucinated selector that
+            # doesn't exist on the page. The fix: include the SCANNER'S
+            # ACTUAL SELECTORS in the field summary so the engine picks
+            # from real candidates, not from prior knowledge of standard
+            # form names.
             field_summary = "\n".join(
-                f"- {(f.get('label') or '')[:80]} ({f.get('type', '?')})"
+                f"- label={(f.get('label') or '')[:80]!r} "
+                f"type={f.get('type', '?')} "
+                f"selector={(f.get('selector') or 'unknown')[:100]!r}"
                 for f in (fields or [])[:25]
             )
             button_summary = "\n".join(
-                f"- {b.get('text', '')[:60]} "
-                f"[role={b.get('role') or 'button'}, "
-                f"haspopup={b.get('haspopup') or 'none'}]"
+                f"- text={b.get('text', '')[:60]!r} "
+                f"id={b.get('id') or '(none)'!r} "
+                f"role={b.get('role') or 'button'} "
+                f"haspopup={b.get('haspopup') or 'none'}"
                 for b in visible_buttons[:20]
             )
 
@@ -786,6 +796,10 @@ class NativeFormFiller:
                 f"Field label: {label!r}\n"
                 f"Intended value: {value!r}\n"
                 f"Failure tier reached: {failure_tier!r}\n\n"
+                f"IMPORTANT: pick a selector ONLY from the lists below. Do NOT "
+                f"invent standard form names like select[name='visa_sponsorship'] "
+                f"— React forms rarely use plain HTML name attributes. If none "
+                f"of the listed selectors matches the field, return action='abort'.\n\n"
                 f"Visible fields on page ({len(fields or [])}):\n{field_summary}\n\n"
                 f"Visible buttons ({len(visible_buttons)}):\n{button_summary}\n\n"
                 f"Return ONLY a JSON object describing one executable action:\n"
