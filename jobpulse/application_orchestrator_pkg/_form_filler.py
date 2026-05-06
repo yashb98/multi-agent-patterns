@@ -91,6 +91,7 @@ class FormFiller:
                 custom_answers=custom_answers or {},
                 platform=platform,
                 dry_run=dry_run,
+                planned_action=planned_action,
             )
             # Convert FormFillResult to legacy dict format
             return {

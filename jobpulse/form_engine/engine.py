@@ -85,9 +85,16 @@ class FormFillEngine:
         custom_answers: dict[str, Any],
         platform: str = "generic",
         dry_run: bool = False,
+        planned_action: dict | None = None,
     ) -> FormFillResult:
         """Fill a complete multi-page form."""
         import time
+
+        # Plan F1: stash the reasoner's PageAction so _click_navigation
+        # consumes advance_button + action='done' instead of running
+        # hardcoded button-name lookups (the same dynamic-over-hardcoded
+        # violation Plan D fixed in NativeFormFiller).
+        self._planned_action = planned_action
 
         t0 = time.monotonic()
         total_filled = 0
@@ -439,33 +446,40 @@ class FormFillEngine:
                 except Exception:
                     continue
 
-        # Generic role-based search
-        button_groups = [
-            ("submit", ["Submit Application", "Submit", "Apply"]),
-            ("next", ["Review", "Save and Continue", "Save & Continue", "Continue", "Next", "Proceed"]),
-        ]
+        # Plan F1: consume the reasoner's advance_button + action='done'
+        # signal. Same dynamic dispatch as NativeFormFiller (Plan D).
+        # Falls back to a fresh reasoner call when no planned_action
+        # was threaded in (cron / direct callers).
+        pa = getattr(self, "_planned_action", None) or {}
+        target_text = (pa.get("advance_button") or "").strip()
+        is_submit = pa.get("action") == "done"
 
-        for action, names in button_groups:
-            for name in names:
+        if not target_text:
+            try:
+                from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                snap = await self._driver.get_snapshot()
+                act = get_page_reasoner().reason_sync(snap)
+                target_text = (act.advance_button or "").strip()
+                is_submit = act.action == "done"
+            except Exception:
+                pass
+
+        if target_text:
+            for matcher in (
+                page.get_by_role("button", name=target_text, exact=True),
+                page.get_by_role("button", name=target_text, exact=False),
+                page.get_by_role("link", name=target_text, exact=True),
+                page.get_by_role("link", name=target_text, exact=False),
+            ):
                 try:
-                    btn = page.get_by_role("button", name=name, exact=False).first
+                    btn = matcher.first
                     if await btn.count() and await btn.is_visible():
-                        if action == "submit" and dry_run:
+                        if is_submit and dry_run:
                             return "dry_run_stop"
                         await btn.click()
-                        return "submitted" if action == "submit" else "next"
+                        return "submitted" if is_submit else "next"
                 except Exception:
                     continue
-
-        # Fallback to link roles
-        for name in ["Submit", "Apply Now", "Continue"]:
-            try:
-                link = page.get_by_role("link", name=name, exact=False).first
-                if await link.count() and await link.is_visible():
-                    await link.click()
-                    return "next"
-            except Exception:
-                continue
 
         return ""
 

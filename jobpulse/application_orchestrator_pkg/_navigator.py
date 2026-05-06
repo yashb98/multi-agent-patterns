@@ -1335,28 +1335,44 @@ class FormNavigator:
                 scored.append((score, btn))
 
         if not scored:
-            logger.warning("No apply button found in snapshot — trying Playwright locator fallback")
+            logger.warning(
+                "No apply button found in snapshot — consulting reasoner for "
+                "target_text (Plan F1-2: dynamic-over-hardcoded fallback)"
+            )
             current_page = getattr(self.driver, "page", None)
             if current_page is not None:
-                for text_pattern in ("Apply now", "Apply for this job", "Start application", "Apply"):
-                    try:
-                        loc = current_page.get_by_role("link", name=text_pattern, exact=False).first
-                        if await loc.count() and await loc.is_visible():
-                            logger.info("Playwright fallback: clicking link '%s'", text_pattern)
-                            await loc.click()
-                            await wait_for_page_stable(current_page, timeout_ms=8000)
-                            return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
-                    except Exception:
-                        pass
-                    try:
-                        loc = current_page.get_by_role("button", name=text_pattern, exact=False).first
-                        if await loc.count() and await loc.is_visible():
-                            logger.info("Playwright fallback: clicking button '%s'", text_pattern)
-                            await loc.click()
-                            await wait_for_page_stable(current_page, timeout_ms=8000)
-                            return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
-                    except Exception:
-                        pass
+                # Plan F1-2: ask the reasoner for the exact button text to
+                # click. The reasoner emits action='click_apply' with
+                # target_text on JD pages. No hardcoded button-name list —
+                # whatever string ladder we wrote here would always lag a
+                # site we hadn't seen yet.
+                try:
+                    from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+                    snap = self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                    action = get_page_reasoner().reason_sync(snap)
+                    target_text = (action.target_text or "").strip()
+                    if (action.action == "click_apply"
+                            and target_text):
+                        for matcher in (
+                            current_page.get_by_role("link", name=target_text, exact=True),
+                            current_page.get_by_role("button", name=target_text, exact=True),
+                            current_page.get_by_role("link", name=target_text, exact=False),
+                            current_page.get_by_role("button", name=target_text, exact=False),
+                        ):
+                            try:
+                                loc = matcher.first
+                                if await loc.count() and await loc.is_visible():
+                                    logger.info(
+                                        "click_apply: clicked %r via reasoner-named target_text",
+                                        target_text,
+                                    )
+                                    await loc.click()
+                                    await wait_for_page_stable(current_page, timeout_ms=8000)
+                                    return self._as_dict(await self.driver.get_snapshot(force_refresh=True))
+                            except Exception:
+                                continue
+                except Exception as exc:
+                    logger.debug("click_apply: reasoner fallback failed: %s", exc)
             return snapshot
 
         # Rank by score descending
