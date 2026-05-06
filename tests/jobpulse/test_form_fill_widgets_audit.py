@@ -115,3 +115,67 @@ class TestSemanticMatcherShortAliasGuard:
             "yes", ["true", "false", "maybe"],
         )
         assert result == "true"
+
+
+class TestValidationMinorFixes:
+    """Regression guards for the S2 minor cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_role_alert_errors_get_distinct_selectors(self):
+        """Pre-fix: every role=alert error shared selector "[role='alert']"
+        — caller couldn't dedupe by field. Post-fix: each gets a distinct
+        nth-of-type selector or its element id."""
+        from unittest.mock import AsyncMock, MagicMock
+        from jobpulse.form_engine.validation import scan_for_errors
+
+        a1 = MagicMock()
+        a1.text_content = AsyncMock(return_value="First error")
+        a1.get_attribute = AsyncMock(return_value="")
+
+        a2 = MagicMock()
+        a2.text_content = AsyncMock(return_value="Second error")
+        a2.get_attribute = AsyncMock(return_value="email-error")
+
+        page = MagicMock()
+        page.query_selector_all = AsyncMock(side_effect=[
+            [],            # aria-invalid
+            [a1, a2],      # role=alert (two distinct alerts)
+            [],            # error CSS classes
+            [],            # aria-errormessage
+            [], [], [], [],  # ATS selectors
+        ])
+
+        errors = await scan_for_errors(page)
+        selectors = [e.field_selector for e in errors]
+        # Two role=alert errors must have different selectors, not both
+        # "[role='alert']" the way they did pre-fix.
+        assert len(set(selectors)) == len(selectors), (
+            f"role=alert selectors collided: {selectors!r}"
+        )
+        # Element id, when available, takes precedence
+        assert "#email-error" in selectors
+
+    @pytest.mark.asyncio
+    async def test_long_error_messages_truncated_not_dropped(self):
+        """Pre-fix: error messages > 200 chars were silently dropped.
+        Post-fix: they're truncated with an ellipsis."""
+        from unittest.mock import AsyncMock, MagicMock
+        from jobpulse.form_engine.validation import scan_for_errors
+
+        long_msg = "Please confirm: " + "x" * 250
+        long_el = MagicMock()
+        long_el.text_content = AsyncMock(return_value=long_msg)
+
+        page = MagicMock()
+        page.query_selector_all = AsyncMock(side_effect=[
+            [],          # aria-invalid
+            [],          # role=alert
+            [long_el],   # error CSS classes
+            [],          # aria-errormessage
+            [], [], [], [],
+        ])
+
+        errors = await scan_for_errors(page)
+        assert len(errors) == 1, "long error message was dropped"
+        assert errors[0].error_message.endswith("…")
+        assert len(errors[0].error_message) <= 200

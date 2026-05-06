@@ -140,7 +140,7 @@ async def vision_augment_scan(
         url = page.url or ""
         title = await page.title()
     except Exception as exc:
-        logger.debug("vision_augment_scan: screenshot failed: %s", exc)
+        logger.warning("vision_augment_scan: screenshot failed: %s", exc)
         return []
 
     cache_key = _content_hash(url, screenshot)

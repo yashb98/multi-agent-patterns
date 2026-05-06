@@ -55,13 +55,17 @@ async def scan_for_errors(page) -> list[ValidationError]:
             field_selector=selector, error_message=error_msg or "Invalid field",
         ))
 
-    # Strategy 2: role="alert" elements (often used for form errors)
+    # Strategy 2: role="alert" elements (often used for form errors).
+    # Use :nth-of-type so each alert has a distinct selector — otherwise
+    # downstream code can't dedupe or target a specific alert by field.
     alerts = await page.query_selector_all("[role='alert']")
-    for alert in alerts:
+    for idx, alert in enumerate(alerts, start=1):
         text = await alert.text_content()
         if text and text.strip():
+            alert_id = await alert.get_attribute("id") or ""
+            selector = f"#{alert_id}" if alert_id else f"[role='alert']:nth-of-type({idx})"
             errors.append(ValidationError(
-                field_selector="[role='alert']",
+                field_selector=selector,
                 error_message=text.strip(),
             ))
 
@@ -72,10 +76,15 @@ async def scan_for_errors(page) -> list[ValidationError]:
     )
     for el in error_class_els:
         text = await el.text_content()
-        if text and text.strip() and len(text.strip()) < 200:
+        if text and text.strip():
+            # Truncate long error toasts (Workday/Greenhouse multi-paragraph
+            # confirmations) instead of dropping them — preserves the signal.
+            msg = text.strip()
+            if len(msg) >= 200:
+                msg = msg[:197] + "…"
             errors.append(ValidationError(
                 field_selector=".error",
-                error_message=text.strip(),
+                error_message=msg,
             ))
 
     # Strategy 4: aria-errormessage — element references an error message by ID

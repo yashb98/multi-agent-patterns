@@ -73,10 +73,10 @@ async def resolve_form_container(
                 if await container.count():
                     logger.info("Container Tier 1 (learned): %s for %s", stored, domain)
                     return stored
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Container Tier 1 lookup errored on %s: %s", domain, exc)
             form_experience_db.delete_container(domain)
-            logger.info("Container Tier 1: stale selector '%s' deleted for %s", stored, domain)
+            logger.warning("Container Tier 1: stale selector %r deleted for %s", stored, domain)
 
     # Tier 2: Auto-detect via common ancestor of form elements
     detected = await _detect_form_container(page)
@@ -1229,7 +1229,7 @@ async def _run_strategy(
             from jobpulse.form_engine.semantic_scanner import scan_semantic
             return await scan_semantic(page)
     except Exception as exc:
-        logger.debug("Scan strategy %s failed: %s", strategy_name, exc)
+        logger.warning("Scan strategy %s failed: %s", strategy_name, exc)
     return []
 
 
@@ -1299,8 +1299,8 @@ def _emit_scan_signal(
             payload={"action": "multi_strategy_scan", "winner": winner, "field_count": field_count},
             session_id=f"scan_{domain}",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("scan signal emit failed for %s: %s", domain, exc)
 
 
 # ---------------------------------------------------------------------------

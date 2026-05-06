@@ -230,8 +230,8 @@ def checkbox_intent(label: str, *, required: bool = False) -> bool | None:
             return True
         if marketing_score >= _CHECKBOX_SIMILARITY_THRESHOLD and marketing_score > consent_score:
             return False
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("checkbox_intent: embedding tier failed: %s", exc)
 
     if required:
         return True

@@ -28,6 +28,13 @@ CDP_CONNECT_TIMEOUT_SECONDS = 20
 CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_PROFILE_DIR = os.path.expanduser("~/.chrome-playwright-profile")
 
+# ATS form iframes whose contents we want to scan instead of the top-level
+# document. iCIMS is the only known case today; add new platforms here
+# rather than reaching into `get_snapshot` to grow the list. Keep this
+# data-driven so a future second match doesn't tangle with the existing
+# `break` (we always pick the first match).
+_FORM_IFRAME_NAMES: tuple[str, ...] = ("icims_content_iframe",)
+
 
 async def _with_retry(fn, max_retries=2, delay_ms=500):
     """Retry an async function on transient errors."""
@@ -376,9 +383,9 @@ class PlaywrightDriver:
 
     async def get_snapshot(self, **kwargs) -> dict:
         """Scan DOM for form fields, buttons, and page text — returns same shape as extension snapshots."""
-        # Use iframe content frame if an ATS iframe exists (e.g. iCIMS)
+        # Use iframe content frame if a known ATS iframe exists (e.g. iCIMS)
         scan_frame = self._page
-        for iframe_name in ("icims_content_iframe",):
+        for iframe_name in _FORM_IFRAME_NAMES:
             frame = self._page.frame(name=iframe_name)
             if frame is not None:
                 scan_frame = frame

@@ -174,6 +174,13 @@ class PageReasoner:
         return None
 
     def _set_cache(self, key: str, action: PageAction) -> None:
+        # Skip caching only for low-confidence aborts (confidence < 0.5),
+        # which usually mean the LLM was uncertain and we should re-ask
+        # next time. Notably this means an `abort` with confidence ≥ 0.5
+        # IS cached and will be returned on every subsequent visit to
+        # the same page+content_hash for the cache TTL (1h). Callers
+        # that need a fresh decision after a known-bad cached abort
+        # must call `invalidate(snapshot)` first.
         if action.action == "abort" and action.confidence < 0.5:
             return
         try:

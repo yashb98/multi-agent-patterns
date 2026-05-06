@@ -3,6 +3,16 @@
 Polls Gmail inbox for verification/confirmation emails from ATS platforms,
 extracts the verification link, and returns it for the orchestrator to navigate to.
 Uses exponential backoff: 1s → 2s → 4s → 8s → 16s → 32s → capped at 32s.
+
+Wiring note (S3 audit, 2026-05-07):
+The link extractor's regex tier (`_VERIFY_PATTERNS`, `_ANTI_PATTERNS`)
+scores HTML anchors at the email-body level — borderline structural,
+since multilingual ATS emails (German "Bestätigen Sie", French "Confirmez
+votre adresse") would slip past. Tracked under
+`docs/superpowers/plans/2026-05-04-regex-to-dynamic-migration.md`. Not
+migrated in S3 because the apply path also pre-filters by
+`from:{from_domain}` and the link selection is robust to the keyword
+miss (token=/code= URL params still contribute score).
 """
 from __future__ import annotations
 

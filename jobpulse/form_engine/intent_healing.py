@@ -175,8 +175,8 @@ async def heal_locator(
             except Exception as exc:
                 logger.debug("intent_healing: LLM-suggested selector errored: %s", exc)
 
-    logger.debug(
-        "intent_healing: all resolution paths failed for %r",
-        intent.label[:40],
+    logger.info(
+        "intent_healing: all 3 resolution paths failed for %r (stored=%r)",
+        intent.label[:40], (stored_selector or "")[:80],
     )
     return None

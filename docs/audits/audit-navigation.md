@@ -519,6 +519,31 @@ All three deltas filed for the final-step doc update; not in this commit.
   blockers being shipped first, which they now are.
 - **Pause point:** end of subsystem-3. Next: subsystem-4 (`screening_pipeline`).
 
+### Minor fixes shipped (post-blocker pass)
+
+User asked to clear all 11 minors after the blockers shipped. All
+applied in commit `<minors>`:
+
+| ID | Where | What |
+|---|---|---|
+| 1 | `_navigator.py:178+` | Extracted `APPLY_CLICK_ACTIONS` and `NO_VISION_GATE_ACTIONS` module constants; replaced 3 inline literal sets at 873/919/1130/1132 |
+| 2 | `navigation/action_executor.py:97+` | Extracted `_CLOSE_TEXT_CANDIDATES` constant for the in-dialog close-button list |
+| 3 | `_executor.py:74+` | Replaced the 28-line if/elif dispatch ladder with a `dispatch` dict keyed on action-type → lambda |
+| 5 | (same as 2) | — |
+| 6 | `navigation/action_executor.py:341+` | Collapsed `_click_by_text` to a thin wrapper around `_try_click_by_text` so the two entry points share the same loop body |
+| 8 | `page_reasoner.py:177-187` | Documented the cache-poisoning behavior of `_set_cache` (abort with confidence ≥ 0.5 IS cached for 1h until `invalidate(snapshot)`) |
+| 9 | `playwright_driver.py:31+` + `_form_filler.py:82` | Extracted `_FORM_IFRAME_NAMES` to a module constant; both `get_snapshot` and `fill_application` consume it |
+| **M-D** | `verification_detector.py:135` | While in the file: replaced `re.search(re.escape(pattern), body_lower)` with `pattern in body_lower` (the patterns are literal substrings); dropped the now-unused `import re` |
+| 4 | `cookie_dismisser.py:1` | Documentation flag — i18n CJK gap covered by the regex-to-dynamic migration plan; playwright fallback covers most production cases |
+| 7 | `account_manager.py:1` | Wiring-note docstring — apply path only reaches `mark_verified`; rest of API is wired but unreachable since the 2026-05-04 auth rewrite |
+| 10 | `verification_detector.py:1` | Wiring-note docstring — module is unused in apply path; `playwright_driver.get_snapshot` does the equivalent inline. Tests + scraper-side scripts still consume it |
+| 11 | `gmail_verify.py:1` | Documentation flag — link-extractor regex tier doesn't cover CJK ATS emails; tracked under the same migration plan |
+
+Tests: 96 + 51 = 147 pass across the navigation + form-filler +
+executor + cookie + verification regression sweeps. No new tests
+needed — all minors are either constant extractions, doc additions,
+or behavior-preserving refactors.
+
 ### Known limitations / next-session notes (advisor reconcile)
 
 1. **`CLAUDE.md:98`** lists "Cognitive Escalation" as one of the three

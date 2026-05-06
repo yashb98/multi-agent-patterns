@@ -49,6 +49,16 @@ class ExecutorResult:
 
 _PROFILE_REF = re.compile(r"^FROM_PROFILE:(\w+)$")
 
+# Close-button text candidates for in-dialog overlay dismissal. Order
+# matters: more conservative ("Not now", "Dismiss") sit ahead of greedier
+# matches ("Skip", "Close") that can match form-progression buttons like
+# "Skip section" / "Close my application" outside the dialog scope. The
+# whole list is only consulted when a visible dialog is present (guarded
+# by has_dialog in `_dismiss_overlays`).
+_CLOSE_TEXT_CANDIDATES = (
+    "Not now", "No thanks", "Dismiss", "Close", "Got it", "Maybe later", "Skip",
+)
+
 
 class NavigationActionExecutor:
     """Executes a PageAction's instructions on a Playwright page."""
@@ -113,7 +123,7 @@ class NavigationActionExecutor:
         except Exception:
             has_dialog = False
         if has_dialog:
-            for close_text in ("Not now", "No thanks", "Dismiss", "Close", "Got it", "Maybe later", "Skip"):
+            for close_text in _CLOSE_TEXT_CANDIDATES:
                 try:
                     for role in ("button", "link"):
                         loc = dialog_loc.get_by_role(role, name=close_text, exact=False)
@@ -318,12 +328,12 @@ class NavigationActionExecutor:
         return False
 
     async def _try_click_by_text(self, text: str) -> bool:
-        """Try to click an element by text, return True if clicked."""
+        """Try to click an element by text. Returns True iff a visible
+        button-or-link match was clicked."""
         if not text:
             return False
         candidates = [text]
-        tl = text.lower().strip()
-        if tl == "apply":
+        if text.lower().strip() == "apply":
             candidates.extend(["Apply on company website", "Apply now", "Apply on"])
         for candidate in candidates:
             for role in ("button", "link"):
@@ -339,24 +349,12 @@ class NavigationActionExecutor:
         return False
 
     async def _click_by_text(self, text: str) -> None:
-        if not text:
-            return
-        candidates = [text]
-        tl = text.lower().strip()
-        if tl == "apply":
-            candidates.extend(["Apply on company website", "Apply now", "Apply on"])
-        for candidate in candidates:
-            for role in ("button", "link"):
-                try:
-                    loc = self._page.get_by_role(role, name=candidate, exact=False)
-                    if await loc.count() and await loc.first.is_visible():
-                        await loc.first.click()
-                        logger.info("Clicked %s: '%s'", role, candidate[:40])
-                        await asyncio.sleep(1.0)
-                        return
-                except Exception:
-                    continue
-        logger.warning("Could not find clickable element: '%s'", text[:40])
+        """Click an element by text. Logs a warning if no visible match
+        was clicked. Thin wrapper over `_try_click_by_text` so the two
+        entry points stay in lockstep."""
+        if not await self._try_click_by_text(text):
+            if text:
+                logger.warning("Could not find clickable element: '%s'", text[:40])
 
     @staticmethod
     def _resolve_value(value: str, profile: dict[str, str]) -> str:

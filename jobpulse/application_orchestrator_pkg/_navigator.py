@@ -177,6 +177,15 @@ def _maybe_reflect_on_failure(
 # pages with only file inputs are now handled correctly.
 TERMINAL_ACTIONS = frozenset({"fill_form", "fill_and_advance", "done", "abort"})
 
+# Apply-button click actions — _phase_act and _verify_learned_action route
+# all three to the same `click_apply_button` handler.
+APPLY_CLICK_ACTIONS = frozenset({"click_apply", "click_apply_guess", "linkedin_direct_apply"})
+
+# Actions that consume their own outcome (no separate vision-gate cross-
+# check needed). Used by `_phase_act` to skip the screenshot-based vision
+# disagreement probe on terminal/no-progress actions.
+NO_VISION_GATE_ACTIONS = frozenset({"done", "abort", "wait_human"})
+
 MAX_NAVIGATION_STEPS = 10
 
 _NUMERIC_ID_RE = re.compile(r"/\d{3,}")
@@ -870,7 +879,7 @@ class FormNavigator:
         return ctx
 
     def _verify_learned_action(self, action: str, snapshot: dict) -> bool:
-        if action in ("click_apply", "click_apply_guess", "linkedin_direct_apply"):
+        if action in APPLY_CLICK_ACTIONS:
             return find_apply_button(snapshot) is not None
         if action.startswith("sso_"):
             provider = action[len("sso_"):]
@@ -916,7 +925,7 @@ class FormNavigator:
         except Exception:
             pass
 
-        if act in ("click_apply", "click_apply_guess", "linkedin_direct_apply"):
+        if act in APPLY_CLICK_ACTIONS:
             post_snap = await self.click_apply_button(ctx.snapshot)
             ctx.action_executed = True
         elif act.startswith("sso_"):
@@ -1127,9 +1136,9 @@ class FormNavigator:
         logger.info(
             "THRESHOLD_OBS: vision_gate threshold=0.7 confidence=%.2f decision=%s",
             action.confidence,
-            "fired" if action.confidence < 0.7 and act not in ("done", "abort", "wait_human") else "skipped",
+            "fired" if action.confidence < 0.7 and act not in NO_VISION_GATE_ACTIONS else "skipped",
         )
-        if action.confidence < 0.7 and act not in ("done", "abort", "wait_human"):
+        if action.confidence < 0.7 and act not in NO_VISION_GATE_ACTIONS:
             try:
                 from jobpulse.vision_tier import classify_page_type_from_screenshot
                 page = getattr(self.driver, "page", None)

@@ -102,7 +102,13 @@ class ConfidenceScorer:
             if winner_count > 1 or len(values) == 1:
                 result[label] = winner
             else:
-                # All values different — return first candidate's value
+                # All values different — log so calibration can spot
+                # high-disagreement labels later, then return the
+                # lowest-temperature (first) candidate.
+                logger.info(
+                    "consensus: no majority for %r (%d distinct values), using first",
+                    label, len(values),
+                )
                 result[label] = values[0]
 
         return result

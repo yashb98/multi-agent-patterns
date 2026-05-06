@@ -78,8 +78,15 @@ class FormFiller:
             await self._ensure_correct_tab(expected_url)
             page = self.driver.page
 
-        # Use iframe content if an ATS iframe exists (e.g. iCIMS)
-        iframe = page.frame(name="icims_content_iframe") if page else None
+        # Use iframe content if a known ATS iframe exists (e.g. iCIMS).
+        # Source-of-truth list lives in `playwright_driver._FORM_IFRAME_NAMES`.
+        from jobpulse.playwright_driver import _FORM_IFRAME_NAMES
+        iframe = None
+        if page is not None:
+            for name in _FORM_IFRAME_NAMES:
+                iframe = page.frame(name=name)
+                if iframe is not None:
+                    break
         effective_page = iframe or page
 
         # Feature flag: use unified FormFillEngine when enabled
