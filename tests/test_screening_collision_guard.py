@@ -134,10 +134,11 @@ POSITIVE_EXAMPLES: dict[str, list[str]] = {
         "How many direct reports have you managed?",
         "How many people have you managed?",
     ],
-    "uk_resident": [
-        "Are you based in the UK?",
-        "Are you a UK resident?",
-    ],
+    # Audit S4 B-1 (2026-05-07): the `based.*in.*uk|...` regex returned
+    # "No" for plain location queries even though the user is based in
+    # the UK. The pattern was deleted; legitimate permanent-residency
+    # questions are covered by the `british.*citizen|...|settled.*status`
+    # pattern (which lives in the existing `authorization` category).
     "consent": [
         "I consent to having my data processed for recruitment purposes",
         "Do you agree to the privacy policy?",

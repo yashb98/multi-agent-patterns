@@ -246,6 +246,10 @@ class ScreeningSemanticCache:
                                 "job_context_hash": job_context_hash,
                                 "selected_option": selected_option,
                                 "field_type": field_type,
+                                # Persist the options that were on the form
+                                # when this answer was correct. Future hits
+                                # use this list to align our cached answer
+                                "field_options": field_options or [],
                             },
                         )
                     ],
@@ -270,19 +274,37 @@ class ScreeningSemanticCache:
 
         hit: CacheHit | None = None
 
-        # 1. Try Qdrant first
+        # 1. Try Qdrant first.
+        # Gap 3: when the field has options, fetch the top-K matches (not just
+        # top-1) and filter them down to entries whose stored answer/selected
+        # option IS in the current field's options. This prevents a
+        # semantically-similar but option-incompatible cache entry from
+        # winning the lookup. Without this, a question like "Are you eligible
+        # to work in the country..." matches "Country*" via shared "country"
+        # tokens, and the cached "United Kingdom" answer leaks into a Yes/No
+        # field. Filtering at search-time complements the align-time fix in
+        # _align_to_options for defence-in-depth.
         if self._qdrant_available and self._embedder is not None and self._qdrant is not None:
             try:
                 vector = self._embedder.embed(question.strip())
                 from qdrant_client import models as qm
+                limit = 10 if field_options else 1
                 results = self._qdrant.query_points(
                     collection_name=_COLLECTION_NAME,
                     query=vector,
-                    limit=1,
+                    limit=limit,
                     score_threshold=min_score,
                 )
-                if results.points:
-                    point = results.points[0]
+                points = list(results.points)
+                if points and field_options:
+                    options_lower = {(o or "").lower().strip() for o in field_options}
+                    points = [
+                        p for p in points
+                        if (p.payload.get("answer", "") or "").lower().strip() in options_lower
+                        or (p.payload.get("selected_option", "") or "").lower().strip() in options_lower
+                    ] or points[:1]  # if zero option-compatible, fall back to top — let _align_to_options decide
+                if points:
+                    point = points[0]
                     self._touch_sqlite(str(point.payload.get("qdrant_id", "")))
                     hit = CacheHit(
                         answer=point.payload.get("answer", ""),
@@ -413,8 +435,26 @@ class ScreeningSemanticCache:
                 hit.answer = target
                 return hit
 
-        # Priority 5: fuzzy alignment via OptionAligner
+        # Priority 5: fuzzy alignment via OptionAligner.
         aligned = aligner.align_answer(hit.answer, field_options, field_type)
+        # OptionAligner returns the original answer unchanged when no option
+        # is similar enough. That's a cache MISS for an option-bearing field —
+        # we must not return a free-text answer for a closed-set picker.
+        # Returning None forces the caller's V2 pipeline to fall through to
+        # the LLM tier, which is option-constrained (Fix #4) and will pick
+        # one of `field_options` exactly. Without this, semantic-similar
+        # cache hits from unrelated questions (e.g. cached "Country*" →
+        # "United Kingdom" matching against "Are you eligible to work in the
+        # country...?" via the shared word "country") leak into option-only
+        # fields, producing a country name as the answer to a Yes/No.
+        options_lower_set = {o.lower().strip() for o in field_options}
+        if aligned.lower().strip() not in options_lower_set:
+            logger.info(
+                "screening_cache: dropping non-option answer %r for field with "
+                "options %s — forcing LLM-tier regeneration",
+                hit.answer[:60], [o[:30] for o in field_options[:5]],
+            )
+            return None  # signal cache miss → V2 → LLM tier with options constraint
         if aligned != hit.answer:
             hit.selected_option = aligned
         hit.answer = aligned
@@ -537,3 +577,23 @@ def _infer_boolean_from_text(text: str) -> bool | None:
 def _get_qdrant_url_from_env() -> str:
     import os
     return os.environ.get("MEMORY_QDRANT_URL", "").strip()
+
+
+def _get_qdrant_client():
+    """Return a connected QdrantClient, or None if Qdrant is unavailable.
+
+    Used by sibling subsystems (e.g. `cross_platform_field_transfer`) that
+    need to share the same Qdrant configuration as the screening cache
+    without instantiating a `ScreeningSemanticCache`. Audit S4 B-3 added
+    this accessor — its absence had been silently breaking the
+    cross-platform vector path.
+    """
+    url = _get_qdrant_url_from_env()
+    if not url:
+        return None
+    try:
+        from qdrant_client import QdrantClient
+        return QdrantClient(url=url)
+    except Exception as exc:
+        logger.debug("_get_qdrant_client: Qdrant unavailable (%s)", exc)
+        return None

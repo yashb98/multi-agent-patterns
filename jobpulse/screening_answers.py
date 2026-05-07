@@ -130,7 +130,11 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # SALARY & COMPENSATION (3 patterns) — current before expected
     # ===================================================================
-    r"current.*salary|salary.*current|present.*salary|current.*compensation|current.*base": "CURRENT_SALARY",
+    # `current.*base` must be salary-anchored — bare `base` collides with
+    # location queries like "Are you currently based in the UK?". Audit S4
+    # B-1: live repro returned the user's salary value (PII leak) for that
+    # question because of unbounded `.*` between "current" and "base".
+    r"current.*salary|salary.*current|present.*salary|current.*compensation|current.*base\s*(?:pay|salary|compensation|comp|rate|wage)": "CURRENT_SALARY",
     r"salary.*expect|expected.*salary|desired.*compensation|pay.*expect|minimum.*salary|salary.*range|target.*salary|compensation.*require|salary.*requirement": "ROLE_SALARY",
     r"daily.*rate|hourly.*rate|day.*rate": "150",
 
@@ -196,7 +200,12 @@ COMMON_ANSWERS: dict[str, str | None] = {
     r"background.*check|dbs.*check|criminal.*record|willing.*undergo|pre.?employment.*screen": "Yes",
     r"security.*clearance|hold.*clearance|sc.*clearance|dv.*clearance|bpss|level.*clearance": "None",
     r"non.?compete|restrictive.*covenant|conflict.*interest|gardening.*leave": "No",
-    r"based.*in.*uk|resident.*uk|uk.*resid|live.*in.*uk|reside.*in.*united.*kingdom": "No",
+    # Removed: `based.*in.*uk|resident.*uk|...` — audit S4 B-1. The pattern
+    # over-matched and answered "No" to plain location/residency questions
+    # ("Are you a UK resident?", "Do you live in the UK?") even though the
+    # user IS based in the UK. The legitimate "permanent resident / settled
+    # status" cases are already covered by L127 (british.*citizen|...|
+    # settled.*status). Plain location → V2 intent classifier handles it.
 
     # ===================================================================
     # COMPANY & APPLICATION HISTORY (3 patterns)

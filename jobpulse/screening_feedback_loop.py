@@ -159,10 +159,18 @@ class ScreeningFeedbackLoop:
         # 4. Pattern Extractor: record the failure for future avoidance
         if self._extractor is not None:
             try:
-                intent_val = None
+                # Audit S4 B-4: must default to UNKNOWN, never None.
+                # PatternExtractor.observe() reads `intent.value` on its
+                # input, so a None intent crashes silently inside the
+                # outer try/except and the observation is dropped (rows
+                # never persisted). Lazy-import here to keep the
+                # module-level deps minimal.
+                from jobpulse.screening_intent import ScreeningIntent
+                intent_val: ScreeningIntent = ScreeningIntent.UNKNOWN
                 if self._classifier is not None:
                     intent, _ = self._classifier.classify(q)
-                    intent_val = intent
+                    if intent is not None:
+                        intent_val = intent
                 self._extractor.observe(
                     question=q,
                     answer=str(agent_answer),

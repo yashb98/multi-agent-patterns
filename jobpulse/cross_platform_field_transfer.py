@@ -105,10 +105,17 @@ class CrossPlatformFieldTransfer:
             """)
 
     def _init_vector_stores(self) -> None:
-        """Lazy-init embedding model and Qdrant client."""
+        """Lazy-init embedding model and Qdrant client.
+
+        Audit S4 B-3: previously imported a non-existent `shared.embeddings`
+        module (silent ImportError → embedder=None) and a non-existent
+        `_get_qdrant_client` from screening_semantic_cache (silent
+        ImportError → qdrant=None). Both paths now use the canonical
+        accessors so the vector path actually wires when configured.
+        """
         try:
-            from shared.embeddings import get_embedder
-            self._embedder = get_embedder()
+            from shared.semantic_utils import _get_embedder
+            self._embedder = _get_embedder()
         except Exception as exc:
             logger.debug("Embedder unavailable for cross-platform transfer: %s", exc)
         try:

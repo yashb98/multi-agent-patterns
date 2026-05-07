@@ -312,7 +312,11 @@ class ScreeningPipeline:
         if intent == ScreeningIntent.WILLING_RELOCATE and job_context:
             job_loc = job_context.get("location", "").lower()
             my_loc = self._profile.get("location", "").lower()
-            if job_loc and my_loc and job_loc in my_loc or my_loc in job_loc:
+            # Parentheses required: `and` binds tighter than `or`, so
+            # without them the empty-`my_loc` case short-circuits via
+            # `"" in job_loc == True` and we wrongly claim "same area"
+            # for users with no profile location set. Audit S4 B-2.
+            if job_loc and my_loc and (job_loc in my_loc or my_loc in job_loc):
                 return "No"  # Already in the same area
 
         fields = mapping.get(intent, [])
@@ -332,27 +336,77 @@ class ScreeningPipeline:
         field: dict[str, Any] | None,
         job_context: dict[str, Any] | None,
     ) -> str | None:
-        """LLM fallback for unrecognised questions."""
-        system_prompt = (
-            "You are answering a job application screening question. "
-            "Answer concisely and honestly based on the candidate profile provided. "
-            "Never mention that you are an AI. Give a direct, personal-sounding answer."
-        )
+        """LLM fallback for unrecognised questions.
 
+        When the field carries options (select, radio, multiselect, combobox),
+        the prompt is constrained to those options so the LLM picks one
+        instead of producing free text. Without this, asking "identify your
+        race" against a 5-option dropdown returns a paragraph that the
+        downstream option-aligner has to fuzzy-match — which sometimes lands
+        on something reasonable and sometimes on nothing.
+        """
         profile_summary = self._profile_summary()
         context = ""
         if job_context:
             context = f"\nJob context: {job_context}\n"
 
-        user_prompt = (
-            f"Candidate profile:\n{profile_summary}\n"
-            f"{context}"
-            f"Screening question: {question}\n\n"
-            "Provide a concise answer (1-3 sentences max)."
+        # Option-bearing fields → constrain the LLM to pick one option.
+        # This is the primary correctness path for selects/radios/multiselects.
+        # The downstream OptionAligner remains as a safety net for near-misses.
+        options = field.get("options") if field else None
+        field_type = (field.get("type") or "").lower() if field else ""
+        is_option_field = bool(options) and field_type in {
+            "select", "radio", "checkbox", "combobox", "custom_dropdown",
+            "multiselect",
+        }
+        logger.info(
+            "DIAG _llm_answer: question=%r field_type=%r has_options=%s n_options=%d "
+            "is_option_field=%s",
+            (question or "")[:80],
+            field_type,
+            bool(options),
+            len(options) if options else 0,
+            is_option_field,
         )
 
+        if is_option_field:
+            options_block = "\n".join(f"- {opt}" for opt in options)
+            multi = field_type == "multiselect"
+            instruction = (
+                "Return ONE or MORE options as a comma-separated list, "
+                "using the EXACT option text from the list above."
+                if multi
+                else "Return EXACTLY ONE option, using the EXACT option text "
+                     "from the list above. No commentary, no explanation."
+            )
+            system_prompt = (
+                "You are answering a job application screening question. "
+                "The form field is a closed-set picker — you must select from "
+                "the provided options. Be honest, base on the candidate's "
+                "profile. Never mention that you are an AI."
+            )
+            user_prompt = (
+                f"Candidate profile:\n{profile_summary}\n"
+                f"{context}"
+                f"Screening question: {question}\n\n"
+                f"Available options:\n{options_block}\n\n"
+                f"{instruction}"
+            )
+        else:
+            system_prompt = (
+                "You are answering a job application screening question. "
+                "Answer concisely and honestly based on the candidate profile "
+                "provided. Never mention that you are an AI. Give a direct, "
+                "personal-sounding answer."
+            )
+            user_prompt = (
+                f"Candidate profile:\n{profile_summary}\n"
+                f"{context}"
+                f"Screening question: {question}\n\n"
+                "Provide a concise answer (1-3 sentences max)."
+            )
+
         try:
-            # Route through CognitiveEngine (default-on) for structured screening answers
             from shared.agents import cognitive_llm_call
             answer = cognitive_llm_call(
                 task=f"SYSTEM: {system_prompt}\nUSER: {user_prompt}",
@@ -361,7 +415,6 @@ class ScreeningPipeline:
             )
             if answer is None:
                 return None
-            # Strip any AI disclaimers
             if any(phrase in answer.lower() for phrase in ("as an ai", "i don't have", "i cannot")):
                 return None
             return answer
