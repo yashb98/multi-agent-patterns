@@ -11,9 +11,37 @@ def use_temp_db(monkeypatch, tmp_path):
     """Patch _DB_PATH to tmp_path so tests never touch production data/*.db."""
     db_path = tmp_path / "skill_gaps.db"
     monkeypatch.setattr("jobpulse.skill_gap_tracker._DB_PATH", db_path)
-    # Re-initialize tables in the temp DB
-    from jobpulse.skill_gap_tracker import _init_db
-    _init_db()
+    # Reset the per-process schema-applied marker so the temp DB gets schema.
+    import jobpulse.skill_gap_tracker as mod
+    mod._SCHEMA_APPLIED.discard(str(db_path))
+    # Force schema apply for the temp DB
+    mod._init_db()
+
+
+def test_module_import_does_not_apply_schema_eagerly():
+    """Importing the module MUST NOT touch the production DB (Principle 1).
+
+    Regression: previously `_init_db()` ran at module-import time, opening a
+    connection to the production `data/skill_gaps.db` and writing schema —
+    even when called from tests, CLI tools, or read-only diagnostic scripts.
+
+    Verified by reloading the module and checking that no schema-applied
+    paths are recorded as a result of import alone.
+    """
+    import importlib
+    import jobpulse.skill_gap_tracker as mod
+
+    # Snapshot any state from earlier tests, then reload.
+    pre_reload = set(mod._SCHEMA_APPLIED)
+    importlib.reload(mod)
+    post_reload = set(mod._SCHEMA_APPLIED)
+
+    # Reload should not ADD any new paths (i.e. no import-time _init_db call).
+    new_paths = post_reload - pre_reload
+    assert new_paths == set(), (
+        f"Importing skill_gap_tracker triggered DB schema init: {new_paths!r}. "
+        "Schema must apply lazily inside _get_conn, not at import time."
+    )
 
 
 def test_record_gap_creates_entries():
