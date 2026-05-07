@@ -437,30 +437,38 @@ were "Yes - I require sponsorship" → token overlap fails →
   from past corrections BEFORE the LLM runs (every "user changed X
   to Y" correction becomes a rule).
 
-**Screening pipeline (`screening_pipeline.py`)** — 7 internal modules:
+**Screening pipeline (`screening_pipeline.py`)** — 9 internal modules:
 
-| Module | Role |
-|---|---|
-| `screening_detector` | "Is this a screening question?" — embedding-primary classifier (already complies with rules) |
-| `screening_decomposer` | Splits compound questions ("salary AND notice") into atoms |
-| `screening_semantic_cache` | Qdrant + SQLite cache, keyed by question embedding |
-| `screening_intent` | Embedding-based intent classification (visa / salary / notice / DEI / etc.) |
-| `screening_pattern_extractor` | Auto-extracts new screening patterns from observations |
-| `screening_option_aligner` | Aligns the LLM's free-text answer to one of the offered options |
-| `screening_validator` | Post-generation validation: length, format, profanity, hallucination check |
-| `screening_outcome_recorder` | Records per-question feedback after submit (success / corrected) |
-| `screening_feedback_loop` | Reinforcement loop: corrections feed back into the cache + intent classifier |
+| Module | Role | Wiring (S4 audit) |
+|---|---|---|
+| `screening_detector` | "Is this a screening question?" — embedding-primary classifier | **D-tier dead** — `is_screening()` has zero production callers. Field-type detection happens upstream in `form_engine`. Documented for ref only. |
+| `screening_decomposer` | Splits compound questions ("salary AND notice") into atoms via LLM (regex-gated) | A — invoked by `pipeline.answer` |
+| `screening_semantic_cache` | Qdrant + SQLite cache, keyed by question embedding. Single writer for fill/confirm signals via `screening_outcome_recorder`. | A |
+| `screening_intent` | Embedding-based intent classification across 31 intents | A |
+| `screening_pattern_extractor` | Auto-extracts new screening patterns from observations | A on `observe()`; `extract_patterns` / `find_matching_pattern` are C/D-tier — no production read of the patterns DB. |
+| `screening_option_aligner` | Aligns generated answers to one of the offered options (5-tier matcher) | A |
+| `screening_validator` | Post-generation validation: length, format, AI-self-reference, profile consistency | A |
+| `screening_outcome_recorder` | Single writer for per-question fill + confirmation signals | A |
+| `screening_feedback_loop` | Corrections → semantic cache, intent classifier, option mappings, pattern extractor, cross-platform transfer | A |
 
-Resolution order per question:
-1. **Cache hit** — `screening_semantic_cache.lookup`
-2. **Decomposition** if compound — `screening_decomposer.decompose`
-3. **Pattern match** — `screening_answers.lookup_canned_answer`
-   (regex `COMMON_ANSWERS` — F5 target)
+Resolution order per question (`ScreeningPipeline.answer`):
+1. **Empty guard** — return early on blank input
+2. **Compound decomposition** — `screening_decomposer.decompose` (LLM-gated by regex pre-filter)
+3. **Semantic cache lookup** — `screening_semantic_cache.lookup` (Qdrant first, SQLite-vector fallback, option-aware filtering)
 4. **Intent classification** — `screening_intent.classify`
-5. **Option-aware LLM generation** — `_llm_answer` with `options=[…]`
-   from F2 + `intent_label` from #4 in the prompt
-6. **Option alignment** — `screening_option_aligner.align_answer`
-7. **Validation** — `screening_validator.validate`
+5. **Profile resolution** — `_resolve_intent_from_profile` maps intent → profile field with job-context overrides (salary range, work mode, location)
+6. **LLM fallback** — `_llm_answer`. When the field has options, the prompt is option-constrained.
+7. **Option alignment** — `screening_option_aligner.align_answer`, plus `BoolFieldHandler` and `SalaryFieldHandler` for type-specific picks
+8. **Validation** — `screening_validator.validate` with auto-correct via `_suggest_fix`
+9. **Pattern observation** — `_finalise` records the (question, answer, intent, success) tuple for future learning
+
+Audit trail (S4, 2026-05-07): four blockers fixed —
+- B-1: `current.*base` regex tightened + `based.*in.*uk|...` pattern deleted (was leaking PII / auto-rejecting UK-based applicants)
+- B-2: operator-precedence bug in `_resolve_intent_from_profile` for `WILLING_RELOCATE` with empty profile location
+- B-3: missing `_get_qdrant_client()` accessor in `screening_semantic_cache` + broken `shared.embeddings` import in `cross_platform_field_transfer` (silently disabled the cross-platform vector path)
+- B-4: `screening_feedback_loop` passed `intent=None` to `PatternExtractor.observe`, silently dropping every correction observation when the intent classifier failed.
+
+The legacy `screening_answers.get_answer` path remains as a regex fallback when V2 confidence is below threshold; migration to embedding-first lives in `docs/superpowers/plans/2026-05-04-regex-to-dynamic-migration.md`.
 
 ### ④.6a Specialised pre-dispatch sweeps
 
