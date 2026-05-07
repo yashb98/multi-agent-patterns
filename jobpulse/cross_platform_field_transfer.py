@@ -261,16 +261,22 @@ class CrossPlatformFieldTransfer:
 
         vector = np.frombuffer(query_embedding_bytes, dtype=np.float32).tolist()
 
-        search_filter = None
-        if exclude_same_platform:
-            search_filter = Filter(
-                must=[FieldCondition(
-                    key="platform",
-                    match=MatchExcept(except_=[to_platform]),
-                )]
-            )
-
         try:
+            search_filter = None
+            if exclude_same_platform:
+                # qdrant_client's MatchExcept uses "except" as the JSON field
+                # (Python keyword conflict — must pass via dict kwargs). The
+                # `except_=...` form crashes pydantic v2 strict validation.
+                # Audit S4 B-3 follow-up: building the filter inside the
+                # try/except too so any qdrant_client API drift degrades
+                # gracefully to an empty-vector path rather than crashing.
+                search_filter = Filter(
+                    must=[FieldCondition(
+                        key="platform",
+                        match=MatchExcept(**{"except": [to_platform]}),
+                    )]
+                )
+
             results = self._qdrant.search(
                 collection_name="field_mappings",
                 query_vector=vector,

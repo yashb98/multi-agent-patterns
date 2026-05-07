@@ -543,15 +543,37 @@ got = p._resolve_intent_from_profile(
 - `test(screening): S4 audit guards for B-1..B-4`
 
 ### Verification
-- `tests/jobpulse/test_screening_audit.py` — 7/7 pass
-- Full screening regression sweep — `tests/jobpulse/test_screening_*.py
-  + tests/test_screening_*.py` — **282 passed, 1 pre-existing failure
-  (`direct_reports/8` — placeholder vs concrete-value mismatch
-  unrelated to S4)**.
+- `tests/jobpulse/test_screening_audit.py` — 8/8 pass (includes B-2
+  Bristol→London distinct-cities case added per advisor feedback).
+- Full jobpulse + screening regression sweep — **2137 passed, 11 failed,
+  54 skipped**. Failure breakdown after pre-fix vs post-fix
+  reconciliation:
+  | Test | pre-S4 | post-S4 | Cause |
+  |------|--------|---------|-------|
+  | `test_cross_platform_field_transfer.py` (6 tests) | passed (silent fallback) | 5 pass / 1 fail | B-3 surfaced latent `MatchExcept` pydantic schema bug — fixed; remaining `test_high_overlap` hits a Qdrant collection-schema-state issue (collection exists on host with incompatible vector dims). Net win: 5 paths previously silent-dead are now exercised; documented as B-3 follow-up. |
+  | `test_diversity_keyword_fallback` | failed | failed | pre-existing, unrelated to S4. |
+  | `test_portfolio_variants.py::test_hero_project_has_all_archetypes` | passed | failed | unrelated in-progress portfolio-variants DB-migration in working tree (`MANUAL_VARIANTS` was emptied; test still asserts the dict). Not a screening regression. |
+  | `test_runner_real.py::test_known_command_not_unknown[gmail]` | passed | failed | flaky CLI test — passes in isolation, fails in long sweeps. Unrelated to screening. |
+  | `test_runner_real.py::test_no_args_exits_nonzero` | passed | passed in retry | flaky as above. |
+  | `test_screening_collision_guard::direct_reports/8` | failed | failed | pre-existing test bug — assertion checks raw `SENSITIVE:largest_team_managed` placeholder for substring `"8"`. Documented in S2/S4 audit doc. |
 - Live evidence captured to `/tmp/audit-screening_pipeline-livelog.txt`
   shows pre-fix `try_instant_answer("Are you currently based in the
   UK?")` returned the user's salary `'22000'` (PII leak); post-fix it
   no longer matches the regex tier.
+
+### Deferred follow-ups (logged for next pass)
+
+- **B-3 follow-up:** `cross_platform_field_transfer.find_transfers`
+  needs a `_ensure_collection()` analogue (the existing code assumes
+  the `field_mappings` Qdrant collection is provisioned but never
+  creates it with the correct vector dims). Until then, the vector
+  path falls through to SQLite-only — exercise lives in
+  `test_high_overlap`.
+- **B-5 (D-tier):** `screening_pattern_extractor.find_matching_pattern`
+  returns the wrong pattern (max success-rate ignores the search vec);
+  D-tier dead in production so non-blocking, but mark for fix-when-touched.
+- **B-6 / B-8:** regex-classification migrations — tracked in
+  `docs/superpowers/plans/2026-05-04-regex-to-dynamic-migration.md`.
 
 ---
 

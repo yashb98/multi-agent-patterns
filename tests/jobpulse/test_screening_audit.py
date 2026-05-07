@@ -101,6 +101,25 @@ def test_b2_willing_relocate_real_geo_overlap_still_returns_no():
     assert result == "No"
 
 
+def test_b2_willing_relocate_distinct_cities_falls_through():
+    """Profile in one city, job in another → must NOT short-circuit.
+
+    Before B-2, this case got the right answer for the wrong reason
+    (the bug only surfaced when `my_loc` was empty). Adding this guard
+    so future regressions of the precedence change are caught.
+    """
+    from jobpulse.screening_pipeline import ScreeningPipeline
+    from jobpulse.screening_intent import ScreeningIntent
+
+    pipeline = ScreeningPipeline(profile={"location": "Bristol"})
+    result = pipeline._resolve_intent_from_profile(
+        ScreeningIntent.WILLING_RELOCATE, {"location": "London"},
+    )
+    # Bristol vs London — neither contains the other. Profile has no
+    # `willing_to_relocate` field set, so mapping lookup returns None.
+    assert result is None
+
+
 # ---------------------------------------------------------------------------
 # B-3: missing _get_qdrant_client export breaks
 # cross_platform_field_transfer's vector store init.
