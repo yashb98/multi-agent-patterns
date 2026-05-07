@@ -254,7 +254,59 @@ before/after, B-3 adaptation payload key — see audit doc Step 5).
 
 ## Subsystem 6 — `cognitive_engine`
 
-*pending audit*
+Audit doc: `docs/audits/audit-cognitive_engine.md`
+Fixes commit: TBD (S6 — 1 blocker + 3 majors)
+
+### Deferred majors
+
+| ID | Location | Description | Why deferred |
+|---|---|---|---|
+| 🔴 M-D | `shared/cognitive/_engine.py:142-148` | Escalation cost-reporting drops original level's cost. `escalated_result.cost` carries only the escalated level's spend; per-call `ThinkResult.cost` introspection drifts (~$0.001 per escalated call). Budget caps still work. | Cosmetic — needs threading the original level's cost into `escalated_result.cost` without double-charging the budget tracker. |
+| 🔴 M-E | `shared/cognitive/_engine.py:185-197` | L0→L1 escalated successes never reach `flush()`. Early `return escalated_result` on L164 happens BEFORE the L1 batch-write block at L185-197. Production data: ~158 templates per ~1200 calls (13%) discarded — direct learning-rate hit. | Restructure of escalation early-return — needs careful test for both scoreless and scored escalation paths so the queue receives the right templates without double-writing on success. |
+
+### Wiring gaps
+
+| ID | Location | Description |
+|---|---|---|
+| 🔌 W-1 | `shared/cognitive/_engine.py:78-199` (`think`) | Cognitive auto-escalate (L0→L1, L1→L2, L2→L3) writes `cognitive_outcomes(escalated=1)` only; **no `OptimizationEngine.emit(signal_type='adaptation', ...)`** is fired. Per `shared/optimization/CLAUDE.md` "All learning loops MUST emit signals at key decision points." The SignalAggregator never sees escalations. |
+| 🔌 W-2 | `_classifier.py:165-176 load_persisted_stats` | Reads `memory.semantic.facts.items()` directly instead of going through `MemoryManager.query`. If SemanticMemory's in-memory shape changes, restore silently degrades to "no stats restored" (and the M-A patch hides this — recovery within 10 samples). Worth porting to a proper `query` call. |
+
+### Minors
+
+| ID | Location | Description |
+|---|---|---|
+| 🟡 m-1 | `shared/cognitive/_classifier.py:8-21` | `STAKES_REGISTRY` hand-curated `{stakes: [domains]}` map. Borderline Principle-8 violation but explicit `stakes` arg overrides — qualifies as last-resort default. |
+| 🟡 m-2 | `shared/cognitive/_engine.py:91-99` | Classifier exception → "fall back to L1" path logs `%s, e` only — stack traces dropped. Hard to root-cause classifier failures from a single log line. |
+| 🟡 m-3 | `shared/cognitive/_engine.py:301-322` | `think_sync` builds a fresh `ThreadPoolExecutor(max_workers=1)` per call when an event loop is already running. ~1-3ms overhead per call; no thread-safety guard around `self._pending_writes` (currently safe via GIL + per-agent singleton, but ordering non-deterministic). |
+| 🟡 m-4 | `shared/cognitive/_strategy.py:101-103` | `failures = [e for e in episodic if e.final_score < 5.0]` — relies on `EpisodicEntry.final_score` being non-Optional. Defensive `getattr(..., 0.0)` would harden. |
+| 🟡 m-5 | `shared/cognitive/_strategy.py:20-24` | `STRATEGY_PAYLOAD_KEYS` claims a canonical payload-key set that no producer fully respects (`_engine.flush`, `_reflexion._store_success`, `_tot.explore` each emit slightly different `context` strings). Consumer doesn't parse them — currently harmless drift. |
+
+### Nits
+
+| ID | Location | Description |
+|---|---|---|
+| ⚪ n-1 | `shared/cognitive/_engine.py:215-217` | Fall-through `return await self._execute_l1(...)` is unreachable — `ThinkLevel` is a 4-value IntEnum fully covered by the if/elif chain. |
+| ⚪ n-2 | `shared/cognitive/_classifier.py:181` | `re.match` parsing persisted facts. Borderline regex-for-classification but parses a structured format the classifier itself wrote — falls under "structural format validation" exemption. |
+
+### Dead code
+
+| ID | Location | Description |
+|---|---|---|
+| 💀 d-1 | `shared/cognitive/_strategy.py:165-170` | `StrategyComposer.record_template_outcome` is dead — no production caller mutates template dicts in-place; `_reflexion._store_success` uses `MemoryManager.learn_procedure` instead. |
+| 💀 d-2 | `shared/cognitive/_engine.py:292` | `CognitiveEngine.report()` reachable only from tests + analytics; no apply-path consumer. Cheap to keep. |
+
+### Test infrastructure gaps
+
+| ID | Location | Description |
+|---|---|---|
+| 🔌 T-1 | `tests/shared/cognitive/conftest.py:96-100` | Conftest isolates `cognitive_budget.db` via env override but does NOT isolate `data/optimization.db`. Production data shows 567/1197 cognitive_outcomes rows (47%) are from `agent_name='test_agent'` — tests are leaking via the `get_optimization_engine()` singleton inside `record_cognitive_outcome`. Fix: add a fixture that monkeypatches `shared.optimization.get_optimization_engine` to a tmp-DB instance for the cognitive test scope. |
+
+### Doc deltas
+
+| ID | Location | Description |
+|---|---|---|
+| 📝 D-1 | `docs/job-application-pipeline.md` (any line claiming cognitive emits adaptation signals on escalation) | Update once W-1 lands — currently no `emit()` from cognitive. |
+| 📝 D-2 | `shared/cognitive/CLAUDE.md` (Rules section) | Add note about the 3 producer sites for `learn_procedure` and the aspirational `STRATEGY_PAYLOAD_KEYS` contract, when m-5 lands. |
 
 ---
 
