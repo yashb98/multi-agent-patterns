@@ -312,7 +312,42 @@ Fixes commit: TBD (S6 — 1 blocker + 3 majors)
 
 ## Subsystem 7 — `pre_screen`
 
-*pending audit*
+Audit doc: `docs/audits/audit-pre_screen.md`
+Fixes: `7e10b10` (B-1), `45749a2` (B-2), `0de4527` (B-3), `4fa9fb0` (M-A + M-B)
+
+### Deferred majors
+
+(none — both M-A and M-B fixed inline this session)
+
+### Minors
+
+| ID | Location | Description |
+|---|---|---|
+| 🟡 m-1 | `skill_graph_store.py:215-217` | `total_projects` query result computed but never used in `get_projects_for_skills` — wasted COUNT statement on every `pre_screen_jd` call. |
+| 🟡 m-2 | `skill_graph_store.py:432` | `[m.lower() for m in matched]` rebuilt inside list-comprehension over `top5` — O(n×m) and the `.lower()` is no-op since `matched` is pre-lowercased upstream. |
+| 🟡 m-3 | `skill_graph_store.py:408` | `_check_kill_signals`: `if primary and self._normalize(primary) not in profile and not self._skill_match(primary, profile)` — the `not in profile` clause is redundant; `_skill_match` already does that check internally. |
+| 🟡 m-4 | `gate4_quality.py:217-221` | `bullet_lines` heuristic flags any line >20 chars not all-caps as a bullet, producing false-positive "missing metric" warnings on paragraph-style summary lines. |
+| 🟡 m-5 | `recruiter_screen.py:44-49` | `try / except: pass` on AgentRulesDB load — should `logger.debug(..., exc_info=True)` minimum so silent failures are observable. |
+| 🟡 m-6 | `jd_analyzer.py:145` | `import re` inside `_canonicalize_url` shadows the module-level `import re` at line 23 — pure cleanup. |
+| 🟡 m-7 | `skill_extractor.py:392-396` | `_FakeChoice` wrapper around `cognitive_llm_call` response is unnecessary; the returned string can be parsed directly. |
+| 🟡 m-8 | `gate4_quality.py:130` | Generic-company detection fires on plausible names like "Cloud Solutions Ltd" (3 words all in `GENERIC_WORDS`). Soft flag only, but produces noise in logs. |
+| 🟡 m-9 | `scan_pipeline.py:1078-1090` | `process_single_url` skips Gate 0 (title) and Gate 4A (blocklist, JD quality, spam). For ad-hoc URL submissions this may be intentional, but the asymmetry isn't documented. |
+
+### Nits
+
+| ID | Location | Description |
+|---|---|---|
+| ⚪ n-1 | `jd_analyzer.py:100-103` | `_SINGLE_SALARY_RE` defined, never referenced. Dead code. |
+| ⚪ n-2 | `scrutiny_calibrator.py:184` | `import json` inside `get_insight` — unused. |
+| ⚪ n-3 | `skill_extractor.py:32-33` | `SYNONYMS_PATH` and `_LEARNING_DB_PATH` use `Path(__file__).parent.parent` instead of the centralized `DATA_DIR` from `jobpulse.config`. |
+
+### Wiring / doc deltas
+
+| ID | Location | Description |
+|---|---|---|
+| 🔌 W-1 | `scan_pipeline.process_single_url` | Doesn't call `record_gap` (skill_gap_tracker), so single-URL applies don't contribute to skill-gap learning telemetry. Cron path does. |
+| 📝 W-2 | `docs/job-application-pipeline.md` | Doesn't document scan-vs-single-URL gate-coverage asymmetry: cron path runs Gate 0 + Gate 4A, single-URL path skips both. |
+| 🔌 W-3 | `gate4_quality.JobDB.record_gate_decision` | Writes to `gate_decisions` table; no consumer found inside the pre-screen subsystem. Possibly read by `job_analytics.get_funnel_stats`, but the link is loose. |
 
 ---
 
