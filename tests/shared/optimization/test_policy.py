@@ -105,6 +105,22 @@ class TestOptimizationPolicy:
         if mock_cognitive.think_calls:
             assert mock_cognitive.think_calls[0]["stakes"] == "medium"
 
+    @pytest.mark.asyncio
+    async def test_decide_async_handles_none_score(self, policy, mock_cognitive):
+        """S6 audit M-B regression: CognitiveEngine.think() returns
+        score=None whenever no scorer is supplied and the chosen level is
+        L1 / L2 / L3 with the LLM scoring fallback unavailable.
+        decide_async previously did `result.score / 10.0` which raised
+        TypeError on None and crashed the policy decision."""
+        mock_cognitive._think_score = None
+        insight = self._make_insight("systemic_failure", confidence=0.4)
+        # Pre-fix: TypeError("unsupported operand type(s) for /: 'NoneType' and 'float'")
+        actions = await policy.decide_async(insight)
+        # Post-fix: PolicyAction confidence is coalesced to 0.0
+        cognitive_actions = [a for a in actions if a.action_type == "cognitive_decision"]
+        if cognitive_actions:
+            assert cognitive_actions[0].confidence == 0.0
+
     def test_memory_promote_on_improvement(self, policy, mock_memory):
         actions = policy.promote_memory("mem_001")
         assert "mem_001" in mock_memory._promoted

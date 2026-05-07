@@ -140,3 +140,64 @@ class TestSelfImprovement:
 
         batch2_l0 = sum(1 for l in batch2_levels if l == ThinkLevel.L0_MEMORY)
         assert batch2_l0 >= batch1_l0
+
+    def test_persisted_stats_survive_first_new_sample(self):
+        """S6 audit M-A regression: load_persisted_stats must back-fill
+        l0_total/l0_success counters consistent with the persisted rate, so
+        the first new sample doesn't catastrophically swing the rate.
+
+        Pre-fix behaviour: l0_total=0 in restored stats → recomputed rate
+        becomes 1/1 (single success, 100%) or 0/1 (single escalation, 0%),
+        wiping the prior signal. Post-fix: counters back-filled, single
+        new sample perturbs rate by at most ~1%.
+        """
+        from tests.shared.cognitive.conftest import MockMemoryManager
+        from shared.cognitive._budget import BudgetTracker, CognitiveBudget
+
+        memory = MockMemoryManager()
+        # Simulate a previous session that persisted: 100 samples, L0
+        # success rate 95%, L1 escalation rate 5%.
+        class _SemEntry:
+            def __init__(self, domain, fact):
+                self.domain = domain
+                self.fact = fact
+        class _SemNS:
+            def __init__(self, facts):
+                self.facts = facts
+        memory.semantic = _SemNS(facts={
+            "f1": _SemEntry(
+                "cognitive_classifier",
+                "easy_domain: L0 success 95%, L1 escalation 5%, n=100",
+            ),
+        })
+
+        classifier = EscalationClassifier(memory, BudgetTracker(CognitiveBudget()))
+        classifier.load_persisted_stats()
+        stats_after_load = classifier._domain_stats.get("easy_domain", {})
+        assert stats_after_load.get("l0_success_rate") == 0.95
+
+        # Single new sample: L0 success (escalated=False)
+        classifier.update_domain_stats(
+            "easy_domain", ThinkLevel.L0_MEMORY, escalated=False,
+        )
+        rate_after_one_sample = classifier._domain_stats["easy_domain"][
+            "l0_success_rate"
+        ]
+        # Pre-fix: rate jumps to 1.0 (1/1). Post-fix: stays close to 0.95.
+        assert 0.94 <= rate_after_one_sample <= 0.96, (
+            f"persisted rate corrupted by single sample: {rate_after_one_sample}"
+        )
+
+        # Single L0 escalation should also keep us close, not collapse to 0.
+        classifier.update_domain_stats(
+            "easy_domain", ThinkLevel.L0_MEMORY, escalated=True,
+        )
+        rate_after_two_samples = classifier._domain_stats["easy_domain"][
+            "l0_success_rate"
+        ]
+        # Pre-fix would have been 1/2 = 0.5 or 0/2 = 0.0; post-fix
+        # should still be > 0.93.
+        assert rate_after_two_samples > 0.93, (
+            f"persisted rate collapsed after one escalation: "
+            f"{rate_after_two_samples}"
+        )

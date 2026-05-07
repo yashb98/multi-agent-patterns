@@ -179,3 +179,52 @@ async def test_fill_by_label_returns_failure_when_heal_also_fails():
 
     assert result.get("success") is False
     assert "Nonexistent Field" in result.get("error", "")
+
+
+# ---------------------------------------------------------------------------
+# S6 audit B-1 — _try_cognitive_unstuck must not crash on score=None
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_try_cognitive_unstuck_handles_none_score(caplog):
+    """S6 audit B-1 regression: CognitiveEngine.think_sync() returns
+    score=None when classifier picks L1 with no scorer. Pre-fix,
+    `result.score < 5.0` raised TypeError, was swallowed by the broad
+    except, and the function silently failed in production via a
+    `logger.debug` line invisible at default log levels. Post-fix the
+    threshold check coerces None to 0.0 and returns False directly,
+    never entering the broad except.
+    """
+    import logging
+    from types import SimpleNamespace
+
+    page = _make_page(_make_locator(0))
+    filler = _make_filler(page)
+
+    fake_engine = MagicMock()
+    fake_engine.think_sync = MagicMock(return_value=SimpleNamespace(
+        score=None, answer="don't care", level=1, cost=0.001,
+    ))
+
+    with (
+        patch(
+            "shared.cognitive.get_cognitive_engine",
+            return_value=fake_engine,
+        ),
+        caplog.at_level(logging.DEBUG, logger="jobpulse.native_form_filler"),
+    ):
+        acted = await filler._try_cognitive_unstuck(
+            fields=[{"label": "Phone", "type": "tel"}],
+            platform="generic", page_url="https://example.com/apply",
+        )
+
+    assert acted is False
+    # The bug-marker log line MUST NOT appear post-fix.
+    failed_log_lines = [
+        rec.message for rec in caplog.records
+        if "Cognitive unstuck failed" in rec.message
+    ]
+    assert failed_log_lines == [], (
+        f"_try_cognitive_unstuck fell into broad except — "
+        f"score=None still raises TypeError: {failed_log_lines}"
+    )

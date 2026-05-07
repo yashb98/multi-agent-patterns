@@ -159,8 +159,8 @@ class CognitiveEngine:
                         success=success,
                         escalated=True,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to record escalated cognitive outcome: %s", e)
                 return escalated_result
 
         elapsed = (time.monotonic() - start) * 1000
@@ -178,8 +178,8 @@ class CognitiveEngine:
                 success=success,
                 escalated=result.escalated_from is not None,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to record cognitive outcome: %s", e)
 
         # L1 successes get queued for batch-write via flush()
         if (

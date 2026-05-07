@@ -176,17 +176,32 @@ class EscalationClassifier:
             logger.debug("Failed to load persisted classifier stats: %s", e)
 
     def _parse_persisted_fact(self, fact: str):
-        """Parse a persisted classifier fact string back into domain stats."""
+        """Parse a persisted classifier fact string back into domain stats.
+
+        Back-fill l0_total/l0_success/l1_total/l1_escalated counters
+        consistent with the persisted rates so a single new sample
+        doesn't catastrophically swing the recomputed rate. The previous
+        version reset all counters to 0, which made `update_domain_stats`
+        recompute rate from scratch and effectively forget every prior
+        sample after one new observation. S6 audit M-A.
+        """
         import re
         match = re.match(r"(\S+): L0 success (\d+)%, L1 escalation (\d+)%, n=(\d+)", fact)
         if match:
             domain = match.group(1)
+            l0_rate = int(match.group(2)) / 100
+            l1_rate = int(match.group(3)) / 100
+            n = int(match.group(4))
+            l0_total = n
+            l1_total = n
             self._domain_stats[domain] = {
-                "l0_success_rate": int(match.group(2)) / 100,
-                "l1_escalation_rate": int(match.group(3)) / 100,
-                "l0_total": 0, "l0_success": 0,
-                "l1_total": 0, "l1_escalated": 0,
-                "sample_size": int(match.group(4)),
+                "l0_success_rate": l0_rate,
+                "l1_escalation_rate": l1_rate,
+                "l0_total": l0_total,
+                "l0_success": round(l0_total * l0_rate),
+                "l1_total": l1_total,
+                "l1_escalated": round(l1_total * l1_rate),
+                "sample_size": n,
             }
 
     @staticmethod

@@ -545,7 +545,10 @@ class NativeFormFiller:
                 domain="form_navigation",
                 stakes="medium",
             )
-            if not result or result.score < 5.0:
+            # Score is None when the classifier picks L1 with no scorer
+            # (the dominant case here). Treat unscored answers as below
+            # threshold so they don't bypass the gate. S6 audit B-1.
+            if not result or (result.score or 0.0) < 5.0:
                 return False
 
             suggestion = result.answer.strip()
@@ -572,7 +575,10 @@ class NativeFormFiller:
                 pass
             return acted
         except Exception as exc:
-            logger.debug("Cognitive unstuck failed: %s", exc)
+            # With the score-coalesce fix above, a real exception here is
+            # an actual bug, not the routine None-score path. Surface at
+            # warning so it shows up in default logs. S6 audit B-1.
+            logger.warning("Cognitive unstuck failed: %s", exc)
         return False
 
     async def _execute_unstuck_action(self, suggestion: str) -> bool:

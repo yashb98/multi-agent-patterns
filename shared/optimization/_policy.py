@@ -180,12 +180,18 @@ class OptimizationPolicy:
                     domain="optimization",
                     stakes="medium",
                 )
+                # CognitiveEngine.think() returns score=None whenever no
+                # scorer is supplied and the chosen level is L1 / L2 / L3
+                # with the LLM scoring fallback unavailable. Coalesce to
+                # 0.0 so the PolicyAction is still emitted with a usable
+                # confidence floor instead of crashing. S6 audit M-B.
+                confidence = (result.score or 0.0) / 10.0
                 actions.append(PolicyAction(
                     action_type="cognitive_decision",
                     target=result.answer,
                     domain=insight.domain,
                     evidence=f"CognitiveEngine: {result.answer[:200]}",
-                    confidence=result.score / 10.0,
+                    confidence=confidence,
                 ))
         return actions
 
