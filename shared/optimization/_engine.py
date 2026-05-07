@@ -457,7 +457,8 @@ class OptimizationEngine:
             return {"type": "daily", "enabled": False}
         total = self._bus.count()
         by_type = {"all": total}
-        for st in ("correction", "failure", "success", "adaptation", "score_change", "rollback"):
+        for st in ("correction", "failure", "success", "adaptation",
+                   "score_change", "rollback", "transfer"):
             try:
                 sigs = self._bus.query(signal_type=st, limit=10000)
                 by_type[st] = len(sigs)

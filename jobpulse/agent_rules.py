@@ -311,7 +311,22 @@ class AgentRulesDB:
                 source_loop="agent_rules",
                 domain=field_label,
                 agent_name="agent_rules",
-                payload={"field": field_label, "old_value": agent_value, "new_value": user_value, "platform": platform},
+                # Audit S5 B-3: the aggregator's adaptation_worked
+                # detector reads `payload["param"]` (see
+                # `_aggregator._detect_adaptation_effectiveness` L341).
+                # The previous payload only carried `field`, so every
+                # correction-driven adaptation insight reported
+                # "Adaptation 'unknown' on …" and lost the field-label
+                # provenance. Match the schema used by
+                # `auto_generate_from_blocker` (L231) and
+                # `auto_rule_generator.deploy_rule` (L411).
+                payload={
+                    "param": "correction_override",
+                    "field": field_label,
+                    "old_value": agent_value,
+                    "new_value": user_value,
+                    "platform": platform,
+                },
                 session_id=f"ar_corr_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
             )
         except Exception as e:

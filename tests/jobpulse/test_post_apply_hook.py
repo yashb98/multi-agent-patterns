@@ -223,3 +223,67 @@ def test_hook_no_op_on_failed_result(job_context, tmp_dbs):
     mock_notion.assert_not_called()
     # Real DB row should remain Pending (mark_applied wasn't called)
     assert _read_application_status(tmp_dbs["apps_db"], "abc123") == "Pending"
+
+
+@patch("jobpulse.post_apply_hook.upload_cv", return_value="https://drive.google.com/cv")
+@patch("jobpulse.post_apply_hook.upload_cover_letter", return_value="https://drive.google.com/cl")
+@patch("jobpulse.post_apply_hook.update_application_page", return_value=True)
+def test_optimization_before_after_records_meaningful_delta(
+    mock_notion, mock_cl, mock_cv,
+    mock_result, job_context, tmp_dbs, tmp_path, monkeypatch,
+):
+    """Audit S5 B-2 reproducer.
+
+    The previous instrumentation snapshotted form-fill metrics
+    (`fields_filled`, `pages_filled`, `time_seconds`) on both sides of
+    the hook even though the hook never mutates them — so deltas were
+    always 0. The Drive / Notion / nav booleans we *do* change had no
+    `_before` counterpart and were dropped by the tracker's
+    `set(before) & set(after)` intersection.
+
+    This test routes through the real OptimizationEngine and asserts
+    that at least one delta is non-zero (Drive upload 0→1, Notion 0→1,
+    nav 0→1) — i.e. the after-block actually carries new information
+    relative to the before-block.
+    """
+    from shared.optimization._engine import OptimizationEngine
+
+    opt_db = str(tmp_path / "optimization.db")
+    real_engine = OptimizationEngine(db_path=opt_db)
+    monkeypatch.setattr(
+        "shared.optimization.get_optimization_engine",
+        lambda: real_engine,
+    )
+    _seed_application_row(tmp_dbs["apps_db"], "abc123")
+
+    post_apply_hook(
+        result=mock_result,
+        job_context=job_context,
+        form_exp_db_path=tmp_dbs["form_exp_db"],
+    )
+
+    actions = real_engine._tracker.get_recent_actions(limit=10)
+    post_actions = [a for a in actions if a["loop_name"] == "post_apply"]
+    assert post_actions, "post_apply learning_action row should exist"
+    action = post_actions[0]
+
+    before = action["before_metrics"]
+    after = action["after_metrics"]
+    common_keys = set(before) & set(after)
+    assert "drive_cv_uploaded" in common_keys, (
+        "Outcome key drive_cv_uploaded must appear on both sides — pre-fix "
+        "_before only had form-fill metrics so this was dropped by the "
+        "tracker's common-keys intersection"
+    )
+    assert "notion_updated" in common_keys
+    assert "nav_learned" in common_keys
+
+    nonzero_deltas = [
+        k for k in common_keys
+        if (after.get(k) or 0) - (before.get(k) or 0) != 0
+    ]
+    assert nonzero_deltas, (
+        f"At least one delta should be non-zero; got before={before}, "
+        f"after={after}. Pre-fix every delta was 0 because both sides "
+        f"snapshotted unchanged form-fill metrics."
+    )
