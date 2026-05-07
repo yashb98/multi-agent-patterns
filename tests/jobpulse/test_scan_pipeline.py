@@ -795,3 +795,110 @@ class TestDataClasses:
         r = RouteResult(action="auto_applied", job_id="xyz", title="Dev", company="Acme")
         assert r.action == "auto_applied"
         assert r.job_id == "xyz"
+
+
+# ---------------------------------------------------------------------------
+# process_single_url — single-URL CLI path (used by `runner job-process-url`)
+# ---------------------------------------------------------------------------
+
+
+class TestProcessSingleUrlGateRouting:
+    """Regression coverage for the single-URL gate-routing surface.
+
+    The single-URL path historically diverged from `prescreen_listings` —
+    notably comparing `pre_screen.tier == "rejected"` while SkillGraphStore
+    only sets tier ∈ {"reject", "skip", "apply", "strong"} (S7 audit B-1).
+    """
+
+    def test_gate1_reject_short_circuits(self, monkeypatch):
+        """tier == 'reject' must produce a 'rejected' status response.
+
+        Bug: scan_pipeline.py:1092 compared against the wrong literal,
+        so Gate 1 kills (seniority, primary skill, foreign domain) silently
+        fell through to material generation.
+        """
+        from jobpulse.scan_pipeline import process_single_url
+        from jobpulse.skill_graph_store import PreScreenResult
+
+        screen = PreScreenResult()
+        screen.tier = "reject"
+        screen.gate1_passed = False
+        screen.gate1_kill_reason = "Seniority kill: JD requires 5+ years experience"
+
+        listing = _make_listing(
+            job_id="test-reject-001",
+            title="Senior Engineer",
+            company="Acme",
+            url="https://example.com/job/1",
+        )
+
+        # Stub HTTP client used inside process_single_url
+        class _Resp:
+            status_code = 200
+            url = "https://example.com/job/1"
+            text = (
+                "<html><body><h1>Senior Engineer</h1>"
+                "<div class='job-description'>Need 5+ years experience</div>"
+                "</body></html>"
+            )
+            def __init__(self, *_a, **_kw):
+                pass
+
+        class _Client:
+            def __init__(self, *_a, **_kw):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *_a):
+                return False
+            def get(self, *_a, **_kw):
+                return _Resp()
+
+        import httpx
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: _Resp())
+        monkeypatch.setattr(httpx, "Client", _Client)
+
+        from jobpulse.liveness_checker import classify_liveness
+        monkeypatch.setattr(
+            "jobpulse.liveness_checker.classify_liveness",
+            lambda **kw: type("LR", (), {"status": "alive"})(),
+        )
+
+        # Stub heavy dependencies
+        monkeypatch.setattr("jobpulse.scan_pipeline.analyze_jd", lambda **kw: listing)
+
+        class _SGS:
+            def __init__(self, *_a, **_kw): pass
+            def pre_screen_jd(self, _listing): return screen
+
+        monkeypatch.setattr("jobpulse.scan_pipeline.SkillGraphStore", _SGS)
+
+        # JobDB is lazy-imported inside process_single_url — patch on origin module.
+        # MagicMock here: the test asserts on the returned response, not DB rows.
+        db = MagicMock()
+        db.get_listing.return_value = None
+        monkeypatch.setattr("jobpulse.job_db.JobDB", lambda: db)
+
+        # If the bug is present, the code falls through to generate_materials —
+        # patch that to detect the leak; passing test means we never reached it.
+        called = {"materials": False}
+        def _fake_materials(*a, **kw):
+            called["materials"] = True
+            from jobpulse.scan_pipeline import MaterialsBundle
+            return MaterialsBundle()
+        monkeypatch.setattr("jobpulse.scan_pipeline.generate_materials", _fake_materials)
+
+        result = process_single_url(
+            "https://example.com/job/1",
+            platform="generic",
+            dry_run=True,
+        )
+
+        assert result["status"] == "rejected", (
+            f"Gate 1 reject must short-circuit, got status={result['status']}"
+        )
+        assert result["pre_screen"].tier == "reject"
+        assert "Seniority kill" in result["message"]
+        assert called["materials"] is False, (
+            "generate_materials should NOT run after a Gate 1 reject"
+        )

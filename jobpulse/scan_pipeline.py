@@ -816,13 +816,42 @@ def route_and_apply(
             _queue_for_review(listing, ats_score, review_batch)
             return RouteResult("queued_for_review", listing.job_id, listing.title, listing.company)
 
+        # Lazy CL generator — only invoked if the form actually has a cover-letter
+        # file input. Greenhouse / Lever / Ashby commonly do (Octus had
+        # `<input type="file" id="cover_letter">` with the literal label "Attach"),
+        # but the auto-apply path was passing cl_generator=None so the lazy hook
+        # never fired. Mirror the live-review and webhook paths that already wire
+        # a generator (live_review_applicator.py / job_api.py).
+        cl_generator = None
+        if bundle.cover_letter_path is None and listing.company and listing.title:
+            def cl_generator():
+                try:
+                    from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
+                    from jobpulse.project_portfolio import get_best_projects_for_jd
+                    project_dicts = get_best_projects_for_jd(
+                        list(listing.required_skills or []),
+                        list(listing.preferred_skills or []),
+                    )
+                    return generate_cover_letter_pdf(
+                        company=listing.company,
+                        role=listing.title,
+                        matched_projects=project_dicts,
+                        required_skills=list(listing.required_skills or []),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "scan_pipeline: lazy CL generation failed for %s: %s",
+                        listing.company, exc,
+                    )
+                    return None
+
         try:
             result = apply_job(
                 url=listing.url,
                 ats_platform=listing.ats_platform,
                 cv_path=bundle.cv_path,
                 cover_letter_path=bundle.cover_letter_path,
-                cl_generator=None,
+                cl_generator=cl_generator,
                 custom_answers={
                     "_job_context": _build_screening_context(listing),
                 },
@@ -840,26 +869,61 @@ def route_and_apply(
                 dry_run=dry_run,
             )
             if result.get("success"):
+                # CRITICAL: distinguish actual submission vs dry-run-stop.
+                # apply_job(dry_run=True) returns success=True, dry_run=True
+                # when the form fills cleanly and reaches the Submit button —
+                # but Submit is NEVER clicked under dry_run. Marking these as
+                # status='Applied' falsely records jobs as submitted that the
+                # user hasn't approved yet, hides them from the review queue,
+                # and corrupts the daily quota. They must be queued for
+                # human review and only flip to 'Applied' after
+                # confirm_application() fires (post-approval).
                 applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
                 follow_up = (date.today() + timedelta(days=7)).isoformat()
-                db.save_application(
-                    job_id=listing.job_id,
-                    status="Applied",
-                    ats_score=ats_score,
-                    match_tier=tier,
-                    matched_projects=bundle.matched_project_names,
-                    cv_path=str(bundle.cv_path),
-                    cover_letter_path=str(bundle.cover_letter_path) if bundle.cover_letter_path else None,
-                    applied_at=applied_at,
-                    notion_page_id=notion_page_id,
-                    follow_up_date=follow_up,
-                )
-                # Notion update now handled by post_apply_hook inside apply_job
-                logger.info(
-                    "scan_pipeline: AUTO-APPLIED %s @ %s (ATS %.1f%%)",
-                    listing.title, listing.company, ats_score,
-                )
-                return RouteResult("auto_applied", listing.job_id, listing.title, listing.company)
+                actually_submitted = not result.get("dry_run", False)
+                if actually_submitted:
+                    db.save_application(
+                        job_id=listing.job_id,
+                        status="Applied",
+                        ats_score=ats_score,
+                        match_tier=tier,
+                        matched_projects=bundle.matched_project_names,
+                        cv_path=str(bundle.cv_path),
+                        cover_letter_path=str(bundle.cover_letter_path) if bundle.cover_letter_path else None,
+                        applied_at=applied_at,
+                        notion_page_id=notion_page_id,
+                        follow_up_date=follow_up,
+                    )
+                    logger.info(
+                        "scan_pipeline: AUTO-APPLIED %s @ %s (ATS %.1f%%)",
+                        listing.title, listing.company, ats_score,
+                    )
+                    return RouteResult("auto_applied", listing.job_id, listing.title, listing.company)
+                else:
+                    # Dry-run-stop on a successful fill — form is ready, waiting
+                    # for human approval via Telegram review. Record state so the
+                    # review handler can resume from this point.
+                    db.save_application(
+                        job_id=listing.job_id,
+                        status="Pending Approval",
+                        ats_score=ats_score,
+                        match_tier=tier,
+                        matched_projects=bundle.matched_project_names,
+                        cv_path=str(bundle.cv_path),
+                        cover_letter_path=str(bundle.cover_letter_path) if bundle.cover_letter_path else None,
+                        applied_at=None,
+                        notion_page_id=notion_page_id,
+                        follow_up_date=None,
+                    )
+                    logger.info(
+                        "scan_pipeline: DRY-RUN STOP (form ready for review) %s @ %s (ATS %.1f%%)",
+                        listing.title, listing.company, ats_score,
+                    )
+                    _queue_for_review(listing, ats_score, review_batch)
+                    return RouteResult(
+                        "queued_for_review",
+                        listing.job_id, listing.title, listing.company,
+                    )
             else:
                 logger.warning(
                     "scan_pipeline: auto-apply failed for %s: %s",
@@ -1025,13 +1089,15 @@ def process_single_url(
         pre_screen.gate3_score,
     )
 
-    if pre_screen.tier == "rejected":
+    if pre_screen.tier == "reject":
         db.update_status(listing.job_id, "Rejected")
         return {
             "status": "rejected",
             "listing": listing,
             "pre_screen": pre_screen,
-            "message": f"Pre-screen rejected: {pre_screen.tier}",
+            "message": (
+                f"Pre-screen rejected: {pre_screen.gate1_kill_reason or pre_screen.tier}"
+            ),
         }
 
     # 5. Generate materials
