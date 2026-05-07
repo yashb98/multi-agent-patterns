@@ -44,6 +44,28 @@ def test_extract_location() -> None:
     assert extract_location("Remote, UK") == "Remote, UK"
 
 
+def test_extract_location_city_beats_remote_mention() -> None:
+    """A concrete city must win over an inline 'remote'/'remote-first' mention.
+
+    Regression for S7 audit M-B: previously the Remote regex ran before the
+    UK-city scan, so a JD like 'London office, remote-friendly culture'
+    resolved to 'remote' (or the partial match) instead of 'London'.
+    Remoteness is independently captured by detect_remote().
+    """
+    # Compound word that previously matched the bare-Remote regex
+    assert (
+        extract_location("Senior Engineer in London with remote-friendly culture")
+        == "London"
+    )
+    # Explicit remote phrase, but a real city is also present
+    assert (
+        extract_location("Hybrid role: Manchester HQ, remote-first team")
+        == "Manchester"
+    )
+    # No city → falls through to the Remote pattern (preserved behavior)
+    assert extract_location("Remote, UK") == "Remote, UK"
+
+
 # ---------------------------------------------------------------------------
 # 3. detect_remote
 # ---------------------------------------------------------------------------

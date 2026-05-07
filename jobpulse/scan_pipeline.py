@@ -485,7 +485,12 @@ def prescreen_listings(
         # A3: Company background (soft flags)
         try:
             past_apps = db.get_applications_by_company(listing.company)
-        except (AttributeError, Exception):
+        except Exception as exc:
+            logger.warning(
+                "scan_pipeline: get_applications_by_company failed for %r — Gate 4 cannot detect duplicate applications: %s",
+                listing.company,
+                exc,
+            )
             past_apps = []
         bg = check_company_background(listing.company, past_apps)
         if bg.previously_applied:

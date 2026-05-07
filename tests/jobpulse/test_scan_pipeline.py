@@ -477,6 +477,45 @@ class TestPrescreenListings:
         assert len(gate4_filtered) == 1
         assert gate4_filtered[0] == (listing, None)
 
+    def test_get_applications_by_company_failure_logs_warning(self, caplog):
+        """Errors from db.get_applications_by_company must be logged, not swallowed.
+
+        Regression for S7 audit M-A: previously `except (AttributeError, Exception)`
+        silently coerced any failure (schema drift, locked DB, etc.) into
+        past_apps=[], so Gate 4 quietly lost the duplicate-application detection
+        signal. Fix logs a warning so the failure is observable.
+        """
+        import logging
+        from jobpulse.scan_pipeline import prescreen_listings
+
+        listing = _make_listing()
+        screen = self._make_screen(tier="apply")
+        store = MagicMock()
+        store.pre_screen_jd.return_value = screen
+        db = MagicMock()
+        db.get_applications_by_company.side_effect = RuntimeError("schema drift")
+        db.save_listing = MagicMock()
+        db.save_application = MagicMock()
+        db.get_company_reliability = MagicMock(return_value=None)
+
+        with (
+            caplog.at_level(logging.WARNING, logger="jobpulse.scan_pipeline"),
+            patch("jobpulse.scan_pipeline.SkillGraphStore", return_value=store),
+            patch("jobpulse.scan_pipeline.BlocklistCache", return_value=self._make_blocklist()),
+            patch("jobpulse.scan_pipeline.detect_spam_company", return_value=self._make_spam()),
+            patch("jobpulse.scan_pipeline.check_jd_quality", return_value=self._make_jd_quality()),
+            patch("jobpulse.scan_pipeline.check_company_background", return_value=MagicMock(previously_applied=False, is_generic=False)),
+        ):
+            gate4_filtered, *_ = prescreen_listings([listing], db, _make_trail())
+
+        # Listing should still pass through (degraded gracefully) ...
+        assert len(gate4_filtered) == 1
+        # ... but the failure must be visible in the warning log.
+        warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        assert any("get_applications_by_company" in m for m in warnings), (
+            f"Expected a warning about get_applications_by_company, got: {warnings}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Stage 4: generate_materials
