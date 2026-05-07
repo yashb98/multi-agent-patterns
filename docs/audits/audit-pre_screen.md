@@ -244,6 +244,20 @@ session):
 142 passed in 37.81s
 ```
 
+Wider repo sweep (excluding live integration tests, after all S7 fixes):
+```
+4149 passed, 8 failed, 106 skipped in 594.14s
+```
+The 8 failures are pre-existing baseline drift on the dirty branch — verified
+by grep that none of them import or reference `scan_pipeline`,
+`jd_analyzer`, `skill_gap_tracker`, or `company_blocklist`. Failure list:
+`test_field_mapper_real`, `test_cross_platform_field_transfer`,
+`test_portfolio_variants`, `test_runner_real[gmail]`,
+`test_no_blocking_sleep` (lint flagging a pre-existing sleep in
+`test_navigation_audit.py:147`), `test_agent_eval`,
+`test_email_preclassifier`, `test_screening_collision_guard`. None caused
+by S7 changes.
+
 ---
 
 ## 5. Fixes (this session)
