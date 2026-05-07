@@ -122,6 +122,13 @@ class BlocklistCache:
 # ---------------------------------------------------------------------------
 
 
+# Notion's default page size is 100 entries; 50 pages = 5,000 companies — well
+# above the largest realistic blocklist. Cap exists to satisfy seven-principles §4
+# (bounded loops): a misbehaving Notion response that returned a stable
+# next_cursor would otherwise hang the scan-window startup.
+_BLOCKLIST_FETCH_MAX_PAGES = 50
+
+
 def fetch_blocklist_from_notion() -> dict[str, str]:
     """Query Notion blocklist DB and return {company_lower: status}."""
     db_id = _get_blocklist_db_id()
@@ -131,8 +138,9 @@ def fetch_blocklist_from_notion() -> dict[str, str]:
     entries: dict[str, str] = {}
     has_more = True
     start_cursor: str | None = None
+    pages_seen = 0
 
-    while has_more:
+    while has_more and pages_seen < _BLOCKLIST_FETCH_MAX_PAGES:
         payload: dict = {}
         if start_cursor:
             payload["start_cursor"] = start_cursor
@@ -153,7 +161,24 @@ def fetch_blocklist_from_notion() -> dict[str, str]:
                 entries[company.lower()] = status
 
         has_more = resp.get("has_more", False)
-        start_cursor = resp.get("next_cursor")
+        next_cursor = resp.get("next_cursor")
+        # Guard against a server returning the same cursor it received — that
+        # would loop forever even before the page cap kicks in.
+        if has_more and next_cursor == start_cursor:
+            logger.warning(
+                "blocklist fetch: Notion returned identical next_cursor — aborting pagination at page %d",
+                pages_seen,
+            )
+            break
+        start_cursor = next_cursor
+        pages_seen += 1
+
+    if has_more:
+        logger.warning(
+            "blocklist fetch: hit page cap (%d) with more pages remaining — increase _BLOCKLIST_FETCH_MAX_PAGES if Notion blocklist > %d entries",
+            _BLOCKLIST_FETCH_MAX_PAGES,
+            _BLOCKLIST_FETCH_MAX_PAGES * 100,
+        )
 
     return entries
 
