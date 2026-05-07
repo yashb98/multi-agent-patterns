@@ -49,7 +49,12 @@ policy decides actions → tracker measures impact → trajectories log everythi
 | `_replay.py` | Trajectory replay harness for deterministic fixture testing |
 
 ## Signal Types
-correction | failure | success | adaptation | score_change | rollback
+correction | failure | success | adaptation | score_change | rollback | transfer
+
+(`transfer` was added 2026-05-07 alongside the audit-S5 B-1 fix —
+producer in `jobpulse.platform_transfer.record_outcome` had been
+silently dropping signals because `LearningSignal.__post_init__`
+rejected the type.)
 
 ## Rules
 - ALL learning loops MUST emit signals at key decision points

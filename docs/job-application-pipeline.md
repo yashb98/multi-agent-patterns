@@ -765,15 +765,38 @@ post_apply_hook ──┬──▶ ① CorrectionCapture ──▶ AgentRulesDB
 ```
 
 **OptimizationEngine signals emitted:**
-- `success` (every submission)
-- `correction` (per field corrected)
-- `adaptation` (per learning DB write)
-- `failure` (gate 4 reject, fill error, ghost click)
+- `success` (every submission, plus `form_experience.record` outcomes,
+  plus `strategy_reflector` summary on successful applications)
+- `correction` (per field corrected via `CorrectionCapture`)
+- `adaptation` (per learning DB write — `agent_rules`,
+  `auto_rule_generator`)
+- `failure` (Gate 4 reject, fill error, ghost click; also emitted
+  from `post_apply_hook` when `result.success == False`)
 - `score_change` (when ATS score crosses threshold)
+- `rollback` (policy auto-revert when a learning action regresses
+  metrics)
+- `transfer` (cross-domain donor outcomes via
+  `PlatformTransferEngine.record_outcome`). Added to
+  `VALID_SIGNAL_TYPES` 2026-05-07 — pre-fix the producer raised
+  `ValueError` and the optimization signal was silently dropped.
+
+`post_apply_hook` also wraps itself with
+`OptimizationEngine.before_learning_action("post_apply", domain, ...)`
+and pairs the call with `after_learning_action(...)` at the bottom.
+The `_before` / `_after` dicts carry the four outcome booleans this
+hook owns (`drive_cv_uploaded`, `drive_cl_uploaded`,
+`notion_updated`, `nav_learned`) plus `elapsed_seconds`. Pre-2026-05
+the `_before` snapshot only carried unchanged form-fill metrics, so
+`learning_actions.improvement` was always 0; that's now fixed and
+the tracker can detect Drive/Notion regressions.
 
 Aggregator (`shared/optimization/_aggregator.py`) detects patterns:
 e.g. ≥10 corrections for the same field in one week → emit `failure`
 signal → policy raises confidence threshold for that field's auto-fill.
+The `adaptation_worked` detector reads `payload["param"]` to label
+the insight evidence — every emitter must populate that key, not
+just `field` (`agent_rules.auto_generate_from_correction` was the
+last hold-out, fixed 2026-05-07).
 
 ---
 

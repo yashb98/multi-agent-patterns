@@ -204,9 +204,51 @@ Fix commit: `a747f16`
 
 ---
 
-## Subsystem 5 — `post_apply`
+## Subsystem 5 — `post_apply` (`jobpulse/post_apply_hook.py` + 16 sister files)
 
-*pending audit*
+Audit doc: `docs/audits/audit-post_apply.md`
+Blockers fixed in audit session (B-1 transfer signal, B-2 zero-delta
+before/after, B-3 adaptation payload key — see audit doc Step 5).
+
+### Deferred majors
+
+| ID | Location | Description | Why deferred |
+|---|---|---|---|
+| 🔴 M-5.1 | `process_logger.py:229-230` | Module-level `init_process_db()` + `cleanup_old_trails(30)` fire at every import (15+ jobpulse modules import this). Import-time side-effect violates Principle 1; the `DELETE` runs on every cron tick / test-runner startup. | Touches daemon startup path; needs broader regression run beyond post_apply scope. |
+| 🔴 M-5.2 | `agent_rules.py:346-349` (consumers) | `get_escalation_fields()` returns fields where `auto_generate_from_correction` set `action='escalate'` after 3+ corrections, but no production caller consumes it. The "escalate" action value is written but the form filler / screening pipeline never short-circuit on it. | Pure feature-wiring gap; touches form_fill_dispatch / screening_pipeline. Revisit when next touching those. |
+| 🔴 M-5.3 | `trajectory_store.py:555-584, 714-787` | `record_heuristic_outcome`, `invalidate_stale_heuristics`, `load_heuristics_for_application` all unreferenced in production. Heuristics get written by `strategy_reflector` but `times_applied/times_succeeded` stay at 0 forever and the GRPO replay loop never runs. | Heuristic-replay subsystem is write-only; defer until owner decides wire-vs-delete. |
+| 🔴 M-5.4 | `cross_platform_field_transfer.py` (whole module) | No production importer; only tests + `weekly_optimize.py`. Cross-platform Qdrant/embedding transfer dormant. | Needs product-owner decision on whether to wire or remove. |
+| 🔴 M-5.5 | `form_experience_db.py:377` (`store`), `:444` (`lookup_by_content_hash`), `:902-958` (negative exemplars + confidence calibration) | "PRAXIS-aware" cross-domain `content_hash` matching wired only in tests. `post_apply_hook.record(...)` is used; `store(...)` never called in production. `content_hash` column always `''`. | Defer; large-file scope creep. |
+
+### Minors
+
+| ID | Location | Description |
+|---|---|---|
+| 🟡 m-5.1 | `correction_capture.py:140`, `:155` | LLM/Optimization signal failure paths use `logger.debug`; should be `logger.warning` for non-retryable errors so future schema regressions surface. |
+| 🟡 m-5.2 | `agent_rules.py:122-127` | Bare `except sqlite3.OperationalError: pass` for ALTER TABLE migration loses "column already exists" vs "table missing" distinction. |
+| 🟡 m-5.3 | `cross_platform_field_transfer.py:34, 76-77` | `Optional[Any]` referenced but `Any` not imported; latent defect (only saved by `from __future__ import annotations`). |
+| 🟡 m-5.4 | `post_apply_hook.py:79`, `:299`, `:138` | Session IDs use raw `company` string with spaces/unicode → brittle `LIKE` queries on `optimization.db`. |
+| 🟡 m-5.5 | `drive_uploader.py:46` | `_file_name_prefix` falls back to literal `"Resume"` when both ProfileStore and `APPLICANT_*` config are missing — silent name drift. |
+| 🟡 m-5.6 | `process_logger.py:69-72` | `step_input: str = None` etc. mis-typed as `str` instead of `str | None`. |
+
+### Nits
+
+| ID | Location | Description |
+|---|---|---|
+| ⚪ n-5.1 | `form_experience_db.py:28-134` (`_schema_sql`) vs `:149-298` (`_init_db`) | Same DDL written twice — drift risk if a future ALTER lands in only one. |
+| ⚪ n-5.2 | `agent_performance.py:88-95` | `INSERT` SQL uses positional placeholders without column count assertion. |
+| ⚪ n-5.3 | `trajectory_store.py:402` | Raw `success` int passed to `success: bool` dataclass field. |
+
+### Dead code
+
+| ID | Location |
+|---|---|
+| 💀 d-5.1 | `correction_capture.py:160-220` — `get_correction_count`, `get_correction_rate`, `get_high_correction_fields` (test-only island) |
+| 💀 d-5.2 | `agent_rules.py:346-349` — `get_escalation_fields` (see M-5.2) |
+| 💀 d-5.3 | `cross_platform_field_transfer.py` (whole module, see M-5.4) |
+| 💀 d-5.4 | `form_experience_db.py:377, 444, 902-958` — PRAXIS-aware subsystem (see M-5.5) |
+| 💀 d-5.5 | `platform_transfer.py:362-396` — `record_outcome` has no production caller despite the signal-emit path now working post-B-1 |
+| 💀 d-5.6 | `trajectory_store.py:555-584, 714-787` — `record_heuristic_outcome`, `invalidate_stale_heuristics`, `load_heuristics_for_application` (see M-5.3) |
 
 ---
 
