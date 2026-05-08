@@ -50,5 +50,5 @@ Two perspectives on the memory system:
 - ALL memory access through MemoryManager — never query engines directly
 - Embeddings via Voyage 3 Large (fallback: MiniLM)
 - Lifecycle: STM → MTM → LTM → Cold → Archive
-- Forgetting sweep runs hourly — 6-signal decay score (3 of 6 signals — `connectivity`, `impact`, `uniqueness` — depend on `AutonomousLinker.link_with_neighbors` having populated Neo4j edges; until that wiring lands [`pipeline-bugs.md` S11 M-11.A], those 3 signals return defaults and `compute_decay` is half-functional.)
+- Forgetting sweep runs hourly — 6-signal decay score. The 3 graph signals (`connectivity` / `impact` / `uniqueness`) require Neo4j edges; `SyncService._sync_entry` now invokes `AutonomousLinker.link_with_neighbors` after every secondary-sync write to populate them (pipeline-bugs.md S6).
 - Tests use tmp_path for SQLite, MagicMock for Qdrant/Neo4j

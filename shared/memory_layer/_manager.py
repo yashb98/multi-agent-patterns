@@ -147,8 +147,10 @@ class MemoryManager:
             from shared.memory_layer._sync import SyncService
             from shared.memory_layer._linker import AutonomousLinker
             from shared.memory_layer._forgetting import ForgettingEngine
-            self._sync = SyncService(sqlite_store, qdrant, neo4j, embedder)
             self._linker = AutonomousLinker(neo4j=neo4j)
+            self._sync = SyncService(
+                sqlite_store, qdrant, neo4j, embedder, linker=self._linker,
+            )
             self._forgetting = ForgettingEngine(neo4j=neo4j)
 
     def get_context_for_agent(
