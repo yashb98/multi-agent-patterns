@@ -141,8 +141,12 @@ class PerformanceTracker:
                 fact=content,
                 run_id=f"baseline_{loop_name}_{domain}",
             )
-            if memory_id and hasattr(self._memory, "pin"):
-                self._memory.pin(memory_id)
+            # MemoryManager exposes pin_memory; the previous hasattr("pin")
+            # guard was always False so 30+ snapshot baselines were stored
+            # but never pinned and could be evicted by the forgetting engine.
+            # (S10 audit M-A.)
+            if memory_id and hasattr(self._memory, "pin_memory"):
+                self._memory.pin_memory(memory_id)
         except Exception as e:
             logger.warning("Failed to store baseline: %s", e)
 
@@ -314,6 +318,21 @@ class PerformanceTracker:
                 "SELECT * FROM cognitive_outcomes WHERE domain = ? AND agent_name = ?",
                 (domain, agent_name),
             ).fetchall()
+            # Read the manual forced-level override regardless of how many
+            # cognitive_outcomes rows exist. Pre-fix this lookup happened
+            # AFTER the `total == 0` early return, so escalate_cognitive
+            # writes were silently invisible whenever the consumer queried
+            # a (domain, agent_name) shape that had no recorded outcomes
+            # — which is exactly what _classifier.classify(domain, domain)
+            # always sees, since cognitive_outcomes are keyed by real agent
+            # name (cv_tailoring, screening_answers …). (S10 audit B-1.)
+            override_row = conn.execute(
+                "SELECT forced_level FROM forced_level_overrides "
+                "WHERE domain = ? AND agent_name = ?",
+                (domain, agent_name),
+            ).fetchone()
+
+        manual_forced = override_row["forced_level"] if override_row else None
 
         total = len(rows)
         if total == 0:
@@ -321,7 +340,7 @@ class PerformanceTracker:
                 domain=domain, agent_name=agent_name, sample_size=0,
                 l0_success_rate=0.0, l1_success_rate=0.0,
                 l2_success_rate=0.0, l3_success_rate=0.0,
-                forced_level=None, avg_correction_rate=0.0,
+                forced_level=manual_forced, avg_correction_rate=0.0,
                 escalation_frequency=0.0,
                 last_updated=datetime.now(timezone.utc).isoformat(),
             )
@@ -333,17 +352,12 @@ class PerformanceTracker:
             return sum(1 for r in at_level if r["success"]) / len(at_level)
 
         escalated_count = sum(1 for r in rows if r["escalated"])
-        # Check manual overrides first (set by escalate_cognitive action)
-        forced = None
-        with self._connect() as conn:
-            override = conn.execute(
-                "SELECT forced_level FROM forced_level_overrides "
-                "WHERE domain = ? AND agent_name = ?",
-                (domain, agent_name),
-            ).fetchone()
-        if override:
-            forced = override["forced_level"]
-        elif total >= 20:
+        # Manual overrides (escalate_cognitive policy action) take precedence
+        # over the computed forced_level. The override row was already loaded
+        # at the top of this function so it is visible even when sample_size
+        # is below the 20-row threshold.
+        forced = manual_forced
+        if forced is None and total >= 20:
             l0_rate = _rate(0)
             if l0_rate >= 0.95:
                 forced = 0

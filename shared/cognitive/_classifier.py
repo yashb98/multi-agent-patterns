@@ -47,7 +47,14 @@ class EscalationClassifier:
         try:
             from shared.optimization import get_optimization_engine
             opt_stats = get_optimization_engine().get_domain_stats(domain, domain)
-            if opt_stats.forced_level is not None and opt_stats.sample_size >= 20:
+            # forced_level set by manual override (forced_level_overrides table) is an
+            # explicit policy decision and must not be gated by sample_size — the
+            # tracker already gates the *computed* fallback by total >= 20. Without
+            # this, the optimization escalate_cognitive action wrote rows that the
+            # classifier silently ignored because cognitive_outcomes are keyed by
+            # real agent_name (cv_tailoring, screening_answers) while the classifier
+            # queries (domain, domain), so sample_size was always 0. (S10 audit B-1.)
+            if opt_stats.forced_level is not None:
                 level = ThinkLevel(opt_stats.forced_level)
                 logger.debug(
                     "Optimization override: %s forced to %s (n=%d)",

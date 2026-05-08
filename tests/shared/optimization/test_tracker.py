@@ -191,3 +191,40 @@ class TestPerformanceTracker:
         tracker.clear_forced_level("override_test", "agent")
         stats = tracker.get_domain_stats("override_test", "agent")
         assert stats.forced_level == 0  # back to computed
+
+    def test_baseline_pin_uses_pin_memory_not_pin(self, db_path, tmp_path):
+        """S10 audit M-A: _store_baseline used `hasattr(memory, "pin")` but
+        MemoryManager exposes `pin_memory`, so 30+ snapshot baselines were
+        stored unpinned and silently became eligible for forgetting-engine
+        eviction. Use a stub that only carries the real `pin_memory` attribute
+        so the test fails loud if the call is reverted to `pin`.
+        """
+        class _PinOnlyMemory:
+            def __init__(self):
+                self.pinned: list[str] = []
+                self.facts: list[tuple[str, str]] = []
+
+            def learn_fact(self, domain: str, fact: str, run_id: str = "") -> str:
+                mid = f"mem_{len(self.facts)}"
+                self.facts.append((mid, fact))
+                return mid
+
+            def pin_memory(self, memory_id: str) -> None:
+                self.pinned.append(memory_id)
+
+        mem = _PinOnlyMemory()
+        tracker_local = PerformanceTracker(db_path=db_path, memory_manager=mem)
+
+        # 30 snapshots for the same loop+domain triggers the baseline path.
+        for i in range(30):
+            tracker_local.snapshot(
+                loop_name="correction_capture", domain="greenhouse.io",
+                metrics={"correction_rate": 0.1 + i * 0.001},
+            )
+
+        assert mem.facts, "_store_baseline must have called learn_fact"
+        assert mem.pinned, (
+            "_store_baseline must have called pin_memory — pre-fix this used "
+            "the non-existent `pin` method and silently skipped pinning"
+        )
+        assert mem.pinned[-1] == mem.facts[-1][0]
