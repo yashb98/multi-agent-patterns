@@ -18,6 +18,97 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+def _sync_portfolio_to_user_profile_db() -> None:
+    """Mirror auto + manual portfolio entries into user_profile.db.cv_projects.
+
+    `sync_portfolio_entries` writes to a JSON file (auto_portfolio.json) which
+    is fine for caching the LLM-generated entries, but the canonical source
+    of truth that CV generation reads is `user_profile.db.cv_projects` via
+    ProfileStore.cv_projects(). Without mirroring, the DB never gets refreshed
+    from the nightly GitHub sync — a user with an empty cv_projects table
+    will fall back to the legacy hardcoded dict in project_portfolio.py
+    forever.
+
+    Behavior:
+      - Iterates the merged portfolio (manual `_LEGACY_PORTFOLIO_FALLBACK`
+        + JSON `auto_portfolio.entries`)
+      - Upserts each into cv_projects keyed by `url` (project URL is unique
+        per repo)
+      - Stamps updated_at with current UTC timestamp
+      - Marks `source` = 'manual' or 'auto_github' so we can later prune
+        stale auto entries when the repo is deleted from GitHub
+    """
+    import json
+    import sqlite3
+    from datetime import datetime, UTC
+    from pathlib import Path
+
+    from jobpulse.portfolio_variants import load_auto_portfolio
+    from jobpulse.project_portfolio import _LEGACY_PORTFOLIO_FALLBACK
+
+    db_path = Path(__file__).parent.parent / "data" / "user_profile.db"
+    if not db_path.exists():
+        logger.warning("user_profile.db missing — skipping cv_projects sync")
+        return
+
+    auto = load_auto_portfolio() or {}
+    auto_entries = (auto.get("entries") or {})
+
+    rows: list[tuple[str, str, str, int, str, str]] = []
+    now = datetime.now(UTC).isoformat()
+    sort_order = 0
+
+    # Manual portfolio first (priority sort), then auto entries.
+    for repo_name, entry in _LEGACY_PORTFOLIO_FALLBACK.items():
+        if not isinstance(entry, dict):
+            continue
+        title = (entry.get("title") or "").strip()
+        url = (entry.get("url") or "").strip()
+        bullets = entry.get("bullets") or []
+        if not title or not url:
+            continue
+        rows.append((title, url, json.dumps(bullets), sort_order, now, "manual"))
+        sort_order += 1
+
+    for repo_name, entry in auto_entries.items():
+        if not isinstance(entry, dict):
+            continue
+        title = (entry.get("title") or "").strip()
+        url = (entry.get("url") or f"https://github.com/{repo_name}").strip()
+        bullets = entry.get("bullets") or []
+        if not title or not bullets:
+            continue
+        rows.append((title, url, json.dumps(bullets), sort_order, now, "auto_github"))
+        sort_order += 1
+
+    if not rows:
+        logger.warning("Portfolio→DB sync: no entries to write")
+        return
+
+    upserts = 0
+    with sqlite3.connect(str(db_path)) as conn:
+        for title, url, bullets_json, sort_order, ts, source in rows:
+            existing = conn.execute(
+                "SELECT id FROM cv_projects WHERE url = ?", (url,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE cv_projects SET title = ?, bullets = ?, "
+                    "sort_order = ?, updated_at = ?, source = ? WHERE url = ?",
+                    (title, bullets_json, sort_order, ts, source, url),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO cv_projects "
+                    "(title, url, bullets, sort_order, updated_at, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (title, url, bullets_json, sort_order, ts, source),
+                )
+            upserts += 1
+        conn.commit()
+    logger.info("Portfolio→cv_projects DB sync: upserted %d rows", upserts)
+
+
 # ---------------------------------------------------------------------------
 # Source 1: GitHub repos
 # ---------------------------------------------------------------------------
@@ -378,6 +469,16 @@ def sync_profile() -> None:
             sync_portfolio_entries(repos)
         except Exception as exc:  # noqa: BLE001
             logger.error("Portfolio auto-generation failed: %s", exc)
+
+    # --- Source 1d: Mirror auto + manual portfolio into user_profile.db ---
+    # Without this step, the canonical cv_projects table never gets refreshed
+    # from the GitHub-derived portfolio JSON. CV generation reads from the DB
+    # via ProfileStore.cv_projects() — leaving the JSON-only path means the DB
+    # goes stale or fully empty for users who never seeded it manually.
+    try:
+        _sync_portfolio_to_user_profile_db()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Portfolio→cv_projects DB sync failed: %s", exc)
 
     # --- Source 2: Resume skills ---
     try:
