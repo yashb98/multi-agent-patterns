@@ -554,10 +554,14 @@ class MemoryManager:
 
         Returns a summary of actions taken.
         """
-        if not self._forgetting:
+        if not self._forgetting or not self._sqlite:
             return {"enabled": False, "reason": "ForgettingEngine not configured"}
         try:
-            result = self._forgetting.sweep(dry_run=dry_run)
+            result = self._forgetting.sweep(
+                self._sqlite,
+                sync_service=self._sync,
+                dry_run=dry_run,
+            )
             logger.info(
                 "Forgetting sweep complete: %d decayed, %d promoted, %d demoted, %d tombstoned",
                 result.get("decayed", 0),

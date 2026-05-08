@@ -155,3 +155,56 @@ class ForgettingEngine:
                 actions["demote_to"] = Lifecycle.COLD
 
         return actions
+
+    def sweep(
+        self,
+        sqlite_store,
+        sync_service=None,
+        dry_run: bool = False,
+        decay_change_threshold: float = 0.05,
+    ) -> dict:
+        """Iterate every active memory and apply forgetting actions.
+
+        Returns counters {evaluated, decayed, promoted, demoted, tombstoned}.
+        ``decay_change_threshold`` skips no-op decay writes when the new score
+        is within ``threshold`` of the persisted score.
+        """
+        stats = {
+            "evaluated": 0,
+            "decayed": 0,
+            "promoted": 0,
+            "demoted": 0,
+            "tombstoned": 0,
+        }
+        for memory_id in sqlite_store.all_memory_ids():
+            entry = sqlite_store.get_by_id(memory_id)
+            if entry is None:
+                continue
+            actions = self.evaluate_single(entry)
+            stats["evaluated"] += 1
+
+            new_decay = actions.get("decay_score")
+            if (
+                new_decay is not None
+                and abs(new_decay - entry.decay_score) > decay_change_threshold
+            ):
+                if not dry_run:
+                    sqlite_store.update_decay(memory_id, new_decay)
+                stats["decayed"] += 1
+
+            if "promote_to" in actions:
+                if not dry_run:
+                    sqlite_store.update_lifecycle(memory_id, actions["promote_to"])
+                stats["promoted"] += 1
+            elif "demote_to" in actions:
+                if not dry_run:
+                    sqlite_store.update_lifecycle(memory_id, actions["demote_to"])
+                stats["demoted"] += 1
+            elif actions.get("tombstone"):
+                if not dry_run:
+                    sqlite_store.tombstone(memory_id)
+                    if sync_service is not None:
+                        sync_service.propagate_tombstone(memory_id, entry.tier)
+                stats["tombstoned"] += 1
+
+        return stats

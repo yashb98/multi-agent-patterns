@@ -124,3 +124,115 @@ class TestSweep:
         entry.confidence = 0.5
         actions = engine.evaluate_single(entry)
         assert actions.get("demote_to") == Lifecycle.COLD
+
+
+class TestSweepLoop:
+    """Regression coverage for the sweep() loop wired into MemoryManager.
+
+    Pre-fix, ForgettingEngine had no sweep() method but
+    MemoryManager.run_forgetting_sweep called self._forgetting.sweep(...).
+    The error was swallowed by a try/except — the hourly forgetting loop
+    silently failed in production.
+    """
+
+    def test_sweep_no_entries(self, engine):
+        from shared.memory_layer._sqlite_store import SQLiteStore
+        store = SQLiteStore(db_path=":memory:")
+        result = engine.sweep(store)
+        assert result == {
+            "evaluated": 0, "decayed": 0, "promoted": 0,
+            "demoted": 0, "tombstoned": 0,
+        }
+
+    def test_sweep_promotes_stm_to_mtm(self, engine, tmp_path):
+        from shared.memory_layer._sqlite_store import SQLiteStore
+        from shared.memory_layer._entries import Lifecycle, MemoryTier
+        store = SQLiteStore(db_path=str(tmp_path / "mem.db"))
+        from tests.shared.memory_layer.conftest import make_entry
+        entry = make_entry(
+            lifecycle=Lifecycle.STM, access_count=4,
+            tier=MemoryTier.EPISODIC,
+        )
+        store.insert(entry)
+
+        result = engine.sweep(store)
+
+        assert result["evaluated"] == 1
+        assert result["promoted"] == 1
+        # Verify persistence
+        reloaded = store.get_by_id(entry.memory_id)
+        assert reloaded.lifecycle == Lifecycle.MTM
+
+    def test_sweep_tombstones_decayed_stm(self, engine, tmp_path):
+        from shared.memory_layer._sqlite_store import SQLiteStore
+        from shared.memory_layer._entries import Lifecycle, MemoryTier
+        store = SQLiteStore(db_path=str(tmp_path / "mem.db"))
+        from tests.shared.memory_layer.conftest import make_entry
+        entry = make_entry(
+            lifecycle=Lifecycle.STM, decay_score=0.2,
+            tier=MemoryTier.EPISODIC,
+        )
+        # Push last_accessed back so decay drops below threshold
+        entry.last_accessed = datetime.now() - timedelta(hours=100)
+        store.insert(entry)
+
+        result = engine.sweep(store)
+
+        assert result["tombstoned"] == 1
+        reloaded = store.get_by_id(entry.memory_id)
+        # tombstoned rows are filtered out of get_by_id
+        assert reloaded is None
+
+    def test_sweep_dry_run_no_writes(self, engine, tmp_path):
+        from shared.memory_layer._sqlite_store import SQLiteStore
+        from shared.memory_layer._entries import Lifecycle, MemoryTier
+        store = SQLiteStore(db_path=str(tmp_path / "mem.db"))
+        from tests.shared.memory_layer.conftest import make_entry
+        entry = make_entry(
+            lifecycle=Lifecycle.STM, access_count=4,
+            tier=MemoryTier.EPISODIC,
+        )
+        store.insert(entry)
+
+        result = engine.sweep(store, dry_run=True)
+
+        assert result["promoted"] == 1
+        # Lifecycle should remain unchanged
+        reloaded = store.get_by_id(entry.memory_id)
+        assert reloaded.lifecycle == Lifecycle.STM
+
+    def test_sweep_propagates_tombstone_to_sync(self, engine, tmp_path):
+        from shared.memory_layer._sqlite_store import SQLiteStore
+        from shared.memory_layer._entries import Lifecycle, MemoryTier
+        store = SQLiteStore(db_path=str(tmp_path / "mem.db"))
+        from tests.shared.memory_layer.conftest import make_entry
+        entry = make_entry(
+            lifecycle=Lifecycle.STM, decay_score=0.2,
+            tier=MemoryTier.EPISODIC,
+        )
+        entry.last_accessed = datetime.now() - timedelta(hours=100)
+        store.insert(entry)
+
+        sync = MagicMock()
+        engine.sweep(store, sync_service=sync)
+
+        sync.propagate_tombstone.assert_called_once_with(
+            entry.memory_id, MemoryTier.EPISODIC,
+        )
+
+    def test_run_forgetting_sweep_via_manager(self, tmp_path):
+        """MemoryManager.run_forgetting_sweep must NOT silently AttributeError."""
+        from shared.memory_layer._manager import MemoryManager
+        from shared.memory_layer._sqlite_store import SQLiteStore
+        store = SQLiteStore(db_path=str(tmp_path / "mem.db"))
+        manager = MemoryManager(
+            storage_dir=str(tmp_path),
+            sqlite_store=store,
+        )
+
+        # Pre-fix this returned {"enabled": True, "error": "...has no attribute 'sweep'"}
+        result = manager.run_forgetting_sweep(dry_run=True)
+
+        assert "error" not in result, f"sweep raised: {result.get('error')}"
+        assert result["evaluated"] == 0  # empty store
+        assert result["decayed"] == 0
