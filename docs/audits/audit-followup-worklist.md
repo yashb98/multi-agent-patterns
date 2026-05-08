@@ -476,7 +476,78 @@ Fixes commits: `aa6fe74` (B-1 forced_level + M-A pin_memory), `619ee4c` (M-B imp
 
 ---
 
-## Subsystem 11 — `ats_adapters`
+## Subsystem 11 — `memory_layer`
+
+Audit doc: `docs/audits/audit-memory_layer.md`
+Fix commits: `e9b2919` (B-1 forgetting sweep), `45432ec` (B-2 dim guard)
+
+### Deferred majors
+
+| ID | Location | Description | Why deferred |
+|---|---|---|---|
+| 🔴 M-11.A | `_manager.py:151` (constructed) → never invoked | `AutonomousLinker.link_with_neighbors` is wired into `MemoryManager.__init__` but no production callsite ever calls it. Result: Neo4j has Memory nodes but **zero edges** in production → 3 of 6 ForgettingEngine signals (`degree`/`count_similar`/`avg_downstream_score`) always return defaults → `compute_decay` is half-functional. | Per-write Qdrant top-K + SQLite hydrate + Neo4j round-trip in the bg worker is a behavioral change worth its own session with proper benchmarks. Same shape as S5 M-5.3 / M-5.4. |
+| 🔴 M-11.B | `_stores.py:217-248` `SemanticMemory.learn` | `max_facts=500` is documented as cap but `learn` has **no eviction logic**. Production `semantic.json` has 1 041 entries despite the cap; will hit ~10 K / 5 MB within ~6 months at current write rate, blocking startup `_load`. | Pure additive cleanup (~6 LOC, mirror EpisodicMemory eviction). Bundle with M-11.C (the cognitive read-path uses the same JSON store and the cap matters more for reads). |
+| 🔴 M-11.C | `_manager.py:364, 368` `get_procedural_entries` / `get_episodic_entries` | Cognitive engine consumers (`_classifier.py:85,101`, `_engine.py:223`, `_strategy.py:53,98`, `_reflexion.py:122`) read JSON-only (capped 100/200) while SQLite has 19 789 procedural / 203 episodic. Production has ~378 distinct procedural strategies → cognitive sees ~1/4. CLAUDE.md claim "All old API calls now feed the 3-engine memory stack" holds for writes but not reads. | Cross-system contract change — `get_procedural_entries` returns typed `list[ProceduralEntry]`; SQLite returns `list[MemoryEntry]` with payload-encoded fields. S6 W-2 (`_classifier.load_persisted_stats` reaches into `memory.semantic.facts` directly) shares the root cause. Joint S6 / S11 follow-up. |
+| 🔴 M-11.D | `_neo4j_store.py:46-97` (env config, not code) | In dev env Neo4j `verify()` fails with `Unsupported authentication token, missing key 'credentials'` because `NEO4J_PASSWORD` is unset. Every `_neo4j_store` method returns its no-op default — **graph signals dormant** for the entire audit. Neo4j-dependent code paths cannot be exercised in dev. | Add `NEO4J_PASSWORD` to `.env.example`, document the docker-compose default in `shared/memory_layer/CLAUDE.md`. |
+| 🔴 M-11.E | `_sync.py:88-115` `reconcile()` | O(N) embedding + O(N) Qdrant `has_point` per missing entry. With 27 786 entries that's ~$0.50 per full reconcile and ~23 min latency at 50 ms/entry. `multi_bot_listener.py:45` calls this on every daemon start. Pre-B-2 fix, MiniLM dim-mismatch writes silently failed → Qdrant divergence grew → reconcile work grew unboundedly. | Performance cleanup. Fix shape: batch `has_point` lookups (Qdrant supports `count` + filters). |
+
+### Minors
+
+| ID | Location | Description |
+|---|---|---|
+| 🟡 m-11.1 | `_stores.py:178-188, 308-320, 421-432` | EpisodicMemory `_save/_load` warning-log on failure but SemanticMemory and ProceduralMemory `_save/_load` debug-log only. Inconsistent with error-handling rules — JSON I/O failures should all be `warning`. |
+| 🟡 m-11.2 | `_sqlite_store.py:116-131` `_record_read` | Writes `memory_access_log` only when `get_trajectory_id() != "no_trajectory"` — production has 0 rows because trajectory_id is rarely set in the apply path. Either wire trajectory_id through cognitive's `_engine.py` or delete the table. |
+| 🟡 m-11.3 | `_manager.py:518-525` `pin_memory` | Writes `payload.pinned=True` to **SQLite only**; JSON-backed stores have no pin concept. Pinning a procedure does NOT prevent ProceduralMemory's eviction at `_stores.py:365-370` from dropping it. The OptimizationEngine pin signal is half-applied. |
+| 🟡 m-11.4 | `_manager.py:451-516` `query()` FTS path | "FTS fallback" uses `query_active(min_decay=...)` then Python-side substring `in` check. With 27 786 active rows that's a full table scan + Python lowercase per row. Fine while Qdrant is up; degrades sharply when down. SQLite supports FTS5 — no FTS5 virtual table is created. |
+| 🟡 m-11.5 | `_embedder.py:37` vs `_manager.py:639` | Class default `primary='bge'` but `_build_three_engine_kit` defaults `primary='voyage'`. Defaults disagree — direct constructor calls (e.g. tests) get a different model than the production singleton. |
+| 🟡 m-11.6 | `_sync.py:46-50` `_run_worker` | Busy-polls `queue.get(timeout=0.5)` — ~2 wakeups/sec when idle. 24/7 daemon idle CPU. Cleaner: blocking `get()` + sentinel item posted by `shutdown`. |
+| 🟡 m-11.7 | `_qdrant_store.py:201` | `point.payload["memory_id"]` — KeyError if upsert ever wrote a point without memory_id. Today safe (line 109 always sets it); `.get()` is free defensive. |
+| 🟡 m-11.8 | `_embedder.py:107` | `except Exception` for Voyage failure broader than BGE's `(URLError, OSError, RuntimeError, TimeoutError)` shape; mirror the BGE try/except. |
+| 🟡 m-11.9 | `_manager.py:200-207` `get_context_for_agent` experiential-memory path | Bare `except Exception: pass` silently drops experiential context. C-tier (pattern-only) but breaks OPRAL "no silent swallow". |
+
+### Nits
+
+| ID | Location | Description |
+|---|---|---|
+| ⚪ n-11.1 | `_neo4j_store.py:198-201, 255-258` | `_ALLOWED_EDGE_TYPES` literal duplicated in `create_edge` and `batch_create_edges`. Extract to module-level frozenset. |
+| ⚪ n-11.2 | `_stores.py:96, 212, 338` | Default `storage_path="/tmp/agent_..."` for ShortTerm/Episodic/Semantic/Procedural is dev-only legacy; tests use tmp_path; production overrides. Could `raise ValueError` instead of silently using `/tmp`. |
+| ⚪ n-11.3 | `_pattern.py:52` | `HybridSearch(":memory:")` rebuilt on every process start (L57-64). Pattern-tier (C) so low impact, but cold-start cost. |
+
+### Dead code
+
+| ID | Location |
+|---|---|
+| 💀 d-11.1 | `data/agent_memory/memory.db` (0 bytes) — orphan file, no production code references the path. Safe to delete. |
+| 💀 d-11.2 | `_linker.py` whole module (apply path) — see M-11.A. |
+| 💀 d-11.3 | `_router.py` `TieredRouter` — pattern-tier only (C), constructed but never invoked from apply path. |
+| 💀 d-11.4 | `_qdrant_store.py:213` `search_all_tiers` — no production caller. |
+| 💀 d-11.5 | `_qdrant_store.py:240` `count` — test/analytics only. |
+| 💀 d-11.6 | `_sqlite_store.py:262, 271, 280, 289, 307` — `query_by_tier`, `query_by_domain`, `query_by_lifecycle`, `query_by_decay_desc`, `query_tombstoned_recent` test/analytics only; `MemoryManager.query` doesn't use them. |
+| 💀 d-11.7 | `_stores.py` `ShortTermMemory` whole class — pattern-tier only (C). |
+| 💀 d-11.8 | `_pattern.py` whole module (apply path) — pattern-tier only (C). |
+| 💀 d-11.9 | `_entries.py:108` `MemoryEntry.touch` — no production caller (`SQLiteStore.touch` is canonical). |
+
+### Wiring gaps
+
+| ID | Description |
+|---|---|
+| 🔌 W-11.1 | Linker not invoked, see M-11.A. |
+| 🔌 W-11.2 | `memory_access_log` table is write-conditional + read-empty (m-11.2). Producer requires `trajectory_id != "no_trajectory"`; 0 rows in prod; no reader exists in repo. |
+| 🔌 W-11.3 | `pin_memory` only protects SQLite, not JSON cap (m-11.3). OptimizationEngine pins are half-applied. |
+| 🔌 W-11.4 | `get_procedural_entries`/`get_episodic_entries` read JSON; `query` reads SQLite — same store, divergent reads (M-11.C). |
+| 🔌 W-11.5 | `cognitive/_classifier.py:179` reaches into `self._memory.semantic.facts.items()` directly (S6 W-2 carryover). The underlying gap is in `MemoryManager` (no public `query_facts_by_domain` accessor). |
+
+### Doc deltas
+
+| ID | Description |
+|---|---|
+| 📝 D-11.1 | `shared/memory_layer/CLAUDE.md` "Forgetting sweep runs hourly — 6-signal decay" — true post-fix only because `sweep` now exists. Add a note that 3 of 6 signals (connectivity/impact/uniqueness) depend on `AutonomousLinker.link_with_neighbors` being wired and today it isn't (M-11.A). |
+| 📝 D-11.2 | `jobpulse/CLAUDE.md` "All old API calls (`learn_fact`, `record_episode`, `learn_procedure`) now automatically feed the 3-engine memory stack" — correct for writes; reads from `get_procedural_entries`/`get_episodic_entries` still come from JSON-only legacy stores (M-11.C). Document the asymmetry until resolved. |
+| 📝 D-11.3 | `shared/CLAUDE.md` "ALL memory access goes through MemoryManager" — true except for `cognitive/_classifier.py:179` (W-11.5 / S6 W-2 carryover). |
+
+---
+
+## Subsystem 12 — `ats_adapters`
 
 *pending audit*
 
@@ -488,6 +559,8 @@ Patterns recurring across S1-S4 worth a thematic followup:
 
 1. **Regex-for-classification violations (Principle 8)** — recurring in S1 (M-3, M-4), S2 (M-B, M-C, M-D), S3 (M-C, m-3 i18n cookies, gmail_verify), S4 (B-6, B-8). The migration plan `docs/superpowers/plans/2026-05-04-regex-to-dynamic-migration.md` is the right home.
 2. **Verification claims without readback** — concentrated in S1 (M-1 family) but the same pattern likely recurs in any "fill X then return success" code. Worth a sweep in S5 (`post_apply`) and S11 (`ats_adapters`).
-3. **Bare `except: pass` swallowing real errors** — S1 (M-4), S2 (n-4), S3 (silently-handled cognitive escalation, fixed), S4 (B-4 silently-broken feedback loop, fixed). Add a lint rule.
-4. **Dead/unused code in production path** — `scan_current_values` (S1), `verify_submission` (S3), `account_manager` API (S3), `verification_detector` (S3), `screening_detector` (S4), `find_matching_pattern` (S4). Candidate for a single deletion PR after all 11 audits.
-5. **CLAUDE.md / architecture-doc drift** — S3 introduced 4 doc deltas; S4 already shipped doc updates inline. After all 11 audits, batch the remaining deltas into one architecture-doc PR (per the audit prompt's STEP 7 instruction).
+3. **Bare `except: pass` swallowing real errors** — S1 (M-4), S2 (n-4), S3 (silently-handled cognitive escalation, fixed), S4 (B-4 silently-broken feedback loop, fixed), S11 (m-11.9 `get_context_for_agent` experiential path). Add a lint rule.
+4. **Dead/unused code in production path** — `scan_current_values` (S1), `verify_submission` (S3), `account_manager` API (S3), `verification_detector` (S3), `screening_detector` (S4), `find_matching_pattern` (S4), `_linker` whole module (S11), `_router.TieredRouter` (S11), `_pattern` whole module (S11), `MemoryEntry.touch` (S11), `0-byte memory.db` (S11). Candidate for a single deletion PR after all 12 audits.
+5. **CLAUDE.md / architecture-doc drift** — S3 introduced 4 doc deltas; S4 already shipped doc updates inline; S11 adds 3 more (forgetting sweep signals, JSON-vs-SQLite read asymmetry, direct attribute reach-through). Batch into one architecture-doc PR.
+6. **Method called but never defined** (silent AttributeError swallowed by try/except) — S11 B-1 (`ForgettingEngine.sweep`). Audit other facade methods that catch generic Exception around bare attribute calls; same shape can hide for years. Suggested grep: `rg "except Exception.*log.*warning|debug" -A 0 shared/ jobpulse/` correlated with method-name lookups.
+7. **Wired-but-unconsumed infrastructure** — S5 M-5.3 (heuristic-replay `record_heuristic_outcome` etc.), S5 M-5.4 (cross-platform Qdrant transfer), S5 M-5.5 (PRAXIS-aware FormExperienceDB), S6 d-1 (StrategyComposer.record_template_outcome), S10 d-10.2 (gate_policy module), S11 M-11.A (AutonomousLinker). Pattern: code exists, instantiation exists, no production callsite invokes the contract. After all 12 audits, decide wire-or-delete on each.
