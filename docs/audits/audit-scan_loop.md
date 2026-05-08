@@ -107,14 +107,39 @@ Schema agreement: producer (linkedin.py:252) and consumer (`engine.record_event`
 
 - `jobpulse/job_scanners/linkedin.py:252` **[major — partial fix shipped]**
   `record_success(engine, "linkedin", signals)` ran unconditionally at the end of the scan. If every paginated request returned 429 the inner retry loop breaks and we still log "success" — `signals.record_request()` (line 89) increments on every send regardless of status, and `record_success` only guards `requests_count > 0`, not "saw any 200". This actively pollutes `scan_learning.events` with `outcome=success` rows for blocked sessions and resets cooldown via `engine.reset_cooldown` (`__init__.py:170`) when in fact we just got rate-limited. **Partial fix shipped**: only call `record_success` when `results` is non-empty (handles the worst case — every page blocked → zero results → no spurious success). The 429-mid-pagination case (some 200s, some 429s, non-empty results) still records success and is deferred to the M-B/C/D fix that introduces explicit block-event recording. Test: `test_scan_linkedin_skips_record_success_on_zero_results` + `test_scan_linkedin_records_success_when_results_non_empty`.
-- `jobpulse/job_scanners/indeed.py:43` **[major — deferred]**
-  `scan_indeed` has **no scan_learning wiring at all** — no `engine.can_scan_now`, no `get_adaptive_params`, no `record_success`, no `handle_block`. JobSpy errors are caught and logged at line 93 but never recorded. The cooldown system can never engage for Indeed because there is no producer that emits a block event. Indeed is the platform with the highest empirical block rate in the codebase (per `jobpulse/scan_learning.py` LLM-analysis comments) so this is the worst gap.
-- `jobpulse/job_scanners/reed.py:103` **[major — deferred]**
-  `scan_reed` consults `engine.can_scan_now("reed")` at the start (line 39) but never emits a `record_success` or block event. After the `for retry in range(3)` exhausts on 429, the `for…else: break` exits silently — no event recorded. Reed has the lowest block rate empirically (API path) but the cooldown-engagement asymmetry is the same root cause as M-A/M-B/M-D.
-- `jobpulse/job_scanners/__init__.py:123` **[major — deferred]**
-  `handle_block` is defined for httpx scanners but takes a `wall: Any` parameter whose only fields used (`wall.wall_type`) come from `verification_detector.VerificationWall`. httpx scanners can't produce a verification wall — so this function is shape-incompatible with every production scanner. Either the type contract is wrong (it should accept a string `wall_type` directly, like `"rate_limit"` for 429, `"forbidden"` for 403) or the function is dead. Tests pass because the test file fakes a `wall` object with the right shape (`tests/jobpulse/test_scan_learning_wiring.py:130`).
+- `jobpulse/job_scanners/indeed.py:43` **[major — ✅ FIXED in pipeline-bugs S9]**
+  Pre-fix `scan_indeed` had no scan_learning wiring at all. Post-fix:
+  `engine.can_scan_now("indeed")` cooldown gate; `SessionSignals` tracks
+  one logical request per search term (JobSpy is opaque, so per-term is
+  the only honest unit); `record_success` after results land; `handle_block`
+  on JobSpy exceptions whose message matches the
+  `_BLOCK_PATTERNS = ("blocked", "captcha", "rate", "403", "429", "forbidden")`
+  substring set. Block detection is heuristic by design — JobSpy is a
+  third-party black box so we trade perfect detection for clear semantics.
+- `jobpulse/job_scanners/reed.py:103` **[major — ✅ FIXED in pipeline-bugs S9]**
+  Pre-fix `scan_reed` had `can_scan_now` only. Post-fix: `SessionSignals`
+  tracks every httpx request via `record_request()` + `last_load_time_ms`;
+  `record_success` fires after all terms complete with non-empty results;
+  the `for retry in range(3)` exhaustion path now calls
+  `handle_block(engine, "reed", "http_429", signals)` and breaks the term
+  loop; `httpx.HTTPStatusError` for status in `(429, 503)` calls
+  `handle_block` with `"http_<status>"`. Auth errors (401/403) are
+  explicitly NOT treated as blocks — wrong-API-key shouldn't trip a
+  cooldown.
+- `jobpulse/job_scanners/__init__.py:123` **[major — ✅ FIXED in pipeline-bugs S9]**
+  Pre-fix `handle_block` insisted on `wall.wall_type`; httpx scanners
+  couldn't construct a VerificationWall. Post-fix:
+  `wall_type = wall.wall_type if hasattr(wall, "wall_type") else str(wall)`.
+  Backwards-compatible — LinkedIn's existing test fixture
+  (`SimpleNamespace(wall_type="turnstile")`) still works; httpx scanners
+  pass `"http_429"` / `"jobspy_exception"` directly.
 
-> The four majors all share one fix: a producer that fires on every scanner exit-path (success path, partial-success, terminal-block) so `scan_learning` actually gets the data it consumes. Implementing that touches three scanners + `__init__.py` + a contract change to `handle_block` and is too large to share a session with the B-1 fix. Tracked for a follow-up session.
+> ✅ The four-major cluster from this section is now closed in S9 except
+> for the linkedin partial fix (still applied). Tests:
+> `tests/jobpulse/test_scan_loop_wiring.py` (8 tests; 6 fail pre-fix).
+> Live verification: real `scan_reed` against the Reed REST API produced
+> a `platform=reed, outcome=success` row in `data/scan_learning.db` —
+> commit message has the timestamp.
 
 #### MINORS
 

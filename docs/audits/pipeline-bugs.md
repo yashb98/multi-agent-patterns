@@ -103,9 +103,9 @@ broader redesign.
 
 | ID | Location | Description |
 |---|---|---|
-| 🔴 M-9.B | `jobpulse/job_scanners/indeed.py:43` | `scan_indeed` has no scan_learning wiring at all (no `can_scan_now`, `record_success`, or block-event recording). Highest-block-rate platform empirically. |
-| 🔴 M-9.C | `jobpulse/job_scanners/reed.py:103` | `scan_reed` consults `engine.can_scan_now` but never emits success or block events. |
-| 🔴 M-9.D | `jobpulse/job_scanners/__init__.py:123` | `handle_block` is shape-incompatible with httpx scanners — typed for `verification_detector.VerificationWall` but only test fakes pass it. |
+| ✅ S9 | `jobpulse/job_scanners/indeed.py:scan_indeed` | Full ScanLearningEngine wiring: `can_scan_now("indeed")` cooldown gate; `SessionSignals` tracks one logical request per search term; `record_success` after results land; `handle_block` on JobSpy exceptions whose message matches `_BLOCK_PATTERNS = ("blocked", "captcha", "rate", "403", "429", "forbidden")`. JobSpy is opaque so block detection is heuristic — substring match on the exception, not perfect HTTP introspection. |
+| ✅ S9 | `jobpulse/job_scanners/reed.py:scan_reed` | `SessionSignals` tracks every httpx request with `record_request()` and `last_load_time_ms`. `record_success` fires after all terms complete with results. Terminal 429 (3 retries exhausted) and `httpx.HTTPStatusError` for status in `(429, 503)` both call `handle_block(engine, "reed", "http_<status>", signals)`. Auth errors (401/403) are explicitly NOT treated as blocks — wrong-API-key shouldn't trip a cooldown. |
+| ✅ S9 | `jobpulse/job_scanners/__init__.py:handle_block` | Now `wall.wall_type if hasattr(wall, "wall_type") else str(wall)` — accepts both VerificationWall objects (LinkedIn cognitive path) and plain strings like `"http_429"` (httpx scanners). Backwards-compatible duck-typing. |
 
 ### S10 — `optimization_engine`
 

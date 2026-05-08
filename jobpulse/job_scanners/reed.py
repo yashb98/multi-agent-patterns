@@ -14,9 +14,12 @@ from shared.logging_config import get_logger
 from jobpulse.config import REED_API_KEY
 from jobpulse.job_scanners import (
     MAX_REQUESTS_PER_PLATFORM,
+    SessionSignals,
     anti_detection_sleep,
+    handle_block,
     make_job_id,
     random_ua,
+    record_success,
     to_float,
 )
 from jobpulse.models.application_models import SearchConfig
@@ -44,12 +47,18 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
         )
         return []
 
+    ua = random_ua()
+    signals = SessionSignals("reed", ua)
+
     results: list[dict[str, Any]] = []
     base_url = "https://www.reed.co.uk/api/1.0/search"
+    blocked_terminally = False
 
     for title in config.titles:
-        if len(results) >= MAX_REQUESTS_PER_PLATFORM:
+        if blocked_terminally or len(results) >= MAX_REQUESTS_PER_PLATFORM:
             break
+
+        signals.last_query = title
 
         try:
             logger.info("scan_reed: searching '%s' in '%s'", title, config.location)
@@ -75,12 +84,17 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
 
                     data = None
                     for retry in range(3):
+                        load_start = time.monotonic()
                         resp = client.get(
                             base_url,
                             params=params,
                             auth=(REED_API_KEY, ""),
-                            headers={"User-Agent": random_ua()},
+                            headers={"User-Agent": ua},
                         )
+                        signals.last_load_time_ms = int(
+                            (time.monotonic() - load_start) * 1000
+                        )
+                        signals.record_request()
 
                         if resp.status_code == 429:
                             wait = 2 ** (retry + 1)
@@ -100,7 +114,10 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
                         data = resp.json()
                         break
                     else:
+                        # for/else: retries exhausted → terminal 429 block
                         logger.error("scan_reed: rate limited after 3 retries for '%s' page %d", title, page + 1)
+                        handle_block(engine, "reed", "http_429", signals)
+                        blocked_terminally = True
                         break
 
                     if data is None:
@@ -152,12 +169,18 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
                     time.sleep(random.uniform(0.5, 1.5))
 
         except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
             logger.error(
                 "scan_reed: HTTP %s for title '%s': %s",
-                exc.response.status_code,
-                title,
-                exc,
+                status, title, exc,
             )
+            # 429 / 503 are scraper-block signals; 401 / 403 mean wrong API
+            # key — that's a config problem, not a block. Don't trip a
+            # cooldown for auth issues (Reed would silently throttle real
+            # scans afterwards). 5xx server errors are transient.
+            if status in (429, 503):
+                handle_block(engine, "reed", f"http_{status}", signals)
+                blocked_terminally = True
         except Exception as exc:
             logger.error("scan_reed: unexpected error for title '%s': %s", title, exc)
 
@@ -195,6 +218,9 @@ def scan_reed(config: SearchConfig) -> list[dict[str, Any]]:
             logger.debug("scan_reed: detail fetch failed for %s: %s", reed_id, exc)
 
         time.sleep(random.uniform(0.5, 1.5))
+
+    if results and not blocked_terminally:
+        record_success(engine, "reed", signals)
 
     logger.info("scan_reed: returning %d total results", len(results))
     return results
