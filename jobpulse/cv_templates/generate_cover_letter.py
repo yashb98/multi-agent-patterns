@@ -231,8 +231,16 @@ def generate_cover_letter_pdf(
         points = build_dynamic_points(matched_projects, required_skills)
         try:
             points = polish_points_llm(points, role, company, required_skills)
-        except Exception:
-            pass  # Use unpolished points on LLM failure
+        except Exception as exc:
+            # Don't swallow silently — polish failure means the generic
+            # deterministic points ship instead of LLM-refined ones, which is
+            # an operator-visible quality drop. Same shape as scan_pipeline
+            # CV tailoring (S8 audit M-B). Non-blocking.
+            logger.warning(
+                "generate_cover_letter: polish_points_llm failed for %s — "
+                "using unpolished deterministic points: %s",
+                company, exc, exc_info=True,
+            )
 
     # Build dynamic intro from matched projects
     if intro is None and matched_projects:

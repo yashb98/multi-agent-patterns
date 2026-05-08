@@ -583,12 +583,20 @@ def generate_materials(
     try:
         extra_skills = build_extra_skills(listing.required_skills, listing.preferred_skills)
 
-        # Pre-generation: sync Notion Skill Tracker
+        # Pre-generation: sync Notion Skill Tracker (MANDATORY step 1 per
+        # `.claude/rules/jobs.md`). Non-blocking but the failure MUST be
+        # visible — silent swallow lets stale verified-skill data ship into
+        # every CV with zero observability. Same shape as S7 M-A (db
+        # access exception swallowed silently).
         try:
             from jobpulse.skill_tracker_notion import sync_verified_to_profile
             sync_verified_to_profile()
-        except Exception:
-            pass  # Non-blocking
+        except Exception as exc:
+            logger.warning(
+                "scan_pipeline: sync_verified_to_profile failed before CV generation "
+                "for %s — CV may use stale verified skills: %s",
+                listing.job_id[:8], exc, exc_info=True,
+            )
 
         # Dynamic project selection from MindGraph (archetype-aware)
         archetype = getattr(listing, "archetype", None)
@@ -626,7 +634,15 @@ def generate_materials(
             if tailored.projects:
                 matched_projects = tailored.projects
         except Exception as exc:
-            logger.debug("scan_pipeline: CV tailoring failed, using templates: %s", exc)
+            # Tailoring is the value-add — silent debug-only on failure means
+            # generic template CVs ship without any operator signal. Promote
+            # to warning so failures (LLM quota, key, model name change) are
+            # visible. CV still falls back to templates so apply path keeps
+            # running.
+            logger.warning(
+                "scan_pipeline: CV tailoring failed, using templates: %s",
+                exc, exc_info=True,
+            )
 
         # ATS scoring — include all CV sections so soft skills in
         # Experience/Community are counted toward keyword matches
@@ -716,7 +732,13 @@ def generate_materials(
                         job_id=listing.job_id,
                     )
                 except Exception as exc:
-                    logger.debug("scan_pipeline: scrutiny calibration record failed: %s", exc)
+                    # Calibration is a learning system — silent debug means
+                    # the calibrator never learns if a schema migration breaks
+                    # writes. Warning surfaces the regression. Non-blocking.
+                    logger.warning(
+                        "scan_pipeline: scrutiny calibration record failed: %s",
+                        exc, exc_info=True,
+                    )
             except Exception as exc:
                 logger.warning("scan_pipeline: Gate 4B LLM failed: %s", exc)
 

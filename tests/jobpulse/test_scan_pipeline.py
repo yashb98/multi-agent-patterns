@@ -606,6 +606,63 @@ class TestGenerateMaterials:
         assert len(notion_failures) == 1
         assert "Notion 502" in notion_failures[0]
 
+    def test_sync_verified_failure_is_logged_not_swallowed(self, tmp_path, caplog):
+        """Regression: sync_verified_to_profile failures must surface in logs.
+
+        Pre-fix `try: sync_verified_to_profile() except Exception: pass`
+        silently swallowed errors with no signal — stale Notion-verified
+        skills propagated into every CV with zero observability. Post-fix
+        the failure logs at WARNING with `exc_info=True` so operators can
+        see why CV skills are stale. Same shape as S7 audit M-A.
+        """
+        import logging
+        from jobpulse.scan_pipeline import generate_materials
+
+        listing = _make_listing()
+        db = _make_db()
+        notion_failures: list = []
+
+        mock_ats = MagicMock()
+        mock_ats.total = 70.0  # below 85 → no PDF gen, faster test
+
+        caplog.set_level(logging.WARNING, logger="jobpulse.scan_pipeline")
+
+        with (
+            patch("jobpulse.scan_pipeline.create_application_page", return_value=None),
+            patch("jobpulse.scan_pipeline.build_extra_skills", return_value={}),
+            patch("jobpulse.scan_pipeline.get_best_projects_for_jd", return_value=[]),
+            patch("jobpulse.scan_pipeline.fetch_and_cache_repos", return_value=[]),
+            patch("jobpulse.scan_pipeline.pick_top_projects", return_value=[]),
+            patch("jobpulse.scan_pipeline.get_role_profile", return_value={}),
+            patch("jobpulse.scan_pipeline.score_ats", return_value=mock_ats),
+            patch("jobpulse.scan_pipeline.BASE_SKILLS", {}),
+            patch("jobpulse.scan_pipeline.EDUCATION", []),
+            patch("jobpulse.scan_pipeline.EXPERIENCE", []),
+            patch("jobpulse.scan_pipeline.scrutinize_cv_deterministic", return_value=MagicMock(status="clean", warnings=[])),
+            patch("jobpulse.scan_pipeline.scrutinize_cv_llm", return_value=MagicMock(needs_review=False)),
+            patch("jobpulse.scan_pipeline.update_application_page"),
+            patch("jobpulse.scan_pipeline.build_page_content", return_value=[]),
+            patch("jobpulse.scan_pipeline.set_page_content"),
+            patch("jobpulse.scan_pipeline.determine_match_tier", return_value="skip"),
+            patch(
+                "jobpulse.skill_tracker_notion.sync_verified_to_profile",
+                side_effect=RuntimeError("Notion auth failed"),
+            ),
+        ):
+            generate_materials(listing, None, db, [], notion_failures)
+
+        warning_msgs = [
+            r.getMessage() for r in caplog.records
+            if r.levelno >= logging.WARNING and "sync_verified_to_profile" in r.getMessage()
+        ]
+        assert warning_msgs, (
+            "Expected a WARNING when sync_verified_to_profile raises — "
+            "silent swallow lets stale skills ship into CV with zero observability."
+        )
+        assert any("Notion auth failed" in m for m in warning_msgs), (
+            f"Warning should mention the underlying cause; got {warning_msgs!r}"
+        )
+
     def test_screen_best_projects_used_when_available(self, tmp_path):
         from jobpulse.scan_pipeline import generate_materials
 

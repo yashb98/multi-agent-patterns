@@ -152,7 +152,15 @@ def ensure_tailored_cv_for_job(job_id: str, db: "JobDB | None" = None) -> Path |
                     extra = {}
                 extra[label] = merged
     except Exception as exc:
-        logger.debug("application_materials: correction skill boost failed: %s", exc)
+        # Correction-driven skill boost is the OPRAL learning chain's last
+        # mile — debug-only swallow means a broken CorrectionCapture path
+        # produces silent skill drift across every tailored CV. Promote to
+        # warning so the regression is visible.
+        logger.warning(
+            "application_materials: correction skill boost failed for %s — "
+            "tailored CV will not include user-corrected skills: %s",
+            job_id[:12], exc, exc_info=True,
+        )
 
     # Tailor all CV sections via parallel LLM calls
     experience_entries = get_profile_store().experience()
@@ -240,7 +248,15 @@ def build_lazy_cover_letter_generator(
                 matched_projects=matched,
             )
         except Exception as exc:
-            logger.debug("application_materials: CL tailoring failed: %s", exc)
+            # CL tailoring is the value-add for the lazy-CL path; silent
+            # failure ships generic templates without operator signal.
+            # Promote to warning to mirror the eager-CL path in
+            # scan_pipeline.generate_materials (S8 audit M-B).
+            logger.warning(
+                "application_materials: CL tailoring failed for %s — "
+                "lazy CL will use generic template: %s",
+                row.get("company") or "Company", exc, exc_info=True,
+            )
 
         try:
             return generate_cover_letter_pdf(
