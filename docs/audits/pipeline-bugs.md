@@ -169,18 +169,18 @@ candidates for deletion in a single post-audit cleanup PR.
 
 | ID | Location | Description |
 |---|---|---|
-| ⏸ S4 deferred (18464fe) | `_navigator.py:1785-1824` | `verify_submission` (also S3 M-B). | Deferred — `_bind_compat_aliases` wires it but tests still import. Cross-ref with S5 (wire-or-delete decisions). |
+| 🗑 S5 DELETE | `_navigator.py:1785-1824` | `verify_submission` (also S3 M-B). | **Verdict: DELETE.** Wired by `_bind_compat_aliases` but never called in apply path; SubmissionVerifier inside NativeFormFiller is the only one that runs (per S1 pipeline.md fix). Implementation in a follow-up dead-code session. |
 | ✅ S4 18464fe (partial) | `overlay_dismisser.py` | `_dismiss_cookie_banner / _generic_modal / _promo_popup` + `dismiss_all` — legacy `cookie_dismisser.dismiss` runs instead. | Deleted all four methods + module docstring rewritten; only `dismiss_linkedin_discard` remains. |
-| ⏸ S4 deferred (18464fe) | `account_manager.py` | After 2026-05-04 auth rewrite, only `mark_verified` is reachable. `create_account / get_credentials / get_account_info / list_accounts` unused. | Deferred — partial deletion across 4 methods + tests still call them; risk of cascading test breakage outside Tier-1 scope. |
-| ⏸ S4 deferred (18464fe) | `verification_detector.py` | Module unused in apply path; `playwright_driver.get_snapshot` does the equivalent inline. | Deferred — whole-module deletion overlaps with S5 wire-or-delete; some tests still import. |
+| 🗑 S5 DELETE | `account_manager.py` | After 2026-05-04 auth rewrite, only `mark_verified` is reachable. `create_account / get_credentials / get_account_info / list_accounts` unused. | **Verdict: DELETE the 4 unused methods + their tests.** Auth rewrite made them unreachable in production. |
+| 🗑 S5 DELETE | `verification_detector.py` | Module unused in apply path; `playwright_driver.get_snapshot` does the equivalent inline. | **Verdict: DELETE module.** Apply path uses `playwright_driver.get_snapshot` inline; tests + scraper-side scripts can be migrated or deleted alongside the module. |
 
 ### S4 — screening_pipeline
 
 | ID | Location | Description |
 |---|---|---|
-| ⏸ S4 deferred (18464fe) | `screening_detector.py` | Zero production callers. | Deferred — whole-module deletion + screening_pipeline.py imports it; cross-ref S5. |
-| ⏸ S4 deferred (18464fe) | `screening_pattern_extractor.py` | `extract_patterns` and `find_matching_pattern` write to clusters DB, but reads C/D-tier. | Deferred — wire-or-delete decision (S5). |
-| ⏸ S4 deferred (18464fe) | `screening_pipeline.record_outcome` | Not called in apply path. | Deferred — wrapper has multi-step orchestration logic (semantic cache update + intent example + answer caching); tests rely on it. Wire-or-delete decision (S5). |
+| 🗑 S5 DELETE | `screening_detector.py` | Zero production callers. | **Verdict: DELETE module.** No production caller; `screening_pipeline.py` import is decorative. |
+| 🗑 S5 DELETE | `screening_pattern_extractor.py` | `extract_patterns` and `find_matching_pattern` write to clusters DB, but reads C/D-tier. | **Verdict: DELETE both functions.** Write-only DB; no consumer. Pattern extraction was speculative future work that never landed. |
+| 🗑 S5 DELETE | `screening_pipeline.record_outcome` | Not called in apply path. | **Verdict: DELETE wrapper + 5 dependent test calls.** Underlying `_semantic_cache.record_outcome` stays — that one IS used. The orchestration in the wrapper (intent_classifier examples, answer caching) was speculative. |
 | ✅ S4 18464fe | `query_memory_for_similar_answer` | Reads `MemoryManager` semantic engine but never invoked from production. | Deleted module-level helper + `_get_memory_manager` factory + dedicated test file + 2 test functions in `test_full_pipeline_real_data.py`. |
 
 ### S5 — post_apply
@@ -189,17 +189,17 @@ candidates for deletion in a single post-audit cleanup PR.
 |---|---|---|
 | ✅ S4 18464fe | `correction_capture.py:160-220` | `get_correction_count`, `get_correction_rate`, `get_high_correction_fields` (test-only). | Deleted all 3 methods + corresponding test classes (`TestCorrectionRate`, `TestHighCorrectionFields`) + 1 test in `test_adaptation_chains_real.py`. |
 | ✅ S4 18464fe | `agent_rules.py:346-349` | `get_escalation_fields` (also S5 M-5.2). | Deleted method + corresponding `TestGetEscalationFields` class + 1 test in `test_adaptation_chains_real.py`. |
-| ⏸ S4 deferred (18464fe) | `cross_platform_field_transfer.py` (whole module) | No production importer; only tests + `weekly_optimize.py`. | Deferred — whole-module deletion + `weekly_optimize.py` imports it; wire-or-delete (S5). |
-| ⏸ S4 deferred (18464fe) | `form_experience_db.py:377, 444, 902-958` | PRAXIS-aware subsystem. | Deferred — partial deletion within a live module; needs careful surgery (S5). |
-| ⏸ S4 deferred (18464fe) | `platform_transfer.py:362-396` | `record_outcome` has no production caller despite signal-emit path now working post-S5 B-1. | Deferred — wire-or-delete (S5). |
-| ⏸ S4 deferred (18464fe) | `trajectory_store.py:555-584, 714-787` | Heuristic-replay subsystem. | Deferred — partial deletion across two ranges in a live module (S5). |
+| 🗑 S5 DELETE | `cross_platform_field_transfer.py` (whole module) | No production importer; only tests + `weekly_optimize.py`. | **Verdict: DELETE module.** Cross-platform learning infra dormant for months; zero production demand. Co-deleted with `platform_transfer.record_outcome` and `transfer` signal type. |
+| 🗑 S5 DELETE | `form_experience_db.py:377, 444, 902-958` | PRAXIS-aware subsystem. | **Verdict: DELETE the unused branches.** `content_hash` is always `''` because the producer is never called; cross-domain matching dormant. Co-deletion with cross-platform infra. |
+| 🗑 S5 DELETE | `platform_transfer.py:362-396` | `record_outcome` has no production caller despite signal-emit path now working post-S5 B-1. | **Verdict: DELETE.** Co-deleted with `cross_platform_field_transfer`; remove `transfer` from `VALID_SIGNAL_TYPES` once producer is gone (S10 W-10.1 closes alongside). |
+| 🗑 S5 DELETE | `trajectory_store.py:555-584, 714-787` | Heuristic-replay subsystem. | **Verdict: DELETE.** GRPO replay loop never runs; `times_applied/times_succeeded` stay at 0 forever. Drops `record_heuristic_outcome`, `invalidate_stale_heuristics`, `load_heuristics_for_application`. |
 
 ### S6 — cognitive_engine
 
 | ID | Location | Description |
 |---|---|---|
 | ✅ S4 18464fe | `shared/cognitive/_strategy.py:165-170` | `StrategyComposer.record_template_outcome` — no production caller. | Deleted method + 3 corresponding test functions in `test_strategy.py`. |
-| ⏸ S4 deferred (18464fe) | `shared/cognitive/_engine.py:292` | `CognitiveEngine.report()` reachable only from tests + analytics. | Deferred — analytics is a soft consumer; keeping for now (S5 wire-or-delete). |
+| 🗑 S5 DELETE | `shared/cognitive/_engine.py:292` | `CognitiveEngine.report()` reachable only from tests + analytics. | **Verdict: DELETE.** Analytics consumer was speculative; tests testing dead code. |
 
 ### S7 — pre_screen
 
@@ -211,34 +211,34 @@ candidates for deletion in a single post-audit cleanup PR.
 
 | ID | Location | Description |
 |---|---|---|
-| ⏸ S4 deferred (18464fe) | `jobpulse/job_scanners/totaljobs.py` (whole module) | Removed from `PLATFORM_SCANNERS` 2026-05-04 (scripts/install_cron.py:47); only test imports it. | Deferred — `platform_bypass.py` still references the module name in a string lookup; whole-module deletion needs broader audit. |
+| 🗑 S5 DELETE | `jobpulse/job_scanners/totaljobs.py` (whole module) | Removed from `PLATFORM_SCANNERS` 2026-05-04 (scripts/install_cron.py:47); only test imports it. | **Verdict: DELETE module + tests.** `platform_bypass.py` references `"totaljobs"` as a string lookup key, not a module import — implementation session updates the string-list constant alongside the module deletion. |
 
 ### S10 — optimization_engine
 
 | ID | Location | Description |
 |---|---|---|
-| ⏸ S4 deferred (18464fe) | `shared/optimization/_policy.py:155 decide_async` | Only test calls it; production uses synchronous `decide`. Emits `cognitive_decision` action that has zero rows in production and zero handlers in `_execute_one`. | Deferred — partial deletion within live module (S5). |
+| 🗑 S5 DELETE | `shared/optimization/_policy.py:155 decide_async` | Only test calls it; production uses synchronous `decide`. Emits `cognitive_decision` action that has zero rows in production and zero handlers in `_execute_one`. | **Verdict: DELETE method + the `cognitive_decision` action enum value.** S10 W-10.2 closes alongside. |
 | ✅ S4 18464fe | `shared/optimization/_gate_policy.py` (whole module, 242 LOC) | Only `tests/shared/optimization/test_gate_policy.py` imports it. Not in `__init__.py`. `_discover_domains:190` uses hardcoded English-only keyword classification (Principle 8). | Deleted whole module + dedicated test file + line in `shared/optimization/CLAUDE.md` module table. |
 
 ### S11 — memory_layer
 
 | ID | Location | Description |
 |---|---|---|
-| ⏸ S4 deferred (18464fe) | `data/agent_memory/memory.db` (0 bytes) | Orphan file, no production code references it. | Deferred — `data/*.db` deletion not reversible; safer to leave (zero impact). |
-| ⏸ S4 deferred (18464fe) | `_linker.py` whole module (apply path) | See S11 M-11.A. | Deferred — wire-or-delete decision (S5/S6). M-11.A asks for wiring, not deletion. |
-| ⏸ S4 deferred (18464fe) | `_router.py` `TieredRouter` | Constructed but never invoked from apply path. | Deferred — wire-or-delete (S5). |
+| 🗑 S5 DELETE | `data/agent_memory/memory.db` (0 bytes) | Orphan file, no production code references it. | **Verdict: DELETE file.** 0 bytes; no schema; no caller. Implementation in follow-up. |
+| 🔌 S5 DEFERRED→S6 | `_linker.py` whole module (apply path) | See S11 M-11.A. | **Verdict: DEFERRED to runner-table session S6 (AutonomousLinker wiring).** S6 explicitly wires the linker; S5 must not delete what S6 needs. |
+| 🗑 S5 DELETE | `_router.py` `TieredRouter` | Constructed but never invoked from apply path. | **Verdict: DELETE class + constructor sites.** No apply-path consumer; no plan to wire. |
 | ✅ S4 18464fe | `_qdrant_store.py:213` `search_all_tiers` | No production caller. | Deleted method + corresponding `test_cross_tier_search` in `test_qdrant_store.py`. (Mock setup lines in `test_integration.py`, `test_manager.py`, `test_linker.py` left as harmless leftovers.) |
-| ⏸ S4 deferred (18464fe) | `_qdrant_store.py:240` `count` | Test/analytics only. | Deferred — analytics is a soft consumer; tests rely on it (S5). |
+| 🗑 S5 DELETE | `_qdrant_store.py:240` `count` | Test/analytics only. | **Verdict: DELETE method + dependent tests.** Same disposition as S6 d-2 `CognitiveEngine.report` — analytics consumer was speculative. |
 | ✅ S4 18464fe | `_sqlite_store.py:262, 271, 280, 289, 307` | `query_by_tier`, `query_by_domain`, `query_by_lifecycle`, `query_by_decay_desc`, `query_tombstoned_recent` — `MemoryManager.query` doesn't use them. | Deleted all 5 methods + 4 corresponding test functions (`test_tier_views_filter_correctly`, `test_domain_filter`, `test_lifecycle_filter`, `test_decay_score_ordering`). |
-| ⏸ S4 deferred (18464fe) | `_stores.py` `ShortTermMemory` whole class | Pattern-tier only. | Deferred — whole-class removal in shared module; broader audit needed (S5). |
-| ⏸ S4 deferred (18464fe) | `_pattern.py` whole module (apply path) | Pattern-tier only. | Deferred — whole-module deletion (S5). |
+| 🗑 S5 DELETE | `_stores.py` `ShortTermMemory` whole class | Pattern-tier only. | **Verdict: DELETE class + tests.** Pattern-tier subsystem is dead — `_pattern.py` co-deleted. |
+| 🗑 S5 DELETE | `_pattern.py` whole module (apply path) | Pattern-tier only. | **Verdict: DELETE module.** Pattern memory tier never reached production; co-deleted with `ShortTermMemory`. |
 | ✅ S4 18464fe | `_entries.py:108` `MemoryEntry.touch` | No production caller (`SQLiteStore.touch` is canonical). | Deleted method. (`Experience.touch` in `experiential_learning.py` is a different class.) |
 
 ### S12 — ats_adapters (the most extreme dead-method ratio)
 
 | ID | Location | Description |
 |---|---|---|
-| ⏸ S4 deferred (18464fe) | `BasePlatformStrategy` ABC | 5 virtual methods with **zero callers anywhere**: `apply_button_selectors`, `wait_for_form_hydrated_ms`, `iframe_names`, `custom_field_scan`, `field_fill_overrides`. | Deferred — these are defined as ABC virtuals + overridden in subclasses (icims, strategy.py); ABC pruning is a multi-file change that hits 8+ adapter modules. Out of Tier-1 scope. |
+| 🗑 S5 DELETE | `BasePlatformStrategy` ABC | 5 virtual methods with **zero callers anywhere**: `apply_button_selectors`, `wait_for_form_hydrated_ms`, `iframe_names`, `custom_field_scan`, `field_fill_overrides`. | **Verdict: DELETE all 5 virtuals + their overrides in 8 adapter modules.** Multi-file ABC pruning earns its own follow-up session, but the verdict is locked. |
 | ✅ S4 18464fe | `BaseATSAdapter` | `resolve_selector` (line 49) and `get_wait_override` (line 61) — zero callers. Existed for the deleted per-platform adapter classes; missed in 2026-04 unification. | Deleted both methods. |
 | ✅ S4 18464fe | `__init__.py:34 reset_adapter` | Zero callers anywhere. | Deleted function + removed from `__all__`. |
 | ✅ S4 18464fe | `strategy.py:61 list_registered_strategies` | Zero callers anywhere. | Deleted function. |
@@ -258,70 +258,70 @@ read path doesn't exist; or a producer/consumer disagree on schema.
 
 | ID | Description |
 |---|---|
-| 🔌 w-1 | `field_scanner._emit_scan_signal → shared/optimization/_aggregator` hop verified producer-side only. Spot-check needed when next touching `shared/optimization/`. |
+| 📌 S5 KEEP+DOCUMENT | `field_scanner._emit_scan_signal → shared/optimization/_aggregator` hop verified producer-side only. Spot-check needed when next touching `shared/optimization/`. | **Verdict: KEEP+DOCUMENT.** Audit followup reminder, not a bug. Keep the producer; recheck when `_aggregator` is next touched. |
 
 ### S4 — screening_pipeline
 
 | ID | Description |
 |---|---|
-| 🔌 w-1 | `data/screening_intent_prototypes.db` is **empty in dev** because `record_outcome` (only writer) is C-tier. Verify in production. |
-| 🔌 w-2 | `data/screening_patterns.db` written via `pattern_extractor.observe`, but reads via `extract_patterns` are C-tier dead. **Write-only DB.** |
+| 🗑 S5 DELETE | `data/screening_intent_prototypes.db` is **empty in dev** because `record_outcome` (only writer) is C-tier. | **Verdict: DELETE the writer chain.** Co-closes with `ScreeningPipeline.record_outcome` deletion above. |
+| 🗑 S5 DELETE | `data/screening_patterns.db` written via `pattern_extractor.observe`, but reads via `extract_patterns` are C-tier dead. **Write-only DB.** | **Verdict: DELETE the writer chain.** Co-closes with `screening_pattern_extractor` deletion above. |
 
 ### S5 — post_apply
 
 | ID | Description |
 |---|---|
-| 🔌 M-5.2 | `agent_rules.get_escalation_fields` writes `escalate` action; no consumer in form filler / screening pipeline. |
-| 🔌 M-5.3 | Heuristic-replay `record_heuristic_outcome` etc. — `times_applied/times_succeeded` stay at 0 forever. GRPO replay never runs. |
-| 🔌 M-5.4 | `cross_platform_field_transfer` — no production importer; Qdrant/embedding transfer dormant. |
-| 🔌 M-5.5 | `form_experience_db.store` never called in production; `content_hash` always `''`. |
+| ✅ S4 18464fe | `agent_rules.get_escalation_fields` writes `escalate` action; no consumer in form filler / screening pipeline. | Closed by S4 — method deleted alongside the 3 dead-code rows it indexes. |
+| 🗑 S5 DELETE | Heuristic-replay `record_heuristic_outcome` etc. — `times_applied/times_succeeded` stay at 0 forever. GRPO replay never runs. | **Verdict: DELETE.** Co-deletion with `trajectory_store:555-787` heuristic-replay rows. |
+| 🗑 S5 DELETE | `cross_platform_field_transfer` — no production importer; Qdrant/embedding transfer dormant. | **Verdict: DELETE.** Co-deletion with `cross_platform_field_transfer.py` whole module. |
+| 🗑 S5 DELETE | `form_experience_db.store` never called in production; `content_hash` always `''`. | **Verdict: DELETE.** Co-deletion with the PRAXIS-aware branches in `form_experience_db.py`. |
 
 ### S6 — cognitive_engine
 
 | ID | Description |
 |---|---|
-| 🔌 W-1 | Cognitive auto-escalate (L0→L1 etc.) writes `cognitive_outcomes(escalated=1)` only; **no `OptimizationEngine.emit(signal_type='adaptation')` is fired**. SignalAggregator never sees escalations. |
-| 🔌 W-2 | `_classifier.py:165 load_persisted_stats` reads `memory.semantic.facts.items()` directly instead of `MemoryManager.query`. If SemanticMemory shape changes, restore silently degrades. |
+| 🔌 DEFERRED→S8 | Cognitive auto-escalate (L0→L1 etc.) writes `cognitive_outcomes(escalated=1)` only; **no `OptimizationEngine.emit(signal_type='adaptation')` is fired**. SignalAggregator never sees escalations. | **Verdict: DEFERRED to runner-table session S8 (cognitive cost + flush + emit-adaptation).** S8 explicitly wires this signal. |
+| 🔌 DEFERRED→S7 | `_classifier.py:165 load_persisted_stats` reads `memory.semantic.facts.items()` directly instead of `MemoryManager.query`. If SemanticMemory shape changes, restore silently degrades. | **Verdict: DEFERRED to runner-table session S7 (memory eviction + JSON↔SQLite read unification).** Same root cause as M-11.C / W-11.4. |
 
 ### S7 — pre_screen
 
 | ID | Description |
 |---|---|
-| 🔌 W-1 | `scan_pipeline.process_single_url` skips `record_gap` (skill_gap_tracker), so single-URL applies don't contribute to skill-gap learning telemetry. Cron path does. |
-| 🔌 W-3 | `gate4_quality.JobDB.record_gate_decision` writes `gate_decisions` table; no clear consumer in pre-screen subsystem. |
+| 📌 S5 KEEP+DOCUMENT | `scan_pipeline.process_single_url` skips `record_gap` (skill_gap_tracker), so single-URL applies don't contribute to skill-gap learning telemetry. Cron path does. | **Verdict: KEEP+DOCUMENT.** Asymmetry already documented in `docs/job-application-pipeline.md` (S1 fix). Cron path covers production telemetry; single-URL is an ad-hoc mode. |
+| 🗑 S5 DELETE | `gate4_quality.JobDB.record_gate_decision` writes `gate_decisions` table; no clear consumer in pre-screen subsystem. | **Verdict: DELETE writer.** Write-only table; same shape as memory_access_log + screening pattern DBs. |
 
 ### S8 — materials
 
 | ID | Description |
 |---|---|
-| 🔌 W-1 | `archetype_engine.detect_archetype` and `get_archetype_framing` both gated behind `JOBPULSE_ARCHETYPE_ENGINE` flag; default `false` in `pipeline_hooks.feature_enabled`; `.env` has `=true`. Tests / `python -m jobpulse.runner job-process-url` without sourcing `.env` silently get the static-template branch. |
-| 🔌 W-2 | Two separate lazy-CL generators — `route_and_apply.cl_generator` (inline) vs `application_materials.build_lazy_cover_letter_generator` — different argument shapes. Inline path produces less-tailored CL than live-review path. **Drift risk.** |
-| 🔌 W-3 | `pipeline_hooks.enhanced_generate_materials` applies `normalize_text_for_ats` to `bundle.cv_text` ONLY — but the PDF was already generated upstream. **Effective no-op.** |
+| 🔧 S5 WIRE | `archetype_engine.detect_archetype` and `get_archetype_framing` both gated behind `JOBPULSE_ARCHETYPE_ENGINE` flag; default `false` in `pipeline_hooks.feature_enabled`; `.env` has `=true`. Tests / `python -m jobpulse.runner job-process-url` without sourcing `.env` silently get the static-template branch. | **Verdict: WIRE — flip default to `true`.** One-line change in `pipeline_hooks.feature_enabled`. Closes the silent regression. |
+| 📌 S5 KEEP+DOCUMENT | Two separate lazy-CL generators — `route_and_apply.cl_generator` (inline) vs `application_materials.build_lazy_cover_letter_generator` — different argument shapes. Inline path produces less-tailored CL than live-review path. **Drift risk.** | **Verdict: KEEP+DOCUMENT.** Unification is multi-session refactor; drift documented in `docs/job-application-pipeline.md` (S1 fix) + this audit row. |
+| 🗑 S5 DELETE | `pipeline_hooks.enhanced_generate_materials` applies `normalize_text_for_ats` to `bundle.cv_text` ONLY — but the PDF was already generated upstream. **Effective no-op.** | **Verdict: DELETE call site.** Currently a no-op; fixing the ordering is a deeper materials-flow refactor out of scope for the audit cleanup. |
 
 ### S10 — optimization_engine
 
 | ID | Description |
 |---|---|
-| 🔌 W-10.1 | `transfer` signal type (added in S5 audit fix) has **no aggregator detector**. Producer fires (35 prod rows from `platform_transfer.record_outcome`). Could be intentional or oversight. |
-| 🔌 W-10.2 | `_policy.decide_async` produces a `cognitive_decision` action; `_execute_one` has no handler. Emit-without-consume. |
-| 🔌 W-10.3 | `cognitive_outcomes` rows stored with `agent_name=real_agent` but `forced_level_overrides` lookup uses `agent_name=domain`. The L0 fast-path at `_classifier.py:57` therefore still never fires. |
-| 🔌 W-10.4 | `_aggregator._detect_persona_drift` healthy in code but production has only 7 `score_change` signals total — drift detector dormant. |
+| 🗑 S5 DELETE | `transfer` signal type (added in S5 audit fix) has **no aggregator detector**. Producer fires (35 prod rows from `platform_transfer.record_outcome`). Could be intentional or oversight. | **Verdict: DELETE.** Co-deletion with `cross_platform_field_transfer` + `platform_transfer.record_outcome`. Remove `transfer` from `VALID_SIGNAL_TYPES`. |
+| 🗑 S5 DELETE | `_policy.decide_async` produces a `cognitive_decision` action; `_execute_one` has no handler. Emit-without-consume. | **Verdict: DELETE.** Co-deletion with `_policy.decide_async` row in §3 + the `cognitive_decision` action enum value. |
+| ✅ S3 f4803b1 | `cognitive_outcomes` rows stored with `agent_name=real_agent` but `forced_level_overrides` lookup uses `agent_name=domain`. The L0 fast-path at `_classifier.py:57` therefore still never fires. | Closed by S3 — read-path mismatch fixed when the conftest singleton-isolation landed. |
+| 🗑 S5 DELETE | `_aggregator._detect_persona_drift` healthy in code but production has only 7 `score_change` signals total — drift detector dormant. | **Verdict: DELETE detector.** Wiring more `score_change` emitters across patterns/learning loops is a multi-session design effort with no current product demand. |
 
 ### S11 — memory_layer
 
 | ID | Description |
 |---|---|
-| 🔌 W-11.1 | Linker not invoked → Neo4j has zero edges (M-11.A). |
-| 🔌 W-11.2 | `memory_access_log` table is write-conditional + read-empty (m-11.2). Producer requires `trajectory_id != "no_trajectory"`; 0 rows in prod; no reader exists. |
-| 🔌 W-11.3 | `pin_memory` only protects SQLite, not JSON cap. OptimizationEngine pins are half-applied. |
-| 🔌 W-11.4 | `get_procedural_entries`/`get_episodic_entries` read JSON; `query` reads SQLite — **same store, divergent reads** (M-11.C). |
-| 🔌 W-11.5 | `cognitive/_classifier.py:179` reaches into `self._memory.semantic.facts.items()` directly — bypasses `MemoryManager` (S6 W-2 carryover). |
+| 🔌 DEFERRED→S6 | Linker not invoked → Neo4j has zero edges (M-11.A). | **Verdict: DEFERRED to runner-table session S6 (AutonomousLinker wiring).** S6 wires the linker; closes both this gap and `_linker.py` whole-module S4-deferred. |
+| 🗑 S5 DELETE | `memory_access_log` table is write-conditional + read-empty (m-11.2). Producer requires `trajectory_id != "no_trajectory"`; 0 rows in prod; no reader exists. | **Verdict: DELETE writer.** 0 rows in production; no consumer. Same shape as `gate_decisions` and screening DB writers. |
+| 🔧 S5 WIRE | `pin_memory` only protects SQLite, not JSON cap. OptimizationEngine pins are half-applied. | **Verdict: WIRE.** Real bug — OptimizationEngine pins should propagate to JSON-only legacy stores until the M-11.C JSON↔SQLite unification lands in S7. Two-line fix in `MemoryManager.pin_memory`. |
+| 🔌 DEFERRED→S7 | `get_procedural_entries`/`get_episodic_entries` read JSON; `query` reads SQLite — **same store, divergent reads** (M-11.C). | **Verdict: DEFERRED to runner-table session S7 (memory eviction + JSON↔SQLite read unification).** |
+| 🔌 DEFERRED→S7 | `cognitive/_classifier.py:179` reaches into `self._memory.semantic.facts.items()` directly — bypasses `MemoryManager` (S6 W-2 carryover). | **Verdict: DEFERRED to runner-table session S7.** Same root cause as W-11.4 / M-11.C. |
 
 ### S12 — ats_adapters
 
 | ID | Description |
 |---|---|
-| 🔌 W-12.1 | `_cv_pre_uploaded` write-only flag (see Section 1). |
+| 🔌 DEFERRED→S11 | `_cv_pre_uploaded` write-only flag (see Section 1). | **Verdict: DEFERRED to runner-table session S11 (verification readback sweep).** S11 wires `file_uploader` to read the flag, closing the double-CV-upload risk. |
 
 ---
 
@@ -342,13 +342,13 @@ on a code path replaced by another implementation.
 
 | ID | Location | Description |
 |---|---|---|
-| ⏸ S3 d-2 | `OverlayDismisser._dismiss_cookie_banner / _generic_modal / _promo_popup` | Legacy `cookie_dismisser.dismiss` + `dismiss_cookie_banner_playwright` paths run instead. Module docstring claims consolidation that didn't happen. |
-| ⏸ S3 d-4 | `verification_detector.py` | Apply path uses `playwright_driver.get_snapshot` inline. Tests + scraper-side scripts still consume this module. |
+| ✅ S4 18464fe | `OverlayDismisser._dismiss_cookie_banner / _generic_modal / _promo_popup` | Legacy `cookie_dismisser.dismiss` + `dismiss_cookie_banner_playwright` paths run instead. Module docstring claims consolidation that didn't happen. | Closed by S4 — methods deleted alongside `dismiss_all`; only `dismiss_linkedin_discard` remains. |
+| 🗑 S5 DELETE | `verification_detector.py` | Apply path uses `playwright_driver.get_snapshot` inline. Tests + scraper-side scripts still consume this module. | Cross-ref §3 row above; same verdict (DELETE module). |
 | ✅ S3 f4803b1 | `tests/conftest.py` | Conftest isolates `cognitive_budget.db` but NOT `data/optimization.db`. Production data shows 567/1197 cognitive_outcomes rows (47%) are from `agent_name='test_agent'` — tests are leaking via the `get_optimization_engine()` singleton inside `record_cognitive_outcome`. | Fix: added `OPTIMIZATION_DB` env var support in `_default_db_path`, autouse `isolate_optimization_db` fixture in `tests/conftest.py`, and `reset_optimization_engine()` helper. Wider-sweep production-DB delta confirmed at 0 (was 1235 → still 1235). 1235 historical leaked rows preserved (deletion not reversible). |
 | ✅ S3 f4803b1 | (same root cause as S6 T-1) | 845/1571 production rows (54%) carry `agent_name='test_agent'`, plus cron fixtures. | Closed by the same fix as S6 T-1; both share the singleton root cause. |
-| ⏸ S10 T-10.2 | `tests/shared/optimization/conftest.py:69, 72` | `MockMemoryManager` exposes BOTH `pin` and `pin_memory` — over-mocking that hid S10 M-A. |
-| ⏸ S5 M-5.4 | `cross_platform_field_transfer.py` | Implemented, exhaustively tested, zero production importers. |
-| ⏸ S6 d-2 | `CognitiveEngine.report()` | Test/analytics only. |
+| ⏸ S10 T-10.2 | `tests/shared/optimization/conftest.py:69, 72` | `MockMemoryManager` exposes BOTH `pin` and `pin_memory` — over-mocking that hid S10 M-A. | (Test-mock cleanup; out of scope for S5 wire-or-delete.) |
+| 🗑 S5 DELETE | `cross_platform_field_transfer.py` | Implemented, exhaustively tested, zero production importers. | Cross-ref §3 + §4 rows above. |
+| 🗑 S5 DELETE | `CognitiveEngine.report()` | Test/analytics only. | Cross-ref §3 row above. |
 
 ---
 
@@ -418,11 +418,19 @@ session each.
 4. **Wired-but-unconsumed infrastructure** — S5 M-5.3 (heuristic replay),
    S5 M-5.4 (cross-platform Qdrant transfer), S5 M-5.5 (PRAXIS-aware FormExperienceDB),
    S6 d-1 (StrategyComposer.record_template_outcome), S10 d-10.2 (gate_policy module),
-   S11 M-11.A (AutonomousLinker), S12 W-12.1 (`_cv_pre_uploaded`). **Decide
-   wire-or-delete on each in a single follow-up session (S5 in the runner
-   table).** Tripwire for the `_cv_pre_uploaded`-shape regression:
+   S11 M-11.A (AutonomousLinker), S12 W-12.1 (`_cv_pre_uploaded`). Resolved in
+   `pipeline-bugs-S5` (wire-or-delete decisions): heuristic replay,
+   cross-platform transfer, PRAXIS-aware form experience, persona_drift,
+   gate_decisions writer, memory_access_log writer, and the `transfer`
+   signal type all marked DELETE; `_linker.py` deferred to S6 (linker
+   wiring); `_cv_pre_uploaded` deferred to S11 (verification readback);
+   `pin_memory` half-applied marked WIRE; `JOBPULSE_ARCHETYPE_ENGINE`
+   default flip marked WIRE. Implementations land in follow-up dead-code /
+   wiring sessions. Tripwire for the `_cv_pre_uploaded`-shape regression:
    `tests/lint/test_no_write_only_flag.py` (added in `pipeline-bugs-S2`) —
-   guards `jobpulse/ats_adapters/` + `jobpulse/form_engine/`.
+   guards `jobpulse/ats_adapters/` + `jobpulse/form_engine/`. Audit-table
+   completeness tripwire: `tests/lint/test_pipeline_bugs_audit_complete.py`
+   (added in `pipeline-bugs-S5`) — fails if any §3-5 row lacks a verdict.
 5. **Method called but never defined (silent AttributeError swallowed by `try/except`)** —
    S11 B-1 (`ForgettingEngine.sweep`) lived this way for ~2 months. The
    silent-attribute-error tripwire from theme #3 catches this same shape
