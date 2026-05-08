@@ -403,13 +403,76 @@ Fix commits: `21e836d` (B-1 archetype lazy), `d1252a9` (B-2 + M-B/C/D/E log sile
 
 ## Subsystem 9 — `scan_loop`
 
-*pending audit*
+Audit doc: `docs/audits/audit-scan_loop.md`
+Fixes commits: `bdb6892` (B-1 liveness filter), `e93320e` (M-A linkedin record_success guard)
+
+### Deferred majors
+
+| ID | Location | Description | Why deferred |
+|---|---|---|---|
+| 🔴 M-9.B | `jobpulse/job_scanners/indeed.py:43` | `scan_indeed` has no scan_learning wiring at all (no `can_scan_now`, `record_success`, or block-event recording). Highest-block-rate platform empirically. | Shares fix shape with M-9.C / M-9.D — single follow-up session to design a shared block-event producer. |
+| 🔴 M-9.C | `jobpulse/job_scanners/reed.py:103` | `scan_reed` consults `engine.can_scan_now` but never emits success or block events. | Same producer-coverage gap as M-9.B/D. |
+| 🔴 M-9.D | `jobpulse/job_scanners/__init__.py:123` | `handle_block` is shape-incompatible with httpx scanners — typed for `verification_detector.VerificationWall` but only test fakes pass it. Either the type contract is wrong (should accept `wall_type` string for 429/403) or the function is dead. | Touches three scanners + `__init__.py` + a contract change; too large for the B-1 session. |
+
+### Dead code
+
+| ID | Location | Description |
+|---|---|---|
+| 💀 d-9.1 | `jobpulse/job_scanners/totaljobs.py` (whole module) | `scan_totaljobs` was removed from `PLATFORM_SCANNERS` 2026-05-04 (`scripts/install_cron.py:47`). Module remains, only `tests/jobpulse/test_job_scanner_platforms.py:20` imports it. |
 
 ---
 
-## Subsystem 10 — `optimization_engine + memory_layer`
+## Subsystem 10 — `optimization_engine`
 
-*pending audit*
+Audit doc: `docs/audits/audit-optimization_engine.md`
+Fixes commits: `aa6fe74` (B-1 forced_level + M-A pin_memory), `619ee4c` (M-B import direction + M-C log promotions)
+
+### Deferred majors
+
+| ID | Location | Description | Why deferred |
+|---|---|---|---|
+| 🔴 M-10.A | `shared/optimization/_engine.py:329, 346, 364, 371, 381, 397, 406` | 7 `logger.debug` swallows on memory `demote`/`promote`/`pin`/alert-callback in `investigate_domain` / AutoRuleGenerator unavailable / rule-deploy fall-through / outer auto-rule deploy. Per OPRAL, every error must surface. | Cluster — 7 lines, no fix-shared function, low risk. Bundle when next touching `_execute_one`. |
+| 🔴 M-10.B | `shared/optimization/_aggregator.py:359, 379` | `_dedup_with_memory` and `_cross_domain_search` use bare `except Exception: pass` / `return []`. Memory failures during pattern detection are swallowed silently — could mask MemoryManager regressions. | Routine OPRAL warning promotion. |
+| 🔴 M-10.C | `shared/optimization/_policy.py:71-77` | `_load_budget_state` bare `except: pass` AND opaque monotonic↔wall-clock conversion (functionally correct via `_maybe_reset_window` cleanup, but semantically confusing). Refactor to `if (time.time() - saved_window) < 3600`. | Pure cleanup; verified safe via trace but readable form preferred. |
+
+### Minors
+
+| ID | Location | Description |
+|---|---|---|
+| 🟡 m-10.1 | `_tracker.py:362` | `correction_rate` calc has bare `except Exception: pass` — silent zero on signal_bus failure. |
+| 🟡 m-10.2 | `_engine.py:525` | `health()` reads `self._aggregator._paused_loops` (private attr). Add a public `_aggregator.paused_loops` property. |
+| 🟡 m-10.3 | `_engine.py:18-28` | `_get_auto_rule_generator` references `logger` before module-level `logger = get_logger(__name__)` at line 30. Functionally fine (lazy), but reads weird; move logger up. |
+| 🟡 m-10.4 | `_engine.py:567-572` | `_NoOpTracker.get_domain_stats` uses `agent_name=domain` — same shape that caused B-1 in the live tracker. Harden when refactoring to a domain-only `get_domain_stats(domain)`. |
+
+### Dead code
+
+| ID | Location | Description |
+|---|---|---|
+| 💀 d-10.1 | `_policy.py:155` (`decide_async`) | Only test calls it; production uses synchronous `decide`. Emits `cognitive_decision` action that has zero rows in production and zero handlers in `_execute_one`. The whole async LLM-fallback policy branch is dead. |
+| 💀 d-10.2 | `shared/optimization/_gate_policy.py` (whole module, 242 LOC) | Only `tests/shared/optimization/test_gate_policy.py` imports it. Not in `__init__.py`. `_discover_domains:190` uses hardcoded English-only keyword classification (Principle 8 violation, but unreachable). M-B fixed the `from jobpulse.config` import-direction violation regardless. Candidate for deletion in the post-audit cleanup PR. |
+
+### Wiring gaps
+
+| ID | Location | Description |
+|---|---|---|
+| 🔌 W-10.1 | `_aggregator.py` | The `transfer` signal type (added 2026-05-07 in S5 audit fix) has no aggregator detector. Producer fires (`platform_transfer.record_outcome`, 35 prod rows). Could be intentional (record-keeping only) or a wiring oversight. Document the design choice or add a detector. |
+| 🔌 W-10.2 | `_policy.py:189-195` (`cognitive_decision` action) | Emit-without-consume: `decide_async` produces a `cognitive_decision` action but `_execute_one` has no handler. Either delete or wire. |
+| 🔌 W-10.3 | `_tracker.py:315` (`get_domain_stats`) — soft | The forced_level override now surfaces post-fix, but the computed l0/l1/l2/l3 success rates derived from `cognitive_outcomes` still return 0.0 for the `(domain, domain)` lookup shape because real outcomes are stored with `agent_name=real_agent`. The L0 fast-path at `_classifier.py:57` therefore still never fires. Bigger fix: aggregate `cognitive_outcomes` by domain (drop agent_name from the WHERE clause) or thread real `agent_name` through `EscalationClassifier.classify`. Needs design discussion. |
+| 🔌 W-10.4 | `_aggregator._detect_persona_drift:193` | Detector is healthy in code but production has only 7 `score_change` signals total — drift detector is effectively dormant. Either persona evolution emits too rarely, or producers aren't wired. Audit `persona_evolution.py` signal coverage in a follow-up. |
+
+### Test-suite findings
+
+| ID | Location | Description |
+|---|---|---|
+| 🔌 T-10.1 | `tests/shared/cognitive/conftest.py:96-100` | Conftest isolates `cognitive_budget.db` via env override but does NOT isolate `data/optimization.db`. Production `cognitive_outcomes` has 845/1571 rows (54%) with `agent_name='test_agent'` plus `agent_3=13`, `agent_4=13`, `cron_agent=13` — all test-suite leakage via the `get_optimization_engine()` singleton inside `record_cognitive_outcome`. Fix: monkeypatch `shared.optimization.get_optimization_engine` to a tmp-DB instance for the cognitive test scope. (Carryover from S6 audit T-1; not shipped because it requires checking against `test_wiring_e2e` and similar tests that intentionally exercise the singleton.) |
+| 🔌 T-10.2 | `tests/shared/optimization/conftest.py:69, 72` | `MockMemoryManager` exposes BOTH `pin` and `pin_memory` — the over-mocking that hid the M-A bug. Cleanup risks breaking other tests; deferred. The S10 M-A regression test sidesteps this with a dedicated `_PinOnlyMemory` stub. |
+
+### Doc deltas
+
+| ID | Location | Description |
+|---|---|---|
+| 📝 D-10.1 | `shared/optimization/CLAUDE.md` | The `transfer` signal type is documented (line 67 — added in S5 audit fix) but the lack of an aggregator consumer should be noted alongside it. |
+| 📝 D-10.2 | `docs/job-application-pipeline.md` | The schema-shape mismatch between `cognitive_outcomes` (`agent_name=real_agent`) and `forced_level_overrides` (`agent_name=domain`) was fixed at the read-path level (B-1) but should be documented so future contributors don't re-introduce it. |
 
 ---
 
