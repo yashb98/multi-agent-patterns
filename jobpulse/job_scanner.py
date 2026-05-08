@@ -143,10 +143,9 @@ def check_liveness_batch(listings: list[dict], timeout: float = 15.0) -> tuple[l
             try:
                 resp = client.get(url)
                 result = classify_liveness(
-                    status=resp.status_code,
-                    final_url=str(resp.url),
-                    body_text=resp.text[:5000],
-                    apply_controls=[],
+                    status_code=resp.status_code,
+                    url=str(resp.url),
+                    body=resp.text[:5000],
                 )
                 if result.status == "expired":
                     expired.append({**listing, "liveness": result.reason})
