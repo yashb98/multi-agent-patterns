@@ -80,13 +80,6 @@ class LinkedInStrategy(BasePlatformStrategy):
             "how did you hear about this job": "referral_source",
         }
 
-    def screening_defaults(self) -> dict[str, str]:
-        return {
-            "are you legally authorized to work": "yes",
-            "will you now or in the future require sponsorship": "no",
-            "do you have a valid work permit": "yes",
-        }
-
     async def pre_fill(
         self,
         page: "Page",

@@ -23,6 +23,12 @@ _URL_PATTERNS: dict[str, list[str]] = {
     "ashby": ["ashbyhq.com"],
     "icims": ["icims.com"],
     "linkedin": ["linkedin.com/jobs"],
+    # `_DOM_PATTERNS["reed"]` was registered without a URL counterpart, so
+    # reed.co.uk URLs misclassified as "generic" via the URL-only path used by
+    # `applicator._infer_platform_from_url`. `jd_analyzer.detect_ats_platform`
+    # already returned "reed" for the same input — that disagreement broke
+    # platform-tagged telemetry. (S12 audit M-A, 2026-05-08.)
+    "reed": ["reed.co.uk"],
 }
 
 # DOM-based patterns (slower, used when URL is ambiguous).

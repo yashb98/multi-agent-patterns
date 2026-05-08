@@ -55,30 +55,38 @@ class LearnedStrategy(BasePlatformStrategy):
     def detect(self, url: str) -> bool:
         if not url:
             return False
-        try:
-            host = _normalize_domain(url)
-            return host == self._domain
-        except Exception:
-            return False
+        return _normalize_domain(url) == self._domain
 
     def form_container_hint(self) -> str | None:
         try:
             return _get_fe_db().get_container(self._domain)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "LearnedStrategy[%s]: form_container_hint FE lookup failed: %s",
+                self._domain, exc,
+            )
             return None
 
     def expected_field_range(self) -> tuple[int, int]:
         try:
             mappings = _get_fe_db().get_field_mappings(self._domain)
-            n = len(mappings) if mappings else 0
-            if n > 0:
-                return (max(1, n - 2), n + 5)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "LearnedStrategy[%s]: expected_field_range FE lookup failed: %s",
+                self._domain, exc,
+            )
+            return (1, 30)
+        n = len(mappings) if mappings else 0
+        if n > 0:
+            return (max(1, n - 2), n + 5)
         return (1, 30)
 
     def extra_label_mappings(self) -> dict[str, str]:
         try:
             return _get_fe_db().get_field_mappings(self._domain) or {}
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "LearnedStrategy[%s]: extra_label_mappings FE lookup failed: %s",
+                self._domain, exc,
+            )
             return {}

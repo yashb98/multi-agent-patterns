@@ -69,12 +69,6 @@ class LeverStrategy(BasePlatformStrategy):
             "pronouns": "pronouns",
         }
 
-    def screening_defaults(self) -> dict[str, str]:
-        return {
-            "are you legally authorized": "yes",
-            "will you now or in the future require sponsorship": "no",
-        }
-
     async def pre_fill(
         self,
         page: "Page",

@@ -20,11 +20,11 @@ import jobpulse.ats_adapters.icims
 import jobpulse.ats_adapters.smartrecruiters
 
 
-def get_adapter(ats_platform: str | None = None) -> BaseATSAdapter:
-    """Return the PlaywrightAdapter for all platforms.
+def get_adapter() -> BaseATSAdapter:
+    """Return the PlaywrightAdapter — the only ATS adapter post-2026-04 unification.
 
-    Platform-specific behavior is handled by strategies loaded inside
-    the form engine via ``get_strategy(platform)``.
+    Platform-specific behavior is handled by ``BasePlatformStrategy`` subclasses
+    loaded inside the form engine via ``get_strategy(platform, url)``.
     """
     from jobpulse.playwright_adapter import PlaywrightAdapter
 

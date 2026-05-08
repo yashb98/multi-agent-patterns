@@ -63,12 +63,6 @@ class AshbyStrategy(BasePlatformStrategy):
             "portfolio": "portfolio_url",
         }
 
-    def screening_defaults(self) -> dict[str, str]:
-        return {
-            "are you legally authorized to work": "yes",
-            "will you require sponsorship": "no",
-        }
-
     async def pre_fill(
         self,
         page: "Page",

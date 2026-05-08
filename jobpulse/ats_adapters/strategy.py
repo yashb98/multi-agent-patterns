@@ -52,7 +52,10 @@ def get_strategy(
             if learned is not None:
                 return learned
         except Exception as exc:
-            logger.debug("get_strategy: synthesis failed: %s", exc)
+            # OPRAL: synthesis is the runtime alternative to a hand-coded
+            # strategy. A failure here means the apply pipeline silently
+            # falls back to GenericStrategy without using accumulated FE data.
+            logger.warning("get_strategy: synthesis failed for %r: %s", url, exc)
 
     from jobpulse.ats_adapters.generic import GenericStrategy
     return GenericStrategy()
@@ -163,9 +166,11 @@ class BasePlatformStrategy(ABC):
         """Extra label → profile-key mappings for this platform."""
         return {}
 
-    def screening_defaults(self) -> dict[str, str]:
-        """Default answers for common screening questions on this platform."""
-        return {}
+    # NOTE: screening defaults are NOT defined on strategies. Screening answers
+    # are PII (.claude/rules/pii-policy.md) and MUST come from `ScreeningPipeline`
+    # at runtime (DB cache → intent classifier → option aligner → LLM fallback).
+    # Per-platform hardcoded answer dicts were removed in the S12 audit (2026-05-08)
+    # — they were both a PII-policy violation and dead code (zero production callers).
 
     # ------------------------------------------------------------------
     # Pre / post hooks

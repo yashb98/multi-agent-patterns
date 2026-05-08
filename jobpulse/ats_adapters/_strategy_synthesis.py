@@ -32,7 +32,13 @@ def synthesize_strategy_for_domain(domain_or_url: str | None) -> LearnedStrategy
     try:
         record = _get_fe_db().lookup(domain)
     except Exception as exc:
-        logger.debug("synthesize_strategy_for_domain: lookup failed: %s", exc)
+        # OPRAL: FormExperienceDB lookup failure is a real DB-layer fault
+        # (corrupted file, missing schema, lock). Surface it so callers can
+        # see why synthesis silently falls back to GenericStrategy.
+        logger.warning(
+            "synthesize_strategy_for_domain: FormExperienceDB.lookup failed for %r: %s",
+            domain, exc,
+        )
         return None
 
     if not record:

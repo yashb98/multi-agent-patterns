@@ -71,8 +71,10 @@ def classify_action(ats_score: float, easy_apply: bool) -> str:
 
 
 def select_adapter(ats_platform: str | None) -> BaseATSAdapter:
-    """Return the appropriate ATS adapter for the given platform name."""
-    return get_adapter(ats_platform)
+    """Return the ATS adapter. ``ats_platform`` is retained for telemetry only;
+    adapter dispatch is unified post-2026-04 — `get_adapter()` always returns
+    the PlaywrightAdapter."""
+    return get_adapter()
 
 
 def _record_agent_performance(
