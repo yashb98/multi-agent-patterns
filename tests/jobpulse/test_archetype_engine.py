@@ -1,5 +1,41 @@
 """Tests for archetype detection — keyword scoring + profile lookup."""
+import importlib
+
 import pytest
+
+
+class TestImportTimeSideEffects:
+    """Regression: importing archetype_engine MUST NOT touch ProfileStore.
+
+    Previously `_DEFAULT_PROFILE = _build_default_profile()` ran at module
+    import time, calling `get_profile_store().education()` which opens
+    user_profile.db (sqlite3.connect + WAL pragma + ALTER TABLE migration)
+    purely to load the module — same shape as S7 audit B-2 in
+    skill_gap_tracker. Tests, CLI tools, and read-only diagnostic scripts
+    that import any module which transitively imports archetype_engine
+    paid that cost on every invocation.
+    """
+
+    def test_module_import_does_not_build_default_profile(self):
+        import jobpulse.archetype_engine as mod
+
+        # Force a clean state, then reload — the post-reload cache must stay
+        # empty until the first call to `_get_default_profile()`.
+        mod._DEFAULT_PROFILE_CACHE = None
+        importlib.reload(mod)
+        assert mod._DEFAULT_PROFILE_CACHE is None, (
+            "archetype_engine import triggered _build_default_profile() — "
+            "Principle 1 violation (module-level ProfileStore read). "
+            "Use _get_default_profile() lazily."
+        )
+
+    def test_get_default_profile_caches_after_first_call(self):
+        import jobpulse.archetype_engine as mod
+
+        mod._DEFAULT_PROFILE_CACHE = None
+        first = mod._get_default_profile()
+        assert mod._DEFAULT_PROFILE_CACHE is not None
+        assert first is mod._get_default_profile()  # subsequent calls reuse cache
 
 
 class TestDetectArchetype:
