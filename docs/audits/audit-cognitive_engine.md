@@ -492,3 +492,25 @@ returns `result.answer` only) rather than calling `engine.think`
 directly — i.e. field_mapper never sees a `ThinkResult.score`. So
 the M-B blocker pattern doesn't apply there.
 
+---
+
+## Cross-references from later audits
+
+- **S10 (`optimization_engine`) audit, commit `aa6fe74`** modified
+  `shared/cognitive/_classifier.py:46-58` to drop the
+  `sample_size >= 20` gate on the OptimizationEngine `forced_level`
+  override path. The change was scoped as cross-module wiring — the
+  bug's root cause spanned `_tracker.get_domain_stats` and the
+  classifier consumer. See `docs/audits/audit-optimization_engine.md`
+  finding B-1.
+
+- **W-10.3 (deferred, soft)** — the L0 fast-path at
+  `_classifier.py:57` (`l0_success_rate >= 0.95 and sample_size >= 20`)
+  remains dormant in production because `cognitive_outcomes` are
+  stored with real agent_name (cv_tailoring, screening_answers, …)
+  while `_classifier.classify` looks up `(domain, domain)`. The L0
+  fast-path therefore never observes sample_size > 0. Bigger fix:
+  aggregate cognitive_outcomes by domain only, OR thread real
+  `agent_name` through `EscalationClassifier.classify`. Tracked in
+  `docs/audits/audit-followup-worklist.md` § S10 W-10.3.
+
