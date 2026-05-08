@@ -344,8 +344,8 @@ on a code path replaced by another implementation.
 |---|---|---|
 | ⏸ S3 d-2 | `OverlayDismisser._dismiss_cookie_banner / _generic_modal / _promo_popup` | Legacy `cookie_dismisser.dismiss` + `dismiss_cookie_banner_playwright` paths run instead. Module docstring claims consolidation that didn't happen. |
 | ⏸ S3 d-4 | `verification_detector.py` | Apply path uses `playwright_driver.get_snapshot` inline. Tests + scraper-side scripts still consume this module. |
-| ⏸ S6 T-1 | `tests/shared/cognitive/conftest.py` | Conftest isolates `cognitive_budget.db` but NOT `data/optimization.db`. Production data shows 567/1197 cognitive_outcomes rows (47%) are from `agent_name='test_agent'` — tests are leaking via the `get_optimization_engine()` singleton inside `record_cognitive_outcome`. |
-| ⏸ S10 T-10.1 | (same root cause as S6 T-1) | 845/1571 production rows (54%) carry `agent_name='test_agent'`, plus cron fixtures. |
+| ✅ S3 | `tests/conftest.py` | Conftest isolates `cognitive_budget.db` but NOT `data/optimization.db`. Production data shows 567/1197 cognitive_outcomes rows (47%) are from `agent_name='test_agent'` — tests are leaking via the `get_optimization_engine()` singleton inside `record_cognitive_outcome`. | Fix: added `OPTIMIZATION_DB` env var support in `_default_db_path`, autouse `isolate_optimization_db` fixture in `tests/conftest.py`, and `reset_optimization_engine()` helper. Wider-sweep production-DB delta confirmed at 0 (was 1235 → still 1235). 1235 historical leaked rows preserved (deletion not reversible). |
+| ✅ S3 | (same root cause as S6 T-1) | 845/1571 production rows (54%) carry `agent_name='test_agent'`, plus cron fixtures. | Closed by the same fix as S6 T-1; both share the singleton root cause. |
 | ⏸ S10 T-10.2 | `tests/shared/optimization/conftest.py:69, 72` | `MockMemoryManager` exposes BOTH `pin` and `pin_memory` — over-mocking that hid S10 M-A. |
 | ⏸ S5 M-5.4 | `cross_platform_field_transfer.py` | Implemented, exhaustively tested, zero production importers. |
 | ⏸ S6 d-2 | `CognitiveEngine.report()` | Test/analytics only. |
@@ -430,11 +430,20 @@ session each.
 6. **CLAUDE.md / architecture-doc drift** — S3 (4 doc deltas), S6 (1), S7 (1),
    S8 (3), S10 (2), S11 (3), S12 (3). **Batch into one architecture-doc PR.**
    Advisor flagged this as overdue.
-7. **Test-suite leakage into production DBs via singletons** — S6 T-1 / S10 T-10.1:
-   `cognitive_outcomes` table is 47–54 % `agent_name='test_agent'` rows because
-   `cognitive_budget.db` is isolated by env-override but `data/optimization.db`
-   is not. Fix: monkeypatch `shared.optimization.get_optimization_engine` to a
-   tmp-DB instance for the cognitive test scope.
+7. **Test-suite leakage into production DBs via singletons** — S6 T-1 / S10 T-10.1
+   closed in `pipeline-bugs-S3`. `cognitive_outcomes` table was 47–54 %
+   `agent_name='test_agent'` rows because `cognitive_budget.db` was isolated
+   by env-override but `data/optimization.db` wasn't. Fix: added
+   `OPTIMIZATION_DB` env var to `_default_db_path` (consistent with
+   `LLM_USAGE_DB` / `COGNITIVE_BUDGET_DB`), autouse fixture
+   `isolate_optimization_db` in `tests/conftest.py` that resets
+   `_shared_engine = None` before/after every test, and
+   `reset_optimization_engine()` helper. Wiring test
+   (`tests/shared/optimization/test_db_isolation_wiring.py`) asserts the
+   tmp DB receives the write AND the production DB row count is unchanged.
+   1235 historical leaked rows preserved — they don't affect production
+   reads since `forced_level_overrides` is keyed by `agent_name=domain`
+   per S10 B-1, not by real agent name.
 
 ---
 

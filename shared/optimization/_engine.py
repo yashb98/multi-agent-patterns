@@ -34,7 +34,9 @@ _DEFAULT_DB_PATH = None  # set lazily to avoid import-time DATA_DIR side effects
 
 def _default_db_path() -> str:
     from shared.paths import DATA_DIR
-    return str(DATA_DIR / "optimization.db")
+    # Honour `OPTIMIZATION_DB` so tests can redirect writes to tmp_path
+    # (parallels `LLM_USAGE_DB` and `COGNITIVE_BUDGET_DB`).
+    return os.getenv("OPTIMIZATION_DB", str(DATA_DIR / "optimization.db"))
 
 
 class OptimizationEngine:
@@ -580,6 +582,19 @@ class _NoOpTracker:
 
 
 _shared_engine: Optional[OptimizationEngine] = None
+
+
+def reset_optimization_engine() -> None:
+    """Drop the cached singleton so the next `get_optimization_engine()` call
+    rebuilds with the current environment.
+
+    Used by `tests/conftest.py` to make sure each test sees a fresh engine
+    pointed at the tmp `OPTIMIZATION_DB` path. Without this, the first test
+    that touches the engine caches a production-path instance and every
+    subsequent test inherits it.
+    """
+    global _shared_engine
+    _shared_engine = None
 
 
 def get_optimization_engine() -> OptimizationEngine:
