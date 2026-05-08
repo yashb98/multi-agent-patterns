@@ -152,3 +152,121 @@ def test_handle_block_records_cooldown(tmp_path):
     assert event_row is not None
     assert event_row[0] == "blocked"
     assert event_row[1] == "turnstile"
+
+
+# ── Test D: scan_linkedin must not record_success when zero results ──
+# Regression for S9 audit M-A: scan_linkedin previously called record_success
+# unconditionally even when every page returned 429 / empty HTML, which would
+# reset the cooldown after a blocked session.
+
+class _LinkedInEmptyResp:
+    status_code = 200
+    text = "<html></html>"
+    headers: dict = {}
+
+
+class _LinkedInEmptyClient:
+    def __init__(self, *_, **__) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def get(self, _url):
+        return _LinkedInEmptyResp()
+
+
+class _LinkedInLiveResp:
+    status_code = 200
+    headers: dict = {}
+    # one card with required selectors so the parser yields a result
+    text = (
+        '<html><body>'
+        '<div class="base-search-card">'
+        '<h3 class="base-search-card__title">Engineer</h3>'
+        '<h4 class="base-search-card__subtitle">Acme</h4>'
+        '<span class="job-search-card__location">London</span>'
+        '<a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/1">x</a>'
+        '</div></body></html>'
+    )
+
+
+class _LinkedInLiveClient:
+    def __init__(self, *_, **__) -> None:
+        self._first = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def get(self, _url):
+        # First call returns the search page with one card; detail fetches and
+        # subsequent paginated calls return empty HTML so we exit the loop.
+        if self._first:
+            self._first = False
+            return _LinkedInLiveResp()
+        return _LinkedInEmptyResp()
+
+
+def test_scan_linkedin_skips_record_success_on_zero_results(monkeypatch, tmp_path):
+    """When scan_linkedin returns 0 jobs, record_success must NOT be called."""
+    import httpx
+    from unittest.mock import MagicMock
+    from jobpulse.job_scanners import linkedin as linkedin_mod
+    from jobpulse.scan_learning import ScanLearningEngine
+    from jobpulse.models.application_models import SearchConfig
+
+    monkeypatch.setattr(httpx, "Client", _LinkedInEmptyClient)
+    monkeypatch.setattr(linkedin_mod.httpx, "Client", _LinkedInEmptyClient)
+
+    fake_record_success = MagicMock()
+    monkeypatch.setattr(linkedin_mod, "record_success", fake_record_success)
+
+    # Avoid hitting the real scan_learning DB
+    fake_engine = MagicMock(spec=ScanLearningEngine)
+    fake_engine.get_adaptive_params.return_value = {"cooldown_active": False, "max_requests": 5}
+    monkeypatch.setattr(linkedin_mod, "ScanLearningEngine", lambda: fake_engine)
+
+    config = SearchConfig(
+        titles=["Software Engineer"], location="London", include_remote=False, salary_min=0
+    )
+    results = linkedin_mod.scan_linkedin(config)
+
+    assert results == []
+    assert fake_record_success.call_count == 0
+
+
+def test_scan_linkedin_records_success_when_results_non_empty(monkeypatch):
+    """Sanity check: the M-A guard does not break the normal happy path."""
+    import httpx
+    from unittest.mock import MagicMock
+    from jobpulse.job_scanners import linkedin as linkedin_mod
+    from jobpulse.scan_learning import ScanLearningEngine
+    from jobpulse.models.application_models import SearchConfig
+
+    monkeypatch.setattr(httpx, "Client", _LinkedInLiveClient)
+    monkeypatch.setattr(linkedin_mod.httpx, "Client", _LinkedInLiveClient)
+
+    # Skip detail fetch sleeps to keep the test fast
+    monkeypatch.setattr(linkedin_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(linkedin_mod.random, "uniform", lambda *_: 0)
+
+    fake_record_success = MagicMock()
+    monkeypatch.setattr(linkedin_mod, "record_success", fake_record_success)
+
+    fake_engine = MagicMock(spec=ScanLearningEngine)
+    fake_engine.get_adaptive_params.return_value = {"cooldown_active": False, "max_requests": 5}
+    monkeypatch.setattr(linkedin_mod, "ScanLearningEngine", lambda: fake_engine)
+
+    config = SearchConfig(
+        titles=["Software Engineer"], location="London", include_remote=False, salary_min=0
+    )
+    results = linkedin_mod.scan_linkedin(config)
+
+    assert len(results) >= 1
+    assert fake_record_success.call_count == 1

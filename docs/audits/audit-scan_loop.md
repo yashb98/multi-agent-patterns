@@ -103,10 +103,10 @@ Schema agreement: producer (linkedin.py:252) and consumer (`engine.record_event`
 - `jobpulse/job_scanner.py:145-150` **[blocker — FIXED commit `bdb6892`]**
   `check_liveness_batch` called `classify_liveness(status=, final_url=, body_text=, apply_controls=)` — none of these kwargs match the actual signature `classify_liveness(*, status_code, url, body, apply_control_text="")`. Each call raised `TypeError`, the per-listing handler caught only `httpx.HTTPError` so the TypeError escaped, and `scan_pipeline.fetch_and_filter_jobs:234` swallowed it under a blanket `except Exception` and continued with all jobs. **Liveness filtering had been a no-op in production for the entire lifetime of this code path.** Existing `test_scan_pipeline` patches `check_liveness_batch` directly, so the wiring was never exercised. Reproduction: `python -c "from jobpulse.liveness_checker import classify_liveness; classify_liveness(status=200, final_url='x', body_text='', apply_controls=[])"` → `TypeError: got an unexpected keyword argument 'status'`. Regression test added at `tests/jobpulse/test_liveness_checker.py:test_check_liveness_batch_passes_correct_kwargs`.
 
-#### MAJORS (deferred — share an entangled scan_learning wiring fix)
+#### MAJORS
 
-- `jobpulse/job_scanners/linkedin.py:252` **[major — deferred]**
-  `record_success(engine, "linkedin", signals)` runs unconditionally at the end of the scan. If every paginated request returned 429 the inner retry loop breaks and we still log "success" — `signals.record_request()` (line 89) increments on every send regardless of status, and `record_success` only guards `requests_count > 0`, not "saw any 200". This actively pollutes `scan_learning.events` with `outcome=success` rows for blocked sessions, undermines `engine.update_learned_rules`, and resets cooldown via `engine.reset_cooldown` (`__init__.py:170`) when in fact we just got rate-limited.
+- `jobpulse/job_scanners/linkedin.py:252` **[major — partial fix shipped]**
+  `record_success(engine, "linkedin", signals)` ran unconditionally at the end of the scan. If every paginated request returned 429 the inner retry loop breaks and we still log "success" — `signals.record_request()` (line 89) increments on every send regardless of status, and `record_success` only guards `requests_count > 0`, not "saw any 200". This actively pollutes `scan_learning.events` with `outcome=success` rows for blocked sessions and resets cooldown via `engine.reset_cooldown` (`__init__.py:170`) when in fact we just got rate-limited. **Partial fix shipped**: only call `record_success` when `results` is non-empty (handles the worst case — every page blocked → zero results → no spurious success). The 429-mid-pagination case (some 200s, some 429s, non-empty results) still records success and is deferred to the M-B/C/D fix that introduces explicit block-event recording. Test: `test_scan_linkedin_skips_record_success_on_zero_results` + `test_scan_linkedin_records_success_when_results_non_empty`.
 - `jobpulse/job_scanners/indeed.py:43` **[major — deferred]**
   `scan_indeed` has **no scan_learning wiring at all** — no `engine.can_scan_now`, no `get_adaptive_params`, no `record_success`, no `handle_block`. JobSpy errors are caught and logged at line 93 but never recorded. The cooldown system can never engage for Indeed because there is no producer that emits a block event. Indeed is the platform with the highest empirical block rate in the codebase (per `jobpulse/scan_learning.py` LLM-analysis comments) so this is the worst gap.
 - `jobpulse/job_scanners/reed.py:103` **[major — deferred]**
@@ -181,11 +181,13 @@ The TypeError is not caught by the per-listing `except httpx.HTTPError`, escapes
 ### 4.3 Post-fix test run
 
 ```
-$ python -m pytest tests/jobpulse/test_liveness_checker.py -vv
-12 passed, 11 warnings in 0.20s
+$ python -m pytest tests/jobpulse/test_liveness_checker.py tests/jobpulse/test_scan_learning_wiring.py -vv
+17 passed, 11 warnings in 0.45s
 ```
 
-Including the new `test_check_liveness_batch_passes_correct_kwargs` regression that drives the real `check_liveness_batch` → real `classify_liveness` path with stubbed httpx and asserts the expired vs alive split is correct.
+Including the new `test_check_liveness_batch_passes_correct_kwargs` regression that drives the real `check_liveness_batch` → real `classify_liveness` path with stubbed httpx, plus `test_scan_linkedin_skips_record_success_on_zero_results` and the positive-path counterpart for the M-A guard.
+
+> Note on the live-vs-expired classification path: even after the kwargs fix, `check_liveness_batch` calls `classify_liveness(...)` without an `apply_control_text` argument (defaults to `""`). That means classify_liveness step 6 (apply-control match → `active`) never fires from the batch path; non-expired listings end up `status="uncertain"`, which the caller treats as alive (`else: alive.append(listing)` at job_scanner.py:154). The fix recovers expired-filtering correctly, but apply-button affirmation is **not** wired through this path — that's by design for now.
 
 ### 4.4 What I did NOT run live
 
@@ -199,9 +201,10 @@ Including the new `test_check_liveness_batch_passes_correct_kwargs` regression t
 | Severity | Finding | Commit | Test |
 |---|---|---|---|
 | blocker | B-1 — `check_liveness_batch` kwargs | `bdb6892` | `test_check_liveness_batch_passes_correct_kwargs` |
+| major (partial) | M-A — `scan_linkedin` unconditional `record_success` | (this session) | `test_scan_linkedin_skips_record_success_on_zero_results`, `test_scan_linkedin_records_success_when_results_non_empty` |
 
-Deferred (require a single coherent fix that touches three scanners + the `handle_block` contract):
-- M-A — `scan_linkedin` unconditional `record_success`
+Deferred (require a single coherent fix that touches the rest of the scanners + the `handle_block` contract):
+- M-A residue — 429-mid-pagination case (some 200s + some 429s → non-empty results → still records "success")
 - M-B — `scan_indeed` zero scan_learning wiring
 - M-C — `scan_reed` no `record_success`/block recording
 - M-D — `handle_block` shape-incompatible with httpx scanners
