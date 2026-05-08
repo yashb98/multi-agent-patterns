@@ -120,8 +120,8 @@ broader redesign.
 | ID | Location | Description |
 |---|---|---|
 | ✅ S6 7409548 | `shared/memory_layer/_sync.py:_sync_entry → _link_neighbors` | `AutonomousLinker.link_with_neighbors` is now invoked from the secondary-sync background worker after Qdrant upsert + Neo4j `create_node`. Reuses the upsert vector, searches all 4 indexed tiers (`top_k=5`, `score_threshold=0.5`), filters self-match, hydrates from SQLite, hands neighbors to the linker. 3 of 6 ForgettingEngine signals (connectivity / impact / uniqueness) now read non-default values once Neo4j edges exist. |
-| 🔴 M-11.B | `shared/memory_layer/_stores.py:217` | `SemanticMemory.learn` documents `max_facts=500` but has **no eviction logic**. Production `semantic.json` has 1 041 entries despite the cap; will hit ~10 K / 5 MB within ~6 months. |
-| 🔴 M-11.C | `shared/memory_layer/_manager.py:364, 368` | `get_procedural_entries` / `get_episodic_entries` read JSON-only (capped 100/200) while SQLite has 19 789 procedural / 203 episodic. Cognitive sees ~1/4 of procedural strategies. |
+| ✅ S7 | `shared/memory_layer/_stores.py:SemanticMemory.learn → _evict_to_cap` | `SemanticMemory.learn` now evicts to `max_facts` after appending a new fact: sort by `reliability * confidence`, tiebreak `times_validated`, keep top N. Mirrors `EpisodicMemory.store` and `ProceduralMemory.store`. Production `semantic.json` will converge to ≤500 entries on the next reinforcement cycle. |
+| ✅ S7 | `shared/memory_layer/_manager.py:get_procedural_entries / get_episodic_entries / get_semantic_entries` | All three accessors are now SQLite-first with JSON fallback. Procedural reads use a single windowed SQL query (`aggregate_procedural_by_strategy`) that dedups by `SUBSTR(content,1,50)` and aggregates `times_used` / `avg_score` / `avg_success_rate` — collapsing the 19 783 `optimization_success_streak` write-amplified rows into ~378 distinct strategies as cognitive expects. **Behavior change**: `EscalationClassifier` will hit `L0_MEMORY` more often because high-volume domains finally meet `times_used>=3 AND avg_score>=8`. |
 | 🔴 M-11.D | `shared/memory_layer/_neo4j_store.py:46` | `Neo4j.verify()` fails when `NEO4J_PASSWORD` unset — graph signals dormant in any env without docker-compose secrets. Affects forgetting + linker + signals chain. |
 | 🔴 M-11.E | `shared/memory_layer/_sync.py:88` | `reconcile()` is O(N) embedding + O(N) Qdrant `has_point` per missing entry. With 27 786 entries: ~$0.50 per full reconcile, ~23 min latency. Called on every daemon start. |
 
@@ -281,7 +281,7 @@ read path doesn't exist; or a producer/consumer disagree on schema.
 | ID | Description |
 |---|---|
 | 🔌 DEFERRED→S8 | Cognitive auto-escalate (L0→L1 etc.) writes `cognitive_outcomes(escalated=1)` only; **no `OptimizationEngine.emit(signal_type='adaptation')` is fired**. SignalAggregator never sees escalations. | **Verdict: DEFERRED to runner-table session S8 (cognitive cost + flush + emit-adaptation).** S8 explicitly wires this signal. |
-| 🔌 DEFERRED→S7 | `_classifier.py:165 load_persisted_stats` reads `memory.semantic.facts.items()` directly instead of `MemoryManager.query`. If SemanticMemory shape changes, restore silently degrades. | **Verdict: DEFERRED to runner-table session S7 (memory eviction + JSON↔SQLite read unification).** Same root cause as M-11.C / W-11.4. |
+| ✅ S7 | `_classifier.py:166 load_persisted_stats` reads `memory.semantic.facts.items()` directly instead of `MemoryManager.query`. If SemanticMemory shape changes, restore silently degrades. | **Verdict: WIRED.** S7 added `MemoryManager.get_semantic_entries(domain)` and migrated `load_persisted_stats` to use it. Legacy attribute fallback preserved for mock-memory test fixtures. |
 
 ### S7 — pre_screen
 
@@ -314,8 +314,8 @@ read path doesn't exist; or a producer/consumer disagree on schema.
 | ✅ S6 7409548 | Linker not invoked → Neo4j has zero edges (M-11.A). | **Verdict: WIRED.** `SyncService._sync_entry` now calls `_link_neighbors(entry, vector)` after upsert + node creation; closes both this gap and `_linker.py` whole-module S5-deferred. |
 | 🗑 S5 DELETE (c812914) | `memory_access_log` table is write-conditional + read-empty (m-11.2). Producer requires `trajectory_id != "no_trajectory"`; 0 rows in prod; no reader exists. | **Verdict: DELETE writer.** 0 rows in production; no consumer. Same shape as `gate_decisions` and screening DB writers. |
 | 🔧 S5 WIRE (c812914) | `pin_memory` only protects SQLite, not JSON cap. OptimizationEngine pins are half-applied. | **Verdict: WIRE.** Real bug — OptimizationEngine pins should propagate to JSON-only legacy stores until the M-11.C JSON↔SQLite unification lands in S7. Two-line fix in `MemoryManager.pin_memory`. |
-| 🔌 DEFERRED→S7 | `get_procedural_entries`/`get_episodic_entries` read JSON; `query` reads SQLite — **same store, divergent reads** (M-11.C). | **Verdict: DEFERRED to runner-table session S7 (memory eviction + JSON↔SQLite read unification).** |
-| 🔌 DEFERRED→S7 | `cognitive/_classifier.py:179` reaches into `self._memory.semantic.facts.items()` directly — bypasses `MemoryManager` (S6 W-2 carryover). | **Verdict: DEFERRED to runner-table session S7.** Same root cause as W-11.4 / M-11.C. |
+| ✅ S7 | `get_procedural_entries`/`get_episodic_entries` read JSON; `query` reads SQLite — **same store, divergent reads** (M-11.C). | **Verdict: WIRED.** Both accessors now read SQLite first; JSON fallback only for backwards compat (no `sqlite_store` configured) or when SQLite is empty for the domain. |
+| ✅ S7 | `cognitive/_classifier.py:179` reaches into `self._memory.semantic.facts.items()` directly — bypasses `MemoryManager` (S6 W-2 carryover). | **Verdict: WIRED.** S7 added `get_semantic_entries` accessor and migrated `load_persisted_stats` to use it. |
 
 ### S12 — ats_adapters
 

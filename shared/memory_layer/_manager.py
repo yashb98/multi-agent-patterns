@@ -6,6 +6,7 @@ memory_manager.get_context(agent, topic, domain) and receive a single,
 formatted context package.
 """
 
+import json
 import os
 import hashlib
 import time
@@ -17,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from shared.logging_config import get_logger
 from shared.memory_layer._entries import (
-    EpisodicEntry, ProceduralEntry, PatternEntry,
+    EpisodicEntry, ProceduralEntry, PatternEntry, SemanticEntry,
     MemoryEntry, MemoryTier, Lifecycle,
 )
 from shared.memory_layer._stores import (
@@ -363,13 +364,180 @@ class MemoryManager:
                 },
             )
 
-    def get_procedural_entries(self, domain: str) -> list[ProceduralEntry]:
-        """Retrieve procedural templates for a domain (cognitive engine API)."""
-        return self.procedural.recall(domain)
+    def get_procedural_entries(
+        self, domain: str, n: int = 100,
+    ) -> list[ProceduralEntry]:
+        """Retrieve procedural templates for a domain (cognitive engine API).
 
-    def get_episodic_entries(self, domain: str) -> list[EpisodicEntry]:
-        """Retrieve episodic memories for a domain (cognitive engine API)."""
-        return self.episodic.recall("", domain)
+        SQLite is source of truth — pre-fix this read JSON only (capped 100)
+        while SQLite held 19 789 procedural rows; cognitive saw ≈1/4 of
+        distinct strategies (M-11.C). Now reads SQLite first, deduping by
+        strategy prefix to collapse write-amplified writes (e.g.
+        ``optimization_success_streak``). Falls back to the JSON-backed
+        ``ProceduralMemory.recall`` when SQLite is absent or empty for the
+        domain (preserves test fixtures that bypass SQLite).
+
+        Behavior change post-fix: ``times_used`` and ``avg_score_when_used``
+        reflect actual aggregated counts, not JSON's first-50-char LRU view.
+        ``EscalationClassifier`` will now hit ``L0_MEMORY`` more often
+        because high-volume domains finally meet the
+        ``times_used>=3 AND avg_score>=8`` threshold.
+        """
+        if self._sqlite is None:
+            return self.procedural.recall(domain)
+        try:
+            rows = self._sqlite.aggregate_procedural_by_strategy(domain, limit=n)
+        except Exception as exc:
+            logger.warning(
+                "SQLite procedural query failed for domain '%s': %s — "
+                "falling back to JSON store",
+                domain, exc,
+            )
+            return self.procedural.recall(domain)
+        if not rows:
+            return self.procedural.recall(domain)
+        return [self._row_to_procedural(row) for row in rows]
+
+    def get_episodic_entries(
+        self, domain: str, n: int = 200,
+    ) -> list[EpisodicEntry]:
+        """Retrieve episodic memories for a domain (cognitive engine API).
+
+        SQLite is source of truth — pre-fix this read JSON only (capped 200);
+        SQLite held 203 episodic rows so the gap was small but non-zero
+        (M-11.C). Falls back to JSON when SQLite absent or empty.
+        """
+        if self._sqlite is None:
+            return self.episodic.recall("", domain)
+        try:
+            entries = self._sqlite.query_by_tier_and_domain(
+                MemoryTier.EPISODIC, domain, limit=n,
+            )
+        except Exception as exc:
+            logger.warning(
+                "SQLite episodic query failed for domain '%s': %s — "
+                "falling back to JSON store",
+                domain, exc,
+            )
+            return self.episodic.recall("", domain)
+        if not entries:
+            return self.episodic.recall("", domain)
+        return [self._memory_to_episodic(e) for e in entries]
+
+    def get_semantic_entries(
+        self, domain: str, n: int = 100,
+    ) -> list[SemanticEntry]:
+        """Retrieve semantic facts for a domain.
+
+        Provides the public accessor that cognitive's
+        ``EscalationClassifier.load_persisted_stats`` previously bypassed by
+        reaching into ``self._memory.semantic.facts.items()`` directly
+        (pipeline-bugs W-11.5 / S6 W-2). SQLite-first with JSON fallback,
+        same shape as the procedural / episodic accessors.
+        """
+        if self._sqlite is None:
+            return self.semantic.recall(domain, n=n)
+        try:
+            entries = self._sqlite.query_by_tier_and_domain(
+                MemoryTier.SEMANTIC, domain, limit=n,
+            )
+        except Exception as exc:
+            logger.warning(
+                "SQLite semantic query failed for domain '%s': %s — "
+                "falling back to JSON store",
+                domain, exc,
+            )
+            return self.semantic.recall(domain, n=n)
+        if not entries:
+            return self.semantic.recall(domain, n=n)
+        return [self._memory_to_semantic(e, domain) for e in entries]
+
+    @staticmethod
+    def _row_to_procedural(row: dict) -> ProceduralEntry:
+        """Reconstruct ProceduralEntry from an aggregated SQLite row."""
+        payload = row["payload"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+        elif payload is None:
+            payload = {}
+        content = row.get("content", "")
+        if "\nContext: " in content:
+            strategy, context = content.split("\nContext: ", 1)
+        else:
+            strategy, context = content, ""
+        avg_score = row["avg_score"] if row["avg_score"] is not None else 0.0
+        avg_success = row["avg_success_rate"]
+        if avg_success is None:
+            avg_success = 1.0 if avg_score >= 7.0 else 0.5
+        return ProceduralEntry(
+            procedure_id=payload.get("procedure_id", row["memory_id"][:12]),
+            domain=row.get("domain", ""),
+            strategy=strategy,
+            context=context,
+            success_rate=float(avg_success),
+            times_used=int(row["times_used"] or 1),
+            avg_score_when_used=float(avg_score),
+            source=payload.get("source", "sqlite"),
+            created_at=str(row["created_at"]),
+        )
+
+    @staticmethod
+    def _memory_to_episodic(entry: MemoryEntry) -> EpisodicEntry:
+        """Reconstruct EpisodicEntry from a MemoryEntry via payload + content."""
+        payload = entry.payload or {}
+        # record_episode encodes as: "Run: {topic} | Score: {s} | Agents: {a} |
+        # Pattern: {p} | Summary: {summary[:200]}". Recover topic + summary.
+        topic = ""
+        summary = entry.content
+        try:
+            parts = entry.content.split(" | ")
+            kv = {}
+            for p in parts:
+                if ": " in p:
+                    k, v = p.split(": ", 1)
+                    kv[k] = v
+            topic = kv.get("Run", "")
+            summary = kv.get("Summary", entry.content)
+        except Exception:
+            pass
+        return EpisodicEntry(
+            run_id=payload.get("run_id", entry.memory_id[:10]),
+            topic=topic or payload.get("topic", ""),
+            timestamp=entry.created_at.isoformat(),
+            final_score=entry.score,
+            iterations=int(payload.get("iterations", 0)),
+            pattern_used=payload.get("pattern_used", ""),
+            agents_used=list(payload.get("agents_used", [])),
+            strengths=list(payload.get("strengths", [])),
+            weaknesses=list(payload.get("weaknesses", [])),
+            output_summary=summary,
+            duration_seconds=float(payload.get("duration_seconds", 0.0)),
+            total_llm_calls=int(payload.get("total_llm_calls", 0)),
+            domain=entry.domain,
+        )
+
+    @staticmethod
+    def _memory_to_semantic(entry: MemoryEntry, domain: str) -> SemanticEntry:
+        """Reconstruct SemanticEntry from a MemoryEntry. ``times_validated``
+        is approximated by ``access_count``; ``times_contradicted`` is not
+        tracked in SQLite so reads default to 0 (cognitive consumers don't
+        differentiate)."""
+        payload = entry.payload or {}
+        run_id = payload.get("run_id", "unknown")
+        return SemanticEntry(
+            fact_id=entry.memory_id[:12],
+            domain=entry.domain or domain,
+            fact=entry.content,
+            confidence=entry.confidence,
+            source_runs=[run_id],
+            times_validated=max(1, entry.access_count),
+            times_contradicted=0,
+            created_at=entry.created_at.isoformat(),
+            last_used=entry.last_accessed.isoformat(),
+        )
 
     def start_new_session(self):
         """Clear short-term memory for a new session."""

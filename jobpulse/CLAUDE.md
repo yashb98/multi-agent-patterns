@@ -188,11 +188,12 @@ All old API calls (`learn_fact`, `record_episode`, `learn_procedure`) now automa
 feed the 3-engine memory stack (SQLite + Qdrant + Neo4j) on the **write path**. No caller
 code changes required.
 
-**Read-path asymmetry**: `MemoryManager.get_procedural_entries` and `get_episodic_entries`
-still read from JSON-only legacy stores (capped at 100 / 200 entries) while SQLite has
-~19 800 procedural / ~200 episodic rows. Cognitive consumers (`_classifier`, `_engine`,
-`_strategy`, `_reflexion`) therefore see ~1/4 of the procedural memory. Tracked in
-`pipeline-bugs.md` S11 M-11.C.
+As of `pipeline-bugs.md` S7, **read-path is unified** with the write path:
+`MemoryManager.get_procedural_entries` / `get_episodic_entries` /
+`get_semantic_entries` now read SQLite first (with JSON fallback for legacy
+`sqlite_store=None` mode). Procedural reads use a single windowed SQL query
+to dedup write-amplified rows by `SUBSTR(content,1,50)`, returning aggregated
+`times_used` / `avg_score_when_used` / `success_rate` per distinct strategy.
 
 Forgetting sweep runs automatically every hour via the daemon optimization tick.
 

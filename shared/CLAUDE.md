@@ -51,7 +51,7 @@ MCP tools query pre-indexed SQLite (1-28ms). Grep scans 581 files every time (35
 - `_sync.py` — 3-engine reconciliation
 - `_manager.py` — MemoryManager facade (single entry point)
 All memory access goes through MemoryManager — never query engines directly.
-(One known exception: `shared/cognitive/_classifier.py:load_persisted_stats` reaches into `memory.semantic.facts.items()` directly because `MemoryManager` has no public `query_facts_by_domain` accessor — tracked in `pipeline-bugs.md` W-11.5 / S6 W-2.)
+(`MemoryManager` exposes `get_procedural_entries` / `get_episodic_entries` / `get_semantic_entries` for typed-dataclass reads — SQLite-first with JSON fallback as of `pipeline-bugs.md` S7.)
 
 ## Cognitive Reasoning (shared/cognitive/)
 4-level graduated escalation: L0 Memory Recall → L1 Single Shot → L2 Reflexion → L3 Tree of Thought.

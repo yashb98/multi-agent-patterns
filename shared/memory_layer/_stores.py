@@ -220,6 +220,12 @@ class SemanticMemory:
 
         If the fact already exists (fuzzy match), reinforce it.
         If it's new, store it with initial confidence.
+
+        When the fact count exceeds ``max_facts``, evict the lowest-quality
+        entries (sorted by ``reliability * confidence``, tiebreak on
+        ``times_validated``). EpisodicMemory and ProceduralMemory both
+        evict-on-overflow; this mirrors that contract — pre-fix the cap was
+        documented but never enforced (M-11.B).
         """
         fact_id = self._make_id(domain, fact)
 
@@ -244,8 +250,22 @@ class SemanticMemory:
                 created_at=datetime.now().isoformat(),
                 last_used=datetime.now().isoformat(),
             )
+            if len(self.facts) > self.max_facts:
+                self._evict_to_cap()
 
         self._save()
+
+    def _evict_to_cap(self) -> None:
+        """Drop lowest-quality facts until len(facts) == max_facts."""
+        ranked = sorted(
+            self.facts.items(),
+            key=lambda kv: (
+                kv[1].reliability * kv[1].confidence,
+                kv[1].times_validated,
+            ),
+            reverse=True,
+        )
+        self.facts = dict(ranked[: self.max_facts])
 
     def contradict(self, domain: str, fact: str):
         """Record that a fact was contradicted by a run."""

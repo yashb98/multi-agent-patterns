@@ -167,16 +167,22 @@ class EscalationClassifier:
         """Load classifier accuracy from MemoryManager on init.
 
         Called by CognitiveEngine.__init__ to restore cross-session stats.
-        Parses SEMANTIC tier entries with domain='cognitive_classifier'.
+        Reads SEMANTIC tier entries with domain='cognitive_classifier' via
+        the public ``MemoryManager.get_semantic_entries`` accessor (closes
+        pipeline-bugs W-11.5 / S6 W-2 — pre-fix this reached into
+        ``memory.semantic.facts.items()`` directly, bypassing the SQLite
+        source of truth).
         """
         try:
-            sem = getattr(self._memory, "semantic", None)
-            if sem is None:
-                return
-            facts = getattr(sem, "facts", None)
-            if not isinstance(facts, dict):
-                return
-            for _fact_id, entry in facts.items():
+            if hasattr(self._memory, "get_semantic_entries"):
+                entries = self._memory.get_semantic_entries("cognitive_classifier")
+            else:
+                # Test fixtures with mock memory that lack the new accessor —
+                # fall through to legacy attribute access without breaking.
+                sem = getattr(self._memory, "semantic", None)
+                facts = getattr(sem, "facts", None) if sem is not None else None
+                entries = list(facts.values()) if isinstance(facts, dict) else []
+            for entry in entries:
                 if getattr(entry, "domain", "") == "cognitive_classifier":
                     self._parse_persisted_fact(getattr(entry, "fact", ""))
         except Exception as e:

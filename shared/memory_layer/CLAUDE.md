@@ -47,7 +47,7 @@ Two perspectives on the memory system:
 - `_manager.py` — MemoryManager facade (single entry point)
 
 ## Rules
-- ALL memory access through MemoryManager — never query engines directly
+- ALL memory access through MemoryManager — never query engines directly. Cognitive consumers use `get_procedural_entries` / `get_episodic_entries` / `get_semantic_entries`; pre-S7 these read JSON-capped stores while writes went to SQLite, but as of S7 reads are SQLite-first with JSON fallback (`pipeline-bugs.md` M-11.C / W-11.5).
 - Embeddings via Voyage 3 Large (fallback: MiniLM)
 - Lifecycle: STM → MTM → LTM → Cold → Archive
 - Forgetting sweep runs hourly — 6-signal decay score. The 3 graph signals (`connectivity` / `impact` / `uniqueness`) require Neo4j edges; `SyncService._sync_entry` now invokes `AutonomousLinker.link_with_neighbors` after every secondary-sync write to populate them (pipeline-bugs.md S6).
