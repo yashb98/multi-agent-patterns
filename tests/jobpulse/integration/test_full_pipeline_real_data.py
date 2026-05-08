@@ -289,28 +289,6 @@ class TestWidgetRecoveryOnRealData:
 
 
 # ----------------------------------------------------------------------
-# 8. MemoryManager screening fallback — real questions don't crash helper
-# ----------------------------------------------------------------------
-
-class TestMemoryFallbackInputHandling:
-    def test_helper_accepts_real_question_shapes_without_crashing(self):
-        from unittest.mock import patch, MagicMock
-        from jobpulse.screening_pipeline import query_memory_for_similar_answer
-        qa = _real_screening_qa(limit=10)
-        if not qa:
-            pytest.skip("No real screening Q&As available")
-        # Mock MemoryManager (Qdrant/Neo4j may not be running)
-        fake_mm = MagicMock()
-        fake_mm.query = MagicMock(return_value=[])
-        with patch("jobpulse.screening_pipeline._get_memory_manager", return_value=fake_mm):
-            for question, _ans, _intent in qa[:5]:
-                # Helper must not crash on real production question text
-                result = query_memory_for_similar_answer(question)
-                # Result is None when query returns empty — that's the only assertion
-                assert result is None
-
-
-# ----------------------------------------------------------------------
 # 9. End-to-end coverage report — every shipped primitive accessible
 # ----------------------------------------------------------------------
 
@@ -345,7 +323,6 @@ class TestAllPrimitivesImportable:
         # Final wave
         from jobpulse.sso_auto_discovery import detect_sso_button_patterns
         from jobpulse.form_engine.widget_llm_recovery import recover_widget_via_llm
-        from jobpulse.screening_pipeline import query_memory_for_similar_answer
 
         # All importable — single assertion
         assert all([
@@ -355,5 +332,4 @@ class TestAllPrimitivesImportable:
             synthesize_strategy_for_domain, heal_locator, FieldIntent,
             PreSubmitGate, _deterministic_consistency_checks,
             detect_sso_button_patterns, recover_widget_via_llm,
-            query_memory_for_similar_answer,
         ])

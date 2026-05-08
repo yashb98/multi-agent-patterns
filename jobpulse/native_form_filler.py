@@ -3237,26 +3237,6 @@ class NativeFormFiller:
 
     # ── Public Interface ──
 
-    async def scan_current_values(self) -> dict[str, str]:
-        fields = await self._scan_fields()
-        values: dict[str, str] = {}
-        for f in fields:
-            label = f["label"]
-            if not label or f["type"] == "file":
-                continue
-            if f["type"] == "checkbox":
-                values[label] = "checked" if f.get("checked") else "unchecked"
-            elif f["type"] == "radio":
-                for r in await f["locator"].get_by_role("radio").all():
-                    if await r.is_checked():
-                        values[label] = await self._get_accessible_name(r)
-                        break
-            else:
-                val = f.get("value") or ""
-                if val:
-                    values[label] = val
-        return values
-
     async def fill(
         self,
         platform: str,

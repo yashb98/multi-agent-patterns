@@ -45,7 +45,6 @@ policy decides actions → tracker measures impact → trajectories log everythi
 | `_policy.py` | OptimizationPolicy, OptimizationBudget, 14 action types |
 | `_trajectory.py` | TrajectoryStore, Trajectory, TrajectoryStep, JSONL/CSV export |
 | `_engine.py` | OptimizationEngine facade + get_optimization_engine() factory |
-| `_gate_policy.py` | Per-domain threshold adjustments based on outcomes |
 | `_replay.py` | Trajectory replay harness for deterministic fixture testing |
 
 ## Signal Types

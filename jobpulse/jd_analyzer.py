@@ -96,13 +96,6 @@ _SALARY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Single salary: £50,000 or 50K
-_SINGLE_SALARY_RE = re.compile(
-    r"(?:£|\$|USD|GBP)\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*[kK]?",
-    re.IGNORECASE,
-)
-
-
 def _parse_amount(raw: str, suffix_char: str) -> float:
     """Convert a raw numeric string (possibly with commas) + K suffix to float."""
     cleaned = raw.replace(",", "")

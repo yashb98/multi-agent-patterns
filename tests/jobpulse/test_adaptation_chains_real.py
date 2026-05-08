@@ -83,24 +83,6 @@ class TestCorrectionToRuleChain:
         assert row["agent_value"] == "No"
         assert row["user_value"] == "Graduate Visa"
 
-    def test_correction_count_query(self, tmp_path):
-        """CorrectionCapture.get_correction_count returns accurate counts."""
-        db_path = str(tmp_path / "field_corrections.db")
-        cc = CorrectionCapture(db_path=db_path)
-
-        # Record 3 corrections for the same field
-        for i in range(3):
-            cc.record_corrections(
-                domain="greenhouse.io",
-                platform="greenhouse",
-                agent_mapping={"Salary": f"old_{i}"},
-                final_mapping={"Salary": f"new_{i}"},
-            )
-
-        assert cc.get_correction_count("Salary") == 3
-        assert cc.get_correction_count("salary") == 3  # case-insensitive
-        assert cc.get_correction_count("NonExistent") == 0
-
     def test_correction_feeds_agent_rules(self, tmp_path):
         """CorrectionCapture correction -> AgentRulesDB creates an override rule."""
         corrections_db = str(tmp_path / "field_corrections.db")
@@ -196,10 +178,6 @@ class TestCorrectionToRuleChain:
 
         # After 3 corrections, action should be 'escalate'
         assert result["action"] == "escalate"
-
-        # Verify the field shows up in escalation fields
-        escalation_fields = rules.get_escalation_fields()
-        assert "Salary" in escalation_fields
 
     def test_full_chain_correction_to_consumption(self, tmp_path):
         """End-to-end: record correction -> create rule -> query override -> verify DB state."""

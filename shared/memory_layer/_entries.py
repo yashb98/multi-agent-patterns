@@ -105,10 +105,6 @@ class MemoryEntry:
             is_tombstoned=False,
         )
 
-    def touch(self):
-        self.last_accessed = datetime.now()
-        self.access_count += 1
-
 
 @dataclass
 class EpisodicEntry:

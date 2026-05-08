@@ -31,8 +31,4 @@ def get_adapter() -> BaseATSAdapter:
     return PlaywrightAdapter()
 
 
-def reset_adapter() -> None:
-    """No-op — kept for test compatibility."""
-
-
-__all__ = ["BaseATSAdapter", "get_adapter", "reset_adapter"]
+__all__ = ["BaseATSAdapter", "get_adapter"]

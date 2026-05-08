@@ -61,11 +61,6 @@ def get_strategy(
     return GenericStrategy()
 
 
-def list_registered_strategies() -> list[str]:
-    """Return names of all registered strategies."""
-    return list(_STRATEGY_REGISTRY.keys())
-
-
 class BasePlatformStrategy(ABC):
     """Base class for per-platform customization of the form-filling pipeline.
 

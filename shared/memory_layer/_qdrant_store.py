@@ -210,33 +210,6 @@ class QdrantStore:
         logger.error("Qdrant search exhausted retries: %s", last_err)
         return []  # caller falls back to FTS
 
-    def search_all_tiers(
-        self,
-        query_vector: list[float],
-        top_k: int = 10,
-        score_threshold: Optional[float] = None,
-    ) -> list[tuple[str, float]]:
-        """Cross-collection search across all indexed tiers.
-
-        Queries each collection independently and merges results, sorted by
-        descending cosine score.
-
-        Returns
-        -------
-        List of (memory_id, cosine_score) tuples, ordered by descending similarity.
-        """
-        all_results: list[tuple[str, float]] = []
-        for tier in _INDEXED_TIERS:
-            results = self.search(
-                tier,
-                query_vector,
-                top_k=top_k,
-                score_threshold=score_threshold,
-            )
-            all_results.extend(results)
-        all_results.sort(key=lambda x: x[1], reverse=True)
-        return all_results[:top_k]
-
     def count(self, tier: MemoryTier) -> int:
         """Return the number of points in the given tier collection."""
         collection = _TIER_COLLECTION[tier]

@@ -30,37 +30,6 @@ class TestSQLiteStore:
         index_names = {r[0] for r in rows}
         assert {"idx_mem_tier", "idx_mem_domain", "idx_mem_decay", "idx_mem_lifecycle"} <= index_names
 
-    def test_tier_views_filter_correctly(self, store, make_memory):
-        store.insert(make_memory(tier=MemoryTier.SEMANTIC, content="fact 1"))
-        store.insert(make_memory(tier=MemoryTier.SEMANTIC, content="fact 2"))
-        tombstoned = make_memory(tier=MemoryTier.SEMANTIC, content="fact 3", is_tombstoned=True)
-        store.insert(tombstoned)
-        results = store.query_by_tier(MemoryTier.SEMANTIC)
-        assert len(results) == 2
-
-    def test_domain_filter(self, store, make_memory):
-        for i in range(5):
-            store.insert(make_memory(domain="physics", content=f"physics {i}"))
-        for i in range(5):
-            store.insert(make_memory(domain="cooking", content=f"cooking {i}"))
-        results = store.query_by_domain("physics")
-        assert len(results) == 5
-
-    def test_lifecycle_filter(self, store, make_memory):
-        store.insert(make_memory(lifecycle=Lifecycle.STM, content="stm"))
-        store.insert(make_memory(lifecycle=Lifecycle.MTM, content="mtm"))
-        store.insert(make_memory(lifecycle=Lifecycle.LTM, content="ltm"))
-        results = store.query_by_lifecycle(Lifecycle.STM)
-        assert len(results) == 1
-        assert results[0].lifecycle == Lifecycle.STM
-
-    def test_decay_score_ordering(self, store, make_memory):
-        for score in [0.1, 0.9, 0.5, 0.3, 0.7]:
-            store.insert(make_memory(decay_score=score, content=f"decay {score}"))
-        results = store.query_by_decay_desc(limit=5)
-        scores = [r.decay_score for r in results]
-        assert scores == sorted(scores, reverse=True)
-
     def test_tombstone_soft_delete(self, store, make_memory):
         entry = make_memory(content="will be deleted")
         store.insert(entry)

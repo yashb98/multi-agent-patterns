@@ -165,11 +165,3 @@ class StrategyComposer:
             token_count=token_count,
             source_breakdown=source_breakdown,
         )
-
-    @staticmethod
-    def record_template_outcome(template: dict, success: bool, score: float):
-        template["times_used"] = template.get("times_used", 0) + 1
-        if success:
-            template["times_succeeded"] = template.get("times_succeeded", 0) + 1
-        template["success_rate"] = template.get("times_succeeded", 0) / \
-            max(template["times_used"], 1)

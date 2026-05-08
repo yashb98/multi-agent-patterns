@@ -259,42 +259,6 @@ class SQLiteStore:
         self._record_read([r["memory_id"] for r in rows], "get_by_ids")
         return [self._row_to_entry(r) for r in rows]
 
-    def query_by_tier(self, tier: MemoryTier, limit: int = 100) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE tier = ? AND is_tombstoned = 0 LIMIT ?",
-            (tier.value, limit),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_by_tier")
-        return [self._row_to_entry(r) for r in rows]
-
-    def query_by_domain(self, domain: str, limit: int = 100) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE domain = ? AND is_tombstoned = 0 LIMIT ?",
-            (domain, limit),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_by_domain")
-        return [self._row_to_entry(r) for r in rows]
-
-    def query_by_lifecycle(self, lifecycle: Lifecycle, limit: int = 100) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE lifecycle = ? AND is_tombstoned = 0 LIMIT ?",
-            (lifecycle.value, limit),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_by_lifecycle")
-        return [self._row_to_entry(r) for r in rows]
-
-    def query_by_decay_desc(self, limit: int = 50) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE is_tombstoned = 0 ORDER BY decay_score DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_by_decay_desc")
-        return [self._row_to_entry(r) for r in rows]
-
     def query_active(self, min_decay: float = 0.0) -> list[MemoryEntry]:
         conn = self._get_conn()
         rows = conn.execute(
@@ -302,20 +266,6 @@ class SQLiteStore:
             (min_decay,),
         ).fetchall()
         self._record_read([r["memory_id"] for r in rows], "query_active")
-        return [self._row_to_entry(r) for r in rows]
-
-    def query_tombstoned_recent(self, domain: str, days: int = 30) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            """
-            SELECT * FROM memories
-            WHERE domain = ? AND is_tombstoned = 1
-              AND julianday('now') - julianday(last_accessed) <= ?
-            ORDER BY last_accessed DESC
-            """,
-            (domain, days),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_tombstoned_recent")
         return [self._row_to_entry(r) for r in rows]
 
     def count(self, include_tombstoned: bool = False) -> int:

@@ -94,31 +94,6 @@ class TestStrategyComposer:
                                   prompt_resolver=resolver)
         assert result.text.startswith("You are a precise email classifier")
 
-    def test_template_update_on_success(self, mock_memory):
-        """Successful use increments times_used and times_succeeded."""
-        composer = StrategyComposer()
-        template = {"times_used": 5, "times_succeeded": 4, "success_rate": 0.8}
-        composer.record_template_outcome(template, success=True, score=8.5)
-        assert template["times_used"] == 6
-        assert template["times_succeeded"] == 5
-        assert abs(template["success_rate"] - 5 / 6) < 0.01
-
-    def test_template_update_on_failure(self, mock_memory):
-        """Failed use increments times_used but not times_succeeded."""
-        composer = StrategyComposer()
-        template = {"times_used": 5, "times_succeeded": 4, "success_rate": 0.8}
-        composer.record_template_outcome(template, success=False, score=3.0)
-        assert template["times_used"] == 6
-        assert template["times_succeeded"] == 4
-        assert abs(template["success_rate"] - 4 / 6) < 0.01
-
-    def test_success_rate_computed(self):
-        """Success rate is times_succeeded / times_used."""
-        composer = StrategyComposer()
-        template = {"times_used": 10, "times_succeeded": 8, "success_rate": 0.0}
-        composer.record_template_outcome(template, success=True, score=9.0)
-        assert abs(template["success_rate"] - 9 / 11) < 0.01
-
     def test_cross_agent_lower_priority(self, mock_memory):
         """Own templates ranked higher even if cross-agent scores higher."""
         mock_memory._procedural.append(MockProceduralEntry(

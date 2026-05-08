@@ -101,19 +101,6 @@ class TestRuleExpiry:
         assert db.get_exclude_keywords() == []
 
 
-class TestGetEscalationFields:
-    def test_returns_escalated_fields(self, db):
-        for _ in range(3):
-            db.auto_generate_from_correction("salary", "28000", "32000", "a.com", "generic")
-        fields = db.get_escalation_fields()
-        assert "salary" in fields
-
-    def test_override_not_in_escalation(self, db):
-        db.auto_generate_from_correction("salary", "28000", "32000", "a.com", "generic")
-        fields = db.get_escalation_fields()
-        assert fields == []
-
-
 class TestAdaptationSignalSchema:
     """Audit S5 B-3: every emitter of `signal_type='adaptation'` must
     populate `payload['param']` because the aggregator at

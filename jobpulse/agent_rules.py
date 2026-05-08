@@ -358,11 +358,6 @@ class AgentRulesDB:
         rules = self.get_active_rules("blocker_avoidance")
         return [r["value"] for r in rules if r["action"] == "exclude_keyword"]
 
-    def get_escalation_fields(self) -> list[str]:
-        """Return field labels that should skip auto-fill due to repeated corrections."""
-        rules = self.get_active_rules("correction_override")
-        return [r["category"] for r in rules if r["action"] == "escalate"]
-
     def get_field_overrides(self, domain: str = "", platform: str = "") -> dict[str, dict]:
         """Return {field_label: {value, action, confidence, rule_id}} for form-fill consumption.
 
