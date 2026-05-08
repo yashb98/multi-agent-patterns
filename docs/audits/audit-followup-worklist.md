@@ -353,7 +353,51 @@ Fixes: `7e10b10` (B-1), `45749a2` (B-2), `0de4527` (B-3), `4fa9fb0` (M-A + M-B)
 
 ## Subsystem 8 — `materials`
 
-*pending audit*
+Audit doc: `docs/audits/audit-materials.md`
+Fix commits: `21e836d` (B-1 archetype lazy), `d1252a9` (B-2 + M-B/C/D/E log silent swallows)
+
+### Deferred majors
+
+| ID | Location | Description | Why deferred |
+|---|---|---|---|
+| 🔴 M-F | `github_matcher.py:89` | `synonyms = load_skill_synonyms()` called inside `score_repo`, which is called per-repo by `pick_top_projects`. ~22 repos × 36K-entry JSON × 3 `_skill_match` callsites per repo → JSON parsed N×3 per scan-window. | Already noted as REMAINING in `seven-principles.md` §3 — not first surfaced by this audit; queue with the cross-subsystem N+1 cleanup batch. |
+| 🔴 M-G | `ats_scorer.py:165-178` | `_keyword_in_text` falls through to O(N) iteration over the entire synonyms dict (~36K entries) per missed keyword per `score_ats` call. Reverse-lookup map should be precomputed once per process. | Same theme as M-F; bundle with the N+1 cleanup. |
+| 🔴 M-H | `portfolio_variants.py:23-57` | `_load_variants_from_db` has THREE bare `except: ... return None` (inner JSON parse fail, outer SQLite open fail, `if not row: return None`). Multiple silent failure modes on the lookup hot path; CV gets non-archetype bullets when DB is locked / schema changed / JSON malformed. | Larger redesign — facade-via-MemoryManager or at minimum logger.warning at each fail site. Touches the regex-to-dynamic migration plan. |
+| 🔴 M-I | `cv_tailor.py:336` | `tailor_summary_and_tagline` validates only the **summary**, not the **tagline**, despite the prompt saying "Tagline EXACTLY: {required_format}". If the LLM drifts on tagline format (drops degree, wrong YOE, wrong role title), the wrong header line ships on the CV with no signal. | Add a `validate_tagline` mirror; needs format-spec extracted from the prompt's `_required_tagline_format` to assert against. Pure additive. |
+
+### Minors
+
+| ID | Location | Description |
+|---|---|---|
+| 🟡 m-1 | `scan_pipeline.py:664-678` | CV PDF generation runs **before** Gate 4B (line 689-723). If Gate 4B's LLM scrutiny says `needs_review=True`, the PDF is already on disk and `notion_status` flips to "Needs Review". Wasteful disk + ~100ms but not a correctness bug — reorder when next touched. |
+| 🟡 m-2 | `archetype_engine.py:122` | `re.compile(re.escape(keyword), re.IGNORECASE)` recompiled per keyword per archetype per `detect_archetype` call. Cache once. |
+| 🟡 m-3 | `ats_scorer.py:188` | Same shape as m-2 — `re.compile` recompiled per keyword inside `_word_present`. |
+| 🟡 m-4 | `generate_cv.py:601` | Renderer strips `^\d+\.\s*` from project title (`_re.sub`) then re-adds `f"{i+1}. "` at line 605. Two-place numbering — pick one canonical site. |
+| 🟡 m-5 | `generate_cv.py:525-526` + `application_materials.py:39` | Company sanitisation does not strip domain suffixes (`.com`, `.co.uk`). Per user memory, expected output is `Yash_Bishnoi_ASOS.pdf`, not `Yash_Bishnoi_ASOS.com.pdf`. Should fix at extraction (jd_analyzer) layer rather than per-renderer. |
+| 🟡 m-6 | `cv_tailor.py:160` + `generate_cover_letter.py:42` | `_METRIC_RE` regex pattern duplicated; move to a shared constant. |
+| 🟡 m-7 | `archetype_engine.py:18` + `portfolio_variants.py:61` | `Path(__file__).parent.parent / "data" / ...` instead of centralised `DATA_DIR` from `jobpulse.config`. Same nit as S7 n-3. |
+| 🟡 m-8 | `application_materials.py:110` | `db = db or JobDB()` opens fresh JobDB connection per-invocation when caller didn't pass one. Combined with `ensure_tailored_cv_for_job` being on the live-review pre-flight hot path, this is a connection-per-call pattern (Principle §3). |
+| 🟡 m-9 | `generate_cv.py:155-156` | `_load_default_projects` returns `[]` on a fresh DB. `proj_list = projects or _load_default_projects()` then renders empty Projects section. Add an explicit non-empty assertion or hardcoded "see GitHub" fallback. |
+
+### Nits
+
+| ID | Location | Description |
+|---|---|---|
+| ⚪ n-1 | `cv_tailor.py:48` | `_required_tagline_format = build_required_tagline` back-compat alias — collapse callers. |
+| ⚪ n-2 | `archetype_engine.py:90-99` | `_TITLE_ARCHETYPE_MAP` inconsistent grouping (`ai engineer` → `agentic` but `ml engineer` / `mlops` → `data_platform`). Soft naming nit. |
+| ⚪ n-3 | `portfolio_variants.py:38-39` | `import sqlite3` and `import json` inside the function — both already imported at module top in many sister files; lazy imports buy nothing. |
+| ⚪ n-4 | `cv_tailor.py:392, 462, 520` | When `_call_with_correction` returns `None` and `_parse(None)` returns `None`, the parse-fail path doesn't retry — only validator-fail does. Document or add a parse-fail retry. |
+
+### Wiring / doc deltas
+
+| ID | Location | Description |
+|---|---|---|
+| 🔌 W-1 | `archetype_engine.detect_archetype` and `get_archetype_framing` | Both gated behind `JOBPULSE_ARCHETYPE_ENGINE` flag. Default in `pipeline_hooks.feature_enabled` is `false`; `.env` has `=true`. Tests / `python -m jobpulse.runner job-process-url` without sourcing `.env` silently get the static-template branch. Document. |
+| 🔌 W-2 | `route_and_apply.cl_generator` (`scan_pipeline.py:830-851`) vs `application_materials.build_lazy_cover_letter_generator` | Two separate lazy-CL generators co-exist with different argument shapes — inline closure skips `tailor_cover_letter_prose`, builder includes it. Inline path produces less-tailored CL than live-review path. Drift risk. |
+| 🔌 W-3 | `pipeline_hooks.enhanced_generate_materials` (`pipeline_hooks.py:96-123`) | Wraps `generate_materials` and applies `normalize_text_for_ats` to `bundle.cv_text` ONLY. Since the PDF is already generated, the normalised `cv_text` lives only in memory; nothing downstream consumes it (`score_ats` ran upstream). Effectively a no-op. |
+| 📝 D-1 | `docs/job-application-pipeline.md` | Lazy CV path (`ensure_tailored_cv_for_job`) used by live-review and `job_autopilot.handle_apply_review` is undocumented. |
+| 📝 D-2 | `docs/job-application-pipeline.md` | Two-path split for cover letter generation (eager `cl_generator` closure vs lazy `build_lazy_cover_letter_generator`) is undocumented. |
+| 📝 D-3 | `docs/job-application-pipeline.md` | PDF gen runs before Gate 4B — `Needs Review` verdict still leaves the PDF on disk. Note in the architecture doc. |
 
 ---
 
