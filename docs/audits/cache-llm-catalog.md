@@ -362,8 +362,9 @@ themselves cache-or-LLM fix targets.
 Per `cache-or-llm-audit.md §6`, S1's acceptance criterion is *"sibling hash
 check that the catalog covers every grep hit."*
 
-The corrected grep (§A) is the source of truth. Re-running it on
-`HEAD = 85fdd45` (the commit at the start of S1) yields:
+The corrected grep (§A) is the source of truth. Re-running it at the
+S1 catalog commit `93c1987` (parent `85fdd45` — no `.py` files changed
+in S1, so both snapshots produce the same numbers) yields:
 
 ```bash
 $ grep -rln "cognitive_llm_call\|smart_llm_call\|chat\.completions\.create\
