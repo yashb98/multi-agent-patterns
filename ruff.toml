@@ -1,0 +1,71 @@
+# Ruff configuration for JobPulse.
+#
+# Scope is intentionally narrow: only rules that pass repo-wide today
+# with zero violations, so this config acts as a tripwire for new
+# regressions, not a backlog of failures.
+#
+# Each enabled rule was verified at zero hits via:
+#   ruff check --select=<rule> jobpulse/ shared/
+#
+# Future sessions can extend `select` once cleanup PRs land. Cross-
+# referenced families intentionally excluded:
+#   - F401 / F841 (unused imports / variables) — 209 / 33 hits, queued
+#     for a separate cleanup session.
+#   - F541 (f-string without placeholder) — 30 hits.
+#   - F811 (redefined-unused) — 1 hit, fix in S17.
+#   - BLE001 (blind-except) — 186 hits across the codebase, scheduled
+#     for the broader bare-except sweep tracked in pipeline-bugs.md S17.
+#
+# See `tests/lint/test_no_silent_attribute_error.py`,
+# `test_no_classification_regex.py`, `test_no_write_only_flag.py`
+# for the pattern guards that run alongside ruff.
+
+target-version = "py312"
+
+extend-exclude = [
+    ".claude",
+    ".venv",
+    ".worktrees",
+    "exports",
+    "data",
+    "logs",
+]
+
+[lint]
+select = [
+    # Syntax errors and IO problems — always serious.
+    "E9",
+    # `==`/`!=` against None / True / False / singletons.
+    "E711",
+    "E712",
+    # `not in` / `not is` style guides — catches typos in boolean logic.
+    "E713",
+    "E714",
+    # Ambiguous class names (l, I, O).
+    "E742",
+    # printf-style `%`-formatting bugs.
+    "F501",
+    "F502",
+    "F503",
+    "F504",
+    "F505",
+    "F506",
+    "F507",
+    # str.format() bugs (missing arguments, mismatched keys).
+    "F522",
+    "F523",
+    "F524",
+    "F525",
+    # `is` / `is not` with literals.
+    "F632",
+    # Bad forward-reference annotations.
+    "F722",
+    # Local variable referenced before assignment (real runtime bugs).
+    "F823",
+    # Bare `except:` (no exception class). Catches BaseException including
+    # KeyboardInterrupt — almost never the intent. Repo-wide hits today: 0.
+    "E722",
+]
+
+# Per-file ignores can be added here when a clean-files allowlist
+# extension is needed without polluting the global select.

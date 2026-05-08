@@ -402,22 +402,31 @@ session each.
    (M-B, M-C, M-D), S3 (M-C, m-3 i18n cookies, gmail_verify), S4 (B-6, B-8),
    S6 (m-1 stakes registry borderline). Migration plan:
    `docs/superpowers/plans/2026-05-04-regex-to-dynamic-migration.md`.
+   Tripwire: `tests/lint/test_no_classification_regex.py` (added in
+   `pipeline-bugs-S2`) — clean-files allowlist; future regex-purge
+   sessions extend it as files are cleaned.
 2. **Verification claims without DOM readback** — S1 M-1.a/b are the canonical
    shape. Same pattern likely recurs in any "fill X then return success" code.
 3. **Bare `except: pass` swallowing real errors** — S1 (M-4), S2 (n-4), S3
    (silently-handled cognitive escalation, fixed), S4 (B-4 silently-broken
    feedback loop, fixed), S10 (M-10.A 7 sites, M-10.B), S11 (m-11.9 experiential
-   path), S12 (M-1..M-5 promoted to warning this session). **Add a lint rule.**
+   path), S12 (M-1..M-5 promoted to warning this session). Tripwire:
+   `tests/lint/test_no_silent_attribute_error.py` (added in
+   `pipeline-bugs-S2`) — clean-files allowlist for the audit-specified
+   shape `except (AttributeError|Exception): logger.debug|warning; return
+   None|{}|[]`. Repo-wide cleanup tracked separately in S17.
 4. **Wired-but-unconsumed infrastructure** — S5 M-5.3 (heuristic replay),
    S5 M-5.4 (cross-platform Qdrant transfer), S5 M-5.5 (PRAXIS-aware FormExperienceDB),
    S6 d-1 (StrategyComposer.record_template_outcome), S10 d-10.2 (gate_policy module),
    S11 M-11.A (AutonomousLinker), S12 W-12.1 (`_cv_pre_uploaded`). **Decide
-   wire-or-delete on each in a single follow-up session.**
+   wire-or-delete on each in a single follow-up session (S5 in the runner
+   table).** Tripwire for the `_cv_pre_uploaded`-shape regression:
+   `tests/lint/test_no_write_only_flag.py` (added in `pipeline-bugs-S2`) —
+   guards `jobpulse/ats_adapters/` + `jobpulse/form_engine/`.
 5. **Method called but never defined (silent AttributeError swallowed by `try/except`)** —
-   S11 B-1 (`ForgettingEngine.sweep`) lived this way for ~2 months. **Audit
-   other facade methods that catch generic `Exception` around bare attribute
-   calls.** Suggested grep: `rg "except Exception.*log.*warning|debug" -A 0
-   shared/ jobpulse/`.
+   S11 B-1 (`ForgettingEngine.sweep`) lived this way for ~2 months. The
+   silent-attribute-error tripwire from theme #3 catches this same shape
+   in audited-clean modules.
 6. **CLAUDE.md / architecture-doc drift** — S3 (4 doc deltas), S6 (1), S7 (1),
    S8 (3), S10 (2), S11 (3), S12 (3). **Batch into one architecture-doc PR.**
    Advisor flagged this as overdue.
