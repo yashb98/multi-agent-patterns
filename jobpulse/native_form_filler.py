@@ -3156,24 +3156,67 @@ class NativeFormFiller:
                     target_text,
                 )
 
-        # Workday-specific next button via data-automation-id.
-        # Structural selector — allowed under "Dynamic Over Hardcoded"
-        # because it's a stable platform-defined attribute, not a
-        # user-input string heuristic.
+        # S10: consult platform-strategy selectors before generic CSS fallback.
+        # `WorkdayStrategy.next_page_selectors()` returns the
+        # `button[data-automation-id='bottom-navigation-next-button']`
+        # selector that used to live hardcoded inline here; Greenhouse,
+        # Lever, Ashby, etc. each contribute their own `:has-text(...)`
+        # selectors. Pre-S10 these methods were only consumed by the
+        # deleted `UNIFIED_FORM_ENGINE` path — NativeFormFiller duplicated
+        # the same strings inline. The order (submit-first vs next-first)
+        # follows the planned-action's `is_submit`, so we don't accidentally
+        # click "Submit Application" on a multi-page form's intermediate page.
         try:
-            wd_btn = page.locator("button[data-automation-id='bottom-navigation-next-button']")
-            if await wd_btn.count() and await wd_btn.first.is_visible():
-                if dry_run:
-                    return "dry_run_stop"
-                await wd_btn.first.click()
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=5000)
-                except Exception:
-                    await asyncio.sleep(2)
-                logger.info("nav: clicked next via Workday selector")
-                return "next"
-        except Exception:
-            pass
+            from jobpulse.ats_adapters.strategy import (
+                get_strategy as _get_platform_strategy,
+            )
+            _strategy = _get_platform_strategy(self._platform)
+            if is_submit:
+                _ordered = [
+                    ("submit", _strategy.submit_selectors(), "submitted"),
+                    ("next", _strategy.next_page_selectors(), "next"),
+                ]
+            else:
+                _ordered = [
+                    ("next", _strategy.next_page_selectors(), "next"),
+                    ("submit", _strategy.submit_selectors(), "submitted"),
+                ]
+            for _kind, _selectors, _retval in _ordered:
+                for _sel in _selectors:
+                    try:
+                        _btn = page.locator(_sel).first
+                        if not await _btn.count() or not await _btn.is_visible():
+                            continue
+                        if _kind == "submit" and dry_run:
+                            return "dry_run_stop"
+                        if _kind == "submit":
+                            try:
+                                await self._record_final_state_before_submit()
+                            except Exception as exc:
+                                logger.warning(
+                                    "record_final_state_before_submit failed: %s",
+                                    exc,
+                                )
+                        await self._move_mouse_to(_btn)
+                        await _btn.click()
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=5000)
+                        except Exception:
+                            await asyncio.sleep(2)
+                        logger.info(
+                            "nav: clicked %s via platform strategy selector %r "
+                            "(platform=%s)",
+                            _kind, _sel, self._platform,
+                        )
+                        return _retval
+                    except Exception as exc:
+                        logger.debug(
+                            "nav: strategy %s selector %r errored: %s",
+                            _kind, _sel, exc,
+                        )
+                        continue
+        except Exception as exc:
+            logger.debug("nav: strategy consultation failed: %s", exc)
 
         # CSS-selector fallback: get_by_role can miss buttons with extra
         # aria-describedby text or non-standard accessible names. Match the

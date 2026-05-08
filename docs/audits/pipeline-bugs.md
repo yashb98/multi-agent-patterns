@@ -335,7 +335,7 @@ on a code path replaced by another implementation.
 
 | ID | Location | Flag |
 |---|---|---|
-| ⏸ S2 / S12 D-12.2 | `form_engine/engine.py` (whole module — `FormFillEngine.fill`, `_fill_page`, `_click_navigation`) | `UNIFIED_FORM_ENGINE=true`. Set only in `scripts/*.py` and integration tests. **Production daemon never sets it.** Cascade: `next_page_selectors`, `submit_selectors`, `post_page`, `known_widget_libraries` are only consulted via this engine. |
+| 🟡 S10 (PARTIAL) | `form_engine/engine.py` (whole module) | **DECISION: DELETE — but only after porting 4 capabilities into NativeFormFiller, each verified live.** Port plan owned by user 2026-05-09: (1) `strategy.submit_selectors()` / `next_page_selectors()` consultation — **✅ DONE in S10**, (2) Widget-library detection per field — S10b, (3) Plan F1 `PageAction.advance_button` — **✅ already in NativeFormFiller** (Plan D, lines 2801-2811), (4) A/B tracker per-field — S10c. Engine deletion in S10d after all 3 ports pass live. Live verification of S10 deferred to combined S10b run pending non-reasoning Ollama model install (qwen3.6:35b-a3b empirically broken — reasoning consumes max_tokens budget, content stays empty). |
 | ⏸ S8 W-1 | `archetype_engine.detect_archetype` / `get_archetype_framing` | `JOBPULSE_ARCHETYPE_ENGINE` (default false). |
 
 ### C-tier — implementation exists but the apply path uses a different one
