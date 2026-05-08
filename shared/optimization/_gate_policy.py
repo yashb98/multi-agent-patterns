@@ -16,7 +16,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 from shared.logging_config import get_logger
-from jobpulse.config import DATA_DIR
+# shared/ MUST NOT import from jobpulse/ (Principle 1, dependency direction).
+# DATA_DIR was previously sourced from jobpulse.config; resolved via the
+# shared.paths constant instead. (S10 audit M-B.)
+from shared.paths import DATA_DIR
 
 logger = get_logger(__name__)
 
