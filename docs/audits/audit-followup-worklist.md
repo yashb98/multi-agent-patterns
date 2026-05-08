@@ -549,7 +549,87 @@ Fix commits: `e9b2919` (B-1 forgetting sweep), `45432ec` (B-2 dim guard)
 
 ## Subsystem 12 — `ats_adapters`
 
-*pending audit*
+Audit doc: `docs/audits/audit-ats_adapters.md`
+Fix commit: this session
+
+### Shipped this session
+
+- B-1 (PII policy): `screening_defaults()` removed from base + 8 strategy files
+- M-A: Reed URL pattern added to `discovery._URL_PATTERNS`
+- M-1: `_strategy_synthesis.py` FE lookup failure → `logger.warning`
+- M-2/M-3/M-4: `LearnedStrategy.{form_container_hint, expected_field_range, extra_label_mappings}` FE failures → `logger.warning`
+- M-5: `strategy.get_strategy` synthesis-failure → `logger.warning`
+- m-1: `get_adapter(ats_platform)` parameter dropped (was unused)
+- Regression tests in `tests/jobpulse/ats_adapters/test_audit_s12.py`
+
+### Deferred majors
+
+| ID | Location | Description | Why deferred |
+|---|---|---|---|
+| 🔴 W-12.1 | `smartrecruiters.py:43` → `native_form_filler.py:3322-3323` | `custom_answers["_cv_pre_uploaded"]` is write-only — SmartRecruiters auto-uploads CV in `pre_fill`, but `form_engine/file_uploader.py` never reads the flag. Risk: double-CV-upload (violates user-memory rule "Single resume upload"). | Touches form_fill_dispatch (S1) + `form_engine/file_uploader`. Needs a SmartRecruiters live URL to confirm reproducer. Audit-prompt scope rule. |
+
+### Minors / log-promotion sweep
+
+| ID | Location | Description |
+|---|---|---|
+| 🟡 m-12.1 | `icims.py:94-95` | `pre_fill` iframe-check exception → `logger.debug`; promote to warning. |
+| 🟡 m-12.2 | `icims.py:108-110` | `custom_field_scan` exception → `logger.debug`. (And the method is itself D-tier.) |
+| 🟡 m-12.3 | `icims.py:131-134` | `fill_combobox` exception → `logger.debug`. |
+| 🟡 m-12.4 | `indeed.py:88-90` | `pre_fill` Indeed-Resume probe exception → `logger.debug`. |
+| 🟡 m-12.5 | `linkedin.py:101-103` | `pre_fill` outer-exception (the inner warn-log already exists) → `logger.debug`. |
+| 🟡 m-12.6 | `smartrecruiters.py:43-46` | `pre_fill` CV auto-upload exception → `logger.debug`. |
+| 🟡 m-12.7 | `smartrecruiters.py:68-70` | `fill_combobox` exception → `logger.debug`. |
+| 🟡 m-12.8 | `workday.py:101-103` | `pre_fill` Start-button-click exception → `logger.debug`. |
+| 🟡 m-12.9 | `workday.py:135-137` | `fill_combobox` exception → `logger.debug`. |
+
+### Nits
+
+| ID | Location | Description |
+|---|---|---|
+| ⚪ n-12.1 | `_strategy_synthesis.py:42-46` | `THRESHOLD_OBS:` info-level log fires on every synthesis call. Demote to `debug` (the synthesized-success log at L50-53 already provides info-level signal). |
+| ⚪ n-12.2 | `linkedin.py:32-33` | `detect()` matches `"linkedin.com" in url.lower()` — overly broad. C-tier, functionally moot (registry uses name not detect). |
+| ⚪ n-12.3 | `ashby.py`, `greenhouse.py`, `lever.py` `pre_fill` | Overrides that just `return {}` — duplicate of base default. Remove. |
+
+### Dead code (D-tier — single deletion PR after all audits land)
+
+#### D-12.1 — `BasePlatformStrategy` virtual methods with zero callers
+
+| Method | Defined in | Callers |
+|---|---|---|
+| `apply_button_selectors` | `strategy.py:90` | none in production |
+| `wait_for_form_hydrated_ms` | `strategy.py:111` | none anywhere |
+| `iframe_names` | `strategy.py:140` | none — production hardcodes `"icims_content_iframe"` |
+| `custom_field_scan` | `strategy.py:144` | none |
+| `field_fill_overrides` | `strategy.py:200` | none |
+
+#### D-12.2 — `BasePlatformStrategy` methods only used by `FormFillEngine` (B-tier; flag never set in prod)
+
+| Method | Caller | Status |
+|---|---|---|
+| `next_page_selectors` | `engine.py:436` | B-tier (UNIFIED_FORM_ENGINE not set in prod) |
+| `submit_selectors` | `engine.py:435` (NativeFormFiller has its own hardcoded `css_submit_selectors`) | B-tier |
+| `post_page` | `engine.py:304` | B-tier |
+| `known_widget_libraries` | `engine.py:245` | B-tier |
+
+If `UNIFIED_FORM_ENGINE` stays disabled long-term, these (and `form_engine/engine.py` itself) can be deleted. If the engine is intended to ship, needs flag-flip + integration test.
+
+#### D-12.3 — `base.py` legacy adapter API
+
+- `BaseATSAdapter.resolve_selector` (line 49) — zero callers
+- `BaseATSAdapter.get_wait_override` (line 61) — zero callers
+- Existed for the deleted per-platform adapter classes; missed in 2026-04 unification PR.
+
+#### D-12.4 — `__init__.py:34 reset_adapter` — zero callers
+
+#### D-12.5 — `strategy.py:61 list_registered_strategies` — zero callers
+
+### Doc deltas
+
+| ID | Location | Description |
+|---|---|---|
+| 📝 D-12.1 | `docs/job-application-pipeline.md` | Remove the implicit claim that BasePlatformStrategy controls screening behavior. Add: only 6 of 17 BasePlatformStrategy methods are reachable in the default apply path (pre_fill, fill_combobox, form_container_hint, expected_field_range, extra_label_mappings, normalize_label). The rest are B-tier (FormFillEngine off in prod) or D-tier. |
+| 📝 D-12.2 | `jobpulse/CLAUDE.md` "Platform Strategies" | Document that `screening_defaults` is intentionally absent post-S12 (PII policy). Document the Native vs FormFillEngine path divergence — `submit_selectors`/`next_page_selectors`/`post_page`/`known_widget_libraries` are only consulted via FormFillEngine. |
+| 📝 D-12.3 | `jobpulse/CLAUDE.md` "Adapter Registry" | `get_adapter()` takes no arguments (m-1). |
 
 ---
 
