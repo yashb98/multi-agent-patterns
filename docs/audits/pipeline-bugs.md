@@ -83,8 +83,8 @@ broader redesign.
 
 | ID | Location | Description |
 |---|---|---|
-| 🔴 M-D | `shared/cognitive/_engine.py:142` | Escalation cost-reporting drops original level's cost. `escalated_result.cost` carries only the escalated level's spend; per-call `ThinkResult.cost` introspection drifts (~$0.001 per escalated call). |
-| 🔴 M-E | `shared/cognitive/_engine.py:185` | L0→L1 escalated successes never reach `flush()`. Early `return escalated_result` happens BEFORE the L1 batch-write block. Production data: ~158 templates per ~1 200 calls (13%) discarded — direct learning-rate hit. |
+| ✅ S8 | `shared/cognitive/_engine.py:_record_level + escalated_result.cost aggregation` | Escalation now records both levels in the budget tracker (`_record_level(original_level, original_cost)` + `_record_level(next_level, escalated_only_cost)`) and aggregates total spend into `escalated_result.cost = original_cost + escalated_only_cost` so callers see the true per-call cost. The ~$0.001 per L1→L2 drop is closed. |
+| ✅ S8 | `shared/cognitive/_engine.py:_maybe_queue_l1_template` | L1 template-queue logic extracted into a helper called from BOTH the escalation-return and normal-return paths. The ~13 % of L0→L1 escalated successes that pre-fix bypassed `flush()` now land in procedural memory. |
 
 ### S7 — `pre_screen`
 
@@ -280,7 +280,7 @@ read path doesn't exist; or a producer/consumer disagree on schema.
 
 | ID | Description |
 |---|---|
-| 🔌 DEFERRED→S8 | Cognitive auto-escalate (L0→L1 etc.) writes `cognitive_outcomes(escalated=1)` only; **no `OptimizationEngine.emit(signal_type='adaptation')` is fired**. SignalAggregator never sees escalations. | **Verdict: DEFERRED to runner-table session S8 (cognitive cost + flush + emit-adaptation).** S8 explicitly wires this signal. |
+| ✅ S8 | Cognitive auto-escalate (L0→L1 etc.) writes `cognitive_outcomes(escalated=1)` only; **no `OptimizationEngine.emit(signal_type='adaptation')` is fired**. SignalAggregator never sees escalations. | **Verdict: WIRED.** `_engine.py` now emits `signal_type='adaptation'` (source_loop=`cognitive_engine`) alongside `record_cognitive_outcome` in the escalation branch; payload carries `from_level` / `to_level` / `score_before` / `score_after` / `task_prefix`. Same try/except as the outcome write so a single broken import can't break half the chain. |
 | ✅ S7 ef7ae66 | `_classifier.py:166 load_persisted_stats` reads `memory.semantic.facts.items()` directly instead of `MemoryManager.query`. If SemanticMemory shape changes, restore silently degrades. | **Verdict: WIRED.** S7 added `MemoryManager.get_semantic_entries(domain)` and migrated `load_persisted_stats` to use it. Legacy attribute fallback preserved for mock-memory test fixtures. |
 
 ### S7 — pre_screen

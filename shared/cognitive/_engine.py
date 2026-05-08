@@ -148,19 +148,54 @@ class CognitiveEngine:
                 escalated_result.latency_ms = elapsed
                 escalated_result.composed_prompt = composed
                 self._classifier.update_domain_stats(domain, original_level, escalated=True)
-                self._record_level(next_level, escalated_result.cost)
+                # Cost summing (M-D): pre-fix only the escalated level's cost
+                # was charged. The original level's spend (e.g. L1's
+                # _GENERATE_COST when escalating L1→L2) was silently dropped
+                # from both the budget tracker and the returned ThinkResult.
+                # Record both levels independently in the budget tracker,
+                # then aggregate into ``escalated_result.cost`` so callers see
+                # the true total spend per escalated call.
+                original_cost = result.cost
+                escalated_only_cost = escalated_result.cost
+                self._record_level(original_level, original_cost)
+                self._record_level(next_level, escalated_only_cost)
+                escalated_result.cost = original_cost + escalated_only_cost
                 try:
                     from shared.optimization import get_optimization_engine
                     success = escalated_result.score is not None and escalated_result.score >= 6.0
-                    get_optimization_engine().record_cognitive_outcome(
+                    opt = get_optimization_engine()
+                    opt.record_cognitive_outcome(
                         domain=domain,
                         agent_name=self._agent_name,
                         level=next_level.value,
                         success=success,
                         escalated=True,
                     )
+                    # Adaptation signal (W-1): pre-fix `cognitive_outcomes`
+                    # logged the escalation but no signal was emitted, so
+                    # SignalAggregator never saw it. Emit alongside the
+                    # outcome write so a single broken import can't break
+                    # half the chain.
+                    opt.emit(
+                        signal_type="adaptation",
+                        source_loop="cognitive_engine",
+                        domain=domain,
+                        agent_name=self._agent_name,
+                        payload={
+                            "from_level": original_level.value,
+                            "to_level": next_level.value,
+                            "score_before": result.score,
+                            "score_after": escalated_result.score,
+                            "task_prefix": task[:100],
+                        },
+                        severity="info",
+                    )
                 except Exception as e:
-                    logger.debug("Failed to record escalated cognitive outcome: %s", e)
+                    logger.debug("Failed to record/emit cognitive escalation: %s", e)
+                # L1 batch-write (M-E): pre-fix this early return jumped past
+                # the L1 strategy-template queue below, so L0→L1 successful
+                # escalations never landed in flush() — ~13% of templates lost.
+                self._maybe_queue_l1_template(escalated_result, task, domain, scorer)
                 return escalated_result
 
         elapsed = (time.monotonic() - start) * 1000
@@ -181,7 +216,21 @@ class CognitiveEngine:
         except Exception as e:
             logger.debug("Failed to record cognitive outcome: %s", e)
 
-        # L1 successes get queued for batch-write via flush()
+        self._maybe_queue_l1_template(result, task, domain, scorer)
+        return result
+
+    def _maybe_queue_l1_template(
+        self,
+        result: ThinkResult,
+        task: str,
+        domain: str,
+        scorer: Optional[Callable],
+    ) -> None:
+        """Queue successful L1 results for batch flush() to procedural memory.
+
+        Called from both the normal-return and escalation-return paths; pre-S8
+        only the normal path queued, so escalated L0→L1 successes were lost.
+        """
         if (
             result.level == ThinkLevel.L1_SINGLE
             and scorer is not None
@@ -195,8 +244,6 @@ class CognitiveEngine:
                 "score": result.score,
                 "source": self._agent_name,
             })
-
-        return result
 
     async def _execute(
         self,

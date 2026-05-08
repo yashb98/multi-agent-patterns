@@ -223,26 +223,24 @@ succeed, but a regression in `optimization.db` (e.g. lock timeout, schema
 drift, disk-full) would silently lose telemetry. Fix is `logger.debug`
 with the exception so it shows up under `LOG_LEVEL=DEBUG`.
 
-`shared/cognitive/_engine.py:142-148` [major]
-Escalation cost-reporting drops the original level's spend.
-`escalated_result.cost` is the cost of the higher level only;
-the L0/L1 cost paid before the auto-escalate is never added back.
-`BudgetTracker.report()` gets the correct per-level totals via
-`_record_level` (called for both halves), but
-`ThinkResult.cost` (returned to caller and logged in
-gmail_agent/screening_answers debug lines) understates the true spend
-by ~$0.001 per escalated call. Net effect: per-call cost
-introspection drifts; budget caps still work.
+`shared/cognitive/_engine.py:142-148` [major — ✅ FIXED in pipeline-bugs S8]
+Pre-fix: escalation cost-reporting dropped the original level's spend
+(~$0.001 per L1→L2 escalation) — `escalated_result.cost` carried only the
+higher level's cost, and `BudgetTracker.report()` saw only the
+escalated half because pre-fix `_record_level` was called once for
+`next_level`. **Fix:** `_record_level(original_level, original_cost)` and
+`_record_level(next_level, escalated_only_cost)` are now both called, and
+`escalated_result.cost = original_cost + escalated_only_cost` aggregates
+the total into the returned `ThinkResult`.
 
-`shared/cognitive/_engine.py:185-197` [major]
-L0→L1 escalated successes never reach `flush()`. The early `return
-escalated_result` on L164 happens BEFORE the
-"L1 successes get queued for batch-write" block on L185-197. So if
-the classifier picks L0, L0 returns score=0 (no template), the engine
-escalates to L1, and L1 scores ≥ 7.0 with a scorer — that successful
-template is **discarded**. Only "classified-as-L1-from-the-start" wins
-get persisted as future templates. Long-tail effect: the engine learns
-slower than it could on novel domains.
+`shared/cognitive/_engine.py:185-197` [major — ✅ FIXED in pipeline-bugs S8]
+Pre-fix: L0→L1 escalated successes never reached `flush()` because the
+escalation path's early `return escalated_result` jumped past the L1
+strategy-template queue block. **Fix:** queueing is now in
+`_maybe_queue_l1_template(result, task, domain, scorer)`, called
+immediately before BOTH return statements (escalation path and
+normal path). The ~13 % L0→L1 templates that pre-fix were discarded now
+land in `_pending_writes` and reach procedural memory via `flush()`.
 
 ### Minor
 
@@ -313,7 +311,7 @@ ever drops the type guarantee, this comparison crashes. Defensive
 | ProceduralEntry write via `learn_procedure(domain, strategy, context, score, source)` | `_engine.py:327 flush`; `_reflexion.py:140 _store_success`; `_tot.py:178 explore` | `MemoryManager.get_procedural_entries(domain)` consumed by `_classifier.classify` (L78), `_strategy.compose` (L53), `_engine._execute_l0` (L223) | ✅ matches MemoryManager facade (verified via `_manager.py:326`) |
 | EpisodicEntry write via `record_episode(topic, final_score, iterations, pattern_used, agents_used, strengths, weaknesses, output_summary, domain)` | `_reflexion.py:157 _store_failure` | `MemoryManager.get_episodic_entries(domain)` consumed by `_classifier.classify` (L94), `_strategy.compose` (L98), `_reflexion._get_failure_context` (L122) | ✅ matches `_manager.py:254` |
 | SemanticEntry write via `learn_fact(domain='cognitive_classifier', fact='<domain>: L0 success ...', run_id=...)` | `_classifier.py:151 _persist_domain_stats` | `_classifier.py:165 load_persisted_stats` (parses `entry.fact` via regex) | ⚠ **schema agreement is fragile**: producer and consumer share the format string, but `load_persisted_stats` parses entries by iterating `memory.semantic.facts.items()` directly (line 169) instead of going through MemoryManager.query. If the SemanticMemory storage layout ever switches to a different in-memory shape, the load silently degrades to "no stats restored". Tested empirically — currently works, but coupled. |
-| Cognitive auto-escalate emits `escalation_classifier` adaptation signal? | **NO** — there's no `OptimizationEngine.emit(...)` call inside the cognitive engine. The only signal `cognitive_engine` emits is the `record_cognitive_outcome` row above. | n/a | n/a |
+| Cognitive auto-escalate emits `escalation_classifier` adaptation signal? | **YES (post-S8 fix)** — `_engine.py` now calls `OptimizationEngine.emit(signal_type='adaptation', source_loop='cognitive_engine', ...)` alongside `record_cognitive_outcome` whenever an escalation completes. Payload carries `from_level`, `to_level`, `score_before`, `score_after`, `task_prefix`. | escalation block in `_engine.think()` | `tests/shared/cognitive/test_escalation_wiring.py` |
 
 ### Two cross-module facts worth flagging
 
