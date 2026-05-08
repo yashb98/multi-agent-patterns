@@ -63,14 +63,39 @@ class SyncService:
             finally:
                 self._queue.task_done()
 
+    def _embed_for_qdrant(self, content: str, memory_id: str) -> list[float] | None:
+        """Embed and validate dimension matches the Qdrant collection.
+
+        Returns the vector when dimensions match, ``None`` (with warning) when
+        the embedder fell back to a different model whose dim doesn't fit the
+        Qdrant collections. Skipping is safer than letting Qdrant reject the
+        upsert silently in the background worker.
+        """
+        if not (self._qdrant and self._embedder):
+            return None
+        vector = self._embedder.embed(content)
+        expected = getattr(self._qdrant, "_dims", None)
+        # Only enforce when _dims is an actual int — MagicMock-based test
+        # fixtures that don't set _dims should not silently skip Qdrant writes.
+        if isinstance(expected, int) and len(vector) != expected:
+            logger.warning(
+                "Embedder produced %d-dim vector but Qdrant collection expects %d-dim — "
+                "skipping Qdrant write (memory_id=%s). "
+                "Likely a primary/fallback model dim mismatch.",
+                len(vector), expected, memory_id,
+            )
+            return None
+        return vector
+
     def _sync_entry(self, entry: MemoryEntry) -> None:
         if self._qdrant and self._embedder:
-            vector = self._embedder.embed(entry.content)
-            self._qdrant.upsert(
-                entry.memory_id, entry.tier, vector,
-                {"domain": entry.domain, "score": entry.score,
-                 "lifecycle": entry.lifecycle.value},
-            )
+            vector = self._embed_for_qdrant(entry.content, entry.memory_id)
+            if vector is not None:
+                self._qdrant.upsert(
+                    entry.memory_id, entry.tier, vector,
+                    {"domain": entry.domain, "score": entry.score,
+                     "lifecycle": entry.lifecycle.value},
+                )
 
         if self._neo4j:
             self._neo4j.create_node(
@@ -92,7 +117,7 @@ class SyncService:
 
             # Backfill Qdrant
             if self._qdrant and not self._qdrant.has_point(memory_id, entry.tier):
-                vector = self._embedder.embed(entry.content) if self._embedder else []
+                vector = self._embed_for_qdrant(entry.content, memory_id) if self._embedder else None
                 if vector:
                     self._qdrant.upsert(
                         memory_id, entry.tier, vector,

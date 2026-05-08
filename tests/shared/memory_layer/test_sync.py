@@ -18,6 +18,7 @@ def qdrant_mock():
     mock.has_point.return_value = False
     mock.upsert.return_value = None
     mock.delete.return_value = None
+    mock._dims = 1024  # SyncService dim guard reads this
     return mock
 
 
@@ -101,3 +102,74 @@ class TestSyncService:
         assert qdrant_mock.upsert.call_count >= 1
         assert neo4j_mock.create_node.call_count >= 1
         bg_sync.shutdown()
+
+
+class TestEmbedderDimGuard:
+    """Regression: prevent silent Qdrant divergence when embedder fallback
+    produces a vector whose dim doesn't match the Qdrant collection.
+
+    Pre-fix scenario: primary=bge (1024-d) fails → fallback minilm (384-d)
+    → _sync_entry calls qdrant.upsert(384-d) → Qdrant rejects (silent
+    background warning). SQLite has the entry, Qdrant doesn't — divergence.
+    """
+
+    def test_sync_entry_skips_qdrant_on_dim_mismatch(
+        self, sqlite_store, qdrant_mock, neo4j_mock, make_memory,
+    ):
+        embedder = MagicMock()
+        embedder.embed.return_value = [0.1] * 384  # MiniLM fallback dim
+        qdrant_mock._dims = 1024
+        sync = SyncService(
+            sqlite=sqlite_store,
+            qdrant=qdrant_mock,
+            neo4j=neo4j_mock,
+            embedder=embedder,
+            start_background=False,
+        )
+
+        entry = make_memory(content="dim mismatch")
+        sync.sync_to_secondary(entry)
+
+        assert qdrant_mock.upsert.call_count == 0  # skipped, not raised
+        assert neo4j_mock.create_node.call_count == 1  # still writes graph
+
+    def test_sync_entry_writes_qdrant_when_dims_match(
+        self, sqlite_store, qdrant_mock, neo4j_mock, make_memory,
+    ):
+        embedder = MagicMock()
+        embedder.embed.return_value = [0.1] * 1024
+        qdrant_mock._dims = 1024
+        sync = SyncService(
+            sqlite=sqlite_store,
+            qdrant=qdrant_mock,
+            neo4j=neo4j_mock,
+            embedder=embedder,
+            start_background=False,
+        )
+
+        entry = make_memory(content="dim match")
+        sync.sync_to_secondary(entry)
+
+        assert qdrant_mock.upsert.call_count == 1
+
+    def test_reconcile_skips_qdrant_on_dim_mismatch(
+        self, sqlite_store, qdrant_mock, neo4j_mock, make_memory,
+    ):
+        embedder = MagicMock()
+        embedder.embed.return_value = [0.1] * 384  # fallback dim
+        qdrant_mock._dims = 1024
+        sync = SyncService(
+            sqlite=sqlite_store,
+            qdrant=qdrant_mock,
+            neo4j=neo4j_mock,
+            embedder=embedder,
+            start_background=False,
+        )
+
+        sqlite_store.insert(make_memory(content="reconcile mismatch"))
+        stats = sync.reconcile()
+
+        assert stats["qdrant_backfilled"] == 0
+        assert qdrant_mock.upsert.call_count == 0
+        # Neo4j is unaffected by embedder dim issues
+        assert neo4j_mock.create_node.call_count == 1
