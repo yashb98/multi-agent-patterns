@@ -387,8 +387,13 @@ class ScreeningSemanticCache:
         hit: CacheHit,
         field_options: list[str],
         field_type: str,
-    ) -> CacheHit:
-        """Align a cache hit's answer to the current field's available options."""
+    ) -> CacheHit | None:
+        """Align a cache hit's answer to the current field's available options.
+
+        Returns the aligned hit, or `None` when the aligned answer is not in
+        `field_options` — the caller treats `None` as a cache miss and falls
+        through to the LLM tier with an options constraint.
+        """
         from jobpulse.screening_option_aligner import (
             OptionAligner, BoolFieldHandler, SalaryFieldHandler,
         )

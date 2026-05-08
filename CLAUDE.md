@@ -92,10 +92,11 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 4. **Act** — Fix surgically. Re-run same real data. Route fix to correct DB: fill issue → `CorrectionCapture` + `AgentRulesDB` | quirk → `GotchasDB` | answer → screening cache | nav → `NavigationLearner`
 5. **Learn** — Emit `adaptation` signal via `OptimizationEngine`. Verify learning persisted (query DB). Confirm the agent handles this case autonomously on next run. Every error makes the system smarter — if an error can recur, the fix is incomplete.
 
-**Verify 3 self-adaptation layers after every application:**
+**Verify 2 self-adaptation layers after every application:**
 1. **Correction → Rule → Consumption** — `CorrectionCapture` → `AgentRulesDB` → `NativeFormFiller` consumes
 2. **Strategy Reflection** — `strategy_reflector` → `TrajectoryStore` + `ExperienceMemory`
-3. **Cognitive Escalation** — `CognitiveEngine` (L0→L3) + `OptimizationEngine` → `EscalationClassifier`
+
+(Cognitive escalation runs *in-line during form fill*, not post-apply: see `native_form_filler._escalate_fill` for failed field fills (`domain="form_recovery"`/`"form_navigation"`). Navigator-level cognitive escalation was removed in the 2026-05-07 audit because no `ThinkResult`→`PageAction` translator exists, and cognitive does not yet emit `adaptation` signals to `OptimizationEngine` on escalation — see `pipeline-bugs.md` S6 W-1.)
 
 ## Database Wiring Status
 27 DBs active with data, 19 wired but empty (code exists, not yet firing in production), 5 dead/legacy (51 total .db files in data/). Newly wired tables: `application_outcomes`, `company_reliability`, `gate_effectiveness` (in applications.db via post_apply_hook + gate4_quality), `performance_snapshots`, `cognitive_outcomes` (in optimization.db via optimize() + CognitiveEngine.think()). 11 dead 0-byte databases cleaned up. When touching any pipeline code, verify the relevant DB actually receives data — query it after a run.
@@ -161,7 +162,7 @@ Config: `shared/logging_config.py`. All loggers via `get_logger(__name__)`.
 Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 
 ## Stats
-~170,500 LOC | 801 Python files | 55 databases | 4341 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~170,500 LOC | 802 Python files | 56 databases | 4360 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)

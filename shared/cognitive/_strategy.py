@@ -17,6 +17,11 @@ _RELATED_DOMAINS: dict[str, list[str]] = {
     "job_scanning": ["job_application"],
 }
 
+# Aspirational canonical payload-key set. Producers do NOT all respect this
+# contract today: `_engine.flush`, `_reflexion._store_success`, and
+# `_tot.explore` each emit slightly different `context` strings
+# (see `pipeline-bugs.md` S6 m-5). Treat this as the target shape; any
+# consumer reading templates must tolerate missing keys.
 STRATEGY_PAYLOAD_KEYS = {
     "agent_name", "trigger", "composable_fragments", "times_used",
     "times_succeeded", "success_rate", "avg_score", "avg_latency_ms",

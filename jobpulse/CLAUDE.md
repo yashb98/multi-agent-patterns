@@ -135,12 +135,15 @@ The form-filling pipeline uses 3 layers of adaptive intelligence:
 - `unknown` → vision fallback
 
 **Platform Strategies** (`ats_adapters/strategy.py`):
-- `BasePlatformStrategy` ABC with: `form_container_hint()`, `expected_field_range()`, `screening_defaults()`, `normalize_label()`, `extra_label_mappings()`
+- `BasePlatformStrategy` ABC. Of 17 declared methods, only **6 are reachable in the default apply path**: `pre_fill`, `fill_combobox`, `form_container_hint`, `expected_field_range`, `extra_label_mappings`, `normalize_label`. (`screening_defaults` was deliberately removed — PII policy. The remaining methods — `submit_selectors`, `next_page_selectors`, `post_page`, `known_widget_libraries`, `apply_button_selectors`, `wait_for_form_hydrated_ms`, `iframe_names`, `custom_field_scan`, `field_fill_overrides` — are only consulted via `form_engine/engine.py` `FormFillEngine`, which is gated behind `UNIFIED_FORM_ENGINE=true` and **not enabled in production**. Tracked in `pipeline-bugs.md` S12 D-12.1 / D-12.2.)
 - `get_strategy(platform)` returns the registered strategy or GenericStrategy fallback
 - LinkedIn: container `.jobs-easy-apply-modal`, range 3-10
 - Greenhouse: container `#application`, range 3-15
 - Workday: range 3-20, hydration 10s
 - Strategies store successful containers via `FormExperienceDB.store_container()` after fill
+
+**Adapter Registry** (`ats_adapters/__init__.py`):
+- `get_adapter()` takes **no arguments** — the universal `playwright_adapter` is returned for every platform after the 2026-04 unification. Adapter selection by `ats_platform` happens at the strategy layer (`get_strategy(platform)`), not the adapter layer.
 
 ## Dry Run & Platform Learning
 - Always dry-run new platforms first: `apply_job(url, dry_run=True)`
@@ -182,7 +185,14 @@ CLI: `python -m jobpulse.runner ai-assist-summary [agent] [days]`
 
 ## Memory Layer Integration
 All old API calls (`learn_fact`, `record_episode`, `learn_procedure`) now automatically
-feed the 3-engine memory stack (SQLite + Qdrant + Neo4j). No caller code changes required.
+feed the 3-engine memory stack (SQLite + Qdrant + Neo4j) on the **write path**. No caller
+code changes required.
+
+**Read-path asymmetry**: `MemoryManager.get_procedural_entries` and `get_episodic_entries`
+still read from JSON-only legacy stores (capped at 100 / 200 entries) while SQLite has
+~19 800 procedural / ~200 episodic rows. Cognitive consumers (`_classifier`, `_engine`,
+`_strategy`, `_reflexion`) therefore see ~1/4 of the procedural memory. Tracked in
+`pipeline-bugs.md` S11 M-11.C.
 
 Forgetting sweep runs automatically every hour via the daemon optimization tick.
 

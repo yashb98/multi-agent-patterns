@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from shared.logging_config import get_logger
 from jobpulse.config import DATA_DIR

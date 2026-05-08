@@ -362,33 +362,33 @@ pipeline actually does.
 
 | ID | Source | Claim | Reality |
 |---|---|---|---|
-| 📝 S3 doc-1 | `CLAUDE.md:98` | Lists "Cognitive Escalation" as one of three self-adaptation layers verified after every application | Cognitive escalation in the navigator was **deleted** in S3 audit (commit `87d407c`). Other two layers (CorrectionCapture / strategy_reflector) still hold. |
-| 📝 S3 doc-2 | `docs/job-application-pipeline.md` | Claims CognitiveEngine escalation fires when navigation gets stuck | Not wired. No `ThinkResult`→`PageAction` translator exists. |
-| 📝 S3 doc-3 | `docs/job-application-pipeline.md` | Treats `_navigator.verify_submission` as a separate post-submit verifier | The SubmissionVerifier inside NativeFormFiller is the only one that runs. |
-| 📝 S3 doc-4 | `docs/job-application-pipeline.md` | References OverlayDismisser as the single source of truth for overlay dismissal | Legacy paths run instead; OverlayDismisser non-LinkedIn methods are D-tagged. |
-| 📝 S6 D-1 | `docs/job-application-pipeline.md` (cognitive section) | Claims cognitive emits adaptation signals on escalation | No `emit()` from cognitive — see S6 W-1. |
-| 📝 S7 W-2 | `docs/job-application-pipeline.md` | Doesn't document scan-vs-single-URL gate-coverage asymmetry: cron path runs Gate 0 + Gate 4A, single-URL path skips both | Not stated; surprises ad-hoc URL submitters. |
-| 📝 S8 D-1 | `docs/job-application-pipeline.md` | Lazy CV path (`ensure_tailored_cv_for_job`) used by live-review and `job_autopilot.handle_apply_review` is undocumented | Documentation gap. |
-| 📝 S8 D-2 | `docs/job-application-pipeline.md` | Two-path split for cover letter (eager `cl_generator` closure vs lazy `build_lazy_cover_letter_generator`) is undocumented | Drift risk; differing argument shapes. |
-| 📝 S8 D-3 | `docs/job-application-pipeline.md` | Doesn't note that PDF gen runs before Gate 4B — `Needs Review` verdict still leaves the PDF on disk | Wasted disk + ~100ms when needs_review=True. |
-| 📝 S10 D-10.1 | `shared/optimization/CLAUDE.md` | Documents `transfer` signal type | Lacks aggregator consumer; should be flagged inline. |
-| 📝 S10 D-10.2 | `docs/job-application-pipeline.md` | (post-fix) shape mismatch between `cognitive_outcomes` (`agent_name=real_agent`) and `forced_level_overrides` (`agent_name=domain`) | Fixed at the read-path level (S10 B-1) but not documented. |
-| 📝 S11 D-11.1 | `shared/memory_layer/CLAUDE.md` | "Forgetting sweep runs hourly — 6-signal decay" | True post-S11 B-1 only — `sweep` didn't exist before. **Add note that 3 of 6 signals (connectivity/impact/uniqueness) depend on `AutonomousLinker.link_with_neighbors` being wired and today it isn't (M-11.A).** |
-| 📝 S11 D-11.2 | `jobpulse/CLAUDE.md` | "All old API calls (`learn_fact`, `record_episode`, `learn_procedure`) now automatically feed the 3-engine memory stack" | Correct for **writes**; reads from `get_procedural_entries`/`get_episodic_entries` still come from JSON-only legacy stores (M-11.C). Asymmetry undocumented. |
-| 📝 S11 D-11.3 | `shared/CLAUDE.md` | "ALL memory access goes through MemoryManager" | True except for `cognitive/_classifier.py:179` reaching into `semantic.facts.items()` directly (W-11.5). |
-| 📝 S12 D-12.1 | `docs/job-application-pipeline.md` | Implies `BasePlatformStrategy` controls screening behavior | Only 6 of 17 methods are reachable in the default apply path. The rest are B-tier (`UNIFIED_FORM_ENGINE` off in prod) or D-tier. |
-| 📝 S12 D-12.2 | `jobpulse/CLAUDE.md` | "Platform Strategies" section | Does not document the Native vs FormFillEngine path divergence — `submit_selectors`/`next_page_selectors`/`post_page`/`known_widget_libraries` are only consulted via FormFillEngine. |
-| 📝 S12 D-12.3 | `jobpulse/CLAUDE.md` | "Adapter Registry" | Doesn't document that `get_adapter()` takes no arguments (m-1). |
+| ✅ S1 | `CLAUDE.md:95-99` | Lists "Cognitive Escalation" as one of three self-adaptation layers verified after every application | Rewritten to "2 self-adaptation layers" + paragraph explaining cognitive escalation runs in-line during fill, not post-apply. |
+| ✅ S1 verified absent | `docs/job-application-pipeline.md` | Claims CognitiveEngine escalation fires when navigation gets stuck | No such claim in current pipeline doc — the only `CognitiveEngine.think` references (lines 911, 1003) are for form-fill `_escalate_fill`, which IS wired. |
+| ✅ S1 verified absent | `docs/job-application-pipeline.md` | Treats `_navigator.verify_submission` as a separate post-submit verifier | `verify_submission` is not referenced in pipeline doc; only the SubmissionVerifier inside NativeFormFiller is documented. |
+| ✅ S1 verified absent | `docs/job-application-pipeline.md` | References OverlayDismisser as the single source of truth for overlay dismissal | Pipeline doc names `cookie_dismisser` as the primary banner-handler (line 212) and lists `overlay_dismisser.py` only as the LinkedIn save-overlay handler (line 1180) — accurate. |
+| ✅ S1 | `docs/job-application-pipeline.md` (post-apply diagram, line ~752) | Claims cognitive emits adaptation signals on escalation | Diagram now shows 2 layers; CognitiveEngine.flush() removed and explained as a write-back, not an adaptation layer. |
+| ✅ S1 | `docs/job-application-pipeline.md` ① pre-screen | Doesn't document scan-vs-single-URL gate-coverage asymmetry: cron path runs Gate 0 + Gate 4A, single-URL path skips both | Asymmetry now documented — `process_single_url` skips Gate 0 + Gate 4A; `record_gap` only fires on the cron path. |
+| ✅ S1 | `docs/job-application-pipeline.md` ② materials | Lazy CV path (`ensure_tailored_cv_for_job`) used by live-review and `job_autopilot.handle_apply_review` is undocumented | Both paths now documented — eager `generate_materials` + lazy `application_materials.ensure_tailored_cv_for_job`. |
+| ✅ S1 | `docs/job-application-pipeline.md` ② materials | Two-path split for cover letter (eager `cl_generator` closure vs lazy `build_lazy_cover_letter_generator`) is undocumented | Drift risk now documented — inline closure vs builder, with the differing argument shapes called out. |
+| ✅ S1 | `docs/job-application-pipeline.md` ② materials | Doesn't note that PDF gen runs before Gate 4B — `Needs Review` verdict still leaves the PDF on disk | Documented: PDF render at line ~681 of scan_pipeline runs before Gate 4B at line ~703. |
+| ✅ S1 | `shared/optimization/CLAUDE.md` | Documents `transfer` signal type | Note added: producer fires but no aggregator detector consumes the type yet (S10 W-10.1). |
+| ✅ S1 | `docs/job-application-pipeline.md` (signals listing) | (post-fix) shape mismatch between `cognitive_outcomes` (`agent_name=real_agent`) and `forced_level_overrides` (`agent_name=domain`) | Schema-shape note added: contributors must pass agent identity to cognitive_outcomes and domain to forced_level_overrides. |
+| ✅ S1 | `shared/memory_layer/CLAUDE.md:53` | "Forgetting sweep runs hourly — 6-signal decay" | Qualifier added inline: 3 of 6 signals (connectivity/impact/uniqueness) depend on AutonomousLinker.link_with_neighbors being wired (M-11.A still open). |
+| ✅ S1 | `jobpulse/CLAUDE.md` Memory Layer Integration | "All old API calls (`learn_fact`, `record_episode`, `learn_procedure`) now automatically feed the 3-engine memory stack" | Read-path asymmetry now documented (writes feed all 3 engines; reads via `get_procedural_entries`/`get_episodic_entries` still hit JSON-only legacy stores). |
+| ✅ S1 | `shared/CLAUDE.md:53` | "ALL memory access goes through MemoryManager" | Exception now documented: `cognitive/_classifier.py:load_persisted_stats` reaches into `semantic.facts.items()` directly (W-11.5). |
+| ✅ S1 | `docs/job-application-pipeline.md` (BasePlatformStrategy ABC) | Implies `BasePlatformStrategy` controls screening behavior | Listing now states 6 of 17 methods are reachable in default path; remainder are FormFillEngine-only (B-tier) or D-tier dead. |
+| ✅ S1 | `jobpulse/CLAUDE.md` Platform Strategies | Does not document the Native vs FormFillEngine path divergence — `submit_selectors`/`next_page_selectors`/`post_page`/`known_widget_libraries` are only consulted via FormFillEngine. | Now documented; `screening_defaults()` removed from the listing (it was deleted per PII policy). |
+| ✅ S1 | `jobpulse/CLAUDE.md` Adapter Registry | Doesn't document that `get_adapter()` takes no arguments (m-1). | New `Adapter Registry` section added; documents that `get_adapter()` is parameter-less. |
 
 ### Function-level contract lies (docstring vs. behavior)
 
 | ID | Location | Description |
 |---|---|---|
-| 📝 S4 m-9 | `screening_pipeline.py:73` | Docstring claims `Tier 3 Pattern match — screening_answers.lookup_canned_answer` but no such function exists. |
-| 📝 S4 m-4 | `screening_semantic_cache.py:457` | `_align_to_options` annotated `-> CacheHit` but returns `None` when aligned answer not in `field_options`. Caller handles `None`, but type hint lies. |
-| 📝 S6 m-5 | `shared/cognitive/_strategy.py:20-24` | `STRATEGY_PAYLOAD_KEYS` claims a canonical payload-key set that no producer fully respects (`_engine.flush`, `_reflexion._store_success`, `_tot.explore` each emit slightly different `context` strings). |
-| 📝 S5 m-5.6 | `process_logger.py:69-72` | `step_input: str = None` — annotated `str` but accepts `None`. Should be `str | None`. |
-| 📝 S5 m-5.3 | `cross_platform_field_transfer.py:34, 76-77` | `Optional[Any]` referenced but `Any` not imported; latent defect (only saved by `from __future__ import annotations`). |
+| ✅ S1 verified absent | `screening_pipeline.py:73` | Docstring claims `Tier 3 Pattern match — screening_answers.lookup_canned_answer` but no such function exists. | Cleaned up by S4 audit commit `a747f16`; lint guard in `tests/lint/test_claude_md_truth.py` prevents reintroduction. |
+| ✅ S1 | `screening_semantic_cache.py:390` | `_align_to_options` annotated `-> CacheHit` but returns `None` when aligned answer not in `field_options`. Caller handles `None`, but type hint lies. | Annotation changed to `-> CacheHit | None` + docstring explains the cache-miss signal. |
+| ✅ S1 | `shared/cognitive/_strategy.py:20-29` | `STRATEGY_PAYLOAD_KEYS` claims a canonical payload-key set that no producer fully respects (`_engine.flush`, `_reflexion._store_success`, `_tot.explore` each emit slightly different `context` strings). | Comment block added marking the set as aspirational; consumers must tolerate missing keys. |
+| ✅ S1 | `process_logger.py:69-72, 98` | `step_input: str = None` — annotated `str` but accepts `None`. Should be `str | None`. | Both `log_step` and `step` annotations updated to `str \| None = None`. |
+| ✅ S1 | `cross_platform_field_transfer.py:34` | `Optional[Any]` referenced but `Any` not imported; latent defect (only saved by `from __future__ import annotations`). | `Any` added to the `from typing import` line. |
 | 📝 S12 (pre-fix) | `__init__.py get_adapter(ats_platform)` | Accepted parameter, ignored it. **FIXED** in S12 audit — parameter dropped. |
 
 ---

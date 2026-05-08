@@ -86,13 +86,22 @@ marked rejected with the kill reason.
 - `gate_threshold_adapter` — adaptive gate thresholds from
   historical data.
 
+**Scan vs single-URL gate-coverage asymmetry** (`pipeline-bugs.md` S7 W-2):
+The cron path (`prescreen_listings`) runs **all five gates** (0 + 1-3 + 4A + 4B).
+The single-URL path (`process_single_url`, used by `apply_now.py` and ad-hoc
+`job-process-url` invocations) **skips Gate 0 and Gate 4A** and only runs Gates
+1-3 + 4B. This means a manually-pasted URL bypasses title-relevance filtering
+(may apply to a "Senior PHP Architect" role for a Data Engineer profile) and
+the company blocklist + JD-quality screen. `skill_gap_tracker.record_gap` also
+only fires on the cron path.
+
 **State written:**
 - `data/applications.db` — application row with status `Pending Approval`.
 - `data/job_listings.db` (table inside applications.db) — JD details.
 - `data/audit.db` — gate decisions + reasons.
 - `data/gate_thresholds.db` — adaptive threshold updates.
 - `data/cv_scrutiny_calibration.db` — Gate 4B calibration.
-- `data/skill_gaps.db` — `skill_gap_tracker` records missing skills.
+- `data/skill_gaps.db` — `skill_gap_tracker` records missing skills (cron path only).
 
 **Information flow out:**
 - `JDAnalysis` dict → phase ②
@@ -134,6 +143,30 @@ delegates to `jobpulse/application_materials.py`.
    strip embedded scripts, normalize fonts, set human-readable title.
 7. **ATS scoring** — `ats_scorer` against the JD; scores 0-100.
    Score < 85 may get retry with adjusted projects.
+
+**Lazy CV path** (`pipeline-bugs.md` S8 D-1): Two distinct CV-generation paths
+exist. `scan_pipeline.generate_materials` (above) generates eagerly when
+`ats_score >= 85`. `application_materials.ensure_tailored_cv_for_job` is the
+**lazy** path used by `live-review` and `job_autopilot.handle_apply_review` —
+it only generates the tailored PDF on first form-fill if `cv_path` isn't yet
+on the application row. Both paths share the same generator (`generate_cv_pdf`)
+but the lazy path is invoked from the form-fill phase, not pre-screen.
+
+**Two cover-letter generators** (`pipeline-bugs.md` S8 D-2 / W-2): The eager
+path (`route_and_apply.cl_generator` inline closure in
+`scan_pipeline.py:830-851`) and the lazy path
+(`application_materials.build_lazy_cover_letter_generator`) co-exist with
+**different argument shapes**. The inline closure skips
+`tailor_cover_letter_prose`, so it produces a less-tailored CL than the
+live-review path. Drift risk — when changing CL behaviour, update both.
+
+**PDF generation runs before Gate 4B** (`pipeline-bugs.md` S8 D-3): The CV
+PDF is rendered in `generate_materials` (line ~681 of `scan_pipeline.py`) when
+`ats_score >= 85`, *before* Gate 4B (CV scrutiny) runs at line ~703. If Gate
+4B's verdict is "Needs Review" (score 5-6.9), the rendered PDF stays on disk
+unused — wastes ~100 ms + a few MB per rejected application. Tracked but not
+yet fixed (re-ordering would require Gate 4B to score against a non-PDF
+projection of the bundle).
 
 **State written:**
 - `data/applications/<Company>/Yash_Bishnoi_<Company>.pdf` — CV
@@ -298,16 +331,29 @@ Three guard validators:
   domain + DOM signals.
 - `_strategy_synthesis.py` — composes strategy from multiple sources.
 
-`PlatformStrategy` ABC contract (used by phase ③ + ④):
+`PlatformStrategy` ABC declares 17 methods, but only **6 are reachable in the
+default apply path** (`pre_fill`, `fill_combobox`, `form_container_hint`,
+`expected_field_range`, `extra_label_mappings`, `normalize_label`).
+`screening_defaults` was **deliberately removed** (PII policy — answers come
+from `ScreeningPipeline`, not the strategy). The remaining methods —
+`submit_selectors`, `next_page_selectors`, `post_page`, `known_widget_libraries`,
+`apply_button_selectors`, `wait_for_form_hydrated_ms`, `iframe_names`,
+`custom_field_scan`, `field_fill_overrides` — are **only consulted via
+`form_engine.engine.FormFillEngine`**, which is gated behind
+`UNIFIED_FORM_ENGINE=true` and **not enabled in production**. The default
+path is `NativeFormFiller`, which never calls them. Tracked in
+`pipeline-bugs.md` S12 D-12.1 / D-12.2.
+
 ```python
+# Reachable in default apply path:
 class BasePlatformStrategy:
-    def form_container_hint(self) -> str           # CSS for the form root
+    def pre_fill(self, page) -> None
+    def fill_combobox(self, page, label, value) -> bool
+    def form_container_hint(self) -> str
     def expected_field_range(self) -> tuple[int, int]
-    def screening_defaults(self) -> dict
     def normalize_label(self, label: str) -> str
     def extra_label_mappings(self) -> dict
-    def submit_selectors(self) -> list[str]        # structural CSS
-    def next_page_selectors(self) -> list[str]     # structural CSS
+    # The other 11 methods are FormFillEngine-only (B-tier) or D-tier dead.
 ```
 
 **Information flow out:**
@@ -749,20 +795,26 @@ recruiters can re-download.
 - Recruiter Email (extracted from JD)
 - "Needs Review" tag (if Gate 4B scored 5-6.9)
 
-### Three self-adaptation layers fire in parallel
+### Two self-adaptation layers fire in parallel
 
 ```
 post_apply_hook ──┬──▶ ① CorrectionCapture ──▶ AgentRulesDB
                   │                            └─▶ NativeFormFiller consumes
                   │                                next visit
                   │
-                  ├──▶ ② strategy_reflector ──▶ TrajectoryStore
-                  │                          └─▶ ExperienceMemory (LRU)
-                  │
-                  └──▶ ③ CognitiveEngine.flush() ──▶ EscalationClassifier
-                                                  └─▶ DomainStats per
-                                                      domain success rate
+                  └──▶ ② strategy_reflector ──▶ TrajectoryStore
+                                             └─▶ ExperienceMemory (LRU)
 ```
+
+`CognitiveEngine.flush()` is **not** a third self-adaptation layer — it is a
+write-back of queued strategy templates that runs at cron-tick boundaries.
+Cognitive escalation runs *in-line during form fill* via
+`native_form_filler._escalate_fill` (see ④.6 — domain `form_recovery` /
+`form_navigation`), not after submission. Navigator-level cognitive escalation
+was removed in the 2026-05-07 audit because no `ThinkResult`→`PageAction`
+translator exists; cognitive does not yet emit `adaptation` signals to
+`OptimizationEngine` on escalation. Tracked in `pipeline-bugs.md` S6 W-1 and
+S3 doc-1/doc-2.
 
 **OptimizationEngine signals emitted:**
 - `success` (every submission, plus `form_experience.record` outcomes,
@@ -779,6 +831,19 @@ post_apply_hook ──┬──▶ ① CorrectionCapture ──▶ AgentRulesDB
   `PlatformTransferEngine.record_outcome`). Added to
   `VALID_SIGNAL_TYPES` 2026-05-07 — pre-fix the producer raised
   `ValueError` and the optimization signal was silently dropped.
+  **No aggregator detector consumes `transfer` yet** — producer fires
+  but the pattern-detection rules don't read this type
+  (`pipeline-bugs.md` S10 W-10.1).
+
+**Schema-shape note** (`pipeline-bugs.md` S10 D-10.2): `cognitive_outcomes`
+rows are stored with `agent_name=<real-agent>` (e.g. `field_mapper`,
+`screening_pipeline`), while `forced_level_overrides` is keyed by
+`agent_name=<domain>` (e.g. `form_recovery`, `email_classification`). The
+read-path mismatch was fixed in audit-S10 B-1 (the L0 fast-path now resolves
+the override by domain), but the underlying shape divergence remains —
+contributors adding new producers should pass the **agent identity** to
+`cognitive_outcomes` and the **domain** to `forced_level_overrides`, never
+the reverse.
 
 `post_apply_hook` also wraps itself with
 `OptimizationEngine.before_learning_action("post_apply", domain, ...)`
