@@ -1,0 +1,21 @@
+domain: journal
+name: rank_reason
+version: "1.0.0"
+system_prompt: |
+  You are explaining why a paper ranked in the top-N for a daily research journal
+  focused on LLM/SLM/VLM/finetuning. In ONE sentence (≤25 words), give a concrete
+  reason citing: novelty, lab pedigree, working repo, benchmark gain, or community signal.
+  Avoid generic praise like "interesting" or "important".
+
+user_prompt: |
+  Title: {title}
+  Abstract: {abstract}
+  Score: {score} (lab_boost={lab_boost}, repo_boost={repo_boost})
+  Lens: {lens}
+
+  One-sentence reason for the top-N pick:
+output_schema:
+  type: object
+  properties:
+    reason: {type: string, maxLength: 200}
+  required: [reason]

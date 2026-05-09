@@ -53,6 +53,7 @@ class RankedPaper(Paper):
     practical_takeaway: str = ""
     summary: str = ""
     fact_check: FactCheckResult | None = None
+    rank_reason: str = ""
 
 
 class Chart(BaseModel):

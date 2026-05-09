@@ -434,3 +434,60 @@ def summarize_and_verify(papers: list[Paper]) -> list[RankedPaper]:
         results.append(RankedPaper(**data))
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Rank-reason helpers
+# ---------------------------------------------------------------------------
+
+
+def attach_rank_reasons(papers: list, lens: str = "daily") -> list:
+    """Attach a 1-sentence LLM justification to each paper's rank_reason field."""
+    for p in papers:
+        p.rank_reason = _llm_rank_reason(p, lens)
+    return papers
+
+
+def _llm_rank_reason(paper, lens: str) -> str:  # type: ignore[no-untyped-def]
+    """Call LLM once to produce a 1-sentence reason for the top-N pick."""
+    from shared.agents import cognitive_llm_call
+    from shared.prompts import get_prompt
+    import json as _json
+
+    prompt = get_prompt("journal", "rank_reason")
+    call_params = prompt.render(
+        title=paper.title,
+        abstract=paper.abstract[:1500],
+        score=getattr(paper, "impact_score", 0.0),
+        lab_boost=_lab_boost(paper),
+        repo_boost=_repo_activity_boost(
+            getattr(paper, "github_url", ""),
+            getattr(paper, "_last_commit_iso", ""),
+        ),
+        lens=lens,
+    )
+    task = "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in call_params["messages"]
+    )
+    raw = cognitive_llm_call(
+        task=task,
+        domain="journal_rank_reason",
+        stakes="low",
+        fallback_messages=call_params["messages"],
+        response_format={"type": "json_object"},
+    ) or "{}"
+    try:
+        return _json.loads(_strip_codefence(raw)).get("reason", "")[:200]
+    except (ValueError, _json.JSONDecodeError, AttributeError, TypeError):
+        return ""
+
+
+def _strip_codefence(text: str) -> str:
+    """Strip markdown code fences from LLM output."""
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s
+        if s.endswith("```"):
+            s = s[: s.rfind("```")]
+    return s.strip()
