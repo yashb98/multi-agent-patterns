@@ -40,22 +40,31 @@ class PaperFetcher:
     # Public API                                                           #
     # ------------------------------------------------------------------ #
 
-    async def fetch_all(self, max_results: int = 50) -> list[Paper]:
-        """Fetch from all sources with tiered fallback, deduplicate, and return."""
-        # Tier 1 + Tier 2: all run concurrently
-        arxiv_papers, hf_papers, s2_papers, hn_papers, reddit_papers, bsky_papers, or_papers = (
-            await asyncio.gather(
-                self._fetch_arxiv(max_results=max_results),
-                self._fetch_huggingface(),
-                self._fetch_s2_trending(),
+    async def fetch_all(self, max_results: int = 50, include_community: bool = False) -> list[Paper]:
+        """Fetch from all sources with tiered fallback, deduplicate, and return.
+
+        By default only quality/peer-reviewed sources are fetched (arXiv, HuggingFace,
+        Semantic Scholar, OpenReview).  Pass ``include_community=True`` to also fetch
+        HackerNews, Reddit, and Bluesky — used by the legacy ``daily_digest`` path.
+        """
+        # Core sources: always fetched
+        core_results = await asyncio.gather(
+            self._fetch_arxiv(max_results=max_results),
+            self._fetch_huggingface(),
+            self._fetch_s2_trending(),
+            self._fetch_openreview(),
+        )
+        all_papers = [p for sublist in core_results for p in sublist]
+
+        # Community sources: opt-in only
+        if include_community:
+            comm_results = await asyncio.gather(
                 self._fetch_hackernews(),
                 self._fetch_reddit(),
                 self._fetch_bluesky(),
-                self._fetch_openreview(),
             )
-        )
+            all_papers += [p for sublist in comm_results for p in sublist]
 
-        all_papers = arxiv_papers + hf_papers + s2_papers + hn_papers + reddit_papers + bsky_papers + or_papers
         merged = self._deduplicate_and_merge_all(all_papers)
 
         # Tier 3: fallback if < 5 unique papers

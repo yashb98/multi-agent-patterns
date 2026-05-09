@@ -46,7 +46,7 @@ class PapersPipeline:
 
     async def daily_digest(self, top_n: int = 5) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
-        papers = await self.fetcher.fetch_all()
+        papers = await self.fetcher.fetch_all(include_community=True)
         logger.info("Fetched %d papers from all sources", len(papers))
         papers = await self.fetcher.enrich(papers)
         logger.info("Enriched %d papers with S2/GitHub/HF data", len(papers))
