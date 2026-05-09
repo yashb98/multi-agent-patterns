@@ -5,16 +5,227 @@ All personal data comes from the profile DB at runtime — never hardcoded here.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import datetime, timedelta
 
 from shared.agents import cognitive_llm_call
 from shared.logging_config import get_logger
 from shared.profile_store import ExperienceEntry
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tailored-CV cache (cache-llm-S4)
+# ---------------------------------------------------------------------------
+
+_TAILORED_CV_CACHE_TTL_DAYS = 14
+_TAILORED_CV_CACHE_LOCK = threading.Lock()
+
+
+def _classify_role_archetype(role_title: str) -> str:
+    """Coarse archetype for cache keying. Mirrors
+    `screening_answers._classify_role_archetype` so cache rows stay
+    consistent across the pipeline."""
+    if not role_title:
+        return "generic"
+    t = role_title.lower().strip()
+    if "data analyst" in t or ("analytics" in t and "engineer" not in t):
+        return "data_analyst"
+    if "data engineer" in t:
+        return "data_engineer"
+    if "data scientist" in t:
+        return "data_scientist"
+    if "machine learning" in t or "ml engineer" in t or "ai engineer" in t:
+        return "ml_engineer"
+    if "research engineer" in t or "research scientist" in t:
+        return "research_engineer"
+    if "backend" in t or "back-end" in t:
+        return "backend_engineer"
+    if "frontend" in t or "front-end" in t:
+        return "frontend_engineer"
+    if "full stack" in t or "fullstack" in t or "full-stack" in t:
+        return "fullstack_engineer"
+    if "software engineer" in t or "developer" in t:
+        return "software_engineer"
+    return t.split()[0] if t else "generic"
+
+
+def _jd_hash(listing) -> str:
+    """16-char hash of the JD inputs that feed cv_tailor.
+
+    Captures the fields tailor_summary_and_tagline / tailor_experience_bullets
+    / tailor_project_bullets / tailor_cover_letter_prose actually consume:
+    title + description + company + required + preferred skills.
+    Order-independent for skill lists so reordering doesn't invalidate cache.
+    """
+    payload = {
+        "title": (getattr(listing, "title", "") or "").strip().lower(),
+        "company": (getattr(listing, "company", "") or "").strip().lower(),
+        "description": (getattr(listing, "description_raw", "") or "").strip(),
+        "required": sorted((getattr(listing, "required_skills", None) or [])),
+        "preferred": sorted((getattr(listing, "preferred_skills", None) or [])),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _profile_version_hash(
+    experience: list[ExperienceEntry] | None,
+    matched_projects: list[dict] | None,
+) -> str:
+    """16-char hash of the profile-side inputs to cv_tailor (experience +
+    matched projects). When the user adds a project or updates a job
+    title in the profile DB, this hash changes and the cache misses.
+    """
+    exp_payload = []
+    for e in experience or []:
+        exp_payload.append({
+            "title": e.title, "company": e.company, "dates": e.dates,
+            "bullets": e.bullets, "location": e.location,
+        })
+    proj_payload = []
+    for p in matched_projects or []:
+        # Project dicts have variable shapes; canonicalise the fields cv_tailor
+        # actually reads so casual extra keys don't fragment the cache.
+        proj_payload.append({
+            "name": p.get("name", ""),
+            "description": p.get("description", ""),
+            "url": p.get("url", ""),
+            "matched_skills": sorted(p.get("matched_skills", []) or []),
+        })
+    raw = json.dumps(
+        {"experience": exp_payload, "projects": proj_payload},
+        sort_keys=True, ensure_ascii=False,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _tailored_cv_cache_init(db) -> None:
+    """Lazily create tailored_cv_cache table inside applications.db.
+
+    Schema mirrors the hiring_message_cache table from cache-llm-S3:
+    primary key is the (role_archetype, jd_hash, profile_version) tuple,
+    payload is the JSON-serialised TailoredCV.
+    """
+    conn = db._connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tailored_cv_cache ("
+        "role_archetype TEXT NOT NULL, jd_hash TEXT NOT NULL, "
+        "profile_version TEXT NOT NULL, payload TEXT NOT NULL, "
+        "generated_at TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (role_archetype, jd_hash, profile_version))"
+    )
+    conn.commit()
+
+
+def _tailored_cv_cache_lookup(
+    role_archetype: str, jd_hash: str, profile_version: str, *, db=None,
+) -> "TailoredCV | None":
+    """Return cached TailoredCV or None on miss / TTL expiry.
+
+    Under ``JOBPULSE_TEST_MODE=1`` (set by ``tests/conftest.py``), a default
+    ``db=None`` short-circuits to None so unrelated tests don't pick up
+    cache entries from prior runs of the same suite. Tests that exercise
+    cache behaviour pass an explicit ``db=`` kwarg from their tmp_path.
+    """
+    if not (role_archetype and jd_hash and profile_version):
+        return None
+    import os as _os
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return None
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    with _TAILORED_CV_CACHE_LOCK:
+        _tailored_cv_cache_init(db)
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT payload, generated_at FROM tailored_cv_cache "
+            "WHERE role_archetype = ? AND jd_hash = ? AND profile_version = ?",
+            (role_archetype, jd_hash, profile_version),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            generated = datetime.fromisoformat(row["generated_at"])
+            if (datetime.now() - generated).days > _TAILORED_CV_CACHE_TTL_DAYS:
+                return None
+        except (ValueError, TypeError):
+            return None
+        try:
+            payload = json.loads(row["payload"])
+            cv = _tailored_cv_from_payload(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("tailored_cv_cache: payload parse failed: %s", exc)
+            return None
+        conn.execute(
+            "UPDATE tailored_cv_cache SET hit_count = hit_count + 1 "
+            "WHERE role_archetype = ? AND jd_hash = ? AND profile_version = ?",
+            (role_archetype, jd_hash, profile_version),
+        )
+        conn.commit()
+        return cv
+
+
+def _tailored_cv_cache_store(
+    role_archetype: str, jd_hash: str, profile_version: str, cv: "TailoredCV", *,
+    db=None,
+) -> None:
+    """Persist a freshly-generated TailoredCV.
+
+    Under ``JOBPULSE_TEST_MODE=1`` with default ``db=None``, the store is
+    a no-op — same rationale as the lookup guard above.
+    """
+    if not (role_archetype and jd_hash and profile_version) or cv is None:
+        return
+    import os as _os
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    payload = json.dumps(_tailored_cv_to_payload(cv), ensure_ascii=False)
+    with _TAILORED_CV_CACHE_LOCK:
+        _tailored_cv_cache_init(db)
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO tailored_cv_cache "
+            "(role_archetype, jd_hash, profile_version, payload, generated_at, hit_count) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (role_archetype, jd_hash, profile_version, payload,
+             datetime.now().isoformat()),
+        )
+        conn.commit()
+
+
+def _tailored_cv_to_payload(cv: "TailoredCV") -> dict:
+    """Serialise TailoredCV to a JSON-friendly dict (dataclasses → dicts)."""
+    return asdict(cv)
+
+
+def _tailored_cv_from_payload(payload: dict) -> "TailoredCV":
+    """Reconstruct TailoredCV from a JSON-decoded dict.
+
+    Re-hydrates nested dataclasses (`TailoredCoverLetter`, `ExperienceEntry`)
+    so the returned object behaves identically to a freshly-built one.
+    """
+    exp_raw = payload.get("experience") or []
+    experience = [ExperienceEntry(**e) for e in exp_raw] if exp_raw else None
+
+    cl_raw = payload.get("cover_letter")
+    cover_letter = TailoredCoverLetter(**cl_raw) if cl_raw else None
+
+    return TailoredCV(
+        tagline=payload.get("tagline"),
+        summary=payload.get("summary"),
+        experience=experience,
+        projects=payload.get("projects"),
+        cover_letter=cover_letter,
+    )
 
 
 def build_required_tagline(yoe: str, jd_title: str, top_skills: str) -> str:
@@ -161,9 +372,16 @@ _METRIC_RE = re.compile(r"\d+[%$£]|\d{2,}|\$\d|£\d")
 
 
 def validate_summary(summary: str) -> str | None:
-    """Returns error string or None if valid."""
-    if len(summary) < 100 or len(summary) > 500:
-        return f"Summary length {len(summary)} outside 100-500 range"
+    """Returns error string or None if valid.
+
+    Word count enforces the TIH guideline that resume summaries stay under
+    50 words — 30 words floor keeps it substantive. `<b>` tags are stripped
+    before counting so the bold markup we require doesn't inflate the count.
+    """
+    plain = re.sub(r"<[^>]+>", " ", summary)
+    word_count = len(plain.split())
+    if word_count < 30 or word_count > 50:
+        return f"Summary word count {word_count} outside 30-50 range"
     summary_lower = summary.lower()
     for word in _SOFT_SKILL_WORDS:
         if word in summary_lower:
@@ -284,13 +502,16 @@ def tailor_summary_and_tagline(
             # via ProfileStore at runtime instead of hardcoding "MSc Computer
             # Science (UOD)" which would only fit one specific applicant.
             f"- Tagline EXACTLY: {_required_tagline_format(yoe, jd_title, top_skills)}\n"
-            f"- Summary length: 100-500 characters total (count carefully)\n"
+            f"- Summary length: 30-50 words total (TIH guideline; count words, not characters)\n"
             f"- Summary MUST contain at least one <b>...</b> tag — wrap the role title\n"
             f"- Summary MUST mention '{company}' literally\n"
             f"- Summary MUST reference 2-3 of the required skills above\n"
+            f"- Expand common abbreviations on first use: 'Amazon Web Services (AWS)', "
+            f"'Google Cloud Platform (GCP)', 'Machine Learning (ML)', "
+            f"'Natural Language Processing (NLP)', 'Kubernetes (K8s)' — TIH guideline\n"
             f"- Forbidden filler words anywhere in summary: {_SOFT_SKILL_HINT}\n"
             f"- No em-dashes (—); use commas or hyphens instead\n"
-            f"- 3-4 sentences total\n\n"
+            f"- 2-3 sentences total\n\n"
             # Example uses a generic role/employer, not a specific employer.
             f"Format example: <b>Senior Data Engineer</b> with 3+ years building Python pipelines. "
             f"Built distributed Spark workflows processing 100GB/day. Specialises in dbt, Airflow, and SQL "
@@ -542,7 +763,25 @@ def tailor_all_sections(
     matched_projects: list[dict],
     experience: list[ExperienceEntry],
 ) -> TailoredCV:
-    """Run all 4 tailoring calls in parallel. Returns TailoredCV with all sections."""
+    """Run all 4 tailoring calls in parallel. Returns TailoredCV with all sections.
+
+    Wraps the LLM section in a `(role_archetype, jd_hash, profile_version)`
+    cache so a re-application to the same JD with an unchanged profile
+    skips all 4 LLM calls. Cache miss runs the parallel calls and stores
+    the result on success; partial-failure results are NOT cached.
+    """
+    role_archetype = _classify_role_archetype(getattr(listing, "title", ""))
+    jd_hash = _jd_hash(listing)
+    profile_version = _profile_version_hash(experience, matched_projects)
+
+    cached = _tailored_cv_cache_lookup(role_archetype, jd_hash, profile_version)
+    if cached is not None:
+        logger.info(
+            "tailored_cv_cache: hit on (%s, %s, %s) — skipping 4× LLM calls",
+            role_archetype, jd_hash[:8], profile_version[:8],
+        )
+        return cached
+
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="cv_tailor") as pool:
         fut_header = pool.submit(
             tailor_summary_and_tagline,
@@ -581,10 +820,24 @@ def tailor_all_sections(
         tailored_proj = fut_projects.result()
         cl = fut_cl.result()
 
-    return TailoredCV(
+    cv = TailoredCV(
         tagline=header.tagline if header else None,
         summary=header.summary if header else None,
         experience=tailored_exp,
         projects=tailored_proj,
         cover_letter=cl,
     )
+
+    # Only cache when every section produced output. A partial result
+    # (one LLM call returned None / failed validation) would poison the
+    # cache for the next 14 days.
+    fully_tailored = all((
+        cv.tagline, cv.summary, cv.experience, cv.projects, cv.cover_letter,
+    ))
+    if fully_tailored:
+        try:
+            _tailored_cv_cache_store(role_archetype, jd_hash, profile_version, cv)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("tailored_cv_cache: store failed (continuing): %s", exc)
+
+    return cv
