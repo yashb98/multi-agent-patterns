@@ -219,6 +219,38 @@ def _requires_fixed_temperature(model: str) -> bool:
     return False
 
 
+def _is_reasoning_model(model: str) -> bool:
+    """Reasoning models burn tokens on chain-of-thought BEFORE producing
+    final content. Detect them so the caller can budget more tokens —
+    otherwise the reasoning_content blows the cap and the visible
+    ``content`` field comes back empty.
+
+    Currently: o1 / o3 / o4 (OpenAI reasoning), gpt-5 family,
+    Kimi K2.* / K3.* (Moonshot reasoning), DeepSeek-R1.
+    """
+    m = model.lower()
+    return (
+        m.startswith(("o1", "o3", "o4", "gpt-5"))
+        or m.startswith(("kimi-k2", "kimi-k3"))
+        or m.startswith("deepseek-r1")
+    )
+
+
+def _max_tokens_for_model(model: str, requested: int) -> int:
+    """Bump max_tokens for reasoning models so the chain-of-thought
+    can complete AND still leave room for the final content.
+
+    Empirically (probe in S8 step 3): Kimi K2.6 used 675 reasoning
+    tokens on a tiny "return JSON" prompt; cv_tailor's full prompts
+    push this past the default 2000 budget, leaving content empty.
+    16k handles the cv_tailor / page_reasoner working set. Non-reasoning
+    callers keep the requested cap so cost stays bounded.
+    """
+    if _is_reasoning_model(model):
+        return max(requested, 16000)
+    return requested
+
+
 def _token_limit_kwargs(model: str, max_tokens: int) -> dict:
     """Return the correct token limit kwarg for the model."""
     if _needs_max_completion_tokens(model):
@@ -243,11 +275,12 @@ def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens:
     else:
         effective_model = model
     effective_temp = 1 if _requires_fixed_temperature(effective_model) else temperature
+    effective_max_tokens = _max_tokens_for_model(effective_model, max_tokens)
     return ChatOpenAI(
         model=effective_model,
         temperature=effective_temp,
         request_timeout=timeout,
-        **_token_limit_kwargs(effective_model, max_tokens),
+        **_token_limit_kwargs(effective_model, effective_max_tokens),
     )
 
 
@@ -971,8 +1004,8 @@ def _direct_llm_call(
         kwargs: dict = {
             "model": model,
             "messages": [{"role": "user", "content": task}],
-            "temperature": 0.4,
-            **_token_limit_kwargs(model, 2000),
+            "temperature": 1 if _requires_fixed_temperature(model) else 0.4,
+            **_token_limit_kwargs(model, _max_tokens_for_model(model, 2000)),
         }
         if response_format is not None:
             kwargs["response_format"] = response_format
