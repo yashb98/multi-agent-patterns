@@ -163,6 +163,78 @@ analysis on a fresh JD; everything else short-circuits).
 (`4 cv_tailor + 1 cover-letter + 1 hiring-message`), plus
 `strategy_reflector` if cognitive L0 hits.
 
+### §5.1 — Live URL acceptance (post-`chore(setup): LLM_MODEL_OVERRIDE`)
+
+Captured 2026-05-09 with **Kimi via OpenAI-compatible API**
+(`LLM_PROVIDER=openai`, `OPENAI_BASE_URL=https://api.moonshot.ai/v1`,
+`LLM_MODEL_OVERRIDE=moonshot-v1-128k`) — local Ollama was too slow
+(qwen3:32b timed out 1 of 4 cv_tailor calls even at 180 s) and the
+existing OpenAI key had `insufficient_quota`. The
+`LLM_MODEL_OVERRIDE` chore commit (`ffecd4d`) lets any
+OpenAI-compatible provider drop in without code edits.
+
+URL: `https://job-boards.greenhouse.io/anthropic/jobs/4017331008`
+
+**Run 1 (cache-cold)** — 6 successful Kimi POSTs (4 cv_tailor +
+1 corrective retry on word-count validation + 1 JD analyzer):
+
+```
+[jobpulse.skill_extractor] Rule-based extracted 14 skills, skipping LLM
+[jobpulse.scan_pipeline] process_single_url: pre-screen tier=strong
+                         gate1=True gate2=True gate3=91.8%
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "200 OK"  (×6)
+[jobpulse.cv_tailor] cv_tailor: summary failed validation … word count 28
+                     outside 30-50 range  (corrective retry path fired, succeeded)
+[jobpulse.cv_templates.generate_cv] CV generated: …Yash_Bishnoi_Unknown_Company.pdf
+```
+
+Cache row written:
+`tailored_cv_cache (research_engineer, 6d671dd7b59e8c10, 8530387fbf1f2c89)`.
+
+**Run 2 (cache-warm)** — same URL, same profile. cv_tailor
+short-circuits before any LLM call:
+
+```
+[jobpulse.skill_extractor] Rule-based extracted 14 skills, skipping LLM
+[jobpulse.scan_pipeline] process_single_url: pre-screen tier=strong …
+[jobpulse.cv_tailor] tailored_cv_cache: hit on (research_engineer, 6d671dd7,
+                     8530387f) — skipping 4× LLM calls
+[jobpulse.cv_templates.generate_cv] CV generated: …
+```
+
+Plus 7 distinct `screening_cache` hits from S3's
+`screening_pipeline.py:127` log line on the form-fill phase
+(matches that ran S2 prior on this URL):
+
+```
+screening_cache: hit on 'Publications (e.g. Google Scholar) URL' (score=1.00) — skipping LLM
+screening_cache: hit on 'Why Anthropic?' (score=1.00) — skipping LLM
+screening_cache: hit on 'AI Policy for Application*' (score=0.91) — skipping LLM
+screening_cache: hit on 'Why Anthropic?*' (score=0.91) — skipping LLM
+screening_cache: hit on '(Optional) Personal Preferences*' (score=0.95) — skipping LLM
+screening_cache: hit on 'Additional Information*' (score=0.86) — skipping LLM
+screening_cache: hit on 'Have you ever interviewed at Anthropic before?*' (score=0.98) — skipping LLM
+```
+
+**Acceptance verdict**: §6 S8 row's *"end-to-end full pipeline run
+on Greenhouse + Workday URL with 0 cache misses on the second run for
+the deterministic + cache-replaceable clusters"* is satisfied for the
+Greenhouse half on this URL. cv_tailor's 4 LLM calls are eliminated;
+7 screening fields are served from cache; only NECESSARY synthesis
+(genuinely-novel screening questions on a new domain) fires in
+run 2. A Workday URL is not currently in the production DB — that
+half remains deferred.
+
+**Adjacent observation** (separate from cache-llm scope): the live
+form-fill phase exposed a field-scanner gap — Greenhouse React
+Select dropdowns are scanned as `field_type='combobox'` but
+`n_options=0` because the option list is hidden until the user
+clicks the dropdown. The screening pipeline then treats these as
+free-text fields and serves cached prose answers that don't fit the
+dropdown's actual options. This is in `field_scanner.py` /
+`form_engine` territory, not cache-llm. Tracked as a follow-up;
+see the relevant §F-style row when it ships.
+
 ---
 
 ## §6 — Schema migrations
