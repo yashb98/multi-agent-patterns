@@ -98,6 +98,60 @@ _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "qwen3.6:35b")
 # original caller-supplied model wins.
 _MODEL_OVERRIDE = os.environ.get("LLM_MODEL_OVERRIDE", "").strip() or None
 
+
+# Per-domain model registry — used by ``cognitive_llm_call`` so reasoning
+# domains (page-reasoning, field-type analysis, recovery decisions) get
+# a reasoning model while content domains (cv_tailor, cover-letter,
+# screening-answer text) get a fast non-reasoning model. Saves cost +
+# latency on the bulk of calls while keeping reasoning where it pays
+# off.
+#
+# Resolution order (first match wins):
+#   1. LLM_MODEL_OVERRIDE  (global, applies to ALL domains)
+#   2. LLM_MODEL_FOR_<DOMAIN_UPPERCASE>  (env, per-domain)
+#   3. _DOMAIN_MODEL_REGISTRY  (built-in defaults below)
+#   4. get_model_name()  (provider-default fallback)
+#
+# Defaults below assume Kimi/Moonshot (the audit's S8 step-3 verifier).
+# OpenAI / Together users can override via the env vars; they'll see
+# their provider's models slotted in via _MODEL_OVERRIDE or
+# get_model_name's existing fallback chain.
+_DOMAIN_MODEL_REGISTRY = {
+    # Decision / reasoning domains — chain-of-thought matters.
+    "page_reasoning":         "kimi-k2.6",
+    "field_type_analysis":    "kimi-k2.6",
+    "form_recovery":          "kimi-k2.6",
+    "form_navigation":        "kimi-k2.6",
+    "cv_scrutiny":            "kimi-k2.6",
+    # Content domains — speed wins over reasoning.
+    "cv_tailoring":           "moonshot-v1-auto",
+    "cover_letter":           "moonshot-v1-auto",
+    "screening_answers":      "moonshot-v1-auto",
+    "screening_decomposition": "moonshot-v1-auto",
+    "email_classification":   "moonshot-v1-auto",
+    "skill_extraction":       "moonshot-v1-auto",
+    "strategy_reflection":    "moonshot-v1-auto",
+    "form_field_mapping":     "moonshot-v1-auto",
+}
+
+
+def _model_for_domain(domain: str | None) -> str | None:
+    """Resolve the model for a cognitive-domain call.
+
+    Honours ``LLM_MODEL_OVERRIDE`` first (global), then
+    ``LLM_MODEL_FOR_<DOMAIN>`` env vars, then the built-in registry,
+    then None (caller falls back to ``get_model_name()``).
+    """
+    if _MODEL_OVERRIDE:
+        return _MODEL_OVERRIDE
+    if not domain:
+        return None
+    env_key = f"LLM_MODEL_FOR_{domain.upper().replace('-', '_')}"
+    env_val = os.environ.get(env_key, "").strip()
+    if env_val:
+        return env_val
+    return _DOMAIN_MODEL_REGISTRY.get(domain)
+
 # Cloud fallback model map: current → older/cheaper equivalent
 _FALLBACK_MODELS = {
     "gpt-5-mini": "gpt-4o-mini",
@@ -956,11 +1010,12 @@ def cognitive_llm_call(
     # OpenAI with the constraint is both simpler and the canonical pattern.
     if response_format is not None:
         return _direct_llm_call(
-            task, fallback_llm, fallback_messages, response_format=response_format,
+            task, fallback_llm, fallback_messages,
+            response_format=response_format, domain=domain,
         )
 
     if os.getenv("COGNITIVE_ENABLED", "true").lower() == "false":
-        return _direct_llm_call(task, fallback_llm, fallback_messages)
+        return _direct_llm_call(task, fallback_llm, fallback_messages, domain=domain)
 
     try:
         from shared.cognitive import get_cognitive_engine
@@ -970,7 +1025,7 @@ def cognitive_llm_call(
         return result.answer.strip()
     except Exception as exc:
         logger.debug("Cognitive engine failed for %s, falling back to direct LLM: %s", domain, exc)
-        return _direct_llm_call(task, fallback_llm, fallback_messages)
+        return _direct_llm_call(task, fallback_llm, fallback_messages, domain=domain)
 
 
 def _direct_llm_call(
@@ -978,6 +1033,7 @@ def _direct_llm_call(
     fallback_llm=None,
     fallback_messages=None,
     response_format: dict | None = None,
+    domain: str | None = None,
 ) -> str | None:
     """Direct LLM fallback when cognitive engine is unavailable.
 
@@ -985,6 +1041,12 @@ def _direct_llm_call(
     raw OpenAI path is preferred because LangChain's ``llm.invoke`` doesn't
     surface ``response_format`` cleanly across all LLM providers — going
     direct keeps the constraint applied.
+
+    ``domain`` (when provided by ``cognitive_llm_call``) routes to a
+    domain-specific model via ``_model_for_domain``: reasoning domains
+    use a reasoning model, content domains use a fast non-reasoning
+    model. Falls back to ``get_model_name()`` when no domain registry
+    entry exists.
     """
     # Skip the LangChain fallback when caller wants JSON mode — a raw OpenAI
     # call with response_format gives a stronger guarantee than retrying the
@@ -997,10 +1059,14 @@ def _direct_llm_call(
         except Exception:
             pass
 
-    # Raw OpenAI fallback
+    # Raw OpenAI fallback — model picked via per-domain registry first,
+    # falling back to the provider default. cv_tailoring / cover_letter
+    # / screening_answers / etc. land on a fast non-reasoning model;
+    # page_reasoning / form_recovery / field_type_analysis land on a
+    # reasoning model.
     try:
         client = get_openai_client()
-        model = get_model_name()
+        model = _model_for_domain(domain) or get_model_name()
         kwargs: dict = {
             "model": model,
             "messages": [{"role": "user", "content": task}],
