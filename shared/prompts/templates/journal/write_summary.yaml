@@ -1,0 +1,29 @@
+domain: journal
+name: write_summary
+version: "1.0.0"
+system_prompt: |
+  You are writing a 1100-1300 word technical summary of a research paper for a daily
+  research journal. Strict rules:
+
+  STRUCTURE (use these exact section headers, in this order):
+    ## TL;DR             — 50 words, standalone hook
+    ## Problem           — 200 words
+    ## Method            — 400-500 words; describe architecture, training, hyperparameters
+    ## Key insight       — 100 words
+    ## Results           — 350 words; benchmark numbers, comparisons, ablations
+    ## Limitations       — 100 words
+
+  STYLE:
+    - Factual, technical. NO editorializing. NO "why this matters to you" commentary.
+    - Bullet lists allowed in Method and Results. Use specific numbers.
+    - Never invent values not in the extracted facts.
+user_prompt: |
+  Paper: {title}
+  Authors: {authors}
+
+  EXTRACTED FACTS (use these as your source of truth; do not invent beyond them):
+  {facts_json}
+
+  Write the 6-section summary now in markdown.
+output_schema:
+  type: string

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as _json
+import re
 from typing import Optional  # noqa: F401 — forward-reference for Tasks 22-25
 
 import httpx
@@ -76,3 +77,74 @@ def _strip_codefence(text: str) -> str:
         if s.endswith("```"):
             s = s[: s.rfind("```")]
     return s.strip()
+
+
+# ---------------------------------------------------------------------------
+# Writer agent (Task 22)
+# ---------------------------------------------------------------------------
+
+_SECTION_HEADERS = ("TL;DR", "Problem", "Method", "Key insight", "Results", "Limitations")
+_TARGETS = {"TL;DR": 50, "Problem": 200, "Method": 450, "Key insight": 100, "Results": 350, "Limitations": 100}
+_TOLERANCE = 0.25
+
+
+def write_summary(paper: Paper, facts: ExtractedFacts, max_attempts: int = 2) -> str:
+    """Generate 1100-1300w summary with one regen on word-count violation."""
+    last_md = ""
+    for attempt in range(max_attempts):
+        last_md = _llm_write(paper, facts)
+        if _word_count_compliant(last_md):
+            return last_md
+        logger.info("write_summary attempt %d failed word-count check; retrying", attempt + 1)
+    logger.warning("write_summary accepted off-target output after %d attempts", max_attempts)
+    return last_md
+
+
+def _llm_write(paper: Paper, facts: ExtractedFacts) -> str:
+    from shared.agents import cognitive_llm_call
+    from shared.prompts import get_prompt
+
+    prompt = get_prompt("journal", "write_summary")
+    call_params = prompt.render(
+        title=paper.title,
+        authors=", ".join(paper.authors[:5]),
+        facts_json=facts.model_dump_json(indent=2),
+    )
+    task = "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in call_params["messages"]
+    )
+    return cognitive_llm_call(
+        task=task,
+        domain="journal_write",
+        stakes="medium",
+        fallback_messages=call_params["messages"],
+    ) or ""
+
+
+def _word_count_compliant(md: str) -> bool:
+    sections = _split_sections(md)
+    for header, target in _TARGETS.items():
+        words = len(sections.get(header, "").split())
+        lo, hi = int(target * (1 - _TOLERANCE)), int(target * (1 + _TOLERANCE))
+        if not (lo <= words <= hi):
+            return False
+    return True
+
+
+def _split_sections(md: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    current: str | None = None
+    buf: list[str] = []
+    for line in md.splitlines():
+        m = re.match(r"^##\s+(.+?)\s*$", line)
+        if m and m.group(1).strip() in _SECTION_HEADERS:
+            if current is not None:
+                out[current] = "\n".join(buf).strip()
+            current = m.group(1).strip()
+            buf = []
+        elif current is not None:
+            buf.append(line)
+    if current is not None:
+        out[current] = "\n".join(buf).strip()
+    return out
