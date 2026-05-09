@@ -97,3 +97,16 @@ def test_pass2_uses_llm(classifier, monkeypatch):
     tag, conf, reason = classifier._pass2(paper)
     assert tag == "core"
     assert "LLM:" in reason
+
+
+def test_classify_domain_module_function(monkeypatch):
+    """Top-level helper used by the pipeline."""
+    from research_journal import domain_filter
+    monkeypatch.setattr(
+        domain_filter.DomainClassifier, "classify",
+        lambda self, paper: ("core", 0.81, "matched 'RLHF' (0.81)"),
+    )
+    paper = Paper(arxiv_id="x", title="t", authors=["a"], abstract="a",
+                  categories=["cs.CL"], pdf_url="", arxiv_url="", published_at="2026-01-01")
+    tag, conf, reason = domain_filter.classify_domain(paper)
+    assert tag == "core"

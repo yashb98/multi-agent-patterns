@@ -110,3 +110,18 @@ def _strip_codefence(text: str) -> str:
         if s.endswith("```"):
             s = s[: s.rfind("```")]
     return s.strip()
+
+
+_DEFAULT_CLASSIFIER: DomainClassifier | None = None
+
+
+def _get_default() -> DomainClassifier:
+    global _DEFAULT_CLASSIFIER
+    if _DEFAULT_CLASSIFIER is None:
+        _DEFAULT_CLASSIFIER = DomainClassifier()
+    return _DEFAULT_CLASSIFIER
+
+
+def classify_domain(paper: Paper) -> tuple[DomainTag, float, str]:
+    """Module-level helper that uses a singleton DomainClassifier."""
+    return _get_default().classify(paper)
