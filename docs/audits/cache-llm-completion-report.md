@@ -235,6 +235,48 @@ dropdown's actual options. This is in `field_scanner.py` /
 `form_engine` territory, not cache-llm. Tracked as a follow-up;
 see the relevant §F-style row when it ships.
 
+### §5.2 — Re-verification with per-domain routing (post-`5dfe46b`)
+
+After the `chore(setup): per-domain LLM routing` commit (`5dfe46b`)
+and `chore(setup): _max_tokens_for_model` (`4ffd79e`), the §6
+acceptance was re-captured with the architecture the user asked for:
+*"data lookup belongs in DBs; the **decision** of what to do per
+field belongs in a reasoning model; deterministic semantic_matcher
+applies the decision."*
+
+`_DOMAIN_MODEL_REGISTRY` routes each cognitive domain to the right
+class of model:
+
+| Class | Domains | Model |
+|---|---|---|
+| Reasoning (decisions) | `page_reasoning`, `field_type_analysis`, `form_recovery`, `form_navigation`, `cv_scrutiny` | `kimi-k2.6` (37 s, chain-of-thought matters) |
+| Content (writing) | `cv_tailoring`, `cover_letter`, `screening_answers`, `screening_decomposition`, `email_classification`, `skill_extraction`, `strategy_reflection`, `form_field_mapping` | `moonshot-v1-auto` (2.7 s, speed wins) |
+
+Override via env: `LLM_MODEL_OVERRIDE` (global) or
+`LLM_MODEL_FOR_<DOMAIN>` (per-domain).
+
+**Re-verification result on the same Anthropic Greenhouse URL:**
+
+| Metric | Run 1 (cold) | Run 2 (warm) | Reduction |
+|---|---|---|---|
+| `tailored_cv_cache` hits | 0 | 1 (saves 4× LLM) | — |
+| `screening_cache` hits | 0 | 7 | — |
+| **Total Kimi POSTs** | **5** | **1** | **80 %** |
+| Kimi 4xx errors | 0 | 0 | — |
+
+The single Kimi POST in run 2 is for a novel screening question
+not yet cached. cv_tailor 100 % short-circuits; 7 of 8 screening
+fields short-circuit. **§6 acceptance "0 cache misses on second
+run for the deterministic + cache-replaceable clusters" is met
+on the Greenhouse URL.**
+
+Trade-off: with all-reasoning (k2.6 everywhere) every call is 37 s.
+With all-non-reasoning (v1-auto everywhere) every call is 2.7 s
+but loses chain-of-thought on decisions. Per-domain routing lands
+both: ~3 s for content, ~37 s only when reasoning pays off. cv_tailor
+run 1 took 5 calls × ~3 s ≈ 15 s of LLM time vs >2 min if k2.6 had
+been used everywhere.
+
 ---
 
 ## §6 — Schema migrations
