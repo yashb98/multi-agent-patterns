@@ -23,13 +23,7 @@ class DomainClassifier:
 
     def __init__(self, anchors_path: Path | None = None) -> None:
         if anchors_path is None:
-            anchors_path = (
-                Path(__file__).parent.parent
-                / "tests"
-                / "fixtures"
-                / "research_journal"
-                / "anchor_sets.json"
-            )
+            anchors_path = Path(__file__).parent / "anchors" / "anchor_sets.json"
         data = json.loads(anchors_path.read_text())
         self.anchors_core: list[str] = data["core"]
         self.anchors_tangent: list[str] = data["tangent"]

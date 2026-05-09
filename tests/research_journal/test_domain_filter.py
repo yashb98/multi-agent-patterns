@@ -7,7 +7,7 @@ import pytest
 from research_journal.domain_filter import DomainClassifier
 from jobpulse.papers.models import Paper
 
-FIX = Path(__file__).parent.parent / "fixtures" / "research_journal"
+FIX = Path(__file__).parent.parent.parent / "research_journal" / "anchors"
 
 
 @pytest.fixture
@@ -63,3 +63,26 @@ def test_pass1_borderline_returns_none(classifier, monkeypatch):
     monkeypatch.setattr(classifier, "_max_cosine", lambda t, a: 0.60)
     tag, conf, reason = classifier._pass1(_paper("borderline"))
     assert tag is None
+
+
+def test_max_cosine_pair_uses_real_embedder(monkeypatch, classifier):
+    """Verify _max_cosine_pair calls embed_text and computes cosine correctly.
+
+    Patches embed_text to return controlled vectors instead of monkeypatching
+    the higher-level _max_cosine method.
+    """
+    import numpy as np
+
+    def fake_embed(text):
+        if "alpha" in text:
+            return [1.0, 0.0, 0.0]
+        if "beta" in text:
+            return [1.0, 0.0, 0.0]   # identical → cos=1.0
+        return [0.0, 1.0, 0.0]       # orthogonal → cos=0.0
+
+    monkeypatch.setattr("shared.memory_layer._embedder.embed_text", fake_embed)
+    score = classifier._max_cosine_pair("alpha thing", "beta thing")
+    assert score > 0.99   # unit vectors aligned
+
+    score_orth = classifier._max_cosine_pair("alpha thing", "gamma thing")
+    assert abs(score_orth) < 0.01   # orthogonal
