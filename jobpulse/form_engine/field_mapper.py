@@ -599,6 +599,42 @@ def _screen_questions_llm_batch(
         logger.error("LLM screening answer call failed: %s", e)
         return {}, 1
 
+    # Option-validate each answer against the originating field. Without this,
+    # the LLM has been observed to fill EEO compliance fields with profile
+    # values it sees in `applicant_bg` — e.g. Veteran Status / Disability
+    # Status answered with the user's visa_status text, sponsorship answered
+    # with a country name. Drop any answer that doesn't fit the field's
+    # known options so the form is left blank rather than wrong.
+    fields_by_label = {f["label"]: f for f in unresolved_fields}
+    if answers:
+        from jobpulse.screening_option_aligner import OptionAligner
+        aligner = OptionAligner()
+        validated: dict[str, str] = {}
+        for label, answer in answers.items():
+            field = fields_by_label.get(label)
+            if field is None:
+                validated[label] = answer
+                continue
+            opts = field.get("options") or []
+            ftype = (field.get("true_type") or field.get("type") or "").lower()
+            if not opts or ftype not in {
+                "select", "combobox", "radio", "checkbox", "custom_dropdown",
+                "multiselect",
+            }:
+                validated[label] = answer
+                continue
+            aligned = aligner.align_answer(str(answer), opts, ftype)
+            opts_lower = {(o or "").lower().strip() for o in opts}
+            if (aligned or "").lower().strip() in opts_lower:
+                validated[label] = aligned
+            else:
+                logger.warning(
+                    "_screen_questions_llm_batch: dropping %r=%r — does not fit "
+                    "options %s (likely profile-leak hallucination)",
+                    label[:60], str(answer)[:60], [o[:25] for o in opts[:5]],
+                )
+        answers = validated
+
     try:
         from jobpulse.job_db import JobDB
         db = JobDB()
