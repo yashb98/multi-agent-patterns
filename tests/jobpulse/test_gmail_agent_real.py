@@ -124,3 +124,59 @@ class TestExtractBody:
 
         body = _extract_body({"body": {}})
         assert body == ""
+
+
+class TestClassifyEmailCognitiveRouting:
+    """Pin cache-llm-S7-EXT migration: ``_classify_email`` must route
+    through ``cognitive_llm_call`` so L0 Memory Recall + L1/L2/L3
+    escalation apply. The previous code did `engine.think_sync` →
+    `smart_llm_call` fallback by hand; the migration replaces both
+    with a single ``cognitive_llm_call`` invocation."""
+
+    def test_routes_through_cognitive_llm_call(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import jobpulse.gmail_agent as ga
+
+        mock = MagicMock(return_value="SELECTED_NEXT_ROUND")
+        # cognitive_llm_call is imported lazily inside _classify_email,
+        # so patching shared.agents is what counts.
+        monkeypatch.setattr("shared.agents.cognitive_llm_call", mock)
+
+        result = ga._classify_email("Offer letter", "We are pleased to inform you …")
+        assert result == "SELECTED_NEXT_ROUND"
+
+        mock.assert_called_once()
+        kwargs = mock.call_args.kwargs
+        assert kwargs["domain"] == "email_classification"
+        assert kwargs["scorer"] is ga._score_classification
+
+    def test_returns_other_when_cognitive_returns_none(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import jobpulse.gmail_agent as ga
+
+        monkeypatch.setattr("shared.agents.cognitive_llm_call", MagicMock(return_value=None))
+        result = ga._classify_email("Subject", "Body")
+        assert result == ga.OTHER
+
+    def test_returns_other_on_exception(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import jobpulse.gmail_agent as ga
+
+        def _boom(**kw):
+            raise RuntimeError("LLM down")
+
+        monkeypatch.setattr("shared.agents.cognitive_llm_call", _boom)
+        result = ga._classify_email("Subject", "Body")
+        assert result == ga.OTHER
+
+    def test_normalises_partial_category_from_llm(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import jobpulse.gmail_agent as ga
+
+        # cognitive_llm_call returns the fuzzy/case-insensitive answer;
+        # _normalize_category cleans it up.
+        monkeypatch.setattr(
+            "shared.agents.cognitive_llm_call",
+            MagicMock(return_value="rejected"),
+        )
+        assert ga._classify_email("Re: Application", "We regret to inform …") == "REJECTED"
