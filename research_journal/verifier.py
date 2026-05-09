@@ -8,6 +8,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from jobpulse.papers.models import Paper
+from research_journal.models import VerificationBadge
+
 from shared.external_verifiers import semantic_scholar_lookup, PEER_REVIEWED_VENUES
 from shared.logging_config import get_logger
 
@@ -149,3 +152,35 @@ def _fetch_citing_paper_labs(arxiv_id: str, author_labs: set[str]) -> list[str]:
             for aff in author.get("affiliations", []) or []:
                 labs.append(aff)
     return labs
+
+
+def verify_paper(paper: Paper, has_results: bool) -> VerificationBadge:
+    """Compose 4 of the 5 badge checks. claims_grounded is set later by the hallucination guard."""
+    pr_ok, pr_reason = check_peer_reviewed(paper.arxiv_id)
+    repo_ok, repo_reason, last_commit = check_has_repo(getattr(paper, "github_url", ""))
+    author_labs = set(getattr(paper, "affiliations", []) or [])
+    cit_ok, cit_reason = check_independent_citations(paper.arxiv_id, author_labs)
+
+    # Stash last_commit on the paper so the ranker's _repo_activity_boost can find it
+    paper._last_commit_iso = last_commit  # type: ignore[attr-defined]
+
+    return VerificationBadge(
+        has_results=has_results,
+        peer_reviewed=bool(pr_ok),
+        has_repo=bool(repo_ok),
+        independent_citations=bool(cit_ok),
+        claims_grounded=False,   # filled by hallucination guard later
+        reasons={
+            "has_results": "passed §5.3 filter" if has_results else "no empirical results",
+            "peer_reviewed": _tri_state_reason(pr_ok, pr_reason),
+            "has_repo": _tri_state_reason(repo_ok, repo_reason),
+            "independent_citations": _tri_state_reason(cit_ok, cit_reason),
+            "claims_grounded": "pending hallucination guard",
+        },
+    )
+
+
+def _tri_state_reason(ok: Optional[bool], reason: str) -> str:
+    if ok is None:
+        return f"unknown — {reason}"
+    return reason
