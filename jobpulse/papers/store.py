@@ -27,6 +27,10 @@ _HF_COLUMNS: list[tuple[str, str]] = [
     ("s2_influential_citations", "INTEGER DEFAULT 0"),
     ("community_buzz", "INTEGER DEFAULT 0"),
     ("sources", "TEXT"),
+    ("domain_tag", "TEXT DEFAULT ''"),
+    ("verification", "TEXT DEFAULT ''"),
+    ("summary_long", "TEXT DEFAULT ''"),
+    ("rank_reason", "TEXT DEFAULT ''"),
 ]
 
 _CREATE_TABLE = """
@@ -63,7 +67,11 @@ CREATE TABLE IF NOT EXISTS papers (
     fact_check_score    REAL,
     fact_check_claims   INTEGER,
     fact_check_verified INTEGER,
-    fact_check_issues   TEXT
+    fact_check_issues   TEXT,
+    domain_tag          TEXT DEFAULT '',
+    verification        TEXT DEFAULT '',
+    summary_long        TEXT DEFAULT '',
+    rank_reason         TEXT DEFAULT ''
 )
 """
 
