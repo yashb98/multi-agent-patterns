@@ -93,6 +93,49 @@ def _is_select_placeholder(value: str) -> bool:
     return bool(_SELECT_PLACEHOLDER_RE.match(value.strip()))
 
 
+def _align_screening_to_options(
+    answer: str, field: dict, label_for_log: str = "",
+) -> str:
+    """Validate a screening answer against the field's known options.
+
+    Returns the option-aligned answer if it fits, or "" when it doesn't (which
+    the caller treats as "fall through to the next tier"). For free-text
+    fields or fields without options the answer is returned unchanged.
+
+    Why this exists: the legacy `screening_answers.COMMON_ANSWERS` regex map
+    and other early-tier resolvers were written before the form-fill engine
+    could see the dropdown options at decision time. They emit fixed strings
+    like "Yes, within the UK" / "No" / "Norway" without knowing whether the
+    current field has those choices. The form filler then types those values
+    into a closed-set picker and accidentally selects the first autocomplete
+    match — visa fields end up filled with country names, EEO fields end up
+    filled with "No". This helper lets every screening tier fail closed.
+    """
+    options = field.get("options") or []
+    ftype = (field.get("true_type") or field.get("type") or "").lower()
+    if not options or ftype not in {
+        "select", "combobox", "radio", "checkbox", "custom_dropdown",
+        "multiselect",
+    }:
+        return answer
+    try:
+        from jobpulse.screening_option_aligner import OptionAligner
+        aligner = OptionAligner()
+        aligned = aligner.align_answer(str(answer), options, ftype)
+    except Exception:
+        return answer
+    opts_lower = {(o or "").lower().strip() for o in options}
+    if (aligned or "").lower().strip() in opts_lower:
+        return aligned
+    logger.warning(
+        "screening answer %r did not align to any option for %r — dropping "
+        "(opts=%s)",
+        str(answer)[:60], (label_for_log or field.get("label", ""))[:60],
+        [o[:25] for o in options[:5]],
+    )
+    return ""
+
+
 _REQUIRED_MARKER_RE = re.compile(
     r"\s*(?:\*|\(\s*required\s*\)|\brequired\b|\(\s*\*\s*\))\s*$",
     re.IGNORECASE,
@@ -3836,6 +3879,20 @@ class NativeFormFiller:
                     )
                     if cached:
                         cached_text = str(cached).strip()
+                        # Validate the regex/dictionary answer fits the field's
+                        # current options. screening_answers.COMMON_ANSWERS is
+                        # a hardcoded regex map that fires "Yes, within the UK"
+                        # for any "open.*relocation" label, "No" for "veteran"
+                        # / "disability" — none of those values exist in the
+                        # actual EEO 3-item / Yes-No dropdown options on
+                        # Greenhouse / Workday / Anthropic forms. Without
+                        # alignment, the form gets wrong-shape free text typed
+                        # into a closed-set picker, which selects the first
+                        # accidental autocomplete match.
+                        if cached_text:
+                            cached_text = _align_screening_to_options(
+                                cached_text, f, label_for_log=f["label"],
+                            )
                         if cached_text:
                             mapping[f["label"]] = cached_text
                             seen_screening.append({
@@ -3847,6 +3904,7 @@ class NativeFormFiller:
                                 question=f["label"], answer=cached_text,
                                 field_options=f.get("options"), field_type=f.get("type", "text"),
                             )
+                            continue
                         else:
                             still_unresolved.append(f)
                         continue
@@ -3858,6 +3916,15 @@ class NativeFormFiller:
                     )
                     if v2_answer:
                         v2_text = str(v2_answer).strip()
+                        # Same alignment guard: the V2 pipeline's intent
+                        # resolver and pattern fallback can also emit values
+                        # that don't fit the current field's options
+                        # (relocation defaults written before the form's
+                        # options were known).
+                        if v2_text:
+                            v2_text = _align_screening_to_options(
+                                v2_text, f, label_for_log=f["label"],
+                            )
                         if v2_text:
                             mapping[f["label"]] = v2_text
                             seen_screening.append({
