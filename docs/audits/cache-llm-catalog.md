@@ -199,12 +199,34 @@ Target file per `cache-or-llm-audit.md §6`: `page_analysis/page_reasoner.py`.
 Acceptance: navigation across pages doesn't re-call LLM if signature
 unchanged.
 
+**§2.2 #5 audit-reliability check — third stale row found.** §2.2 #5
+calls page_reasoner caching "partial." **Verified false at HEAD**:
+`PageReasoner` already has comprehensive `(domain, content_hash)`
+caching, where `_cache_key` hashes URL path + page text + dialog text
++ sorted field labels + sorted button texts. The cache lives in a
+dedicated `data/page_reasoning_cache.db` (not `form_experience.db`
+as the catalog originally suggested). Both exact lookup
+(`_get_cached`) and semantic near-miss (`_get_cached_semantic`,
+≥ 0.90 similarity on `page_understanding`) short-circuit the LLM call
+in `reason_sync`. TTL is 1 hour; intentional gaps are
+low-confidence aborts (`confidence < 0.5`) and explicit
+`invalidate(snapshot)` calls after ghost-clicks.
+
+**Audit-reliability tally after S6**: §2.2 #1 / #2 verified real,
+§2.2 #3 / #4 / #5 verified stale. The pattern is specific, not
+probabilistic — stale rows have location/framing errors (function in
+the wrong file, "LLM-first" claims when code is dict-first, "partial
+caching" claims when caching is comprehensive); real rows correctly
+identified functions that had no cache at all. Both kinds appear in
+the audit doc. **S8 must verify §2.2 #6 on its own merits** — neither
+"likely real" nor "likely stale" is the default.
+
 | Status | File:Line | Function | Class | Routing | Cache key / DB source | Notes |
 |---|---|---|---|---|---|---|
-| 🟡 | `jobpulse/page_analysis/page_reasoner.py:516` | `PageReasoner._call_llm` | **CACHE-REPLACEABLE** | `smart_llm_call` | `form_experience.db` *or* new `page_reasoner_cache` keyed by `(domain, page_signature)` | §2.2 #5 — partial caching; need per-`(domain, page_signature)` cache. **Bypasses cognitive (S7).** |
-| 🟡 | `jobpulse/page_analyzer.py:45` | `_vision_detect` | **CACHE-REPLACEABLE** | `chat.completions.create` | `form_experience.db` keyed by `(domain, dom_hash)` | Older page-analyzer; vision detect of page type. **Direct OpenAI bypass.** |
-| 🟡 | `jobpulse/vision_tier.py:41` | `analyze_field_screenshot` | **NECESSARY** | `responses.create` | — | Vision recovery per failed field; novel per attempt. **Direct OpenAI.** |
-| 🟡 | `jobpulse/vision_tier.py:117` | `classify_page_type_from_screenshot` | **CACHE-REPLACEABLE** | `responses.create` | `form_experience.db` keyed by `(domain, screenshot_hash)` | Page-type classification from screenshot; same domain layout repeats. **Direct OpenAI.** |
+| ✅ S6 | `jobpulse/page_analysis/page_reasoner.py:516` | `PageReasoner._call_llm` | **CACHE-REPLACEABLE** (verified) | `smart_llm_call` | `data/page_reasoning_cache.db` `reasoning_cache` table keyed by `domain:content_hash` (16-char SHA256 of URL path + page_text[:500] + dialog_text[:300] + sorted field labels + sorted button texts), 1-hour TTL | §2.2 #5 framing **stale**: caching is comprehensive at HEAD. `reason_sync` short-circuits before `_call_llm` on exact cache hit (line 388–392) and again on semantic near-miss (line 398–400). Existing log line `PageReasoner: cache hit for X → action=Y` already provides the §6 acceptance evidence. No code-path fix required. Unit test `tests/jobpulse/test_page_reasoner_cache.py` (9 passing) pins the behaviour against future regression — covers cache key derivation, 1-hour TTL expiry, low-confidence-abort skip rule, `invalidate(snapshot)`, and the cache-hit-no-LLM short-circuit at `reason_sync` integration level. (Note: stash-drill not meaningful for S6 — no source change to revert; the test file is the only addition and pins HEAD behaviour. `git stash; pytest; git stash pop` confirms 9 passing both before and after, which is the expected outcome for verify-only sessions.) |
+| 🟡 | `jobpulse/page_analyzer.py:45` | `_vision_detect` | **CACHE-REPLACEABLE** | `chat.completions.create` | Cache key would reduce to a screenshot hash — function takes only `screenshot_bytes` with no domain context | Deferred from S6 (S6-DEF): vision call accepts only the rendered screenshot, so the cache key is reduced to a screenshot hash. Pixel-level differences (timestamps, dynamic banners) would defeat hash equality. Adding caching requires plumbing the domain context through the caller — a separate scope from S6's verify-only finding. Already a guarded fallback (only fires when DOM classifier confidence is low). |
+| 🟡 | `jobpulse/vision_tier.py:41` | `analyze_field_screenshot` | **NECESSARY** | `responses.create` | — | Vision recovery per failed field; novel per attempt. No cache opportunity beyond what's already in `form_experience.db` (timing/selector reuse). Closed without code change in S6 with the existing **NECESSARY** classification. |
+| 🟡 | `jobpulse/vision_tier.py:117` | `classify_page_type_from_screenshot` | **CACHE-REPLACEABLE** | `responses.create` | Same shape problem as `_vision_detect` — function takes only screenshot bytes; no domain context for keying | Deferred from S6 (S6-DEF): same caveat as `_vision_detect` row above. Requires domain plumbing through the caller (`FormNavigator`) before a cache add is viable. Schedule for a follow-up cluster session before S8. |
 
 Extension row (S6-EXT — page rescue agent):
 
