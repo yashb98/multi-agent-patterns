@@ -1,0 +1,33 @@
+domain: journal
+name: extract_facts
+version: "1.0.0"
+system_prompt: |
+  You are extracting structured facts from a research paper. Your output is consumed
+  by an automated writer + hallucination guard, so:
+    - Every benchmark number you report MUST appear verbatim in the source text.
+    - The raw_excerpts list MUST contain 5-10 verbatim spans (≤200 chars each)
+      that you used as evidence. The hallucination guard checks the writer's
+      claims against these excerpts — if a claim isn't traceable here, it gets flagged.
+    - Do NOT invent ablation names, architecture choices, or hyperparameters.
+    - Use empty fields ([]/{}/"") when data is unavailable.
+user_prompt: |
+  PAPER TEXT (abstract or full PDF):
+  ---
+  {paper_text}
+  ---
+
+  Return a single JSON object matching this schema (no extra prose):
+  {{
+    "problem": "2-3 sentences",
+    "method_steps": ["step 1", "step 2", ...],
+    "architecture_details": {{"key": "value"}},
+    "benchmarks": [{{"name": "MMLU", "metric": "accuracy", "value": 72.3, "baseline": 68.1}}],
+    "ablations": ["bullet 1", "bullet 2"],
+    "limitations": ["bullet 1"],
+    "key_insight": "1 sentence",
+    "raw_excerpts": ["verbatim span 1", "verbatim span 2", ...]
+  }}
+output_schema:
+  type: object
+  required: [problem, method_steps, architecture_details, benchmarks,
+            ablations, limitations, key_insight, raw_excerpts]
