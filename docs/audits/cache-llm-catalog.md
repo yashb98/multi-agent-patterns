@@ -139,13 +139,23 @@ Target files per `cache-or-llm-audit.md §6`: `screening_answers.py`,
 `screening_pipeline.py`. Acceptance: live URL with screening Qs, log shows
 `cache hit, skipping LLM alignment`.
 
+**§2.2 #4 audit-reliability check — second stale row found.** §2.2 #4
+claims `_align_to_options` re-runs LLM on cache hits. **Verified false
+at HEAD**: the function lives in `screening_semantic_cache.py`
+(not `screening_answers.py`) and uses `OptionAligner.align_answer` —
+fuzzy scoring only, **no LLM call**. When alignment fails, it returns
+`None` so the caller falls through to LLM with options constraint
+(intentional safety, not a bug). With S2's §2.2 #3 also stale, the
+audit-reliability rate is **2 / 6 stale (33 %)** — S8 should re-verify
+§2.2 #1, #2, #5, #6 before declaring done.
+
 | Status | File:Line | Function | Class | Routing | Cache key / DB source | Notes |
 |---|---|---|---|---|---|---|
-| 🟡 | `jobpulse/screening_pipeline.py:333` | `ScreeningPipeline._llm_answer` | **CACHE-REPLACEABLE** | `cognitive_llm_call` | `screening_cache.db` (already wired upstream); add fuzzy match before `_align_to_options` LLM call | §2.2 #4 — `_align_to_options` re-runs LLM even on cache hit. Need fuzzy match short-circuit. |
-| 🟡 | `jobpulse/screening_answers.py:421` | `_generate_hiring_message` | **CACHE-REPLACEABLE** | `smart_llm_call` | `screening_cache.db` keyed by `(company, role_archetype)` *or* a new `hiring_message_cache` | Per-company message; same company would repeat. **Bypasses cognitive (S7).** |
-| 🟡 | `jobpulse/screening_answers.py:887` | `_generate_answer` | **CACHE-REPLACEABLE** | `chat.completions.create` | `screening_cache.db` keyed by `(intent, jd_hash, profile_version)` | Direct OpenAI call — **bypasses cognitive entirely (S7)**. §2.2 #4 sibling. |
-| 🟡 | `jobpulse/screening_decomposer.py:133` | `QuestionDecomposer._llm_decompose` | **CACHE-REPLACEABLE** | `cognitive_llm_call` | `screening_cache.db` keyed by `question_text_hash` | Compound-question decomposition; same question repeats across companies. |
-| 🟡 | `jobpulse/form_engine/field_mapper.py:556` | `_screen_questions_llm_batch` | **CACHE-REPLACEABLE** | `cognitive_llm_call` | `screening_cache.db` keyed by `(intent, jd_hash)` | Batch screening Qs already cached upstream in `ScreeningPipeline`; this batch path is redundant when cache hits. |
+| ✅ S3 | `jobpulse/screening_pipeline.py:333` | `ScreeningPipeline._llm_answer` | **CACHE-REPLACEABLE** (verified) | `cognitive_llm_call` | `screening_semantic_cache.db` (already wired) — Qdrant + SQLite hybrid lookup at `_answer_single` short-circuits before LLM | §2.2 #4 framing **stale**: cache-hit path is silent return at `screening_pipeline.py:127` (source=`semantic_cache`), no LLM. S3 commit adds an explicit `screening_cache: hit on … — skipping LLM alignment` log line so the §6 acceptance evidence is observable. No code-path fix to the alignment itself. |
+| ✅ S3 | `jobpulse/screening_answers.py:421` | `_generate_hiring_message` | **CACHE-REPLACEABLE** (cache added) | `smart_llm_call` | NEW table `hiring_message_cache` in `applications.db` keyed by `(company_lower, role_archetype_lower)`, TTL = 30 days | Real cache add — first call generates + stores, repeat call on same `(company, role_archetype)` returns cached without firing LLM. `_classify_role_archetype` collapses trivial title variations (`Senior X`, `X II`, `Lead X` → same archetype). Unit test `tests/jobpulse/test_hiring_message_cache.py` (7 passing; all 7 fail without the change via stash-drill). Still uses `smart_llm_call` (S7 candidate for future routing through cognitive). |
+| 🟡 S3-DEF | `jobpulse/screening_answers.py:887` | `_generate_answer` | **CACHE-REPLACEABLE** (already routed) | `chat.completions.create` | Cognitive engine L0 memory recall; `try_instant_answer` reads `applications.db:ats_answer_cache` upstream | §2.2 #4-sibling framing **partially stale**: this function ALREADY tries `_get_screening_engine()` first (cognitive route with L0 caching), then falls back to direct `chat.completions.create` only when cognitive engine is unavailable. Direct path is defensive, not the hot path. Closed without code change in S3; review during S7 (cognitive routing audit) for completeness. |
+| 🟡 S3-EXT | `jobpulse/screening_decomposer.py:133` | `QuestionDecomposer._llm_decompose` | **CACHE-REPLACEABLE** | `cognitive_llm_call` | NEW `question_decompose_cache` table keyed by `question_text_hash` | Real cache opportunity — same compound question phrasing repeats across companies. Deferred from S3 to keep cluster scope at ≤2 subsystems per `cache-or-llm-audit.md §7`. Schedule for a follow-up cluster session before S8. |
+| 🟡 S3-EXT | `jobpulse/form_engine/field_mapper.py:556` | `_screen_questions_llm_batch` | **CACHE-REPLACEABLE** | `cognitive_llm_call` | `applications.db:ats_answer_cache` (already wired upstream — confirmed via `JobDB.cache_answer` + `JobDB.get_cached_answer`) | Batch screening LLM is the legacy fallback after `try_screening_v2`. The cache writes already happen at line 605–607 (`JobDB.cache_answer`); reads happen earlier in `try_instant_answer` so this batch path only fires on cache miss + V2 miss. Deferred — needs measurement before adding more caching. |
 
 ---
 

@@ -418,11 +418,125 @@ def _check_previously_applied(
     return "Yes" if count > 0 else "No"
 
 
+_HIRING_MESSAGE_CACHE_TTL_DAYS = 30
+_HIRING_MESSAGE_CACHE_LOCK = threading.Lock()
+
+
+def _hiring_message_cache_init(db: JobDB) -> None:
+    """Lazily create the hiring-message cache table inside applications.db.
+
+    Keyed by ``(company_lower, role_archetype_lower)``; rows older than
+    ``_HIRING_MESSAGE_CACHE_TTL_DAYS`` are treated as misses on lookup.
+    """
+    conn = db._connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS hiring_message_cache ("
+        "company TEXT NOT NULL, role_archetype TEXT NOT NULL, "
+        "message TEXT NOT NULL, generated_at TEXT NOT NULL, "
+        "hit_count INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (company, role_archetype))"
+    )
+    conn.commit()
+
+
+def _hiring_message_cache_lookup(
+    company: str, role_archetype: str, *, db: JobDB | None = None,
+) -> str | None:
+    """Return cached message or None on miss / TTL expiry."""
+    if not company or not role_archetype:
+        return None
+    key = (company.lower().strip(), role_archetype.lower().strip())
+    db = db or JobDB()
+    with _HIRING_MESSAGE_CACHE_LOCK:
+        _hiring_message_cache_init(db)
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT message, generated_at FROM hiring_message_cache "
+            "WHERE company = ? AND role_archetype = ?", key,
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            generated = datetime.fromisoformat(row["generated_at"])
+            age = datetime.now() - generated
+            if age.days > _HIRING_MESSAGE_CACHE_TTL_DAYS:
+                return None
+        except (ValueError, TypeError):
+            return None
+        conn.execute(
+            "UPDATE hiring_message_cache SET hit_count = hit_count + 1 "
+            "WHERE company = ? AND role_archetype = ?", key,
+        )
+        conn.commit()
+        return row["message"]
+
+
+def _hiring_message_cache_store(
+    company: str, role_archetype: str, message: str, *, db: JobDB | None = None,
+) -> None:
+    """Persist a freshly-generated hiring message."""
+    if not company or not role_archetype or not message:
+        return
+    key = (company.lower().strip(), role_archetype.lower().strip())
+    db = db or JobDB()
+    with _HIRING_MESSAGE_CACHE_LOCK:
+        _hiring_message_cache_init(db)
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO hiring_message_cache "
+            "(company, role_archetype, message, generated_at, hit_count) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (*key, message, datetime.now().isoformat()),
+        )
+        conn.commit()
+
+
+def _classify_role_archetype(role_title: str) -> str:
+    """Coarse role archetype for cache keying — keeps the (company, role)
+    cache from being polluted by trivial title variations like
+    'Senior X' vs 'X' vs 'X II'. Falls back to lowercased role title.
+    """
+    if not role_title:
+        return "generic"
+    t = role_title.lower().strip()
+    if "data analyst" in t or "analytics" in t and "engineer" not in t:
+        return "data_analyst"
+    if "data engineer" in t:
+        return "data_engineer"
+    if "data scientist" in t:
+        return "data_scientist"
+    if "machine learning" in t or "ml engineer" in t or "ai engineer" in t:
+        return "ml_engineer"
+    if "research engineer" in t or "research scientist" in t:
+        return "research_engineer"
+    if "backend" in t or "back-end" in t:
+        return "backend_engineer"
+    if "frontend" in t or "front-end" in t:
+        return "frontend_engineer"
+    if "full stack" in t or "fullstack" in t or "full-stack" in t:
+        return "fullstack_engineer"
+    if "software engineer" in t or "developer" in t:
+        return "software_engineer"
+    return t.split()[0] if t else "generic"
+
+
 def _generate_hiring_message(job_context: dict | None) -> str:
     """Generate a tailored hiring message using LLM with the user's core projects."""
     ctx = job_context or {}
     company = ctx.get("company", "the company")
     role = ctx.get("title", "this role")
+
+    # Cache lookup: per-(company, role_archetype). Same company + role
+    # returns the cached message without firing an LLM call. TTL keeps
+    # messages from going stale across job-description rewrites.
+    role_archetype = ctx.get("archetype") or _classify_role_archetype(role)
+    cached = _hiring_message_cache_lookup(company, role_archetype)
+    if cached:
+        logger.info(
+            "hiring_message_cache: hit on (%s, %s) — skipping LLM",
+            company[:40], role_archetype[:30],
+        )
+        return cached
 
     # Build the project highlights from cv_projects in user_profile.db so the
     # narrative reflects the user's actual portfolio rather than a hardcoded
@@ -481,7 +595,9 @@ def _generate_hiring_message(job_context: dict | None) -> str:
         result = smart_llm_call(llm, [HumanMessage(content=prompt)])
         text = result.content if hasattr(result, "content") else str(result)
         if text and len(text.strip()) > 50:
-            return text.strip()
+            cleaned = text.strip()
+            _hiring_message_cache_store(company, role_archetype, cleaned)
+            return cleaned
     except Exception as exc:
         logger.debug("Hiring message LLM generation failed: %s", exc)
 

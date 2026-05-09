@@ -126,6 +126,12 @@ class ScreeningPipeline:
         if cache_hit:
             # Boost confidence for well-used cache entries
             times_bonus = min(cache_hit.times_used / 10.0, 0.15) if cache_hit.times_used else 0.0
+            logger.info(
+                "screening_cache: hit on %r (score=%.2f, intent=%s, option_aligned=%s) "
+                "— skipping LLM alignment",
+                question[:80], cache_hit.score, cache_hit.intent,
+                bool(cache_hit.selected_option),
+            )
             return {
                 "answer": cache_hit.answer,
                 "confidence": min(cache_hit.score + times_bonus, 1.0),
