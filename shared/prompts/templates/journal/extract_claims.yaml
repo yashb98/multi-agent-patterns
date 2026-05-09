@@ -1,0 +1,26 @@
+domain: journal
+name: extract_claims
+version: "1.0.0"
+system_prompt: |
+  You are extracting claims from a research paper summary. Your job is to identify ALL sentences
+  that contain verifiable facts: numbers, percentages, benchmark names, or specific architectural choices.
+
+  These claims will be checked against the raw excerpts from the paper to ensure they're grounded.
+
+  Output: a JSON array of strings (the full sentences that contain claims). No extra prose.
+user_prompt: |
+  MARKDOWN SUMMARY:
+  ---
+  {summary_md}
+  ---
+
+  Extract ALL sentences that contain at least one of:
+    - a number, percentage, or numeric range (e.g. "4.2 points", "12 GPU-hours", "75%")
+    - a benchmark name (MMLU, HumanEval, GSM8K, MT-Bench, ImageNet, CIFAR-10, etc.)
+    - a specific architectural choice (model name, layer count, parameter count, etc.)
+
+  Return a JSON array of strings — no extra prose, no explanations.
+output_schema:
+  type: array
+  items:
+    type: string

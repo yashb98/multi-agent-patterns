@@ -148,3 +148,37 @@ def _split_sections(md: str) -> dict[str, str]:
     if current is not None:
         out[current] = "\n".join(buf).strip()
     return out
+
+
+# ---------------------------------------------------------------------------
+# Hallucination Guard: Claim Extraction (Task 23)
+# ---------------------------------------------------------------------------
+
+
+def extract_claims_from_summary(summary_md: str) -> list[str]:
+    """Extract verifiable claims (sentences with numbers/benchmarks) from markdown."""
+    return _llm_extract_claims(summary_md)
+
+
+def _llm_extract_claims(summary_md: str) -> list[str]:
+    from shared.agents import cognitive_llm_call
+    from shared.prompts import get_prompt
+
+    prompt = get_prompt("journal", "extract_claims")
+    call_params = prompt.render(summary_md=summary_md[:12_000])
+    task = "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in call_params["messages"]
+    )
+    raw = cognitive_llm_call(
+        task=task,
+        domain="journal_claims",
+        stakes="low",
+        fallback_messages=call_params["messages"],
+    ) or "[]"
+    try:
+        claims = _json.loads(_strip_codefence(raw))
+        return [str(c) for c in claims if isinstance(c, str)]
+    except (ValueError, _json.JSONDecodeError, AttributeError, TypeError):
+        logger.warning("claim extraction returned invalid JSON; treating as no claims")
+        return []
