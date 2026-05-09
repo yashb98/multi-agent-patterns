@@ -82,3 +82,26 @@ def _summary_to_blocks(md: str) -> list[dict]:
                 "paragraph": {"rich_text": [{"type": "text", "text": {"content": line[:1900]}}]},
             })
     return blocks
+
+
+def build_journal_telegram_digest(
+    items: list[tuple],   # (RankedPaper, VerificationBadge, domain_tag)
+    page_url_for,         # callable: arxiv_id -> Notion page URL
+) -> str:
+    """Build Telegram-formatted message from research journal items.
+
+    Lists core papers in main body with verification badges and rank reasons.
+    Collapses tangent papers at the end.
+    """
+    core = [i for i in items if i[2] == "core"]
+    tangent = [i for i in items if i[2] == "tangent"]
+
+    lines = [f"🧪 Daily Research Journal — {len(core)} papers ({len(tangent)} tangent)\n"]
+    for paper, badge, _ in core:
+        emoji = "🟢" * badge.score + "⚪" * (5 - badge.score)
+        url = page_url_for(paper.arxiv_id)
+        reason = (paper.rank_reason or "").strip()
+        lines.append(f"{emoji} {badge.score}/5 — {paper.title}\n  {reason[:120]}\n  → {url}\n")
+    if tangent:
+        lines.append(f"\n+ {len(tangent)} tangent papers in Notion\n")
+    return "".join(lines)
