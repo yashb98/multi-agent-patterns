@@ -234,17 +234,22 @@ git commit -m "feat(papers/store): add domain_tag/verification/summary_long/rank
 
 ---
 
-### Task 3: Add new Pydantic models to `papers/models.py`
+### Task 3: Add Pydantic models to `research_journal/models.py` (NEW root package)
 
 **Files:**
-- Modify: `jobpulse/papers/models.py`
-- Test: `tests/papers/test_models_journal.py` (new)
+- Create: `research_journal/__init__.py` (empty for now; will export `JournalPipeline` in Task 30)
+- Create: `research_journal/models.py` (NEW — journal-specific types)
+- Test: `tests/research_journal/__init__.py` (empty)
+- Test: `tests/research_journal/test_models.py` (new)
+- Test: `tests/research_journal/conftest.py` (new — shared fixtures)
+
+**Note:** `Paper`, `RankedPaper`, `FactCheckResult`, `BlogPost`, `Chart`, `ReadingStats` stay in `jobpulse/papers/models.py` as cross-cutting paper types. Only the new journal-specific types live in `research_journal/models.py`. Field additions to `Paper` (e.g. `affiliations` in Task 13, `rank_reason` on `RankedPaper` in Task 16) remain in `jobpulse/papers/models.py`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_models_journal.py
-from jobpulse.papers.models import (
+# tests/research_journal/test_models.py
+from research_journal.models import (
     DomainTag, BenchResult, ExtractedFacts, VerificationBadge, PaperTypeClassification,
 )
 
@@ -289,16 +294,20 @@ def test_extracted_facts_requires_excerpts():
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-pytest tests/papers/test_models_journal.py -v
+pytest tests/research_journal/test_models.py -v
 ```
 Expected: FAIL — `DomainTag`/`BenchResult`/etc. don't exist.
 
-- [ ] **Step 3: Add models to `jobpulse/papers/models.py`**
-
-At the bottom of the file:
+- [ ] **Step 3: Create `research_journal/models.py`**
 
 ```python
+"""Journal-specific Pydantic models. Cross-cutting paper types live in jobpulse/papers/models.py."""
+
+from __future__ import annotations
+
 from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 DomainTag = Literal["core", "tangent", "out"]
@@ -355,15 +364,38 @@ class PaperTypeClassification(BaseModel):
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-pytest tests/papers/test_models_journal.py -v
+pytest tests/research_journal/test_models.py -v
 ```
 Expected: PASS, all 5 tests.
+
+- [ ] **Step 4b: Create `research_journal/__init__.py` (empty placeholder)**
+
+```python
+"""research_journal — daily curated ML/LLM/SLM/VLM research feed.
+
+Pipeline: ingest -> domain classify -> hard-filter (results) -> rank -> verify
+        -> summarize (3-agent: Extract -> Write -> Hallucination Guard)
+        -> publish to Notion + Telegram.
+
+The orchestrator JournalPipeline is exported from .pipeline (added in Task 30).
+"""
+```
+
+Also create empty `tests/research_journal/__init__.py` and `tests/research_journal/conftest.py`:
+
+```python
+# tests/research_journal/conftest.py
+"""Shared fixtures for research_journal tests."""
+import pytest
+```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/models.py tests/papers/test_models_journal.py
-git commit -m "feat(papers/models): add Journal v1 Pydantic models"
+git add research_journal/__init__.py research_journal/models.py \
+        tests/research_journal/__init__.py tests/research_journal/conftest.py \
+        tests/research_journal/test_models.py
+git commit -m "feat(research_journal): bootstrap package + journal-specific Pydantic models"
 ```
 
 ---
@@ -373,8 +405,8 @@ git commit -m "feat(papers/models): add Journal v1 Pydantic models"
 ### Task 4: Anchor sets fixture (v0)
 
 **Files:**
-- Create: `tests/fixtures/journal/anchor_sets.json`
-- Create: `tests/fixtures/journal/__init__.py` (empty)
+- Create: `tests/fixtures/research_journal/anchor_sets.json`
+- Create: `tests/fixtures/research_journal/__init__.py` (empty)
 
 - [ ] **Step 1: Create the anchor fixture**
 
@@ -437,7 +469,7 @@ git commit -m "feat(papers/models): add Journal v1 Pydantic models"
 - [ ] **Step 2: Commit**
 
 ```bash
-git add tests/fixtures/journal/anchor_sets.json tests/fixtures/journal/__init__.py
+git add tests/fixtures/research_journal/anchor_sets.json tests/fixtures/research_journal/__init__.py
 git commit -m "feat(papers/journal): v0 anchor sets for domain classifier"
 ```
 
@@ -446,18 +478,18 @@ git commit -m "feat(papers/journal): v0 anchor sets for domain classifier"
 ### Task 5: Embedding-based domain classifier (Pass 1)
 
 **Files:**
-- Create: `jobpulse/papers/domain_filter.py`
-- Test: `tests/papers/test_domain_filter.py` (new — Pass 1 only)
+- Create: `research_journal/domain_filter.py`
+- Test: `tests/research_journal/test_domain_filter.py` (new — Pass 1 only)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_domain_filter.py
+# tests/research_journal/test_domain_filter.py
 import json
 from pathlib import Path
 import pytest
 
-from jobpulse.papers.domain_filter import DomainClassifier
+from research_journal.domain_filter import DomainClassifier
 from jobpulse.papers.models import Paper
 
 FIX = Path(__file__).parent.parent / "fixtures" / "journal"
@@ -516,11 +548,11 @@ def test_pass1_borderline_returns_none(classifier, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-pytest tests/papers/test_domain_filter.py -v
+pytest tests/research_journal/test_domain_filter.py -v
 ```
 Expected: FAIL — `DomainClassifier` doesn't exist.
 
-- [ ] **Step 3: Create `jobpulse/papers/domain_filter.py`**
+- [ ] **Step 3: Create `research_journal/domain_filter.py`**
 
 ```python
 """Domain classifier — narrows raw paper feed to ML/LLM/SLM/VLM/finetune."""
@@ -531,7 +563,8 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from jobpulse.papers.models import DomainTag, Paper
+from jobpulse.papers.models import Paper
+from research_journal.models import DomainTag
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -599,14 +632,14 @@ class DomainClassifier:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-pytest tests/papers/test_domain_filter.py -v
+pytest tests/research_journal/test_domain_filter.py -v
 ```
 Expected: PASS, 4 tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/domain_filter.py tests/papers/test_domain_filter.py
+git add research_journal/domain_filter.py tests/research_journal/test_domain_filter.py
 git commit -m "feat(papers/journal): domain classifier Pass 1 (embedding similarity)"
 ```
 
@@ -616,17 +649,17 @@ git commit -m "feat(papers/journal): domain classifier Pass 1 (embedding similar
 
 **Files:**
 - Create: `shared/prompts/templates/journal/domain_classify.yaml`
-- Modify: `jobpulse/papers/domain_filter.py` (replace `_pass2` body)
-- Test: `tests/papers/test_domain_filter.py` (extend)
+- Modify: `research_journal/domain_filter.py` (replace `_pass2` body)
+- Test: `tests/research_journal/test_domain_filter.py` (extend)
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `tests/papers/test_domain_filter.py`:
+Append to `tests/research_journal/test_domain_filter.py`:
 
 ```python
 def test_pass2_uses_llm(classifier, monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.domain_filter._llm_classify_borderline",
+        "research_journal.domain_filter._llm_classify_borderline",
         lambda paper: ("core", 0.78, "LLM: discusses LoRA fine-tuning"),
     )
     paper = _paper("New approach", abstract="We use LoRA on Llama-3...")
@@ -638,7 +671,7 @@ def test_pass2_uses_llm(classifier, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-pytest tests/papers/test_domain_filter.py::test_pass2_uses_llm -v
+pytest tests/research_journal/test_domain_filter.py::test_pass2_uses_llm -v
 ```
 Expected: FAIL — `NotImplementedError`.
 
@@ -681,7 +714,7 @@ output_schema:
 
 - [ ] **Step 4: Implement `_pass2` and the LLM helper**
 
-In `jobpulse/papers/domain_filter.py`, replace the `_pass2` stub and add the helper:
+In `research_journal/domain_filter.py`, replace the `_pass2` stub and add the helper:
 
 ```python
     def _pass2(self, paper: Paper) -> tuple[DomainTag, float, str]:
@@ -723,14 +756,14 @@ def _strip_codefence(text: str) -> str:
 - [ ] **Step 5: Run test to verify it passes**
 
 ```bash
-pytest tests/papers/test_domain_filter.py -v
+pytest tests/research_journal/test_domain_filter.py -v
 ```
 Expected: PASS, 5 tests.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add jobpulse/papers/domain_filter.py shared/prompts/templates/journal/domain_classify.yaml tests/papers/test_domain_filter.py
+git add research_journal/domain_filter.py shared/prompts/templates/journal/domain_classify.yaml tests/research_journal/test_domain_filter.py
 git commit -m "feat(papers/journal): domain classifier Pass 2 (LLM borderline)"
 ```
 
@@ -739,8 +772,8 @@ git commit -m "feat(papers/journal): domain classifier Pass 2 (LLM borderline)"
 ### Task 7: `classify_domain` orchestration + caching
 
 **Files:**
-- Modify: `jobpulse/papers/domain_filter.py` (add module-level `classify_domain`)
-- Test: `tests/papers/test_domain_filter.py` (extend)
+- Modify: `research_journal/domain_filter.py` (add module-level `classify_domain`)
+- Test: `tests/research_journal/test_domain_filter.py` (extend)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -761,13 +794,13 @@ def test_classify_domain_module_function(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_domain_filter.py::test_classify_domain_module_function -v
+pytest tests/research_journal/test_domain_filter.py::test_classify_domain_module_function -v
 ```
 Expected: FAIL.
 
 - [ ] **Step 3: Add module-level helper**
 
-Append to `jobpulse/papers/domain_filter.py`:
+Append to `research_journal/domain_filter.py`:
 
 ```python
 _DEFAULT_CLASSIFIER: DomainClassifier | None = None
@@ -787,14 +820,14 @@ def classify_domain(paper: Paper) -> tuple[DomainTag, float, str]:
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-pytest tests/papers/test_domain_filter.py -v
+pytest tests/research_journal/test_domain_filter.py -v
 ```
 Expected: PASS, 6 tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/domain_filter.py tests/papers/test_domain_filter.py
+git add research_journal/domain_filter.py tests/research_journal/test_domain_filter.py
 git commit -m "feat(papers/journal): module-level classify_domain helper"
 ```
 
@@ -803,7 +836,7 @@ git commit -m "feat(papers/journal): module-level classify_domain helper"
 ### Task 8: Domain-classifier calibration fixture (40 papers)
 
 **Files:**
-- Create: `tests/fixtures/journal/domain_calibration.json`
+- Create: `tests/fixtures/research_journal/domain_calibration.json`
 
 - [ ] **Step 1: Write the calibration set**
 
@@ -836,12 +869,12 @@ print(json.dumps([dict(zip(['arxiv_id','title','abstract','categories'], r)) for
 "
 ```
 
-Manually label 20 core / 10 tangent / 10 out. Save to `tests/fixtures/journal/domain_calibration.json`.
+Manually label 20 core / 10 tangent / 10 out. Save to `tests/fixtures/research_journal/domain_calibration.json`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tests/fixtures/journal/domain_calibration.json
+git add tests/fixtures/research_journal/domain_calibration.json
 git commit -m "test(papers/journal): 40-paper domain-classifier calibration fixture"
 ```
 
@@ -850,17 +883,17 @@ git commit -m "test(papers/journal): 40-paper domain-classifier calibration fixt
 ### Task 9: Domain-classifier calibration test (LIVE)
 
 **Files:**
-- Test: `tests/papers/test_domain_calibration.py` (new, marked `@pytest.mark.live`)
+- Test: `tests/research_journal/test_domain_calibration.py` (new, marked `@pytest.mark.live`)
 
 - [ ] **Step 1: Write the live calibration test**
 
 ```python
-# tests/papers/test_domain_calibration.py
+# tests/research_journal/test_domain_calibration.py
 import json
 from pathlib import Path
 import pytest
 
-from jobpulse.papers.domain_filter import DomainClassifier
+from research_journal.domain_filter import DomainClassifier
 from jobpulse.papers.models import Paper
 
 CAL = Path(__file__).parent.parent / "fixtures" / "journal" / "domain_calibration.json"
@@ -904,14 +937,14 @@ def test_domain_calibration_meets_thresholds():
 - [ ] **Step 2: Run live (requires TOGETHER_API_KEY + Voyage embeddings)**
 
 ```bash
-pytest tests/papers/test_domain_calibration.py -v -m live
+pytest tests/research_journal/test_domain_calibration.py -v -m live
 ```
-Expected: PASS. If FAIL, iterate on the anchor set in `tests/fixtures/journal/anchor_sets.json` until thresholds pass.
+Expected: PASS. If FAIL, iterate on the anchor set in `tests/fixtures/research_journal/anchor_sets.json` until thresholds pass.
 
 - [ ] **Step 3: Commit (only after thresholds pass)**
 
 ```bash
-git add tests/papers/test_domain_calibration.py
+git add tests/research_journal/test_domain_calibration.py
 git commit -m "test(papers/journal): live calibration test for domain classifier"
 ```
 
@@ -922,17 +955,18 @@ git commit -m "test(papers/journal): live calibration test for domain classifier
 ### Task 10: `results_filter.py` with combined `has_results` + `paper_type`
 
 **Files:**
-- Create: `jobpulse/papers/results_filter.py`
+- Create: `research_journal/results_filter.py`
 - Create: `shared/prompts/templates/journal/results_filter.yaml`
-- Test: `tests/papers/test_results_filter.py` (new)
+- Test: `tests/research_journal/test_results_filter.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_results_filter.py
+# tests/research_journal/test_results_filter.py
 import pytest
-from jobpulse.papers.results_filter import classify_results
-from jobpulse.papers.models import Paper, PaperTypeClassification
+from research_journal.results_filter import classify_results
+from jobpulse.papers.models import Paper
+from research_journal.models import PaperTypeClassification
 
 
 def _paper(title: str, abstract: str) -> Paper:
@@ -945,7 +979,7 @@ def test_passes_research_with_numbers(monkeypatch):
         has_results=True, paper_type="research",
         reason="reports +3.2 on MMLU", confidence=0.92,
     )
-    monkeypatch.setattr("jobpulse.papers.results_filter._llm_classify", lambda p: fake)
+    monkeypatch.setattr("research_journal.results_filter._llm_classify", lambda p: fake)
     out = classify_results(_paper("X", "We achieve +3.2 on MMLU and 84.1 F1 on BoolQ."))
     assert out.has_results is True
     assert out.paper_type == "research"
@@ -956,7 +990,7 @@ def test_drops_position_paper(monkeypatch):
         has_results=False, paper_type="position",
         reason="argument; no experiments", confidence=0.95,
     )
-    monkeypatch.setattr("jobpulse.papers.results_filter._llm_classify", lambda p: fake)
+    monkeypatch.setattr("research_journal.results_filter._llm_classify", lambda p: fake)
     out = classify_results(_paper("Position: We Need Better Evaluation", "We argue..."))
     assert out.has_results is False
     assert out.paper_type == "position"
@@ -968,7 +1002,7 @@ def test_low_confidence_falls_through(monkeypatch):
         has_results=False, paper_type="research",
         reason="unclear", confidence=0.45,
     )
-    monkeypatch.setattr("jobpulse.papers.results_filter._llm_classify", lambda p: fake)
+    monkeypatch.setattr("research_journal.results_filter._llm_classify", lambda p: fake)
     out = classify_results(_paper("X", "..."))
     # The filter should NOT hard-drop on low confidence — return original but mark unknown
     assert out.has_results is True or out.confidence >= 0.6
@@ -983,7 +1017,7 @@ def test_empty_abstract_drops(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_results_filter.py -v
+pytest tests/research_journal/test_results_filter.py -v
 ```
 Expected: FAIL — module doesn't exist.
 
@@ -1031,14 +1065,15 @@ output_schema:
 - [ ] **Step 4: Implement the filter**
 
 ```python
-# jobpulse/papers/results_filter.py
+# research_journal/results_filter.py
 """Hard filter — drops papers without empirical results."""
 
 from __future__ import annotations
 
 import json as _json
 
-from jobpulse.papers.models import Paper, PaperTypeClassification
+from jobpulse.papers.models import Paper
+from research_journal.models import PaperTypeClassification
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -1092,14 +1127,14 @@ def _strip_codefence(text: str) -> str:
 - [ ] **Step 5: Run test to verify it passes**
 
 ```bash
-pytest tests/papers/test_results_filter.py -v
+pytest tests/research_journal/test_results_filter.py -v
 ```
 Expected: PASS, 4 tests.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add jobpulse/papers/results_filter.py shared/prompts/templates/journal/results_filter.yaml tests/papers/test_results_filter.py
+git add research_journal/results_filter.py shared/prompts/templates/journal/results_filter.yaml tests/research_journal/test_results_filter.py
 git commit -m "feat(papers/journal): results filter — has_results + paper_type"
 ```
 
@@ -1108,7 +1143,7 @@ git commit -m "feat(papers/journal): results filter — has_results + paper_type
 ### Task 11: Results-filter calibration fixture (40 papers)
 
 **Files:**
-- Create: `tests/fixtures/journal/results_calibration.json`
+- Create: `tests/fixtures/research_journal/results_calibration.json`
 
 - [ ] **Step 1: Write the schema + 2-paper template**
 
@@ -1131,7 +1166,7 @@ Mix of: 15 research papers with clear results, 5 surveys with benchmark numbers 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tests/fixtures/journal/results_calibration.json
+git add tests/fixtures/research_journal/results_calibration.json
 git commit -m "test(papers/journal): results-filter calibration fixture"
 ```
 
@@ -1140,17 +1175,17 @@ git commit -m "test(papers/journal): results-filter calibration fixture"
 ### Task 12: Results-filter calibration test (LIVE) — must pass before merge
 
 **Files:**
-- Test: `tests/papers/test_results_calibration.py` (new, `@pytest.mark.live`)
+- Test: `tests/research_journal/test_results_calibration.py` (new, `@pytest.mark.live`)
 
 - [ ] **Step 1: Write the live calibration test**
 
 ```python
-# tests/papers/test_results_calibration.py
+# tests/research_journal/test_results_calibration.py
 import json
 from pathlib import Path
 import pytest
 
-from jobpulse.papers.results_filter import classify_results
+from research_journal.results_filter import classify_results
 from jobpulse.papers.models import Paper
 
 CAL = Path(__file__).parent.parent / "fixtures" / "journal" / "results_calibration.json"
@@ -1195,14 +1230,14 @@ def _to_paper(entry: dict) -> Paper:
 - [ ] **Step 2: Run live**
 
 ```bash
-pytest tests/papers/test_results_calibration.py -v -m live
+pytest tests/research_journal/test_results_calibration.py -v -m live
 ```
 Expected: PASS. If FAIL, tune prompt in `shared/prompts/templates/journal/results_filter.yaml` until FNR ≤ 10% and FPR ≤ 20%.
 
 - [ ] **Step 3: Commit (only after thresholds pass)**
 
 ```bash
-git add tests/papers/test_results_calibration.py
+git add tests/research_journal/test_results_calibration.py
 git commit -m "test(papers/journal): live calibration for results filter (FNR ≤ 10%)"
 ```
 
@@ -1627,19 +1662,19 @@ git commit -m "feat(papers/ranker): per-pick LLM rank_reason"
 ### Task 17: `peer_reviewed` check
 
 **Files:**
-- Create: `jobpulse/papers/verifier.py`
-- Test: `tests/papers/test_verifier_peer_review.py` (new)
+- Create: `research_journal/verifier.py`
+- Test: `tests/research_journal/test_verifier_peer_review.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_verifier_peer_review.py
-from jobpulse.papers.verifier import check_peer_reviewed
+# tests/research_journal/test_verifier_peer_review.py
+from research_journal.verifier import check_peer_reviewed
 
 
 def test_neurips_venue_passes(monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.verifier.semantic_scholar_lookup",
+        "research_journal.verifier.semantic_scholar_lookup",
         lambda arxiv_id: {"venue": "NeurIPS 2025", "is_peer_reviewed": True},
     )
     ok, reason = check_peer_reviewed("2401.06401")
@@ -1649,7 +1684,7 @@ def test_neurips_venue_passes(monkeypatch):
 
 def test_arxiv_only_fails(monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.verifier.semantic_scholar_lookup",
+        "research_journal.verifier.semantic_scholar_lookup",
         lambda arxiv_id: {"venue": "arXiv", "is_peer_reviewed": False},
     )
     ok, reason = check_peer_reviewed("2401.99999")
@@ -1657,7 +1692,7 @@ def test_arxiv_only_fails(monkeypatch):
 
 
 def test_s2_unavailable_returns_unknown(monkeypatch):
-    monkeypatch.setattr("jobpulse.papers.verifier.semantic_scholar_lookup", lambda x: None)
+    monkeypatch.setattr("research_journal.verifier.semantic_scholar_lookup", lambda x: None)
     ok, reason = check_peer_reviewed("2401.99999")
     assert ok is None  # tri-state: True/False/None=unknown
     assert "unavailable" in reason.lower()
@@ -1666,14 +1701,14 @@ def test_s2_unavailable_returns_unknown(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_verifier_peer_review.py -v
+pytest tests/research_journal/test_verifier_peer_review.py -v
 ```
 Expected: FAIL.
 
 - [ ] **Step 3: Create `verifier.py` with `check_peer_reviewed`**
 
 ```python
-# jobpulse/papers/verifier.py
+# research_journal/verifier.py
 """Verification engine — composite badge of 5 checks."""
 
 from __future__ import annotations
@@ -1702,14 +1737,14 @@ def check_peer_reviewed(arxiv_id: str) -> tuple[Optional[bool], str]:
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_verifier_peer_review.py -v
+pytest tests/research_journal/test_verifier_peer_review.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/verifier.py tests/papers/test_verifier_peer_review.py
+git add research_journal/verifier.py tests/research_journal/test_verifier_peer_review.py
 git commit -m "feat(papers/verifier): peer_reviewed check via Semantic Scholar"
 ```
 
@@ -1718,22 +1753,22 @@ git commit -m "feat(papers/verifier): peer_reviewed check via Semantic Scholar"
 ### Task 18: `has_repo` check + GitHub cache (24h TTL)
 
 **Files:**
-- Modify: `jobpulse/papers/verifier.py` (add `check_has_repo` + `_RepoCache`)
-- Test: `tests/papers/test_verifier_repo.py` (new)
+- Modify: `research_journal/verifier.py` (add `check_has_repo` + `_RepoCache`)
+- Test: `tests/research_journal/test_verifier_repo.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_verifier_repo.py
+# tests/research_journal/test_verifier_repo.py
 from pathlib import Path
 import pytest
-from jobpulse.papers.verifier import check_has_repo, _RepoCache
+from research_journal.verifier import check_has_repo, _RepoCache
 
 
 def test_passes_when_repo_active(monkeypatch, tmp_path):
     cache = _RepoCache(db_path=tmp_path / "github_cache.db")
     monkeypatch.setattr(
-        "jobpulse.papers.verifier._fetch_github_repo_meta",
+        "research_journal.verifier._fetch_github_repo_meta",
         lambda url: {"stars": 320, "last_commit_iso": "2026-04-25T10:00:00Z"},
     )
     ok, reason, last_commit = check_has_repo("https://github.com/x/y", cache=cache)
@@ -1744,7 +1779,7 @@ def test_passes_when_repo_active(monkeypatch, tmp_path):
 def test_fails_low_stars(monkeypatch, tmp_path):
     cache = _RepoCache(db_path=tmp_path / "github_cache.db")
     monkeypatch.setattr(
-        "jobpulse.papers.verifier._fetch_github_repo_meta",
+        "research_journal.verifier._fetch_github_repo_meta",
         lambda url: {"stars": 3, "last_commit_iso": "2026-04-25T10:00:00Z"},
     )
     ok, reason, _ = check_has_repo("https://github.com/x/y", cache=cache)
@@ -1756,7 +1791,7 @@ def test_cache_hit_does_not_call_github(monkeypatch, tmp_path):
     cache.set("https://github.com/x/y", {"stars": 100, "last_commit_iso": "2026-04-25T10:00:00Z"})
     calls = []
     monkeypatch.setattr(
-        "jobpulse.papers.verifier._fetch_github_repo_meta",
+        "research_journal.verifier._fetch_github_repo_meta",
         lambda url: calls.append(url) or {},
     )
     check_has_repo("https://github.com/x/y", cache=cache)
@@ -1772,7 +1807,7 @@ def test_no_url_returns_false(tmp_path):
 def test_api_failure_returns_unknown(monkeypatch, tmp_path):
     cache = _RepoCache(db_path=tmp_path / "github_cache.db")
     monkeypatch.setattr(
-        "jobpulse.papers.verifier._fetch_github_repo_meta",
+        "research_journal.verifier._fetch_github_repo_meta",
         lambda url: (_ for _ in ()).throw(RuntimeError("rate limit")),
     )
     ok, reason, _ = check_has_repo("https://github.com/x/y", cache=cache)
@@ -1782,13 +1817,13 @@ def test_api_failure_returns_unknown(monkeypatch, tmp_path):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_verifier_repo.py -v
+pytest tests/research_journal/test_verifier_repo.py -v
 ```
 Expected: FAIL.
 
 - [ ] **Step 3: Implement `_RepoCache` + `check_has_repo`**
 
-Append to `jobpulse/papers/verifier.py`:
+Append to `research_journal/verifier.py`:
 
 ```python
 import json
@@ -1895,14 +1930,14 @@ def _fetch_github_repo_meta(github_url: str) -> dict:
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_verifier_repo.py -v
+pytest tests/research_journal/test_verifier_repo.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/verifier.py tests/papers/test_verifier_repo.py
+git add research_journal/verifier.py tests/research_journal/test_verifier_repo.py
 git commit -m "feat(papers/verifier): has_repo check with 24h SQLite cache"
 ```
 
@@ -1911,19 +1946,19 @@ git commit -m "feat(papers/verifier): has_repo check with 24h SQLite cache"
 ### Task 19: `independent_citations` check
 
 **Files:**
-- Modify: `jobpulse/papers/verifier.py`
-- Test: `tests/papers/test_verifier_citations.py` (new)
+- Modify: `research_journal/verifier.py`
+- Test: `tests/research_journal/test_verifier_citations.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_verifier_citations.py
-from jobpulse.papers.verifier import check_independent_citations
+# tests/research_journal/test_verifier_citations.py
+from research_journal.verifier import check_independent_citations
 
 
 def test_passes_with_3_independent(monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.verifier._fetch_citing_paper_labs",
+        "research_journal.verifier._fetch_citing_paper_labs",
         lambda arxiv_id, author_labs: ["LabA", "LabB", "LabC", "LabD"],
     )
     ok, reason = check_independent_citations("2401.06401", author_labs={"LabX"})
@@ -1932,7 +1967,7 @@ def test_passes_with_3_independent(monkeypatch):
 
 def test_fails_with_2(monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.verifier._fetch_citing_paper_labs",
+        "research_journal.verifier._fetch_citing_paper_labs",
         lambda arxiv_id, author_labs: ["LabA", "LabB"],
     )
     ok, _ = check_independent_citations("2401.99999", author_labs={"LabX"})
@@ -1941,7 +1976,7 @@ def test_fails_with_2(monkeypatch):
 
 def test_s2_failure_returns_unknown(monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.verifier._fetch_citing_paper_labs",
+        "research_journal.verifier._fetch_citing_paper_labs",
         lambda arxiv_id, author_labs: (_ for _ in ()).throw(RuntimeError("S2 down")),
     )
     ok, _ = check_independent_citations("2401.99999", author_labs={"LabX"})
@@ -1951,13 +1986,13 @@ def test_s2_failure_returns_unknown(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_verifier_citations.py -v
+pytest tests/research_journal/test_verifier_citations.py -v
 ```
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-Append to `jobpulse/papers/verifier.py`:
+Append to `research_journal/verifier.py`:
 
 ```python
 def check_independent_citations(arxiv_id: str, author_labs: set[str]) -> tuple[Optional[bool], str]:
@@ -1993,14 +2028,14 @@ def _fetch_citing_paper_labs(arxiv_id: str, author_labs: set[str]) -> list[str]:
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_verifier_citations.py -v
+pytest tests/research_journal/test_verifier_citations.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/verifier.py tests/papers/test_verifier_citations.py
+git add research_journal/verifier.py tests/research_journal/test_verifier_citations.py
 git commit -m "feat(papers/verifier): independent_citations via S2 (≥3 distinct labs)"
 ```
 
@@ -2009,23 +2044,23 @@ git commit -m "feat(papers/verifier): independent_citations via S2 (≥3 distinc
 ### Task 20: Compose `verify_paper` → `VerificationBadge`
 
 **Files:**
-- Modify: `jobpulse/papers/verifier.py`
-- Test: `tests/papers/test_verifier_compose.py` (new)
+- Modify: `research_journal/verifier.py`
+- Test: `tests/research_journal/test_verifier_compose.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_verifier_compose.py
-from jobpulse.papers.verifier import verify_paper
+# tests/research_journal/test_verifier_compose.py
+from research_journal.verifier import verify_paper
 from jobpulse.papers.models import Paper
 
 
 def test_compose_aggregates_5_checks(monkeypatch):
-    monkeypatch.setattr("jobpulse.papers.verifier.check_peer_reviewed",
+    monkeypatch.setattr("research_journal.verifier.check_peer_reviewed",
                         lambda aid: (True, "NeurIPS"))
-    monkeypatch.setattr("jobpulse.papers.verifier.check_has_repo",
+    monkeypatch.setattr("research_journal.verifier.check_has_repo",
                         lambda url, cache=None: (True, "320 stars", "2026-04-25T00:00:00Z"))
-    monkeypatch.setattr("jobpulse.papers.verifier.check_independent_citations",
+    monkeypatch.setattr("research_journal.verifier.check_independent_citations",
                         lambda aid, labs: (True, "5 labs"))
 
     paper = Paper(arxiv_id="2401.06401", title="t", authors=["A"], abstract="a",
@@ -2039,11 +2074,11 @@ def test_compose_aggregates_5_checks(monkeypatch):
 
 def test_compose_handles_unknown(monkeypatch):
     """API-unavailable checks contribute False (not True), but stored in `reasons`."""
-    monkeypatch.setattr("jobpulse.papers.verifier.check_peer_reviewed",
+    monkeypatch.setattr("research_journal.verifier.check_peer_reviewed",
                         lambda aid: (None, "S2 down"))
-    monkeypatch.setattr("jobpulse.papers.verifier.check_has_repo",
+    monkeypatch.setattr("research_journal.verifier.check_has_repo",
                         lambda url, cache=None: (None, "GitHub down", ""))
-    monkeypatch.setattr("jobpulse.papers.verifier.check_independent_citations",
+    monkeypatch.setattr("research_journal.verifier.check_independent_citations",
                         lambda aid, labs: (None, "S2 down"))
 
     paper = Paper(arxiv_id="x", title="t", authors=["A"], abstract="a",
@@ -2056,16 +2091,17 @@ def test_compose_handles_unknown(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_verifier_compose.py -v
+pytest tests/research_journal/test_verifier_compose.py -v
 ```
 Expected: FAIL.
 
 - [ ] **Step 3: Implement composer**
 
-Append to `jobpulse/papers/verifier.py`:
+Append to `research_journal/verifier.py`:
 
 ```python
-from jobpulse.papers.models import Paper, VerificationBadge
+from jobpulse.papers.models import Paper
+from research_journal.models import VerificationBadge
 
 
 def verify_paper(paper: Paper, has_results: bool) -> VerificationBadge:
@@ -2103,14 +2139,14 @@ def _tri_state_reason(ok: Optional[bool], reason: str) -> str:
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_verifier_compose.py -v
+pytest tests/research_journal/test_verifier_compose.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/verifier.py tests/papers/test_verifier_compose.py
+git add research_journal/verifier.py tests/research_journal/test_verifier_compose.py
 git commit -m "feat(papers/verifier): compose VerificationBadge from 4 checks"
 ```
 
@@ -2121,23 +2157,24 @@ git commit -m "feat(papers/verifier): compose VerificationBadge from 4 checks"
 ### Task 21: PDF download + Extractor agent
 
 **Files:**
-- Create: `jobpulse/papers/journal_summarizer.py` (Extractor only — Writer + Guard in 22-26)
+- Create: `research_journal/summarizer.py` (Extractor only — Writer + Guard in 22-26)
 - Create: `shared/prompts/templates/journal/extract_facts.yaml`
-- Test: `tests/papers/test_summarizer_extractor.py` (new)
+- Test: `tests/research_journal/test_summarizer_extractor.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_summarizer_extractor.py
-from jobpulse.papers.journal_summarizer import extract_facts
-from jobpulse.papers.models import Paper, ExtractedFacts, BenchResult
+# tests/research_journal/test_summarizer_extractor.py
+from research_journal.summarizer import extract_facts
+from jobpulse.papers.models import Paper
+from research_journal.models import ExtractedFacts, BenchResult
 
 
 def test_extract_uses_abstract_when_pdf_fails(monkeypatch):
-    monkeypatch.setattr("jobpulse.papers.journal_summarizer._download_pdf_text",
+    monkeypatch.setattr("research_journal.summarizer._download_pdf_text",
                         lambda url: "")
     monkeypatch.setattr(
-        "jobpulse.papers.journal_summarizer._llm_extract",
+        "research_journal.summarizer._llm_extract",
         lambda text: ExtractedFacts(
             problem="x", method_steps=["a", "b"],
             architecture_details={"backbone": "Llama-3-8B"},
@@ -2155,7 +2192,7 @@ def test_extract_uses_abstract_when_pdf_fails(monkeypatch):
 
 
 def test_extract_full_pdf_path(monkeypatch):
-    monkeypatch.setattr("jobpulse.papers.journal_summarizer._download_pdf_text",
+    monkeypatch.setattr("research_journal.summarizer._download_pdf_text",
                         lambda url: "Full PDF text here. Lots of content.")
     captured_text = []
     def fake_extract(text):
@@ -2165,7 +2202,7 @@ def test_extract_full_pdf_path(monkeypatch):
             benchmarks=[], ablations=[], limitations=[], key_insight="k",
             raw_excerpts=["full text excerpt"],
         )
-    monkeypatch.setattr("jobpulse.papers.journal_summarizer._llm_extract", fake_extract)
+    monkeypatch.setattr("research_journal.summarizer._llm_extract", fake_extract)
     paper = Paper(arxiv_id="x", title="t", authors=["A"], abstract="abs",
                   categories=["cs.CL"], pdf_url="https://example.com/x.pdf",
                   arxiv_url="", published_at="2026-01-01")
@@ -2176,7 +2213,7 @@ def test_extract_full_pdf_path(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_summarizer_extractor.py -v
+pytest tests/research_journal/test_summarizer_extractor.py -v
 ```
 Expected: FAIL.
 
@@ -2222,7 +2259,7 @@ output_schema:
 - [ ] **Step 4: Implement Extractor**
 
 ```python
-# jobpulse/papers/journal_summarizer.py
+# research_journal/summarizer.py
 """3-agent journal summary pipeline: Extract → Write → Hallucination Guard."""
 
 from __future__ import annotations
@@ -2232,9 +2269,8 @@ from typing import Optional
 
 import httpx
 
-from jobpulse.papers.models import (
-    BenchResult, ExtractedFacts, Paper, VerificationBadge,
-)
+from jobpulse.papers.models import Paper
+from research_journal.models import BenchResult, ExtractedFacts, VerificationBadge
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -2298,14 +2334,14 @@ def _strip_codefence(text: str) -> str:
 - [ ] **Step 5: Run + pass**
 
 ```bash
-pytest tests/papers/test_summarizer_extractor.py -v
+pytest tests/research_journal/test_summarizer_extractor.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add jobpulse/papers/journal_summarizer.py shared/prompts/templates/journal/extract_facts.yaml tests/papers/test_summarizer_extractor.py
+git add research_journal/summarizer.py shared/prompts/templates/journal/extract_facts.yaml tests/research_journal/test_summarizer_extractor.py
 git commit -m "feat(papers/journal): Extractor agent (PDF + abstract fallback)"
 ```
 
@@ -2314,16 +2350,16 @@ git commit -m "feat(papers/journal): Extractor agent (PDF + abstract fallback)"
 ### Task 22: Writer agent (6-section structure)
 
 **Files:**
-- Modify: `jobpulse/papers/journal_summarizer.py` (add `write_summary`)
+- Modify: `research_journal/summarizer.py` (add `write_summary`)
 - Create: `shared/prompts/templates/journal/write_summary.yaml`
-- Test: `tests/papers/test_summarizer_writer.py` (new)
+- Test: `tests/research_journal/test_summarizer_writer.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_summarizer_writer.py
-from jobpulse.papers.journal_summarizer import write_summary
-from jobpulse.papers.models import ExtractedFacts, BenchResult, Paper
+# tests/research_journal/test_summarizer_writer.py
+from research_journal.summarizer import write_summary
+from research_journal.models import ExtractedFacts, BenchResult, Paper
 
 
 def _facts() -> ExtractedFacts:
@@ -2343,7 +2379,7 @@ def _paper() -> Paper:
 
 def test_writer_returns_six_sections(monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.journal_summarizer._llm_write",
+        "research_journal.summarizer._llm_write",
         lambda paper, facts: (
             "## TL;DR\nA " + ("word " * 49) +
             "\n\n## Problem\n" + ("p " * 200) +
@@ -2360,7 +2396,7 @@ def test_writer_returns_six_sections(monkeypatch):
 
 def test_writer_word_count_in_range(monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.journal_summarizer._llm_write",
+        "research_journal.summarizer._llm_write",
         lambda p, f: "## TL;DR\n" + ("w " * 1200),  # too short - regen logic exercised
     )
     md = write_summary(_paper(), _facts(), max_attempts=1)
@@ -2371,7 +2407,7 @@ def test_writer_word_count_in_range(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_summarizer_writer.py -v
+pytest tests/research_journal/test_summarizer_writer.py -v
 ```
 Expected: FAIL.
 
@@ -2412,7 +2448,7 @@ output_schema:
 
 - [ ] **Step 4: Implement Writer**
 
-Append to `jobpulse/papers/journal_summarizer.py`:
+Append to `research_journal/summarizer.py`:
 
 ```python
 import re
@@ -2478,14 +2514,14 @@ def _split_sections(md: str) -> dict[str, str]:
 - [ ] **Step 5: Run + pass**
 
 ```bash
-pytest tests/papers/test_summarizer_writer.py -v
+pytest tests/research_journal/test_summarizer_writer.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add jobpulse/papers/journal_summarizer.py shared/prompts/templates/journal/write_summary.yaml tests/papers/test_summarizer_writer.py
+git add research_journal/summarizer.py shared/prompts/templates/journal/write_summary.yaml tests/research_journal/test_summarizer_writer.py
 git commit -m "feat(papers/journal): Writer agent with 6-section structure + word-count regen"
 ```
 
@@ -2494,20 +2530,20 @@ git commit -m "feat(papers/journal): Writer agent with 6-section structure + wor
 ### Task 23: Hallucination guard — claim extraction
 
 **Files:**
-- Modify: `jobpulse/papers/journal_summarizer.py`
+- Modify: `research_journal/summarizer.py`
 - Create: `shared/prompts/templates/journal/extract_claims.yaml`
-- Test: `tests/papers/test_summarizer_claims.py` (new)
+- Test: `tests/research_journal/test_summarizer_claims.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_summarizer_claims.py
-from jobpulse.papers.journal_summarizer import extract_claims_from_summary
+# tests/research_journal/test_summarizer_claims.py
+from research_journal.summarizer import extract_claims_from_summary
 
 
 def test_extracts_numeric_sentences(monkeypatch):
     monkeypatch.setattr(
-        "jobpulse.papers.journal_summarizer._llm_extract_claims",
+        "research_journal.summarizer._llm_extract_claims",
         lambda md: [
             "MoA improves over single-LoRA baselines by 4.2 points on MMLU.",
             "Training takes 12 GPU-hours on 8× A100.",
@@ -2522,7 +2558,7 @@ def test_extracts_numeric_sentences(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_summarizer_claims.py -v
+pytest tests/research_journal/test_summarizer_claims.py -v
 ```
 Expected: FAIL.
 
@@ -2549,7 +2585,7 @@ output_schema:
 
 - [ ] **Step 4: Implement claim extraction**
 
-Append to `jobpulse/papers/journal_summarizer.py`:
+Append to `research_journal/summarizer.py`:
 
 ```python
 def extract_claims_from_summary(summary_md: str) -> list[str]:
@@ -2576,14 +2612,14 @@ def _llm_extract_claims(summary_md: str) -> list[str]:
 - [ ] **Step 5: Run + pass**
 
 ```bash
-pytest tests/papers/test_summarizer_claims.py -v
+pytest tests/research_journal/test_summarizer_claims.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add jobpulse/papers/journal_summarizer.py shared/prompts/templates/journal/extract_claims.yaml tests/papers/test_summarizer_claims.py
+git add research_journal/summarizer.py shared/prompts/templates/journal/extract_claims.yaml tests/research_journal/test_summarizer_claims.py
 git commit -m "feat(papers/journal): hallucination guard — claim extraction"
 ```
 
@@ -2592,15 +2628,15 @@ git commit -m "feat(papers/journal): hallucination guard — claim extraction"
 ### Task 24: Hallucination guard — deterministic grounding
 
 **Files:**
-- Modify: `jobpulse/papers/journal_summarizer.py`
-- Test: `tests/papers/test_summarizer_grounding.py` (new)
+- Modify: `research_journal/summarizer.py`
+- Test: `tests/research_journal/test_summarizer_grounding.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_summarizer_grounding.py
-from jobpulse.papers.journal_summarizer import is_claim_grounded
-from jobpulse.papers.models import ExtractedFacts, BenchResult
+# tests/research_journal/test_summarizer_grounding.py
+from research_journal.summarizer import is_claim_grounded
+from research_journal.models import ExtractedFacts, BenchResult
 
 
 def _facts(excerpts: list[str], benches: list[BenchResult] | None = None) -> ExtractedFacts:
@@ -2634,7 +2670,7 @@ def test_unrelated_claim_fails():
 def test_embedding_similarity_threshold(monkeypatch):
     facts = _facts(["paraphrased version"])
     monkeypatch.setattr(
-        "jobpulse.papers.journal_summarizer._embedding_similarity",
+        "research_journal.summarizer._embedding_similarity",
         lambda a, b: 0.91,
     )
     assert is_claim_grounded("Different wording but same meaning.", facts) is True
@@ -2643,13 +2679,13 @@ def test_embedding_similarity_threshold(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_summarizer_grounding.py -v
+pytest tests/research_journal/test_summarizer_grounding.py -v
 ```
 Expected: FAIL.
 
 - [ ] **Step 3: Implement grounding**
 
-Append to `jobpulse/papers/journal_summarizer.py`:
+Append to `research_journal/summarizer.py`:
 
 ```python
 import re as _re
@@ -2713,14 +2749,14 @@ def _embedding_similarity(a: str, b: str) -> float:
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_summarizer_grounding.py -v
+pytest tests/research_journal/test_summarizer_grounding.py -v
 ```
 Expected: PASS, 4 tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/journal_summarizer.py tests/papers/test_summarizer_grounding.py
+git add research_journal/summarizer.py tests/research_journal/test_summarizer_grounding.py
 git commit -m "feat(papers/journal): hallucination guard — deterministic grounding (3-tier)"
 ```
 
@@ -2729,15 +2765,16 @@ git commit -m "feat(papers/journal): hallucination guard — deterministic groun
 ### Task 25: Hallucination guard — regen loop + `claims_grounded` integration
 
 **Files:**
-- Modify: `jobpulse/papers/journal_summarizer.py` (add `guard_summary` + `summarize_paper` orchestrator)
-- Test: `tests/papers/test_summarizer_guard_loop.py` (new)
+- Modify: `research_journal/summarizer.py` (add `guard_summary` + `summarize_paper` orchestrator)
+- Test: `tests/research_journal/test_summarizer_guard_loop.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_summarizer_guard_loop.py
-from jobpulse.papers.journal_summarizer import guard_summary, summarize_paper
-from jobpulse.papers.models import ExtractedFacts, BenchResult, Paper, VerificationBadge
+# tests/research_journal/test_summarizer_guard_loop.py
+from research_journal.summarizer import guard_summary, summarize_paper
+from jobpulse.papers.models import Paper
+from research_journal.models import ExtractedFacts, BenchResult, VerificationBadge
 
 
 def _facts() -> ExtractedFacts:
@@ -2750,7 +2787,7 @@ def _facts() -> ExtractedFacts:
 
 
 def test_guard_passes_when_all_grounded(monkeypatch):
-    monkeypatch.setattr("jobpulse.papers.journal_summarizer.extract_claims_from_summary",
+    monkeypatch.setattr("research_journal.summarizer.extract_claims_from_summary",
                         lambda md: ["the model achieves 72.3 on MMLU"])
     md = "## Results\nThe model achieves 72.3 on MMLU."
     grounded, failed = guard_summary(md, _facts())
@@ -2759,7 +2796,7 @@ def test_guard_passes_when_all_grounded(monkeypatch):
 
 
 def test_guard_flags_ungrounded_claims(monkeypatch):
-    monkeypatch.setattr("jobpulse.papers.journal_summarizer.extract_claims_from_summary",
+    monkeypatch.setattr("research_journal.summarizer.extract_claims_from_summary",
                         lambda md: ["Trained on 1.5T tokens.", "Achieves 72.3 on MMLU."])
     md = "fake summary"
     grounded, failed = guard_summary(md, _facts())
@@ -2773,10 +2810,10 @@ def test_summarize_paper_regenerates_then_accepts(monkeypatch):
     def fake_write(paper, facts, avoid=None):
         write_calls.append(avoid or [])
         return "v" + str(len(write_calls))
-    monkeypatch.setattr("jobpulse.papers.journal_summarizer._write_with_avoid", fake_write)
-    monkeypatch.setattr("jobpulse.papers.journal_summarizer.extract_facts", lambda p: _facts())
+    monkeypatch.setattr("research_journal.summarizer._write_with_avoid", fake_write)
+    monkeypatch.setattr("research_journal.summarizer.extract_facts", lambda p: _facts())
     monkeypatch.setattr(
-        "jobpulse.papers.journal_summarizer.extract_claims_from_summary",
+        "research_journal.summarizer.extract_claims_from_summary",
         lambda md: ["Trained on 1.5T tokens."],
     )
     paper = Paper(arxiv_id="x", title="t", authors=["A"], abstract="abs",
@@ -2790,13 +2827,13 @@ def test_summarize_paper_regenerates_then_accepts(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_summarizer_guard_loop.py -v
+pytest tests/research_journal/test_summarizer_guard_loop.py -v
 ```
 Expected: FAIL.
 
 - [ ] **Step 3: Implement orchestrator**
 
-Append to `jobpulse/papers/journal_summarizer.py`:
+Append to `research_journal/summarizer.py`:
 
 ```python
 def guard_summary(summary_md: str, facts: ExtractedFacts, sample_size: int = 5) -> tuple[bool, list[str]]:
@@ -2845,14 +2882,14 @@ def summarize_paper(paper: Paper, max_regens: int = 1) -> tuple[str, bool]:
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_summarizer_guard_loop.py -v
+pytest tests/research_journal/test_summarizer_guard_loop.py -v
 ```
 Expected: PASS, 3 tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/journal_summarizer.py tests/papers/test_summarizer_guard_loop.py
+git add research_journal/summarizer.py tests/research_journal/test_summarizer_guard_loop.py
 git commit -m "feat(papers/journal): hallucination guard regen loop + summarize_paper orchestrator"
 ```
 
@@ -3072,22 +3109,26 @@ git commit -m "feat(papers/fetcher): default fetch_all excludes HN/Reddit/Bluesk
 
 ## Phase 8 — Delivery
 
-### Task 28: `publish_journal_notion` in `notion_publisher.py`
+### Task 28: Notion delivery — `research_journal/delivery.py` (free function)
 
 **Files:**
-- Modify: `jobpulse/papers/notion_publisher.py` (add method)
-- Test: `tests/papers/test_notion_publish_journal.py` (new)
+- Create: `research_journal/delivery.py` (NEW — journal-specific delivery composition)
+- Test: `tests/research_journal/test_delivery.py` (new)
+
+**Note:** Per the directory split, journal-specific Notion + Telegram composition lives in `research_journal/delivery.py`. The existing `jobpulse/papers/notion_publisher.py::NotionPublisher` provides only generic Notion-client primitives and is consumed via composition (we use `publisher.client` + `publisher.database_id`).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_notion_publish_journal.py
+# tests/research_journal/test_delivery.py
 from unittest.mock import MagicMock
 from jobpulse.papers.notion_publisher import NotionPublisher
-from jobpulse.papers.models import RankedPaper, VerificationBadge
+from jobpulse.papers.models import RankedPaper
+from research_journal.models import VerificationBadge
+from research_journal.delivery import publish_journal_to_notion
 
 
-def test_publish_journal_creates_one_page_per_paper(monkeypatch):
+def test_publish_journal_creates_one_page_per_paper():
     pub = NotionPublisher(database_id="db-123", api_key="k")
     pub.client = MagicMock()
     pub.client.pages.create.return_value = {"id": "page-x"}
@@ -3102,8 +3143,9 @@ def test_publish_journal_creates_one_page_per_paper(monkeypatch):
         independent_citations=False, claims_grounded=True,
     )
 
-    pub.publish_journal_notion(
-        papers=[(paper, badge, "## TL;DR\nfoo\n\n## Problem\nbar\n", "core")],
+    publish_journal_to_notion(
+        publisher=pub,
+        items=[(paper, badge, "## TL;DR\nfoo\n\n## Problem\nbar\n", "core")],
         digest_date="2026-05-09",
     )
     assert pub.client.pages.create.call_count == 1
@@ -3117,104 +3159,120 @@ def test_publish_journal_creates_one_page_per_paper(monkeypatch):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_notion_publish_journal.py -v
+pytest tests/research_journal/test_delivery.py -v
 ```
-Expected: FAIL.
+Expected: FAIL — `research_journal.delivery` doesn't exist.
 
-- [ ] **Step 3: Add the method**
-
-In `jobpulse/papers/notion_publisher.py`, append:
+- [ ] **Step 3: Create `research_journal/delivery.py`**
 
 ```python
-    def publish_journal_notion(
-        self,
-        papers: list[tuple],   # list of (RankedPaper, VerificationBadge, summary_md, domain_tag)
-        digest_date: str,
-    ) -> list[str]:
-        """Create one Notion page per paper in the Journal database. Returns page IDs."""
-        page_ids: list[str] = []
-        for paper, badge, summary_md, domain_tag in papers:
-            props = {
-                "Title": {"title": [{"text": {"content": paper.title[:200]}}]},
-                "Date": {"date": {"start": digest_date}},
-                "Domain tag": {"select": {"name": domain_tag}},
-                "Badge": {"number": badge.score},
-                "Badge breakdown": {"multi_select": [
-                    {"name": k} for k, v in {
-                        "has_results": badge.has_results,
-                        "peer_reviewed": badge.peer_reviewed,
-                        "has_repo": badge.has_repo,
-                        "independent_citations": badge.independent_citations,
-                        "claims_grounded": badge.claims_grounded,
-                    }.items() if v
-                ]},
-                "Rank reason": {"rich_text": [{"text": {"content": getattr(paper, "rank_reason", "")[:2000]}}]},
-                "Authors": {"rich_text": [{"text": {"content": ", ".join(paper.authors[:8])[:2000]}}]},
-                "arXiv link": {"url": paper.arxiv_url or None},
-                "Repo link": {"url": getattr(paper, "github_url", "") or None},
-                "Read": {"checkbox": False},
-                "Saved for impl": {"checkbox": False},
-            }
-            children = self._summary_to_blocks(summary_md)
-            try:
-                resp = self.client.pages.create(
-                    parent={"database_id": self.database_id},
-                    properties=props,
-                    children=children,
-                )
-                page_ids.append(resp["id"])
-            except Exception as exc:
-                logger.warning("Notion page create failed for %s: %s", paper.arxiv_id, exc)
-        return page_ids
+"""Journal-specific delivery: Notion page composition + Telegram digest builder.
 
-    def _summary_to_blocks(self, md: str) -> list[dict]:
-        """Convert the 6-section markdown summary into Notion heading_2 + paragraph blocks."""
-        blocks: list[dict] = []
-        for line in md.splitlines():
-            line = line.rstrip()
-            if not line:
-                continue
-            if line.startswith("## "):
-                blocks.append({
-                    "object": "block", "type": "heading_2",
-                    "heading_2": {"rich_text": [{"type": "text", "text": {"content": line[3:]}}]},
-                })
-            else:
-                blocks.append({
-                    "object": "block", "type": "paragraph",
-                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": line[:1900]}}]},
-                })
-        return blocks
+Uses jobpulse.papers.notion_publisher.NotionPublisher for raw Notion-client primitives
+(authentication, page-create) and composes journal-specific properties / blocks here.
+"""
+
+from __future__ import annotations
+
+from jobpulse.papers.models import RankedPaper
+from jobpulse.papers.notion_publisher import NotionPublisher
+from research_journal.models import VerificationBadge
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
+def publish_journal_to_notion(
+    publisher: NotionPublisher,
+    items: list[tuple],   # (RankedPaper, VerificationBadge, summary_md, domain_tag)
+    digest_date: str,
+) -> list[str]:
+    """Create one Notion page per item in the Journal database. Returns page IDs."""
+    page_ids: list[str] = []
+    for paper, badge, summary_md, domain_tag in items:
+        props = {
+            "Title": {"title": [{"text": {"content": paper.title[:200]}}]},
+            "Date": {"date": {"start": digest_date}},
+            "Domain tag": {"select": {"name": domain_tag}},
+            "Badge": {"number": badge.score},
+            "Badge breakdown": {"multi_select": [
+                {"name": k} for k, v in {
+                    "has_results": badge.has_results,
+                    "peer_reviewed": badge.peer_reviewed,
+                    "has_repo": badge.has_repo,
+                    "independent_citations": badge.independent_citations,
+                    "claims_grounded": badge.claims_grounded,
+                }.items() if v
+            ]},
+            "Rank reason": {"rich_text": [{"text": {"content": getattr(paper, "rank_reason", "")[:2000]}}]},
+            "Authors": {"rich_text": [{"text": {"content": ", ".join(paper.authors[:8])[:2000]}}]},
+            "arXiv link": {"url": paper.arxiv_url or None},
+            "Repo link": {"url": getattr(paper, "github_url", "") or None},
+            "Read": {"checkbox": False},
+            "Saved for impl": {"checkbox": False},
+        }
+        children = _summary_to_blocks(summary_md)
+        try:
+            resp = publisher.client.pages.create(
+                parent={"database_id": publisher.database_id},
+                properties=props,
+                children=children,
+            )
+            page_ids.append(resp["id"])
+        except Exception as exc:
+            logger.warning("Notion page create failed for %s: %s", paper.arxiv_id, exc)
+    return page_ids
+
+
+def _summary_to_blocks(md: str) -> list[dict]:
+    """Convert the 6-section markdown summary into Notion heading_2 + paragraph blocks."""
+    blocks: list[dict] = []
+    for line in md.splitlines():
+        line = line.rstrip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            blocks.append({
+                "object": "block", "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": line[3:]}}]},
+            })
+        else:
+            blocks.append({
+                "object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": line[:1900]}}]},
+            })
+    return blocks
 ```
 
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_notion_publish_journal.py -v
+pytest tests/research_journal/test_delivery.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/notion_publisher.py tests/papers/test_notion_publish_journal.py
-git commit -m "feat(papers/notion): publish_journal_notion (one page per paper)"
+git add research_journal/delivery.py tests/research_journal/test_delivery.py
+git commit -m "feat(research_journal/delivery): publish_journal_to_notion (free function)"
 ```
 
 ---
 
-### Task 29: Telegram morning digest builder
+### Task 29: Telegram morning digest builder — same `research_journal/delivery.py`
 
 **Files:**
-- Modify: `jobpulse/papers/notion_publisher.py` (or create `journal_telegram.py` — keep delivery cohesive in publisher)
-- Test: `tests/papers/test_journal_telegram.py` (new)
+- Modify: `research_journal/delivery.py` (extend with `build_journal_telegram_digest`)
+- Test: `tests/research_journal/test_delivery_telegram.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_journal_telegram.py
-from jobpulse.papers.notion_publisher import build_journal_telegram_digest
-from jobpulse.papers.models import RankedPaper, VerificationBadge
+# tests/research_journal/test_delivery_telegram.py
+from research_journal.delivery import build_journal_telegram_digest
+from jobpulse.papers.models import RankedPaper
+from research_journal.models import VerificationBadge
 
 
 def _rp(arxiv_id: str, title: str, score: float = 8.0) -> RankedPaper:
@@ -3253,13 +3311,13 @@ def test_digest_uses_emoji_badges():
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_journal_telegram.py -v
+pytest tests/research_journal/test_delivery_telegram.py -v
 ```
 Expected: FAIL.
 
-- [ ] **Step 3: Add the builder**
+- [ ] **Step 3: Add the builder to `research_journal/delivery.py`**
 
-Append to `jobpulse/papers/notion_publisher.py`:
+Append to `research_journal/delivery.py` (created in Task 28):
 
 ```python
 def build_journal_telegram_digest(
@@ -3283,35 +3341,39 @@ def build_journal_telegram_digest(
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_journal_telegram.py -v
+pytest tests/research_journal/test_delivery_telegram.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/notion_publisher.py tests/papers/test_journal_telegram.py
-git commit -m "feat(papers/journal): Telegram digest builder (core in body, tangent collapsed)"
+git add research_journal/delivery.py tests/research_journal/test_delivery_telegram.py
+git commit -m "feat(research_journal/delivery): Telegram digest builder"
 ```
 
 ---
 
 ## Phase 9 — Wiring
 
-### Task 30: `daily_journal()` method on `PapersPipeline`
+### Task 30: `JournalPipeline` orchestrator in `research_journal/pipeline.py`
 
 **Files:**
-- Modify: `jobpulse/papers/__init__.py`
-- Test: `tests/papers/test_pipeline_journal.py` (new)
+- Create: `research_journal/pipeline.py` (NEW — owns the daily orchestration)
+- Modify: `research_journal/__init__.py` (export `JournalPipeline`)
+- Test: `tests/research_journal/test_pipeline.py` (new)
+
+**Note:** This is where the feature stops being a JobPulse extension and becomes its own self-contained product. `JournalPipeline` composes `PaperFetcher`, `PaperStore`, `NotionPublisher` from `jobpulse.papers` (cross-cutting paper-domain utilities) with the journal-specific modules (`domain_filter`, `results_filter`, `verifier`, `summarizer`, `delivery`).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_pipeline_journal.py
+# tests/research_journal/test_pipeline.py
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from jobpulse.papers import PapersPipeline
-from jobpulse.papers.models import Paper, RankedPaper, VerificationBadge, PaperTypeClassification
+from jobpulse.papers.models import Paper
+from research_journal.models import VerificationBadge, PaperTypeClassification
+from research_journal.pipeline import JournalPipeline
 
 
 @pytest.mark.asyncio
@@ -3320,59 +3382,87 @@ async def test_daily_journal_end_to_end(monkeypatch, tmp_path):
     fake_papers = [Paper(arxiv_id=str(i), title=f"P{i}", authors=["A"], abstract="abs",
                          categories=["cs.CL"], pdf_url="", arxiv_url="", published_at="2026-01-01")
                    for i in range(15)]
-    pipeline = PapersPipeline(db_path=tmp_path / "p.db")
+    pipeline = JournalPipeline(db_path=tmp_path / "p.db")
     pipeline.fetcher.fetch_all = AsyncMock(return_value=fake_papers)
     pipeline.fetcher.enrich = AsyncMock(return_value=fake_papers)
-    monkeypatch.setattr("jobpulse.papers.classify_domain",
+    monkeypatch.setattr("research_journal.pipeline.classify_domain",
                         lambda p: ("core", 0.8, "matched") if int(p.arxiv_id) < 12 else ("tangent", 0.7, "tangent"))
-    monkeypatch.setattr("jobpulse.papers.classify_results",
+    monkeypatch.setattr("research_journal.pipeline.classify_results",
                         lambda p: PaperTypeClassification(has_results=True, paper_type="research",
                                                           reason="ok", confidence=0.9))
-    monkeypatch.setattr("jobpulse.papers.summarize_paper",
+    monkeypatch.setattr("research_journal.pipeline.summarize_paper",
                         lambda p: ("## TL;DR\nshort\n## Problem\nx\n## Method\ny\n## Key insight\nz\n## Results\nr\n## Limitations\nl", True))
-    monkeypatch.setattr("jobpulse.papers.verify_paper",
+    monkeypatch.setattr("research_journal.pipeline.verify_paper",
                         lambda p, has_results: VerificationBadge(
                             has_results=has_results, peer_reviewed=False, has_repo=False,
                             independent_citations=False, claims_grounded=False,
                         ))
-    pipeline.notion.publish_journal_notion = MagicMock(return_value=[])
-    monkeypatch.setattr("jobpulse.papers.send_telegram_message", lambda msg: None)
+    monkeypatch.setattr("research_journal.pipeline.publish_journal_to_notion",
+                        lambda **kw: ["fake-id"])
+    monkeypatch.setattr("research_journal.pipeline.send_telegram_message", lambda msg: None)
 
     result = await pipeline.daily_journal()
     assert result["core_count"] >= 8
     assert result["tangent_count"] >= 1
-    pipeline.notion.publish_journal_notion.assert_called_once()
 ```
 
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_pipeline_journal.py -v
+pytest tests/research_journal/test_pipeline.py -v
 ```
-Expected: FAIL — `daily_journal` doesn't exist.
+Expected: FAIL — `JournalPipeline` doesn't exist.
 
-- [ ] **Step 3: Add `daily_journal` to `PapersPipeline`**
-
-In `jobpulse/papers/__init__.py`, add imports at the top and the method to the class:
+- [ ] **Step 3: Create `research_journal/pipeline.py`**
 
 ```python
-# at top of file (with the other imports)
-from jobpulse.papers.domain_filter import classify_domain
-from jobpulse.papers.results_filter import classify_results
-from jobpulse.papers.verifier import verify_paper
-from jobpulse.papers.journal_summarizer import summarize_paper
+"""JournalPipeline — daily orchestrator for the curated research journal."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+from jobpulse.papers.fetcher import PaperFetcher
+from jobpulse.papers.models import Paper
+from jobpulse.papers.notion_publisher import NotionPublisher
 from jobpulse.papers.ranker import attach_rank_reasons
+from jobpulse.papers.store import PaperStore
+from jobpulse.papers import PaperRanker
+from research_journal.delivery import publish_journal_to_notion, build_journal_telegram_digest
+from research_journal.domain_filter import classify_domain
+from research_journal.results_filter import classify_results
+from research_journal.summarizer import summarize_paper
+from research_journal.verifier import verify_paper
+from shared.logging_config import get_logger
 from shared.telegram_client import send_telegram_message
-```
 
-```python
-# inside class PapersPipeline
+logger = get_logger(__name__)
+
+
+class JournalPipeline:
+    """Daily curated research journal — ML/LLM/SLM/VLM/finetune.
+
+    Composes:
+      - jobpulse.papers.fetcher.PaperFetcher  — multi-source paper ingest
+      - jobpulse.papers.store.PaperStore      — SQLite persistence
+      - jobpulse.papers.PaperRanker           — fast_score + LLM rank
+      - jobpulse.papers.notion_publisher.NotionPublisher — generic Notion client
+      - research_journal.{domain_filter, results_filter, verifier, summarizer, delivery}
+    """
+
+    def __init__(self, db_path: Path | None = None) -> None:
+        self.fetcher = PaperFetcher()
+        self.ranker = PaperRanker()
+        self.store = PaperStore(db_path=db_path)
+        self.notion = NotionPublisher()
+
     async def daily_journal(self, target_volume_max: int = 12) -> dict:
         today = datetime.now().strftime("%Y-%m-%d")
         papers = await self.fetcher.fetch_all()
         logger.info("daily_journal: fetched %d raw papers", len(papers))
 
-        # Classify domain
+        # Stage ② Domain classifier
         tagged: list[tuple[Paper, str]] = []
         for p in papers:
             tag, _, _ = classify_domain(p)
@@ -3380,7 +3470,7 @@ from shared.telegram_client import send_telegram_message
                 tagged.append((p, tag))
         logger.info("daily_journal: %d core+tangent after domain filter", len(tagged))
 
-        # Hard filter on empirical results
+        # Stage ③ Hard filter on empirical results
         survivors: list[tuple[Paper, str, str]] = []  # (paper, domain_tag, paper_type)
         for paper, tag in tagged:
             cls = classify_results(paper)
@@ -3388,36 +3478,35 @@ from shared.telegram_client import send_telegram_message
                 survivors.append((paper, tag, cls.paper_type))
         logger.info("daily_journal: %d survived has_results hard filter", len(survivors))
 
-        # Enrich + rank (existing pipeline)
+        # Stage ④ Enrich + rank
         survivor_papers = [s[0] for s in survivors]
         enriched = await self.fetcher.enrich(survivor_papers)
         ranked = self.ranker.llm_rank(enriched, top_n=min(target_volume_max, len(enriched)))
         ranked = attach_rank_reasons(ranked, lens="daily")
 
-        # Build domain tag map preserving order from survivors
         tag_by_id = {s[0].arxiv_id: s[1] for s in survivors}
 
-        # Verify + summarize each
+        # Stages ⑤ Verify + ⑥ Summarize per paper
         published: list[tuple] = []
         for paper in ranked:
-            cls_for_results = classify_results(paper)  # cached upstream in v2; cheap re-call here
+            cls_for_results = classify_results(paper)
             badge = verify_paper(paper, has_results=cls_for_results.has_results)
             summary, grounded = summarize_paper(paper)
             badge.claims_grounded = grounded
             domain_tag = tag_by_id.get(paper.arxiv_id, "core")
             published.append((paper, badge, summary, domain_tag))
 
-        # Persist + deliver
+        # Persist
         for paper, badge, summary, domain_tag in published:
-            paper.summary_long = summary  # type: ignore[attr-defined]
-            paper.domain_tag = domain_tag  # type: ignore[attr-defined]
+            paper.summary_long = summary           # type: ignore[attr-defined]
+            paper.domain_tag = domain_tag          # type: ignore[attr-defined]
             paper.verification = badge.model_dump_json()  # type: ignore[attr-defined]
         self.store.store(ranked, digest_date=today)
 
-        page_ids = self.notion.publish_journal_notion(papers=published, digest_date=today)
-
-        # Telegram
-        from jobpulse.papers.notion_publisher import build_journal_telegram_digest
+        # Stage ⑦ Delivery
+        page_ids = publish_journal_to_notion(
+            publisher=self.notion, items=published, digest_date=today,
+        )
         digest_msg = build_journal_telegram_digest(
             items=[(p, b, t) for (p, b, _, t) in published],
             page_url_for=lambda aid: f"https://www.notion.so/{aid.replace('.', '')}",
@@ -3429,18 +3518,35 @@ from shared.telegram_client import send_telegram_message
         return {"core_count": core_count, "tangent_count": tangent_count, "page_ids": page_ids}
 ```
 
-- [ ] **Step 4: Run + pass**
+- [ ] **Step 4: Export `JournalPipeline` from `research_journal/__init__.py`**
+
+Replace the placeholder created in Task 3 with:
+
+```python
+"""research_journal — daily curated ML/LLM/SLM/VLM research feed.
+
+Pipeline: ingest -> domain classify -> hard-filter (results) -> rank -> verify
+        -> summarize (3-agent: Extract -> Write -> Hallucination Guard)
+        -> publish to Notion + Telegram.
+"""
+
+from research_journal.pipeline import JournalPipeline
+
+__all__ = ["JournalPipeline"]
+```
+
+- [ ] **Step 5: Run + pass**
 
 ```bash
-pytest tests/papers/test_pipeline_journal.py -v
+pytest tests/research_journal/test_pipeline.py -v
 ```
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add jobpulse/papers/__init__.py tests/papers/test_pipeline_journal.py
-git commit -m "feat(papers/pipeline): daily_journal end-to-end orchestration"
+git add research_journal/pipeline.py research_journal/__init__.py tests/research_journal/test_pipeline.py
+git commit -m "feat(research_journal/pipeline): JournalPipeline orchestrator (daily_journal)"
 ```
 
 ---
@@ -3461,8 +3567,8 @@ from unittest.mock import patch, AsyncMock
 
 
 def test_runner_journal_daily(monkeypatch):
-    fake_pipeline = type("P", (), {"daily_journal": AsyncMock(return_value={"core_count": 9})})()
-    with patch("jobpulse.papers.PapersPipeline", return_value=fake_pipeline), \
+    fake_pipeline = type("P", (), {"daily_journal": AsyncMock(return_value={"core_count": 9, "tangent_count": 1})})()
+    with patch("research_journal.pipeline.JournalPipeline", return_value=fake_pipeline), \
          patch.object(sys, "argv", ["runner", "journal-daily"]):
         from jobpulse import runner
         runner.main()
@@ -3482,12 +3588,12 @@ Find the existing `elif command == "arxiv":` block (around line 185) and add aft
 
 ```python
     elif command == "journal-daily":
-        from jobpulse.papers import PapersPipeline
-        result = asyncio.run(PapersPipeline().daily_journal())
+        from research_journal.pipeline import JournalPipeline
+        result = asyncio.run(JournalPipeline().daily_journal())
         print(f"Journal: {result['core_count']} core, {result['tangent_count']} tangent")
 
     elif command == "journal-quality-audit":
-        from jobpulse.papers.journal_audit import run_weekly_audit
+        from research_journal.audit import run_weekly_audit
         run_weekly_audit()
 ```
 
@@ -3524,38 +3630,39 @@ git commit -m "feat(runner+cron): journal-daily + journal-quality-audit CLI hand
 ### Task 32: Live integration test on 5 real papers
 
 **Files:**
-- Test: `tests/papers/test_journal_pipeline_live.py` (new, `@pytest.mark.live`)
+- Test: `tests/research_journal/test_pipeline_live.py` (new, `@pytest.mark.live`)
 
 - [ ] **Step 1: Write the live integration test**
 
 ```python
-# tests/papers/test_journal_pipeline_live.py
+# tests/research_journal/test_pipeline_live.py
 import sqlite3
 from pathlib import Path
 import pytest
-from jobpulse.papers import PapersPipeline
 
 
 @pytest.mark.live
 @pytest.mark.asyncio
 async def test_daily_journal_live_5_papers(tmp_path: Path, monkeypatch):
     """Runs the real daily_journal against live arXiv. Caps to 5 papers via classify_domain stub."""
+    from research_journal.pipeline import JournalPipeline
+
     db = tmp_path / "papers.db"
-    pipeline = PapersPipeline(db_path=db)
+    pipeline = JournalPipeline(db_path=db)
 
     # Cap volume by short-circuiting domain classifier to "core" for first 5 only
     cnt = {"n": 0}
-    real_classify = __import__("jobpulse.papers.domain_filter", fromlist=["classify_domain"]).classify_domain
+    real_classify = __import__("research_journal.domain_filter", fromlist=["classify_domain"]).classify_domain
     def capped(p):
         if cnt["n"] >= 5:
             return ("out", 0.0, "capped for live test")
         cnt["n"] += 1
         return real_classify(p)
-    monkeypatch.setattr("jobpulse.papers.classify_domain", capped)
+    monkeypatch.setattr("research_journal.pipeline.classify_domain", capped)
 
     # Don't actually post to Notion / Telegram in live test
-    monkeypatch.setattr(pipeline.notion, "publish_journal_notion", lambda **kw: ["fake-id"])
-    monkeypatch.setattr("jobpulse.papers.send_telegram_message", lambda msg: None)
+    monkeypatch.setattr("research_journal.pipeline.publish_journal_to_notion", lambda **kw: ["fake-id"])
+    monkeypatch.setattr("research_journal.pipeline.send_telegram_message", lambda msg: None)
 
     result = await pipeline.daily_journal(target_volume_max=5)
 
@@ -3574,14 +3681,14 @@ async def test_daily_journal_live_5_papers(tmp_path: Path, monkeypatch):
 - [ ] **Step 2: Run live**
 
 ```bash
-pytest tests/papers/test_journal_pipeline_live.py -v -m live
+pytest tests/research_journal/test_pipeline_live.py -v -m live
 ```
 Expected: PASS. If it fails, debug end-to-end with the failing arxiv_id from logs.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tests/papers/test_journal_pipeline_live.py
+git add tests/research_journal/test_pipeline_live.py
 git commit -m "test(papers/journal): live e2e test on 5 real papers"
 ```
 
@@ -3592,16 +3699,16 @@ git commit -m "test(papers/journal): live e2e test on 5 real papers"
 ### Task 33: `journal_audit.py` — hallucination rate + coverage check
 
 **Files:**
-- Create: `jobpulse/papers/journal_audit.py`
-- Test: `tests/papers/test_journal_audit.py` (new)
+- Create: `research_journal/audit.py`
+- Test: `tests/research_journal/test_audit.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/papers/test_journal_audit.py
+# tests/research_journal/test_audit.py
 import sqlite3
 from pathlib import Path
-from jobpulse.papers.journal_audit import compute_hallucination_rate, run_weekly_audit
+from research_journal.audit import compute_hallucination_rate, run_weekly_audit
 
 
 def test_hallucination_rate_basic(tmp_path: Path):
@@ -3619,10 +3726,10 @@ def test_hallucination_rate_basic(tmp_path: Path):
 
 
 def test_run_weekly_audit_emits_signal(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("jobpulse.papers.journal_audit.compute_hallucination_rate", lambda **kw: 0.05)
-    monkeypatch.setattr("jobpulse.papers.journal_audit.compute_coverage_gap", lambda **kw: 0.10)
+    monkeypatch.setattr("research_journal.audit.compute_hallucination_rate", lambda **kw: 0.05)
+    monkeypatch.setattr("research_journal.audit.compute_coverage_gap", lambda **kw: 0.10)
     signals = []
-    monkeypatch.setattr("jobpulse.papers.journal_audit._emit_signal",
+    monkeypatch.setattr("research_journal.audit._emit_signal",
                         lambda **kw: signals.append(kw))
     run_weekly_audit(db_path=tmp_path / "papers.db")
     assert len(signals) >= 1
@@ -3633,14 +3740,14 @@ def test_run_weekly_audit_emits_signal(monkeypatch, tmp_path: Path):
 - [ ] **Step 2: Run + fail**
 
 ```bash
-pytest tests/papers/test_journal_audit.py -v
+pytest tests/research_journal/test_audit.py -v
 ```
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
 ```python
-# jobpulse/papers/journal_audit.py
+# research_journal/audit.py
 """Weekly quality audit — hallucination rate + coverage gap vs HF Daily Papers."""
 
 from __future__ import annotations
@@ -3736,14 +3843,14 @@ def _alert_telegram(msg: str) -> None:
 - [ ] **Step 4: Run + pass**
 
 ```bash
-pytest tests/papers/test_journal_audit.py -v
+pytest tests/research_journal/test_audit.py -v
 ```
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jobpulse/papers/journal_audit.py tests/papers/test_journal_audit.py
+git add research_journal/audit.py tests/research_journal/test_audit.py
 git commit -m "feat(papers/journal): weekly quality audit (hallucination rate + coverage gap)"
 ```
 

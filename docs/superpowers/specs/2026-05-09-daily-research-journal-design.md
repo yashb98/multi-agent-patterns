@@ -31,7 +31,9 @@ The codebase contains two parallel arxiv/blog pipelines (audit 2026-05-08):
 - **OLD**: `jobpulse/arxiv_agent.py` + `jobpulse/blog_generator.py` + `jobpulse/paper_discovery.py` (1,702 LOC). Wired into the 7:57am cron, dispatcher, and 4 webhook endpoints.
 - **NEW**: `jobpulse/papers/` package (2,726 LOC across 9 files). Wired into the Monday 8:33am cron + 1 webhook endpoint.
 
-**This spec builds exclusively on the NEW `jobpulse/papers/` package.** No new code goes into `arxiv_agent.py` or `blog_generator.py`.
+**Directory split:** v1 introduces a new root-level package `research_journal/` that owns all journal-specific logic (domain classification, results filtering, verification composition, summarization with hallucination guard, delivery composition, weekly audit, top-level orchestrator). The package depends one-way on `jobpulse/papers/{fetcher, store, ranker, notion_publisher, models}` as cross-cutting paper-domain utilities (any paper-related project would want them). No code in `jobpulse/papers/` imports from `research_journal/`.
+
+**Cron migration:** The 7:57am `arxiv` cron continues to run `arxiv_agent.send_daily_digest()` during v1 implementation (no behavior change). Once the journal pipeline ships and is stable for one week, a follow-up change repoints the cron to the new pipeline and removes `arxiv_agent.py` + `blog_generator.py` + `paper_discovery.py`. That deprecation is out of scope for v1; tracked as a v1.1 follow-up. A separate v1.1 follow-up may also lift `jobpulse/papers/{fetcher,ranker,store}.py` to a top-level `papers_lib/` once we're certain those utilities are reused.
 
 **Cron migration:** The 7:57am `arxiv` cron continues to run `arxiv_agent.send_daily_digest()` during v1 implementation (no behavior change). Once the journal pipeline ships and is stable for one week, a follow-up change repoints the cron to the new pipeline and removes `arxiv_agent.py` + `blog_generator.py` + `paper_discovery.py`. That deprecation is out of scope for v1; tracked as a v1.1 follow-up.
 
@@ -112,7 +114,7 @@ The hallucination guard runs a regen if grounding fails on first attempt (see §
 
 **Daily volume input:** Expect 100–300 raw papers/day pre-filter.
 
-### 5.2 Domain classifier — `jobpulse/papers/domain_filter.py` (NEW)
+### 5.2 Domain classifier — `research_journal/domain_filter.py` (NEW)
 
 **Purpose:** Decide whether a paper belongs in the ML/LLM/SLM/VLM/finetune domain. Output is one of:
 - `core` — clearly in-domain
@@ -154,9 +156,9 @@ Embeddings via `shared/memory_layer/_embedder.py` (Voyage 3 Large + MiniLM fallb
 
 **LLM borderline classifier prompt:** stored at `shared/prompts/journal_domain_classify.yaml`, loaded via the existing `PromptRegistry`. Returns structured `{tag, confidence, reason}` JSON.
 
-**Calibration:** A fixture at `tests/fixtures/journal/domain_calibration.json` holds 40 hand-labeled papers (20 core, 10 tangent, 10 out). Test asserts ≥90% agreement on `core` vs `out`; tangent classification is allowed to be fuzzier (≥75% agreement).
+**Calibration:** A fixture at `tests/fixtures/research_journal/domain_calibration.json` holds 40 hand-labeled papers (20 core, 10 tangent, 10 out). Test asserts ≥90% agreement on `core` vs `out`; tangent classification is allowed to be fuzzier (≥75% agreement).
 
-### 5.3 Hard filter — has empirical results? — `jobpulse/papers/results_filter.py` (NEW)
+### 5.3 Hard filter — has empirical results? — `research_journal/results_filter.py` (NEW)
 
 **Purpose:** Drop papers without empirical results (position papers, surveys, opinion pieces, theory-only with no eval). This is the only HARD filter in the pipeline — failures are not displayed, they are removed.
 
@@ -195,7 +197,7 @@ output_schema:
 - Confidence < 0.6 → fall through to ranker (don't hard-drop on low confidence)
 - LLM call fails (timeout, rate limit) → keep paper, mark `verification.has_results = "unknown"`, surface in Notion (don't silently drop)
 
-**Calibration set:** `tests/fixtures/journal/results_calibration.json` with 20 known-positive (papers with empirical results) and 20 known-negative (surveys, position papers, theory-only). Tolerance: ≤10% false-negative rate on calibration set before merge.
+**Calibration set:** `tests/fixtures/research_journal/results_calibration.json` with 20 known-positive (papers with empirical results) and 20 known-negative (surveys, position papers, theory-only). Tolerance: ≤10% false-negative rate on calibration set before merge.
 
 ### 5.4 Ranker — `jobpulse/papers/ranker.py` (extend)
 
@@ -229,7 +231,7 @@ Existing `fast_score()` and `llm_rank()` retained. Three additions:
 - If filtered output < 8 papers/day: surface all of them; do not relax filters.
 - If filtered output > 12 papers/day: cap at 12, ranked-best-first; overflow stored in DB with `status='deferred'` for next-day weekly review.
 
-### 5.5 Verification engine — `jobpulse/papers/verifier.py` (NEW)
+### 5.5 Verification engine — `research_journal/verifier.py` (NEW)
 
 Composite of 5 checks, returned as a `VerificationBadge` Pydantic model:
 
@@ -260,7 +262,7 @@ class VerificationBadge(BaseModel):
 
 **Display rule:** A check returning `unknown` (API failure) shows ⚪ in the badge, distinct from ❌ (verified-false).
 
-### 5.6 Summary writer — `jobpulse/papers/journal_summarizer.py` (NEW)
+### 5.6 Summary writer — `research_journal/summarizer.py` (NEW)
 
 Three-agent pipeline. Lighter than the existing 6-agent `blog_pipeline.py`. All LLM calls route through `cognitive_llm_call(domain="journal_summary")`.
 
@@ -386,7 +388,7 @@ elif command == "journal-quality-audit":
     run_weekly_audit()
 ```
 
-`daily_journal()` is a new method on the existing `PapersPipeline` class (does not break `daily_digest` or `weekly_digest`). `run_weekly_audit()` lives in a new `jobpulse/papers/journal_audit.py` module (added to Appendix A).
+`daily_journal()` is a new method on the existing `PapersPipeline` class (does not break `daily_digest` or `weekly_digest`). `run_weekly_audit()` lives in a new `research_journal/audit.py` module (added to Appendix A).
 
 ## 7. Data flow
 
@@ -440,14 +442,14 @@ Per `.claude/rules/testing.md`:
 
 | File | Type | Coverage |
 |---|---|---|
-| `tests/papers/test_domain_filter.py` | unit + calibration | 90% on `core` vs `out`, 75% on `tangent` |
-| `tests/papers/test_results_filter.py` | unit + calibration | ≤ 10% false-negative on 40-paper set |
-| `tests/papers/test_journal_summarizer.py` | unit | Word-count enforcement, structure compliance |
-| `tests/papers/test_hallucination_guard.py` | unit | Substring/numeric/embedding grounding paths |
-| `tests/papers/test_verifier.py` | unit + live | Each check independently; circuit breaker behavior |
-| `tests/papers/test_journal_pipeline.py` | live integration | Full flow on 5 real papers, marked `@pytest.mark.live` |
+| `tests/research_journal/test_domain_filter.py` | unit + calibration | 90% on `core` vs `out`, 75% on `tangent` |
+| `tests/research_journal/test_results_filter.py` | unit + calibration | ≤ 10% false-negative on 40-paper set |
+| `tests/research_journal/test_summarizer_*.py` | unit | Word-count enforcement, structure compliance |
+| `tests/research_journal/test_summarizer_grounding.py + test_summarizer_guard_loop.py` | unit | Substring/numeric/embedding grounding paths |
+| `tests/research_journal/test_verifier_*.py` | unit + live | Each check independently; circuit breaker behavior |
+| `tests/research_journal/test_pipeline_live.py` | live integration | Full flow on 5 real papers, marked `@pytest.mark.live` |
 
-**Calibration fixtures:** `tests/fixtures/journal/`
+**Calibration fixtures:** `tests/fixtures/research_journal/`
 - `domain_calibration.json` — 40 hand-labeled papers (20 core / 10 tangent / 10 out)
 - `results_calibration.json` — 40 papers (20 with results / 20 without)
 
@@ -518,23 +520,23 @@ No silent failures. Every degraded path emits a structured log + (where appropri
 ## Appendix A — Files added/modified
 
 **New:**
-- `jobpulse/papers/domain_filter.py`
-- `jobpulse/papers/results_filter.py`
-- `jobpulse/papers/verifier.py`
-- `jobpulse/papers/journal_summarizer.py`
-- `jobpulse/papers/journal_audit.py`
+- `research_journal/domain_filter.py`
+- `research_journal/results_filter.py`
+- `research_journal/verifier.py`
+- `research_journal/summarizer.py`
+- `research_journal/audit.py`
 - `shared/prompts/journal_domain_classify.yaml`
 - `shared/prompts/journal_results_filter.yaml`
 - `shared/prompts/journal_summary_writer.yaml`
 - `shared/prompts/journal_hallucination_guard.yaml`
-- `tests/papers/test_domain_filter.py`
-- `tests/papers/test_results_filter.py`
-- `tests/papers/test_journal_summarizer.py`
-- `tests/papers/test_hallucination_guard.py`
-- `tests/papers/test_verifier.py`
-- `tests/papers/test_journal_pipeline.py`
-- `tests/fixtures/journal/domain_calibration.json`
-- `tests/fixtures/journal/results_calibration.json`
+- `tests/research_journal/test_domain_filter.py`
+- `tests/research_journal/test_results_filter.py`
+- `tests/research_journal/test_summarizer_*.py`
+- `tests/research_journal/test_summarizer_grounding.py + test_summarizer_guard_loop.py`
+- `tests/research_journal/test_verifier_*.py`
+- `tests/research_journal/test_pipeline_live.py`
+- `tests/fixtures/research_journal/domain_calibration.json`
+- `tests/fixtures/research_journal/results_calibration.json`
 
 **Modified:**
 - `jobpulse/papers/__init__.py` — add `daily_journal()` method to `PapersPipeline`
