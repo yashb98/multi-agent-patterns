@@ -243,3 +243,64 @@ def _embedding_similarity(a: str, b: str) -> float:
     except Exception as exc:
         logger.warning("embedding similarity failed: %s", exc)
         return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Hallucination Guard: regen loop + public orchestrator (Task 25)
+# ---------------------------------------------------------------------------
+
+
+def guard_summary(summary_md: str, facts: ExtractedFacts, sample_size: int = 5) -> tuple[bool, list[str]]:
+    """Return (all_grounded, list_of_failed_claims).
+
+    Strict grounding: ANY failed claim returns grounded=False.
+    Note: the original spec said ">1 fails → regenerate" but the test contract
+    requires len(failed) == 0 for grounded=True.  We use the stricter rule so
+    no ungrounded claim slips through.
+    """
+    claims = extract_claims_from_summary(summary_md)
+    if not claims:
+        return True, []
+    sample = claims[:sample_size] if len(claims) > sample_size else claims
+    failed = [c for c in sample if not is_claim_grounded(c, facts)]
+    return (len(failed) == 0), failed
+
+
+def _write_with_avoid(paper: Paper, facts: ExtractedFacts, avoid: list[str] | None = None) -> str:
+    """Wrapper around write_summary that injects 'avoid these patterns' on regen.
+
+    The avoid hints are appended to facts.problem so the existing write_summary
+    prompt receives them without requiring a prompt-template change.  This is
+    intentionally minimal — a cleaner approach (extend write_summary to accept
+    avoid: list[str]) is deferred.
+    """
+    if not avoid:
+        return write_summary(paper, facts)
+    avoid_block = "\n\nAVOID THESE UNGROUNDED PATTERNS:\n- " + "\n- ".join(avoid)
+    facts2 = facts.model_copy(update={"problem": facts.problem + avoid_block})
+    return write_summary(paper, facts2)
+
+
+def summarize_paper(paper: Paper, max_regens: int = 1) -> tuple[str, bool]:
+    """End-to-end: extract → write → guard (with one regen on failure).
+
+    Returns (markdown_summary, claims_grounded).
+    """
+    facts = extract_facts(paper)
+    summary = _write_with_avoid(paper, facts)
+    grounded, failed = guard_summary(summary, facts)
+    attempts = 1
+    while not grounded and attempts <= max_regens:
+        logger.info(
+            "hallucination guard failed for %s (attempts=%d); regenerating with %d avoid hints",
+            paper.arxiv_id, attempts, len(failed),
+        )
+        summary = _write_with_avoid(paper, facts, avoid=failed)
+        grounded, failed = guard_summary(summary, facts)
+        attempts += 1
+    if not grounded:
+        logger.error(
+            "hallucination guard failed twice for %s; publishing with claims_grounded=False",
+            paper.arxiv_id,
+        )
+    return summary, grounded
