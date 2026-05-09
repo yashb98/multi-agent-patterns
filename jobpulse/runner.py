@@ -1,5 +1,6 @@
 """CLI runner — invoke any agent from command line or cron."""
 
+import asyncio
 import atexit
 import os
 import sys
@@ -191,6 +192,17 @@ def main():
         from jobpulse.notion_papers_agent import create_weekly_page
 
         create_weekly_page()
+
+    elif command == "journal-daily":
+        from research_journal.pipeline import JournalPipeline
+
+        result = asyncio.run(JournalPipeline().daily_journal())
+        print(f"Journal: {result['core_count']} core, {result['tangent_count']} tangent")
+
+    elif command == "journal-quality-audit":
+        from research_journal.audit import run_weekly_audit
+
+        run_weekly_audit()
 
     elif command == "archive-week":
         from jobpulse.budget_tracker import archive_current_week

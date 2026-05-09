@@ -28,6 +28,12 @@ PATH={PYTHON_BIN_DIR}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew
 # arXiv AI research digest (7:57am) — Python agent, NOT shell script
 57 7 * * * {RUNNER} arxiv >> {PROJECT_DIR}/logs/arxiv.log 2>&1
 
+# Daily Research Journal (8:00am — runs after the 7:57am arxiv digest)
+ 0 8 * * * {RUNNER} journal-daily >> {PROJECT_DIR}/logs/journal.log 2>&1
+
+# Weekly Journal quality audit (Sun 9:00pm)
+ 0 21 * * 0 {RUNNER} journal-quality-audit >> {PROJECT_DIR}/logs/journal.log 2>&1
+
 # Morning briefing (8:03am) — all agents → one Telegram message
  3 8 * * * {RUNNER} briefing >> {PROJECT_DIR}/logs/morning.log 2>&1
 
@@ -43,17 +49,22 @@ PATH={PYTHON_BIN_DIR}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew
 
 # ── JOB AUTOPILOT ──
 
-# Full scan (all 5 platforms)
+# Full scan — Reed + LinkedIn + Indeed (3 platforms; Glassdoor + TotalJobs
+# were removed from PLATFORM_SCANNERS in jobpulse/job_scanner.py)
  0 7 * * * {RUNNER} job-scan >> {PROJECT_DIR}/logs/jobs.log 2>&1
  0 13 * * * {RUNNER} job-scan >> {PROJECT_DIR}/logs/jobs.log 2>&1
  0 19 * * * {RUNNER} job-scan >> {PROJECT_DIR}/logs/jobs.log 2>&1
 
-# Quick scan (LinkedIn + Indeed + Reed)
+# Quick scan — same 3 platforms as job-scan (kept for the off-peak slots
+# at 10am / 4:30pm; functionally identical until per-platform throttling
+# is added)
  0 10 * * * {RUNNER} job-scan-quick >> {PROJECT_DIR}/logs/jobs.log 2>&1
 30 16 * * * {RUNNER} job-scan-quick >> {PROJECT_DIR}/logs/jobs.log 2>&1
 
-# Overnight scan (Glassdoor + TotalJobs)
- 0 2 * * * {RUNNER} job-scan-slow >> {PROJECT_DIR}/logs/jobs.log 2>&1
+# Removed 2026-05-04: `job-scan-slow` / 2am overnight scan (Glassdoor +
+# TotalJobs). Both platforms were deleted from PLATFORM_SCANNERS and the
+# runner has no `job-scan-slow` handler — the cron entry was firing
+# nightly with no effect.
 
 # Nightly skill/project profile sync (3am)
  0 3 * * * {RUNNER} profile-sync >> {PROJECT_DIR}/logs/profile_sync.log 2>&1
@@ -71,6 +82,17 @@ PATH={PYTHON_BIN_DIR}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew
 
 # Weekly report summary (Sunday 8pm)
  0 20 * * 0 {RUNNER} weekly-report >> {PROJECT_DIR}/logs/weekly.log 2>&1
+
+# Weekly optimization maintenance (Sunday 9pm) — exports trajectories,
+# rotates trajectory store, runs forgetting sweep on memory engines
+ 0 21 * * 0 {RUNNER} learning-maintenance >> {PROJECT_DIR}/logs/optimize.log 2>&1
+
+# ── LEARNING ──
+
+# Hourly optimization cycle — aggregator pattern detection + policy
+# decisions + tracker measurement + signal flush. shared/optimization
+# CLAUDE.md specifies hourly cadence.
+15 * * * * {RUNNER} optimize >> {PROJECT_DIR}/logs/optimize.log 2>&1
 
 # ── MONITORING ──
 
