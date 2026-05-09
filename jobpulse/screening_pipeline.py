@@ -423,6 +423,26 @@ class ScreeningPipeline:
                 return None
             if any(phrase in answer.lower() for phrase in ("as an ai", "i don't have", "i cannot")):
                 return None
+            # When the field carries options, validate that the LLM picked one
+            # of them. Cognitive routing has been seen to leak unrelated text
+            # ("Enhanced swarm convergence: GRPO group sampling...") into the
+            # answer slot — that text would silently be filed as the user's
+            # screening answer otherwise. Align via the same OptionAligner the
+            # cache lookup uses; if the answer doesn't fit any option, treat
+            # the call as a miss and let the caller fall through.
+            if is_option_field:
+                from jobpulse.screening_option_aligner import OptionAligner
+                aligner = OptionAligner()
+                aligned = aligner.align_answer(answer, options, field_type)
+                opts_lower = {(o or "").lower().strip() for o in options}
+                if (aligned or "").lower().strip() not in opts_lower:
+                    logger.warning(
+                        "LLM fallback returned %r which does not align to any "
+                        "option in %s — treating as miss",
+                        (answer or "")[:60], [o[:25] for o in options[:5]],
+                    )
+                    return None
+                return aligned
             return answer
         except Exception as exc:
             logger.debug("LLM fallback failed: %s", exc)

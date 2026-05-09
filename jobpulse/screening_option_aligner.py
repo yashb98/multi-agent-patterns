@@ -218,6 +218,23 @@ class BoolFieldHandler:
         options_norm = {opt: OptionAligner._normalise(opt) for opt in options}
 
         target = "yes" if is_yes else "no"
+
+        # Tier A: option whose FIRST normalised token equals the target
+        # ("yes"/"no") wins outright. Without this, EEO-style options like
+        # "No, I do not have a disability..." score the same as decoy
+        # options like "I do not want to answer" (both contain the substring
+        # "no") and the shorter-length tiebreaker picks the wrong one.
+        # Strip trailing punctuation from the first token because _normalise
+        # keeps commas (e.g. "no, i do not have..." → first token "no,").
+        import string as _string
+        for opt, opt_norm in options_norm.items():
+            tokens = opt_norm.split()
+            if not tokens:
+                continue
+            first_token = tokens[0].rstrip(_string.punctuation)
+            if first_token == target:
+                return opt
+
         best_match: str | None = None
         best_score = -1.0
 

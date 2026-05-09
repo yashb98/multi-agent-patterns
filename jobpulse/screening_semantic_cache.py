@@ -200,7 +200,20 @@ class ScreeningSemanticCache:
         if self._embedder is not None:
             try:
                 vector = self._embedder.embed(question.strip())
-                vec_json = json.dumps(vector)
+                # Dim guard: MemoryEmbedder silently falls from BGE-M3 (1024)
+                # to MiniLM (384) when Ollama errors. A mixed-dim cache breaks
+                # every subsequent Qdrant query. Refuse the write rather than
+                # poison the index.
+                if vector is not None and len(vector) != self._dims:
+                    logger.warning(
+                        "Embedder returned %d dims, expected %d — skipping cache "
+                        "write for %r (Ollama/BGE-M3 likely degraded)",
+                        len(vector), self._dims, question[:60],
+                    )
+                    vector = None
+                    vec_json = ""
+                else:
+                    vec_json = json.dumps(vector)
             except Exception as exc:
                 logger.debug("Embedding failed during cache: %s", exc)
 
@@ -287,6 +300,18 @@ class ScreeningSemanticCache:
         if self._qdrant_available and self._embedder is not None and self._qdrant is not None:
             try:
                 vector = self._embedder.embed(question.strip())
+                # Dim guard mirrors the writer's: a wrong-dim query against a
+                # 1024-dim collection silently returns nothing, so abort
+                # before the round-trip and let the SQLite cosine fallback
+                # try (which compares stored vec dim to query vec dim).
+                if vector is None or len(vector) != self._dims:
+                    if vector is not None:
+                        logger.warning(
+                            "Lookup embedder returned %d dims, expected %d — "
+                            "skipping Qdrant query for %r",
+                            len(vector), self._dims, question[:60],
+                        )
+                    raise RuntimeError("dim mismatch")
                 from qdrant_client import models as qm
                 limit = 10 if field_options else 1
                 results = self._qdrant.query_points(
