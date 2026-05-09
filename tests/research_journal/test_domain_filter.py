@@ -86,3 +86,14 @@ def test_max_cosine_pair_uses_real_embedder(monkeypatch, classifier):
 
     score_orth = classifier._max_cosine_pair("alpha thing", "gamma thing")
     assert abs(score_orth) < 0.01   # orthogonal
+
+
+def test_pass2_uses_llm(classifier, monkeypatch):
+    monkeypatch.setattr(
+        "research_journal.domain_filter._llm_classify_borderline",
+        lambda paper: ("core", 0.78, "LLM: discusses LoRA fine-tuning"),
+    )
+    paper = _paper("New approach", abstract="We use LoRA on Llama-3...")
+    tag, conf, reason = classifier._pass2(paper)
+    assert tag == "core"
+    assert "LLM:" in reason

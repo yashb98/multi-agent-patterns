@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import json as _json_mod
 from pathlib import Path
 from typing import Literal
 
@@ -24,7 +24,7 @@ class DomainClassifier:
     def __init__(self, anchors_path: Path | None = None) -> None:
         if anchors_path is None:
             anchors_path = Path(__file__).parent / "anchors" / "anchor_sets.json"
-        data = json.loads(anchors_path.read_text())
+        data = _json_mod.loads(anchors_path.read_text())
         self.anchors_core: list[str] = data["core"]
         self.anchors_tangent: list[str] = data["tangent"]
         self.anchors_out: list[str] = data["out"]
@@ -53,8 +53,7 @@ class DomainClassifier:
         return "out", sim_core, f"below all thresholds (core={sim_core:.2f})"
 
     def _pass2(self, paper: Paper) -> tuple[DomainTag, float, str]:
-        # Implemented in Task 6
-        raise NotImplementedError
+        return _llm_classify_borderline(paper)
 
     def _max_cosine(self, text: str, anchors: list[str]) -> float:
         """Return the maximum cosine similarity between text and any anchor."""
@@ -70,3 +69,44 @@ class DomainClassifier:
         v_anchor = np.asarray(embed_text(anchor), dtype=float)
         denom = (np.linalg.norm(v_text) * np.linalg.norm(v_anchor)) or 1.0
         return float(np.dot(v_text, v_anchor) / denom)
+
+
+def _llm_classify_borderline(paper: Paper) -> tuple[DomainTag, float, str]:
+    from shared.agents import cognitive_llm_call
+    from shared.prompts import get_prompt
+
+    prompt = get_prompt("journal", "domain_classify")
+    call_params = prompt.render(
+        title=paper.title,
+        abstract=paper.abstract[:2000],
+        categories=", ".join(paper.categories),
+    )
+    task = "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in call_params["messages"]
+    )
+    raw = cognitive_llm_call(
+        task=task,
+        domain="journal_domain",
+        stakes="low",
+        fallback_messages=call_params["messages"],
+        response_format={"type": "json_object"},
+    ) or "{}"
+    try:
+        data = _json_mod.loads(_strip_codefence(raw))
+        tag = data.get("tag", "out")
+        if tag not in ("core", "tangent", "out"):
+            tag = "out"
+        return tag, float(data.get("confidence", 0.5)), f"LLM: {data.get('reason', '')[:200]}"
+    except (ValueError, _json_mod.JSONDecodeError) as exc:
+        logger.warning("Pass-2 LLM JSON parse failed (%s); defaulting to 'out'", exc)
+        return "out", 0.0, f"LLM parse failed: {exc}"
+
+
+def _strip_codefence(text: str) -> str:
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s
+        if s.endswith("```"):
+            s = s[: s.rfind("```")]
+    return s.strip()

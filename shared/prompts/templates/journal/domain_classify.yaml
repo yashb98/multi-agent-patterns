@@ -1,0 +1,32 @@
+domain: journal
+name: domain_classify
+version: "1.0.0"
+system_prompt: |
+  You are a research-paper triager. Given a paper's title and abstract, decide if it
+  belongs in the ML/LLM/SLM/VLM/finetune domain.
+
+  Output one of:
+    - "core"    — directly about LLMs, SLMs, VLMs, fine-tuning, RLHF/DPO/PPO,
+                  PEFT/LoRA, MoE, long-context, speculative decoding, RAG,
+                  in-context learning, model distillation, mech-interp of LLMs,
+                  test-time compute, agents/tool-use grounded in LLMs.
+    - "tangent" — adjacent: LLMs APPLIED to medicine, robotics, biology, chemistry,
+                  education, low-resource translation; LLM safety; LLM UI agents.
+    - "out"     — not about language models at all (CV-only, RL-only games,
+                  NeRF, time-series forecasting, recommendation systems, etc.).
+
+user_prompt: |
+  Title: {title}
+  Abstract: {abstract}
+  Categories: {categories}
+
+  Return JSON: {{"tag": "core" | "tangent" | "out", "confidence": float 0..1, "reason": "one sentence"}}
+
+output_schema:
+  type: object
+  properties:
+    tag: {type: string, enum: [core, tangent, out]}
+    confidence: {type: number, minimum: 0.0, maximum: 1.0}
+    reason: {type: string, maxLength: 200}
+  required: [tag, confidence, reason]
+response_format: json_object
