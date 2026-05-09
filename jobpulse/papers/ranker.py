@@ -36,6 +36,15 @@ _LENS_WEIGHTS: dict[str, dict[str, float]] = {
     },
 }
 
+# Paper-type de-boost penalties
+_TYPE_DEBOOST: dict[str, float] = {
+    "research": 0.0,
+    "survey": -1.0,
+    "tutorial": -1.5,
+    "position": -2.0,
+    "workshop": -1.5,
+}
+
 
 def fast_score(paper: Paper) -> float:
     """Deterministic score for a paper. Maximum possible value is 10.0.
@@ -177,6 +186,11 @@ def _repo_activity_boost(github_url: str, last_commit_iso: str) -> float:
     if datetime.now(timezone.utc) - last <= timedelta(days=14):
         return 1.0
     return 0.0
+
+
+def _paper_type_deboost(paper_type: str) -> float:
+    """Return de-boost penalty for paper type. Defaults to 0.0 for unknown types."""
+    return _TYPE_DEBOOST.get(paper_type, 0.0)
 
 
 def _extract_json_array(raw: str) -> list:
