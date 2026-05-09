@@ -145,9 +145,11 @@ at HEAD**: the function lives in `screening_semantic_cache.py`
 (not `screening_answers.py`) and uses `OptionAligner.align_answer` —
 fuzzy scoring only, **no LLM call**. When alignment fails, it returns
 `None` so the caller falls through to LLM with options constraint
-(intentional safety, not a bug). With S2's §2.2 #3 also stale, the
-audit-reliability rate is **2 / 6 stale (33 %)** — S8 should re-verify
-§2.2 #1, #2, #5, #6 before declaring done.
+(intentional safety, not a bug). Audit-reliability after S5: §2.2 #3
+and #4 are stale; §2.2 #1 (S4 cv_tailor) and #2 (S5 cover-letter
+polish) are real. Running tally: **2 / 4 stale (50 %)**. S8 must
+verify §2.2 #5 and #6 on their own merits — half hold and half don't,
+so neither outcome is the default.
 
 | Status | File:Line | Function | Class | Routing | Cache key / DB source | Notes |
 |---|---|---|---|---|---|---|
@@ -187,7 +189,7 @@ Acceptance: first run generates + caches, second run pulls from cache.
 
 | Status | File:Line | Function | Class | Routing | Cache key / DB source | Notes |
 |---|---|---|---|---|---|---|
-| 🟡 | `jobpulse/cv_templates/generate_cover_letter.py:123` | `polish_points_llm` | **CACHE-REPLACEABLE** | `cognitive_llm_call` | NEW table `cover_letter_cache` keyed by `(company, role_archetype, profile_version)` | §2.2 #2 — no cache; regenerates per company every time. |
+| ✅ S5 | `jobpulse/cv_templates/generate_cover_letter.py:123` | `polish_points_llm` | **CACHE-REPLACEABLE** (cache added) | `cognitive_llm_call` | NEW table `cover_letter_cache` in `applications.db` keyed by `(company_lower, role_archetype, inputs_hash)`, TTL = 30 days | §2.2 #2 was correct: `polish_points_llm` previously fired an LLM call every time. S5 adds a `(company, role_archetype, inputs_hash)` cache that short-circuits when the deterministic input points + role + company + skills haven't changed. `inputs_hash` covers `(role, company, sorted required_skills, points)` so a profile/project change that produces different deterministic points invalidates the cache automatically. **Malformed-output safety**: if the LLM returns non-JSON / fewer than 4 items / `None` (timeout / cognitive engine off), the unpolished input points are returned and the cache is NOT written — the next call retries the LLM rather than serving garbage. `JOBPULSE_TEST_MODE=1` short-circuits with default `db=None`. Live evidence deferred to S8 — unit test `tests/jobpulse/test_cover_letter_cache.py` (12 passing; collection ERROR under stash-drill confirms regression catch). |
 
 ---
 
