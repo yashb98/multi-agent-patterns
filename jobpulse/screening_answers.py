@@ -442,8 +442,18 @@ def _hiring_message_cache_init(db: JobDB) -> None:
 def _hiring_message_cache_lookup(
     company: str, role_archetype: str, *, db: JobDB | None = None,
 ) -> str | None:
-    """Return cached message or None on miss / TTL expiry."""
+    """Return cached message or None on miss / TTL expiry.
+
+    Under ``JOBPULSE_TEST_MODE=1`` (set by ``tests/conftest.py``), a default
+    ``db=None`` short-circuits to None so unrelated tests don't pick up
+    cache entries from prior runs of the same suite. Tests that exercise
+    cache behaviour pass an explicit ``db=`` kwarg from their tmp_path.
+    Mirrors the same guard in ``cv_tailor._tailored_cv_cache_lookup``.
+    """
     if not company or not role_archetype:
+        return None
+    import os as _os
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
         return None
     key = (company.lower().strip(), role_archetype.lower().strip())
     db = db or JobDB()
@@ -474,8 +484,15 @@ def _hiring_message_cache_lookup(
 def _hiring_message_cache_store(
     company: str, role_archetype: str, message: str, *, db: JobDB | None = None,
 ) -> None:
-    """Persist a freshly-generated hiring message."""
+    """Persist a freshly-generated hiring message.
+
+    Under ``JOBPULSE_TEST_MODE=1`` with default ``db=None``, the store is
+    a no-op — same rationale as the lookup guard above.
+    """
     if not company or not role_archetype or not message:
+        return
+    import os as _os
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
         return
     key = (company.lower().strip(), role_archetype.lower().strip())
     db = db or JobDB()
