@@ -262,7 +262,7 @@ sites *not* already targeted by S2–S6 fixes.
 
 | Status | File:Line | Function | Class | Routing | Notes |
 |---|---|---|---|---|---|
-| ⭐ S0-REF (verified S8) | `jobpulse/skill_extractor.py:339` | `_extract_skills_llm` | **NECESSARY** | `cognitive_llm_call` | §2.2 #6 — runs deterministic rule-based extraction first, escalates to LLM only on miss. **Pattern to copy across the rest of the codebase.** Verified at HEAD during S8 final reconciliation: `extract_skills_rule_based` returns at `skill_extractor.py:332` with the log line `"Rule-based extracted N skills, skipping LLM"` when the deterministic taxonomy yields ≥ 10 skills; `_extract_skills_llm` only fires on miss. **§2.2 #6 verdict: REAL.** No fix needed. |
+| ⭐ S0-REF (verified S8 f5de8b5) | `jobpulse/skill_extractor.py:339` | `_extract_skills_llm` | **NECESSARY** | `cognitive_llm_call` | §2.2 #6 — runs deterministic rule-based extraction first, escalates to LLM only on miss. **Pattern to copy across the rest of the codebase.** Verified at HEAD during S8 final reconciliation: `extract_skills_rule_based` returns at `skill_extractor.py:332` with the log line `"Rule-based extracted N skills, skipping LLM"` when the deterministic taxonomy yields ≥ 10 skills; `_extract_skills_llm` only fires on miss. **§2.2 #6 verdict: REAL.** No fix needed. |
 
 **§2.2 final tally (after S8):** 3 real / 3 stale (50 %).
 - ✅ #1 (cv_tailor) — REAL → S4 added cache.
