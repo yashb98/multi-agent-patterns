@@ -1,0 +1,53 @@
+{
+  "core": [
+    "instruction tuning of large language models",
+    "RLHF reward model alignment",
+    "DPO direct preference optimization",
+    "PPO for language model fine-tuning",
+    "speculative decoding for LLM inference",
+    "long-context attention mechanisms",
+    "mixture-of-experts routing in LLMs",
+    "PEFT LoRA QLoRA parameter-efficient fine-tuning",
+    "vision language model alignment and grounding",
+    "in-context learning behavior of LLMs",
+    "test-time compute and chain-of-thought scaling",
+    "retrieval-augmented generation for LLMs",
+    "tool use in language model agents",
+    "model distillation for small language models",
+    "small language model training",
+    "mechanistic interpretability of transformer LLMs",
+    "model merging and weight averaging",
+    "LLM evaluation benchmarks and harness design",
+    "constitutional AI and self-correction",
+    "synthetic data generation for LLM training",
+    "speculative sampling and draft models",
+    "KV cache compression and quantization",
+    "reasoning chains and verifier models",
+    "agent planning with LLMs",
+    "multimodal vision-language pretraining"
+  ],
+  "tangent": [
+    "transformer architecture for medical imaging",
+    "language model for robotics control policies",
+    "LLM for protein and molecular design",
+    "multi-agent simulation with language models",
+    "LLM in education tutoring systems",
+    "language model for low-resource translation",
+    "LLM for scientific discovery in chemistry",
+    "language model for software engineering autonomy",
+    "LLM safety red-teaming",
+    "LLM-driven UI agents and browser automation"
+  ],
+  "out": [
+    "molecular dynamics simulation",
+    "self-driving lane and object detection",
+    "graph neural network for chemistry property prediction",
+    "convolutional architecture for satellite imagery",
+    "reinforcement learning for game playing without language",
+    "computer vision for medical pathology slides",
+    "speech recognition acoustic modeling",
+    "recommendation systems with collaborative filtering",
+    "time series forecasting for finance",
+    "NeRF and 3D reconstruction"
+  ]
+}
