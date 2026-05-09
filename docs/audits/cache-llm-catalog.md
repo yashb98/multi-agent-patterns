@@ -92,9 +92,28 @@ Target files per `cache-or-llm-audit.md §6`: `field_mapper.py`,
 `field_resolver.py`. Acceptance: live URL fills the same fields, log shows
 `dict-mapped` for ≥ 80 % of fields.
 
+**Two local-Ollama setup gaps** were uncovered while running the live
+verification (SSH-tunnelled remote host); both are tooling, not S2's
+own work, so they live as findings here rather than code in this commit:
+
+1. `shared/agents.py:get_openai_client` default `timeout=30.0` cuts off
+   qwen3:32b mid-response (30–60 s for cv_tailor-sized prompts).
+   180 s is a safer default; OpenAI cloud calls finish in <10 s so it
+   still trips on real hangs.
+2. `jobpulse/cv_tailor.py:tailor_all_sections` runs four LLM calls
+   through `ThreadPoolExecutor(max_workers=4)`. Single-tenant Ollama
+   returns empty content for 2–3 of the four when fired in parallel
+   (verified: 4 concurrent calls produced 2 empty + 2 valid).
+   Workers should auto-scale to `1` when `is_local_llm()`.
+
+Audit doc `cache-or-llm-audit.md §2.3` already covers Step 0 (install
+non-reasoning model). These two are sibling Step-0 items uncovered by
+S2's live run; recommend folding them into a `chore(setup)` commit
+(separate from the `fix(cache-llm-S<n>):` chain) before S3.
+
 | Status | File:Line | Function | Class | Routing | Cache key / DB source | Notes |
 |---|---|---|---|---|---|---|
-| 🟡 | `jobpulse/form_engine/field_mapper.py:322` | `map_fields` | **DETERMINISTIC** | `cognitive_llm_call` | `_FIELD_LABEL_TO_PROFILE_KEY` (static) + `form_experience.db._persist_label_mapping` (learned) | §2.2 #3 — order is backwards: LLM first, dict validation after. Reverse: dict → learned → LLM. |
+| ✅ S2 | `jobpulse/form_engine/field_mapper.py:322` | `map_fields` | **DETERMINISTIC** (verified) | `cognitive_llm_call` | `_FIELD_LABEL_TO_PROFILE_KEY` (static) + `form_experience.db._persist_label_mapping` (learned) | §2.2 #3 framing was **stale**: code at HEAD already does `_fill_by_element_ids → try_cached_mapping → seed_mapping → LLM` (dict-first). Live evidence (Anthropic Greenhouse, 2026-05-09): `DIRECT ID FILL: 2/6 fields set in single evaluate()` fired BEFORE `map_fields` LLM call, which then handled 6 residual labels not in any dict (Publications URL, Personal Preferences, Additional Information). 80 % coverage claim NOT met on this URL (actual 25 % = 2/8) — sparse 42-entry static dict + 73-row learned table is the real bottleneck, not ordering. Closed as no-code-fix verification; growing the dict / learned table per domain is the path to higher coverage (deferred to S8 final reconciliation). |
 | 🟡 | `jobpulse/form_engine/field_mapper.py:614` | `recover_failed_fields_with_llm` | **NECESSARY** | `cognitive_llm_call` | — | Fires only when dict + learned + LLM round-1 all missed. Genuine fallback synthesis. |
 | 🟡 | `jobpulse/form_engine/field_mapper.py:720` | `recover_failed_fields_with_vision` | **NECESSARY** | `responses.create` | — | Vision-based recovery; only fires on round-2 fail. **Direct OpenAI bypass** — verify if Ollama vision fallback exists. |
 | 🟡 | `jobpulse/form_engine/field_mapper.py:804` | `vision_map_unlabeled_fields` | **NECESSARY** | `responses.create` | — | Vision OCR for fields with no a11y label; novel per page. **Direct OpenAI.** |
