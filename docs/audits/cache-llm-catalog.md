@@ -262,7 +262,23 @@ sites *not* already targeted by S2–S6 fixes.
 
 | Status | File:Line | Function | Class | Routing | Notes |
 |---|---|---|---|---|---|
-| ⭐ S0-REF | `jobpulse/skill_extractor.py:339` | `_extract_skills_llm` | **NECESSARY** | `cognitive_llm_call` | §2.2 #6 — runs deterministic rule-based extraction first, escalates to LLM only on miss. **Pattern to copy across the rest of the codebase.** No fix needed. |
+| ⭐ S0-REF (verified S8) | `jobpulse/skill_extractor.py:339` | `_extract_skills_llm` | **NECESSARY** | `cognitive_llm_call` | §2.2 #6 — runs deterministic rule-based extraction first, escalates to LLM only on miss. **Pattern to copy across the rest of the codebase.** Verified at HEAD during S8 final reconciliation: `extract_skills_rule_based` returns at `skill_extractor.py:332` with the log line `"Rule-based extracted N skills, skipping LLM"` when the deterministic taxonomy yields ≥ 10 skills; `_extract_skills_llm` only fires on miss. **§2.2 #6 verdict: REAL.** No fix needed. |
+
+**§2.2 final tally (after S8):** 3 real / 3 stale (50 %).
+- ✅ #1 (cv_tailor) — REAL → S4 added cache.
+- ✅ #2 (cover_letter) — REAL → S5 added cache.
+- ❌ #3 (map_fields) — STALE → S2 verified existing dict-first.
+- ❌ #4 (_align_to_options) — STALE → S3 verified existing fuzzy-only.
+- ❌ #5 (page_reasoner) — STALE → S6 verified existing comprehensive cache.
+- ✅ #6 (skill_extractor) — REAL → S0 reference, verified S8.
+
+The pattern across stale rows is *location and framing errors* (function
+in wrong file; "LLM-first" claims when code is dict-first; "partial
+caching" claims when caching is comprehensive). The pattern across real
+rows is correctly identified *missing caches*. Future audit rounds
+should verify each row independently rather than treating §2.2 as
+ground truth. See `docs/audits/cache-llm-completion-report.md §4` for
+the full audit-doc reliability discussion.
 
 ---
 
