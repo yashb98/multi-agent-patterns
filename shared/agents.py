@@ -386,11 +386,17 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     return _InstrumentedLLM(_MultiProviderLLM(chain), model_hint=model, agent_name=agent_name)
 
 
-def get_openai_client(timeout: float = 30.0) -> OpenAI:
+def get_openai_client(timeout: float = 180.0) -> OpenAI:
     """Factory for raw OpenAI SDK client instances.
 
     Centralizes all direct ``OpenAI()`` calls (previously 27 scattered copies).
     When LLM_PROVIDER=local, points at Ollama's OpenAI-compatible endpoint.
+
+    Default 180s tolerates 32b local models — qwen3:32b (the
+    cache-or-llm-audit.md §2.3 Step-0 model) takes 30–60 s on real
+    cv_tailor / page-reasoner sized prompts, which the previous 30 s
+    default cut off. OpenAI cloud calls finish in <10 s so a 180 s
+    timeout still trips on real hangs.
     """
     _ensure_provider()
     if _LLM_PROVIDER == "local":

@@ -769,6 +769,12 @@ def tailor_all_sections(
     cache so a re-application to the same JD with an unchanged profile
     skips all 4 LLM calls. Cache miss runs the parallel calls and stores
     the result on success; partial-failure results are NOT cached.
+
+    Concurrency: 4-way parallel for cloud OpenAI; serialised (1 worker)
+    for local Ollama. Single-tenant Ollama returns empty content for
+    2–3 of 4 concurrent calls under load (verified during S2 live
+    debugging) — serialising avoids the empty-content failure mode
+    while sacrificing wall-clock for the worse case.
     """
     role_archetype = _classify_role_archetype(getattr(listing, "title", ""))
     jd_hash = _jd_hash(listing)
@@ -782,7 +788,9 @@ def tailor_all_sections(
         )
         return cached
 
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="cv_tailor") as pool:
+    from shared.agents import is_local_llm
+    workers = 1 if is_local_llm() else 4
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="cv_tailor") as pool:
         fut_header = pool.submit(
             tailor_summary_and_tagline,
             listing.title,
