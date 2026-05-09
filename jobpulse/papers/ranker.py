@@ -108,7 +108,59 @@ def fast_score(paper: Paper) -> float:
     # Recency bonus
     score += 0.5
 
+    # Lab track-record boost
+    score += _lab_boost(paper)
+
     return min(score, 10.0)
+
+
+_RECOGNIZED_LABS: set[str] = {
+    "Anthropic", "DeepMind", "Google Research", "Meta AI", "FAIR",
+    "Mistral", "Qwen", "Alibaba", "DeepSeek", "Allen Institute for AI", "AI2",
+    "HuggingFace", "Stanford", "Princeton", "MIT", "CMU", "Berkeley",
+    "OpenAI", "Microsoft Research", "NVIDIA Research",
+}
+
+
+def _levenshtein(a: str, b: str) -> int:
+    if len(a) < len(b):
+        return _levenshtein(b, a)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(curr[j] + 1, prev[j + 1] + 1, prev[j] + (ca != cb)))
+        prev = curr
+    return prev[-1]
+
+
+def _matches_recognized_lab(affiliation: str) -> bool:
+    a_lower = affiliation.lower()
+    for lab in _RECOGNIZED_LABS:
+        if lab.lower() in a_lower:
+            return True
+    # Levenshtein < 3 for short affiliations
+    if len(affiliation) <= 30:
+        for lab in _RECOGNIZED_LABS:
+            if _levenshtein(affiliation.lower(), lab.lower()) < 3:
+                return True
+    return False
+
+
+def _lab_boost(paper) -> float:  # type: ignore[no-untyped-def]
+    affs = getattr(paper, "affiliations", None) or []
+    if not affs:
+        return 0.0
+    matched_indices = [i for i, a in enumerate(affs) if _matches_recognized_lab(a)]
+    if not matched_indices:
+        return 0.0
+    if len(matched_indices) >= 2:
+        return 1.5
+    if 0 in matched_indices:
+        return 1.0
+    return 0.5
 
 
 def _extract_json_array(raw: str) -> list:
