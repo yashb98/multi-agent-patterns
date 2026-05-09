@@ -119,3 +119,33 @@ def _fetch_github_repo_meta(github_url: str) -> dict:
             "stars": meta.get("stargazers_count", 0),
             "last_commit_iso": meta.get("pushed_at", ""),
         }
+
+
+def check_independent_citations(arxiv_id: str, author_labs: set[str]) -> tuple[Optional[bool], str]:
+    """Returns (True/False/None, reason). True = ≥3 distinct labs ≠ author labs."""
+    try:
+        citing_labs = _fetch_citing_paper_labs(arxiv_id, author_labs)
+    except Exception as exc:
+        return None, f"S2 citations API failed: {exc}"
+    distinct = set(citing_labs) - set(author_labs)
+    if len(distinct) >= 3:
+        return True, f"{len(distinct)} independent labs"
+    return False, f"only {len(distinct)} independent labs"
+
+
+def _fetch_citing_paper_labs(arxiv_id: str, author_labs: set[str]) -> list[str]:
+    """Fetch S2 citations and extract author affiliations."""
+    import httpx
+
+    url = f"https://api.semanticscholar.org/graph/v1/paper/arXiv:{arxiv_id}/citations"
+    params = {"fields": "authors.affiliations", "limit": 50}
+    with httpx.Client(timeout=15.0) as client:
+        r = client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+    labs: list[str] = []
+    for citing in data.get("data", []):
+        for author in citing.get("citingPaper", {}).get("authors", []):
+            for aff in author.get("affiliations", []) or []:
+                labs.append(aff)
+    return labs
