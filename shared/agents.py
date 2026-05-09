@@ -90,6 +90,14 @@ _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 _OLLAMA_BASE_URL = _OLLAMA_HOST.rstrip("/") + "/v1"
 _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "qwen3.6:35b")
 
+# Hard model override — when set, overrides every caller's model= argument
+# regardless of LLM_PROVIDER. Lets the user point the existing OpenAI client
+# at any OpenAI-compatible provider (Kimi/Moonshot, Together, Anyscale, etc.)
+# without code changes: just set OPENAI_BASE_URL + OPENAI_API_KEY +
+# LLM_MODEL_OVERRIDE in the env. None when the var is empty/unset, so the
+# original caller-supplied model wins.
+_MODEL_OVERRIDE = os.environ.get("LLM_MODEL_OVERRIDE", "").strip() or None
+
 # Cloud fallback model map: current → older/cheaper equivalent
 _FALLBACK_MODELS = {
     "gpt-5-mini": "gpt-4o-mini",
@@ -167,11 +175,19 @@ def is_local_llm() -> bool:
 def get_model_name(default: str = "gpt-5-mini") -> str:
     """Return the effective model name for raw OpenAI SDK calls.
 
-    When LLM_PROVIDER=local, returns LOCAL_LLM_MODEL (e.g. gemma4:31b).
-    When falling back to cloud via auto-detection, maps to older/cheaper
-    models (e.g. gpt-5-mini → gpt-4o-mini).
-    When LLM_PROVIDER=openai (explicit), returns the provided default as-is.
+    Resolution order (first match wins):
+    1. ``LLM_MODEL_OVERRIDE`` env var — when set, overrides every other
+       rule. Used to point any OpenAI-compatible provider (Kimi/Moonshot,
+       Together, Anyscale, …) at its own model without editing every
+       caller's hardcoded model= argument.
+    2. ``LLM_PROVIDER=local`` → returns ``LOCAL_LLM_MODEL`` (e.g. qwen3:32b).
+    3. ``LLM_PROVIDER=together`` → returns ``TOGETHER_MODEL`` env or default.
+    4. ``LLM_PROVIDER=auto`` falling back to cloud → maps to older/cheaper
+       OpenAI models (e.g. gpt-5-mini → gpt-4o-mini).
+    5. ``LLM_PROVIDER=openai`` (explicit) → returns the caller default.
     """
+    if _MODEL_OVERRIDE:
+        return _MODEL_OVERRIDE
     _ensure_provider()
     if _is_local:
         return _LOCAL_MODEL
@@ -196,8 +212,21 @@ def _token_limit_kwargs(model: str, max_tokens: int) -> dict:
 
 
 def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens: int) -> ChatOpenAI:
-    """Build an OpenAI LLM instance."""
-    effective_model = _FALLBACK_MODELS.get(model, model) if _use_fallback_models else model
+    """Build an OpenAI LLM instance.
+
+    When ``LLM_MODEL_OVERRIDE`` is set (Kimi / Together / Anyscale …),
+    that wins over every caller-supplied ``model`` and the fallback map.
+    Temperature heuristic still defaults to 1 for gpt-5 family — non-OpenAI
+    models with a literal ``gpt-5`` prefix would be misclassified, but
+    the override path's typical models (kimi-*, together's Qwen, …) don't
+    use that prefix so the heuristic is harmless.
+    """
+    if _MODEL_OVERRIDE:
+        effective_model = _MODEL_OVERRIDE
+    elif _use_fallback_models:
+        effective_model = _FALLBACK_MODELS.get(model, model)
+    else:
+        effective_model = model
     effective_temp = temperature if not effective_model.startswith("gpt-5") else 1
     return ChatOpenAI(
         model=effective_model,
