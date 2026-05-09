@@ -7,6 +7,7 @@ import os
 import re
 import time as _time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -42,7 +43,7 @@ class PaperFetcher:
     async def fetch_all(self, max_results: int = 50) -> list[Paper]:
         """Fetch from all sources with tiered fallback, deduplicate, and return."""
         # Tier 1 + Tier 2: all run concurrently
-        arxiv_papers, hf_papers, s2_papers, hn_papers, reddit_papers, bsky_papers = (
+        arxiv_papers, hf_papers, s2_papers, hn_papers, reddit_papers, bsky_papers, or_papers = (
             await asyncio.gather(
                 self._fetch_arxiv(max_results=max_results),
                 self._fetch_huggingface(),
@@ -50,10 +51,11 @@ class PaperFetcher:
                 self._fetch_hackernews(),
                 self._fetch_reddit(),
                 self._fetch_bluesky(),
+                self._fetch_openreview(),
             )
         )
 
-        all_papers = arxiv_papers + hf_papers + s2_papers + hn_papers + reddit_papers + bsky_papers
+        all_papers = arxiv_papers + hf_papers + s2_papers + hn_papers + reddit_papers + bsky_papers + or_papers
         merged = self._deduplicate_and_merge_all(all_papers)
 
         # Tier 3: fallback if < 5 unique papers
@@ -428,6 +430,56 @@ class PaperFetcher:
         except Exception as exc:
             logger.warning("S2 trending fetch failed: %s", exc)
             return []
+
+    async def _fetch_openreview(
+        self,
+        venues: tuple[str, ...] = (
+            "ICLR.cc/2026/Conference",
+            "NeurIPS.cc/2025/Conference",
+            "COLM.cc/2025",
+        ),
+    ) -> list[Paper]:
+        """Fetch accepted papers from OpenReview. Best-effort; returns [] on failure."""
+        out: list[Paper] = []
+        async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": _USER_AGENT}) as client:
+            for venue in venues:
+                try:
+                    r = await client.get(
+                        "https://api2.openreview.net/notes",
+                        params={"content.venueid": venue, "limit": 50},
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                    for note in data.get("notes", []):
+                        c = note.get("content", {})
+                        title = (c.get("title") or {}).get("value", "")
+                        abstract = (c.get("abstract") or {}).get("value", "")
+                        authors = (c.get("authors") or {}).get("value", []) or []
+                        pdf = (c.get("pdf") or {}).get("value", "")
+                        cdate = note.get("cdate", 0)
+                        if cdate:
+                            published_at = datetime.fromtimestamp(
+                                cdate / 1000, tz=timezone.utc
+                            ).date().isoformat()
+                        else:
+                            published_at = ""
+                        if title and abstract:
+                            note_id = note.get("id", "")
+                            out.append(Paper(
+                                arxiv_id=note_id or f"openreview-{note.get('number', '')}",
+                                title=title,
+                                abstract=abstract,
+                                authors=authors,
+                                categories=[venue.split(".")[0]],
+                                pdf_url=f"https://openreview.net{pdf}" if pdf else "",
+                                arxiv_url=f"https://openreview.net/forum?id={note_id}",
+                                published_at=published_at,
+                                source="arxiv",
+                            ))
+                except Exception as exc:
+                    logger.warning("OpenReview fetch failed for %s: %s", venue, exc)
+        logger.info("OpenReview: %d papers", len(out))
+        return out
 
     async def _fetch_arxiv_rss(self) -> list[Paper]:
         """Fallback: fetch from arXiv RSS feeds for cs.AI, cs.LG, cs.CL."""
