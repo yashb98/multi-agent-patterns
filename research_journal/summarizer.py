@@ -182,3 +182,64 @@ def _llm_extract_claims(summary_md: str) -> list[str]:
     except (ValueError, _json.JSONDecodeError, AttributeError, TypeError):
         logger.warning("claim extraction returned invalid JSON; treating as no claims")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Hallucination Guard: Deterministic Grounding (Task 24)
+# ---------------------------------------------------------------------------
+
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_EMBEDDING_THRESHOLD = 0.85
+
+
+def is_claim_grounded(claim: str, facts: ExtractedFacts) -> bool:
+    """Return True if the claim is supported by extracted facts (3-tier deterministic check)."""
+    norm_claim = _normalize(claim)
+    excerpts_norm = [_normalize(e) for e in facts.raw_excerpts]
+
+    # Tier 1: substring containment
+    for ex in excerpts_norm:
+        if norm_claim in ex or _significant_overlap(norm_claim, ex):
+            return True
+
+    # Tier 2: numeric match against benchmark values OR excerpts
+    nums_in_claim = {float(m) for m in _NUMBER_RE.findall(claim)}
+    if nums_in_claim:
+        bench_values = {b.value for b in facts.benchmarks}
+        if nums_in_claim & bench_values:
+            return True
+        for ex in facts.raw_excerpts:
+            ex_nums = {float(m) for m in _NUMBER_RE.findall(ex)}
+            if nums_in_claim & ex_nums:
+                return True
+
+    # Tier 3: embedding similarity
+    for ex in facts.raw_excerpts:
+        if _embedding_similarity(claim, ex) >= _EMBEDDING_THRESHOLD:
+            return True
+    return False
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower().strip())
+
+
+def _significant_overlap(claim: str, excerpt: str) -> bool:
+    """Return True if at least 60% of claim's content words appear in excerpt."""
+    claim_words = {w for w in claim.split() if len(w) > 4}
+    if len(claim_words) < 3:
+        return False
+    return len(claim_words & set(excerpt.split())) / len(claim_words) >= 0.6
+
+
+def _embedding_similarity(a: str, b: str) -> float:
+    try:
+        from shared.memory_layer._embedder import embed_text
+        import numpy as np
+        va = np.asarray(embed_text(a), dtype=float)
+        vb = np.asarray(embed_text(b), dtype=float)
+        denom = (np.linalg.norm(va) * np.linalg.norm(vb)) or 1.0
+        return float(np.dot(va, vb) / denom)
+    except Exception as exc:
+        logger.warning("embedding similarity failed: %s", exc)
+        return 0.0
