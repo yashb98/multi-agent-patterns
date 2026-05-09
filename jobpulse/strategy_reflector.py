@@ -15,7 +15,7 @@ import json
 from collections import Counter
 from typing import TYPE_CHECKING
 
-from shared.agents import get_llm, smart_llm_call
+from shared.agents import cognitive_llm_call
 from shared.logging_config import get_logger
 
 from jobpulse.trajectory_store import _is_sensitive_field
@@ -183,24 +183,29 @@ def reflect_with_llm(
     strategy: ApplicationStrategy,
     trajectories: list[FieldTrajectory],
 ) -> list[dict]:
-    """Pass 2: LLM reflection for edge cases. Returns parsed heuristics."""
-    from shared.cost_tracker import track_llm_usage
+    """Pass 2: LLM reflection for edge cases. Returns parsed heuristics.
 
+    Routes through ``cognitive_llm_call`` so L0 Memory Recall can return
+    a templated heuristic set without firing an LLM call when this
+    domain/platform has been reflected on before. Cognitive engine handles
+    L0 → L1 → L2 → L3 escalation internally; cost tracking happens via
+    its own infra (no separate ``track_llm_usage`` call needed).
+    """
     prompt = _build_reflection_prompt(strategy, trajectories)
 
     try:
-        llm = get_llm(temperature=0.3, model="gpt-5-mini", agent_name="strategy_reflector")
-        response = smart_llm_call(
-            llm, prompt, agent_name="strategy_reflection",
+        raw = cognitive_llm_call(
+            task=prompt,
+            domain="strategy_reflection",
+            stakes="medium",
         )
-
-        raw = response.content if hasattr(response, "content") else str(response)
+        if not raw:
+            return []
         raw = raw.strip()
-
-        if hasattr(response, "_jobpulse_usage"):
-            pass
-        else:
-            track_llm_usage(response, agent_name="strategy_reflection")
+        # Strip markdown fences so cognitive engine outputs that wrap JSON
+        # in ```...``` parse correctly without a separate retry.
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
         parsed = json.loads(raw)
         if isinstance(parsed, list):

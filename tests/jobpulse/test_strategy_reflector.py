@@ -173,15 +173,15 @@ class TestComputeStrategyScore:
 
 
 class TestReflectWithLLM:
-    @patch("shared.cost_tracker.track_llm_usage", return_value={})
-    @patch("jobpulse.strategy_reflector.smart_llm_call")
-    @patch("jobpulse.strategy_reflector.get_llm")
-    def test_parses_valid_json(self, _mock_llm, mock_smart_call, _mock_track):
-        mock_response = MagicMock()
-        mock_response.content = json.dumps([
+    """Routes through ``cognitive_llm_call`` so L0 Memory Recall can
+    short-circuit before an LLM fires (cache-llm-S7). Tests patch the
+    cognitive entry point, not ``smart_llm_call`` / ``get_llm``."""
+
+    @patch("jobpulse.strategy_reflector.cognitive_llm_call")
+    def test_parses_valid_json(self, mock_cognitive):
+        mock_cognitive.return_value = json.dumps([
             {"trigger": "city field", "action": "use ArrowDown", "confidence": 0.8},
         ])
-        mock_smart_call.return_value = mock_response
 
         result = reflect_with_llm(
             _make_strategy(),
@@ -189,32 +189,48 @@ class TestReflectWithLLM:
         )
         assert len(result) == 1
         assert result[0]["trigger"] == "city field"
+        # Confirm cognitive routing — domain identifies the call site so
+        # cognitive engine's L0 memory layer can match templates per domain.
+        mock_cognitive.assert_called_once()
+        kwargs = mock_cognitive.call_args.kwargs
+        assert kwargs["domain"] == "strategy_reflection"
 
-    @patch("shared.cost_tracker.track_llm_usage", return_value={})
-    @patch("jobpulse.strategy_reflector.smart_llm_call")
-    @patch("jobpulse.strategy_reflector.get_llm")
-    def test_handles_invalid_json(self, _mock_llm, mock_smart_call, _mock_track):
-        mock_response = MagicMock()
-        mock_response.content = "not valid json"
-        mock_smart_call.return_value = mock_response
-
+    @patch("jobpulse.strategy_reflector.cognitive_llm_call")
+    def test_handles_invalid_json(self, mock_cognitive):
+        mock_cognitive.return_value = "not valid json"
         result = reflect_with_llm(_make_strategy(), [_make_trajectory()])
         assert result == []
 
-    @patch("shared.cost_tracker.track_llm_usage", return_value={})
-    @patch("jobpulse.strategy_reflector.smart_llm_call")
-    @patch("jobpulse.strategy_reflector.get_llm")
-    def test_filters_malformed_heuristics(self, _mock_llm, mock_smart_call, _mock_track):
-        mock_response = MagicMock()
-        mock_response.content = json.dumps([
+    @patch("jobpulse.strategy_reflector.cognitive_llm_call")
+    def test_filters_malformed_heuristics(self, mock_cognitive):
+        mock_cognitive.return_value = json.dumps([
             {"trigger": "good", "action": "good"},
             {"bad": "no trigger or action"},
             "not even a dict",
         ])
-        mock_smart_call.return_value = mock_response
-
         result = reflect_with_llm(_make_strategy(), [_make_trajectory()])
         assert len(result) == 1
+
+    @patch("jobpulse.strategy_reflector.cognitive_llm_call")
+    def test_handles_markdown_fenced_json(self, mock_cognitive):
+        """Cognitive-engine outputs sometimes wrap JSON in ```...```; the
+        migration adds an explicit fence-strip so we don't need a retry."""
+        mock_cognitive.return_value = (
+            "```json\n"
+            + json.dumps([{"trigger": "t", "action": "a"}])
+            + "\n```"
+        )
+        result = reflect_with_llm(_make_strategy(), [_make_trajectory()])
+        assert len(result) == 1
+        assert result[0]["trigger"] == "t"
+
+    @patch("jobpulse.strategy_reflector.cognitive_llm_call")
+    def test_handles_none_return_from_cognitive(self, mock_cognitive):
+        """cognitive_llm_call returns None when every L1/L2/L3 fallback
+        fails; reflect_with_llm should return [] without raising."""
+        mock_cognitive.return_value = None
+        result = reflect_with_llm(_make_strategy(), [_make_trajectory()])
+        assert result == []
 
 
 class TestFeedExperienceMemory:
