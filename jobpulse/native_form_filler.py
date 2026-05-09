@@ -3525,6 +3525,30 @@ class NativeFormFiller:
                     fields = await self._scan_fields()
             hydration_ms = int((time.monotonic() - t_hydration) * 1000)
 
+            # Reasoning-LLM field analyser (cache-llm Step C):
+            # The static a11y scan misses dynamic widgets — React Select
+            # comboboxes report options=[], custom radio groups look like
+            # buttons, hidden file inputs hide behind drag-drop divs. A
+            # reasoning model corrects this per-page (cached by
+            # (domain, page_signature) so the same form re-uses the
+            # analysis). Augments each field with `true_type`,
+            # `analyzed_options`, `fill_method`, `analyzer_reasoning`,
+            # AND backfills the canonical `options` key when the scanner
+            # came back empty so downstream semantic_matcher /
+            # OptionAligner code keeps working unchanged.
+            try:
+                from jobpulse.form_engine.field_analyzer import analyze_fields
+                page_text_for_analysis = ""
+                try:
+                    page_text_for_analysis = (await self._page.inner_text("body"))[:1500]
+                except Exception:
+                    pass
+                fields = analyze_fields(
+                    fields, url=page_url, page_text=page_text_for_analysis,
+                )
+            except Exception as exc:
+                logger.debug("field_analyzer call failed (continuing): %s", exc)
+
             _cur_fingerprint = self._fingerprint_fields(fields)
             if _cur_fingerprint == _prev_fingerprint and page_num > 1:
                 _stuck_count += 1

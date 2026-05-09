@@ -118,11 +118,18 @@ _MODEL_OVERRIDE = os.environ.get("LLM_MODEL_OVERRIDE", "").strip() or None
 # get_model_name's existing fallback chain.
 _DOMAIN_MODEL_REGISTRY = {
     # Decision / reasoning domains — chain-of-thought matters.
+    # Multi-step / planning calls land here.
     "page_reasoning":         "kimi-k2.6",
-    "field_type_analysis":    "kimi-k2.6",
     "form_recovery":          "kimi-k2.6",
     "form_navigation":        "kimi-k2.6",
     "cv_scrutiny":            "kimi-k2.6",
+    # Bulk-classification with closed enums — non-reasoning is faster and
+    # the few-shot examples in the prompt give the model deterministic
+    # rules to follow. Tried K2.6 reasoning in cache-llm Step C live test:
+    # 44-field input timed out at 180 s because each field's reasoning
+    # chain compounds. v1-auto handles 44 fields in ~3 s with the same
+    # few-shot prompt scaffolding.
+    "field_type_analysis":    "moonshot-v1-auto",
     # Content domains — speed wins over reasoning.
     "cv_tailoring":           "moonshot-v1-auto",
     "cover_letter":           "moonshot-v1-auto",
@@ -976,6 +983,7 @@ def cognitive_llm_call(
     fallback_llm=None,
     fallback_messages=None,
     response_format: dict | None = None,
+    max_tokens: int | None = None,
 ) -> str | None:
     """Route LLM calls through CognitiveEngine when available (default-on).
 
@@ -1012,10 +1020,14 @@ def cognitive_llm_call(
         return _direct_llm_call(
             task, fallback_llm, fallback_messages,
             response_format=response_format, domain=domain,
+            max_tokens=max_tokens,
         )
 
     if os.getenv("COGNITIVE_ENABLED", "true").lower() == "false":
-        return _direct_llm_call(task, fallback_llm, fallback_messages, domain=domain)
+        return _direct_llm_call(
+            task, fallback_llm, fallback_messages, domain=domain,
+            max_tokens=max_tokens,
+        )
 
     try:
         from shared.cognitive import get_cognitive_engine
@@ -1025,7 +1037,10 @@ def cognitive_llm_call(
         return result.answer.strip()
     except Exception as exc:
         logger.debug("Cognitive engine failed for %s, falling back to direct LLM: %s", domain, exc)
-        return _direct_llm_call(task, fallback_llm, fallback_messages, domain=domain)
+        return _direct_llm_call(
+            task, fallback_llm, fallback_messages, domain=domain,
+            max_tokens=max_tokens,
+        )
 
 
 def _direct_llm_call(
@@ -1034,6 +1049,7 @@ def _direct_llm_call(
     fallback_messages=None,
     response_format: dict | None = None,
     domain: str | None = None,
+    max_tokens: int | None = None,
 ) -> str | None:
     """Direct LLM fallback when cognitive engine is unavailable.
 
@@ -1063,15 +1079,18 @@ def _direct_llm_call(
     # falling back to the provider default. cv_tailoring / cover_letter
     # / screening_answers / etc. land on a fast non-reasoning model;
     # page_reasoning / form_recovery / field_type_analysis land on a
-    # reasoning model.
+    # reasoning model. ``max_tokens`` lets a caller (e.g. field_analyzer
+    # with 40+ fields to enrich) request a larger budget; default 2000
+    # keeps cost bounded for the bulk of calls.
     try:
         client = get_openai_client()
         model = _model_for_domain(domain) or get_model_name()
+        requested = max_tokens if max_tokens is not None else 2000
         kwargs: dict = {
             "model": model,
             "messages": [{"role": "user", "content": task}],
             "temperature": 1 if _requires_fixed_temperature(model) else 0.4,
-            **_token_limit_kwargs(model, _max_tokens_for_model(model, 2000)),
+            **_token_limit_kwargs(model, _max_tokens_for_model(model, requested)),
         }
         if response_format is not None:
             kwargs["response_format"] = response_format
