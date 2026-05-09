@@ -3549,6 +3549,108 @@ class NativeFormFiller:
             except Exception as exc:
                 logger.debug("field_analyzer call failed (continuing): %s", exc)
 
+            # Step C2: click-and-extract for analyzer-flagged comboboxes.
+            # The analyzer correctly identifies fields like 'Country',
+            # 'Gender', 'Veteran Status' as comboboxes but its options
+            # are unreliable for closed-enum fields — Veteran Status and
+            # Disability Status get hallucinated as Yes/No when the real
+            # Greenhouse / Workday EEO enums are 3-item ('I am a protected
+            # veteran' / 'I am not …' / 'I do not wish to answer').
+            #
+            # Therefore: ALWAYS click-extract for analyzer-flagged
+            # comboboxes. DOM is ground truth; LLM-inferred options are
+            # only a fallback when click-extract fails (field hidden,
+            # listbox renders in unsupported portal, etc.).
+            #
+            # Two click strategies tried in order:
+            #   1. Field's stored ``selector`` (when scanner populated it)
+            #   2. Playwright's ``get_by_label(label)`` (works for any
+            #      properly-labelled <input role="combobox">, which is
+            #      most ATS dropdowns including Greenhouse / Workday /
+            #      Ashby). The scanner often forgets to store selectors
+            #      for these fields, so the label fallback is what
+            #      actually catches Country / Gender / Veteran Status.
+            try:
+                from jobpulse.form_engine.field_scanner import _scan_combobox_options
+                empty_combos = [
+                    f for f in fields
+                    if (f.get("true_type") or f.get("type") or "").lower() == "combobox"
+                    and (f.get("label") or "").strip()
+                ]
+                if empty_combos:
+                    logger.info(
+                        "field_analyzer: opening %d combobox(es) to extract real options "
+                        "from DOM (analyzer-inferred options can hallucinate on "
+                        "EEO / closed-enum fields)",
+                        len(empty_combos),
+                    )
+                    for f in empty_combos:
+                        label = (f.get("label") or "").strip()
+                        selector = (f.get("selector") or "").strip()
+                        opts: list[str] = []
+                        # 1. Try the scanner-supplied selector first.
+                        if selector:
+                            try:
+                                opts = await _scan_combobox_options(
+                                    self._page, selector, timeout_ms=2000,
+                                )
+                            except Exception as exc:
+                                logger.debug(
+                                    "selector click-extract failed for %r: %s",
+                                    label[:40], exc,
+                                )
+                        # 2. Fall back to label-based locator.
+                        if not opts and label:
+                            label_for_fallback = label.rstrip("*").strip()
+                            try:
+                                loc = self._page.get_by_label(
+                                    label_for_fallback, exact=False,
+                                ).first
+                                if await loc.count():
+                                    await loc.click(timeout=2500)
+                                    options = await self._page.evaluate(
+                                        """() => {
+                                            const sel = '[role="option"], '
+                                                      + '[role="radio"], '
+                                                      + '[role="menuitemcheckbox"], '
+                                                      + 'li[role="option"]';
+                                            return Array.from(
+                                                document.querySelectorAll(sel)
+                                            )
+                                                .filter(o => o.offsetParent !== null)
+                                                .map(o => (o.textContent || '').trim())
+                                                .filter(t => t
+                                                    && !/^select\\s*(one|an?\\s*option)?$/i.test(t)
+                                                    && !/^loading/i.test(t));
+                                        }"""
+                                    )
+                                    try:
+                                        await self._page.keyboard.press("Escape")
+                                        await self._page.wait_for_function(
+                                            """() => document.querySelectorAll(
+                                                '[role="option"], [role="radio"]'
+                                            ).length === 0""",
+                                            timeout=1000,
+                                        )
+                                    except Exception:
+                                        pass
+                                    opts = options or []
+                            except Exception as exc:
+                                logger.debug(
+                                    "get_by_label click-extract failed for %r: %s",
+                                    label[:40], exc,
+                                )
+                        if opts:
+                            f["options"] = opts
+                            f["analyzed_options"] = opts
+                            logger.info(
+                                "  ✓ %r → %d options: %s%s",
+                                label[:50], len(opts),
+                                opts[:5], "…" if len(opts) > 5 else "",
+                            )
+            except Exception as exc:
+                logger.debug("combobox option-extraction skipped: %s", exc)
+
             _cur_fingerprint = self._fingerprint_fields(fields)
             if _cur_fingerprint == _prev_fingerprint and page_num > 1:
                 _stuck_count += 1
@@ -3673,18 +3775,61 @@ class NativeFormFiller:
                 still_unresolved = []
                 for f in unresolved:
                     db_answer = self._cached_screening.get(f["label"].lower().strip())
+                    # Validate the cached answer against the field's CURRENT
+                    # options before using it (Step C2 follow-up: stale
+                    # cache entries served wrong-shape answers because this
+                    # fast path didn't re-align). For combobox/select
+                    # fields with a known options list, the cached answer
+                    # must either match an option exactly OR fuzzy-align
+                    # to one — otherwise treat it as a cache miss and let
+                    # the screening pipeline regenerate.
                     if db_answer:
-                        mapping[f["label"]] = db_answer
-                        seen_screening.append({
-                            "question": f["label"], "answer": db_answer,
-                            "field_type": f.get("type", "text"), "field_options": f.get("options"),
-                            "intent": "unknown", "strategy": "db_cache",
-                        })
-                        _outcome_recorder.record_fill(
-                            question=f["label"], answer=db_answer,
-                            field_options=f.get("options"), field_type=f.get("type", "text"),
-                        )
-                        continue
+                        field_options_now = f.get("options") or []
+                        field_type_now = (f.get("true_type") or f.get("type") or "").lower()
+                        accept_db_answer = True
+                        if field_options_now and field_type_now in (
+                            "combobox", "select", "radio", "custom_dropdown"
+                        ):
+                            try:
+                                from jobpulse.screening_option_aligner import OptionAligner
+                                aligner = OptionAligner()
+                                aligned = aligner.align_answer(
+                                    db_answer, field_options_now, field_type_now,
+                                )
+                                opts_lower = {
+                                    (o or "").lower().strip()
+                                    for o in field_options_now
+                                }
+                                if aligned.lower().strip() not in opts_lower:
+                                    logger.info(
+                                        "_cached_screening: stale entry for %r "
+                                        "(answer=%r doesn't fit options=%s) — "
+                                        "skipping cache, falling through to "
+                                        "screening pipeline",
+                                        f["label"][:60], db_answer[:60],
+                                        [o[:30] for o in field_options_now[:5]],
+                                    )
+                                    accept_db_answer = False
+                                else:
+                                    db_answer = aligned
+                            except Exception as exc:
+                                logger.debug(
+                                    "_cached_screening: alignment check failed "
+                                    "for %r (%s) — accepting cached answer as-is",
+                                    f["label"][:60], exc,
+                                )
+                        if accept_db_answer:
+                            mapping[f["label"]] = db_answer
+                            seen_screening.append({
+                                "question": f["label"], "answer": db_answer,
+                                "field_type": f.get("type", "text"), "field_options": f.get("options"),
+                                "intent": "unknown", "strategy": "db_cache",
+                            })
+                            _outcome_recorder.record_fill(
+                                question=f["label"], answer=db_answer,
+                                field_options=f.get("options"), field_type=f.get("type", "text"),
+                            )
+                            continue
                     cached = try_instant_answer(
                         f["label"], _job_ctx,
                         input_type=f.get("type"), platform=platform,

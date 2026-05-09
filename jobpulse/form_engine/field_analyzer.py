@@ -197,9 +197,25 @@ Rules:
      - "Why X?" with no options → textarea, fill
      - "Upload your CV" → file, upload
      - "I agree to receive marketing" → checkbox (single, with check_label)
-     - "Pronouns" with no options → combobox, options=["He/Him","She/Her","They/Them","Prefer not to say"], select
-     - "Country" with no options → combobox, options=[full country list], select
-6. Never invent labels. Never hallucinate fields not in the input.\
+6. **DO NOT guess options for closed-enum compliance fields.** Return
+   ``options=[]`` for any of these so the downstream click-extract pass
+   can read the real enum from the DOM. Guessing here is always wrong:
+     - Veteran Status (real Greenhouse/Workday enum is 3-item EEO:
+       "I am a protected veteran" / "I am not a protected veteran" /
+       "I don't wish to answer", NOT Yes/No)
+     - Disability Status (3-item: "Yes I have a disability" /
+       "No I don't have a disability" / "I do not wish to answer",
+       NOT Yes/No)
+     - Race / Ethnicity / Hispanic-Latino classification fields
+     - Country / Region (long enums; click-extract will enumerate them)
+     - Gender (varies per form; some are Male/Female/Non-binary/Prefer
+       not to say, others are different — let DOM be ground truth)
+     - Pronouns / Sexual orientation
+     - AI Policy / Code-of-conduct selectors (form-specific dropdowns)
+   For these, set ``true_type=combobox``, ``options=[]``,
+   ``fill_method=select``, and a reasoning line that explicitly says
+   "EEO enum — defer to DOM click-extract".
+7. Never invent labels. Never hallucinate fields not in the input.\
 """
 
 
