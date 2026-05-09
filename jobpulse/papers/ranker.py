@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 
 from jobpulse.papers.models import FactCheckResult, Paper, RankedPaper
 from shared.logging_config import get_logger
@@ -161,6 +162,21 @@ def _lab_boost(paper) -> float:  # type: ignore[no-untyped-def]
     if 0 in matched_indices:
         return 1.0
     return 0.5
+
+
+def _repo_activity_boost(github_url: str, last_commit_iso: str) -> float:
+    """Return +1.0 if repo has a commit within the last 14 days, else 0.0."""
+    if not github_url or not last_commit_iso:
+        return 0.0
+    try:
+        last = datetime.fromisoformat(last_commit_iso.replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return 0.0
+    if datetime.now(timezone.utc) - last <= timedelta(days=14):
+        return 1.0
+    return 0.0
 
 
 def _extract_json_array(raw: str) -> list:
