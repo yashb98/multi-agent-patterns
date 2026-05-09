@@ -98,7 +98,7 @@ def _llm_classify_borderline(paper: Paper) -> tuple[DomainTag, float, str]:
         if tag not in ("core", "tangent", "out"):
             tag = "out"
         return tag, float(data.get("confidence", 0.5)), f"LLM: {data.get('reason', '')[:200]}"
-    except (ValueError, _json_mod.JSONDecodeError) as exc:
+    except (ValueError, _json_mod.JSONDecodeError, AttributeError, TypeError) as exc:
         logger.warning("Pass-2 LLM JSON parse failed (%s); defaulting to 'out'", exc)
         return "out", 0.0, f"LLM parse failed: {exc}"
 
