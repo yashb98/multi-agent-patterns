@@ -204,6 +204,21 @@ def _needs_max_completion_tokens(model: str) -> bool:
     return m.startswith(("o1", "o3", "o4", "gpt-5"))
 
 
+def _requires_fixed_temperature(model: str) -> bool:
+    """Some models reject any temperature ≠ 1 with a 400. Detect them so
+    callers passing temperature=0.4 / 0.7 / 0.2 don't blow up.
+
+    Currently: gpt-5 family (rejects ≠ 1) and Kimi K2.6 / K2.5 (return
+    ``invalid temperature: only 1 is allowed for this model``).
+    """
+    m = model.lower()
+    if m.startswith("gpt-5"):
+        return True
+    if m.startswith("kimi-k2") or m.startswith("kimi-k3"):
+        return True
+    return False
+
+
 def _token_limit_kwargs(model: str, max_tokens: int) -> dict:
     """Return the correct token limit kwarg for the model."""
     if _needs_max_completion_tokens(model):
@@ -227,7 +242,7 @@ def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens:
         effective_model = _FALLBACK_MODELS.get(model, model)
     else:
         effective_model = model
-    effective_temp = temperature if not effective_model.startswith("gpt-5") else 1
+    effective_temp = 1 if _requires_fixed_temperature(effective_model) else temperature
     return ChatOpenAI(
         model=effective_model,
         temperature=effective_temp,
@@ -399,11 +414,15 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     The ``model`` parameter is overridden by LOCAL_LLM_MODEL unless the
     caller explicitly passes a model name that doesn't match the default.
 
+    When LLM_PROVIDER=together, routes to Together AI's OpenAI-compatible API
+    using TOGETHER_MODEL (defaults to Qwen/Qwen3-30B-A3B-Instruct).
+
     When falling back to cloud via auto-detection, builds a provider chain:
       OpenAI → Anthropic → Gemini (whichever have API keys configured).
 
-    Pass ``force_cloud=True`` to bypass local routing entirely — used by
-    callers implementing local→cloud failover after a local LLM error.
+    Pass ``force_cloud=True`` to bypass both ``local`` and ``together``
+    providers and route directly to the OpenAI provider chain — used by
+    callers implementing non-cloud→cloud failover after a provider error.
 
     timeout: seconds before the HTTP request is aborted (default 30s for
     cloud, auto-scaled by LOCAL_TIMEOUT_MULTIPLIER for local Ollama).
