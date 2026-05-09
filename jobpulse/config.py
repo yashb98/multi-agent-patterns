@@ -30,7 +30,7 @@ NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "")
 
 # GitHub
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-GITHUB_USERNAME = os.getenv("GITHUB_USERNAME", "yashb98")
+GITHUB_USERNAME = os.getenv("GITHUB_USERNAME", "")
 
 # Telegram — multi-bot setup
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")          # Main bot (all commands)
@@ -52,6 +52,9 @@ DISCORD_USER_ID = os.getenv("DISCORD_USER_ID", "")
 
 # LLM
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
+TOGETHER_MODEL = os.getenv("TOGETHER_MODEL", "Qwen/Qwen3-30B-A3B-Instruct")
+TOGETHER_CODER_MODEL = os.getenv("TOGETHER_CODER_MODEL", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
 CONVERSATION_MODEL = os.getenv("CONVERSATION_MODEL", "gpt-5-mini")
 
 # Multi-provider fallback

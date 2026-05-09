@@ -88,7 +88,7 @@ logger = get_logger(__name__)
 
 _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 _OLLAMA_BASE_URL = _OLLAMA_HOST.rstrip("/") + "/v1"
-_LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "qwen3.6:35b-a3b")
+_LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "qwen3.6:35b")
 
 # Cloud fallback model map: current → older/cheaper equivalent
 _FALLBACK_MODELS = {
@@ -135,7 +135,7 @@ def _probe_ollama() -> bool:
 def _resolve_provider() -> str:
     """Resolve LLM_PROVIDER, auto-detecting Ollama when set to 'auto'."""
     explicit = os.environ.get("LLM_PROVIDER", "auto").lower()
-    if explicit in ("local", "openai"):
+    if explicit in ("local", "openai", "together"):
         return explicit
     # auto: probe Ollama
     if _probe_ollama():
@@ -175,6 +175,8 @@ def get_model_name(default: str = "gpt-5-mini") -> str:
     _ensure_provider()
     if _is_local:
         return _LOCAL_MODEL
+    if _LLM_PROVIDER == "together":
+        return os.environ.get("TOGETHER_MODEL", default if default != "gpt-5-mini" else "Qwen/Qwen3-30B-A3B-Instruct")
     if _use_fallback_models:
         return _FALLBACK_MODELS.get(default, default)
     return default
@@ -215,6 +217,22 @@ def _make_local_llm(temperature: float, model: str, timeout: float, max_tokens: 
         max_tokens=max_tokens,
         openai_api_base=_OLLAMA_BASE_URL,
         openai_api_key="ollama",
+    )
+
+
+def _make_together_llm(temperature: float, model: str, timeout: float, max_tokens: int) -> ChatOpenAI:
+    """Build a Together AI LLM via OpenAI-compatible endpoint."""
+    api_key = os.environ.get("TOGETHER_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("TOGETHER_API_KEY not set; cannot use LLM_PROVIDER=together")
+    effective_model = os.environ.get("TOGETHER_MODEL", model) if model == "gpt-5-mini" else model
+    return ChatOpenAI(
+        model=effective_model,
+        temperature=temperature,
+        request_timeout=timeout,
+        max_tokens=max_tokens,
+        openai_api_base="https://api.together.xyz/v1",
+        openai_api_key=api_key,
     )
 
 
@@ -339,7 +357,7 @@ _LOCAL_TIMEOUT_MULTIPLIER = float(os.environ.get("LOCAL_TIMEOUT_MULTIPLIER", "3.
 
 def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
             timeout: float = 30.0, max_tokens: int = 4096,
-            agent_name: str = "unknown"):
+            agent_name: str = "unknown", force_cloud: bool = False):
     """
     Factory function for LLM instances with multi-provider fallback.
 
@@ -355,14 +373,24 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     When falling back to cloud via auto-detection, builds a provider chain:
       OpenAI → Anthropic → Gemini (whichever have API keys configured).
 
+    Pass ``force_cloud=True`` to bypass local routing entirely — used by
+    callers implementing local→cloud failover after a local LLM error.
+
     timeout: seconds before the HTTP request is aborted (default 30s for
     cloud, auto-scaled by LOCAL_TIMEOUT_MULTIPLIER for local Ollama).
     """
     _ensure_provider()
-    if _is_local:
+    if _is_local and not force_cloud:
         local_timeout = timeout * _LOCAL_TIMEOUT_MULTIPLIER
         return _InstrumentedLLM(
             _make_local_llm(temperature, model, local_timeout, max_tokens),
+            model_hint=model,
+            agent_name=agent_name,
+        )
+
+    if _LLM_PROVIDER == "together" and not force_cloud:
+        return _InstrumentedLLM(
+            _make_together_llm(temperature, model, timeout, max_tokens),
             model_hint=model,
             agent_name=agent_name,
         )
