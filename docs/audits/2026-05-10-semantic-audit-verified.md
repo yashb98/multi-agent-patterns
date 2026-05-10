@@ -1063,7 +1063,7 @@ Both EEO fields filled on **first pass** (not via cache hit from a prior AI-assi
 | TP-7 (Veteran/Disability first-pass drop) | S4 | **PASS** | `align_answer/yesno_first_token_match` row 46 + `yesno_substring_count` row 44; apply log `fill ✓` for both EEO fields |
 | TP-10 (semantic_decisions.db wiring) | S3 | **PASS** | 88 decision rows written across 9 distinct (call_site, tier) combinations |
 | TP-25 (cognitive routing leak / JD-relevance guard) | S13 | **PASS** | 2 `rejected_jd_relevance_low` rows + apply-log warning quote above |
-| TP-1 (cache key with profile_state_hash + jd_context_hash) | S1 | **PASS (mechanism)** | Screening cache lookups happened (Qdrant queries in log); not directly observable from semantic_decisions.db rows but the cache wiring fired without the prior PG state-blindness symptom (no Tier-4-vs-Graduate-Visa-style stale answer for this profile + JD) |
+| TP-1 (cache key with profile_state_hash + jd_context_hash) | S1 | **FAIL — see TP-28 below** | Qdrant payload inspection AFTER this run shows `profile_state_hash=''` and `jd_context_hash=''` on new cache rows. Keys exist but values are empty. **S1's plumbing reaches Qdrant but the hash computation produces empty strings.** TP-1 is NOT closed in production. |
 | TP-3 (PageReasoner JSON path) | S2 | **N/A** for this URL | DOM classifier confidence high enough that page reasoner didn't engage (no cache miss observed) |
 | TP-21 (vision recovery via Kimi) | S11-redesign | **N/A** for this URL | Form fields all aligned via DOM/a11y, vision tier never engaged |
 
@@ -1092,6 +1092,38 @@ Octus-specific custom screening questions are still being loaded into the Anthro
 - **SG4** (right per real run): ~35% → **~50%** — `semantic_decisions.db` is now demonstrably the load-bearing audit-evidence source; log mining is supplementary, not primary.
 - **SG5** (OPRAL on errors): ~40% → **~45%** — S17 (TP-26 platform Literal) filed as a Phase 2B finding without bundling.
 
+## Phase 2B P0 finding — TP-28 / Slice S19 — S1 hashes empty in production
+
+**P0** — discovered via Qdrant payload inspection after the Anthropic apply.
+
+- **Trace**:
+  ```
+  $ python -c "from qdrant_client import QdrantClient; c=QdrantClient('localhost',port=6333); r=c.scroll('screening_questions',limit=1); print(r[0][0].payload)"
+  {'qdrant_id': ..., 'profile_state_hash': '', 'jd_context_hash': '', ...}
+  ```
+- **Root cause**: `jobpulse/applicator.py:PROFILE` (the global profile dict that ScreeningPipeline ultimately reads from in the apply path) has only `location` populated; `visa_status`, `visa_expiry`, `salary_*`, `notice_period`, `current_city`, `willing_to_relocate`, `languages`, `english_proficiency`, `right_to_work`, `work_auth_type` are all `None`. ScreeningPipeline._compute_profile_state_hash filters fields that are `None` or `""`, so the subset is essentially empty → returns `""`. Same shape for `_jd_context_hash` (the JD object passed in doesn't have the expected `country` / `currency` / `role_level` keys populated).
+- **Why this is P0**: S1's WHOLE POINT was to make the cache key `f(profile_state, jd_context)`. With both hashes empty, the cache is back to keying on question text alone — exactly the SG1 violation S1 was meant to close. **TP-1 is NOT closed in production.** The unit tests in `test_screening_cache_keying.py` passed because they construct synthetic profiles with the hash fields populated; the production caller doesn't.
+- **Status**: **FAIL — TP-1 is back open** post-Phase-2B verification.
+- **Slice**: **S19** (P0; third Phase 2B finding). Branch: `audit-slice-s19-profile-hash-wiring`. Two-part fix:
+  1. **Profile-side**: `jobpulse/applicator.py:PROFILE` (or wherever the apply-path profile is constructed) MUST populate the 14 fields S1 wants to hash. Pull from `data/profile.db` / `get_profile()` at runtime — the values exist (the user IS on Graduate Visa, has an expected salary, etc.) but aren't being threaded into PROFILE.
+  2. **JD-side**: ensure JD-analyzer populates `country` (parsed from JD location), `currency` (parsed from salary range), `role_level` (parsed from title or seniority field) before the JD reaches `_jd_context_hash`. These exist in the JobListing pydantic model but aren't being set.
+- **Why S1's tests didn't catch this**: the test constructs `ScreeningPipeline(profile={'visa_status': 'Graduate Visa', ...})` with synthetic data. Production constructs it with `applicator.PROFILE` which has the hash fields as None. Classic test-vs-prod wiring drift — the kind of thing only live evidence (this Qdrant payload check) reveals.
+- **Audit methodology lesson**: an audit PASS for "the code change shipped" must be paired with **production-data verification**. S1's unit tests verified the function; this Qdrant payload check verifies the production wiring. Both are needed for an honest PASS.
+
+## Phase 2B P0 finding — TP-29 / Slice S20 — apply_job hangs after fill ⊘ for required fields
+
+**P0** — discovered via process-state inspection after the Anthropic apply.
+
+- **Trace**: apply log ends at `fill ⊘ 'Last Name*' reason=no_mapping required=True ...` and then no further log lines for ~5 minutes. Process at 0% CPU in `select_kqueue_control` + `os_waitpid` (asyncio idle). No terminal status emitted (`grep "queued_for_review|status:|approval|RouteResult"` → 0 matches). Killed at 13:08 elapsed without reaching completion.
+- **Root cause hypothesis**: S12's invariant correctly emits `fill ⊘` for required fields with no mapping. But the post-fill phase (verification / dry-run review / `confirm_application` callback) appears to wait on a condition — possibly "all required fields have a fill outcome" — that never resolves because `fill ⊘` is a non-completion. Pre-S12, these would have been silent drops and the apply would have proceeded to `queued_for_review`. **S12 may have exposed a downstream control-flow gap, not just an observability gap.**
+- **Status**: **GAP — P0** (apply pipeline hangs on URLs with unmapped required fields).
+- **Investigation needed**:
+  1. Trace `application_orchestrator` and `confirm_application` for any `wait_for` / `await` patterns gated on field-fill state.
+  2. Check `agent_performance.fill_sessions` schema — does it have a "required field unfilled" assertion that blocks completion?
+  3. Determine whether this is (a) a pre-existing wait that S12 made visible OR (b) something S12 introduced.
+- **Slice**: **S20** (P0). Branch: `audit-slice-s20-apply-hang-on-unmapped-required`. Acceptance: every apply terminates with a `RouteResult` (`queued_for_review` / `applied` / `error_with_reason`) within 15 min, regardless of how many required fields are unmapped. The unmapped-required path either (a) auto-resolves by skipping the required-field constraint with a warning, OR (b) escalates to human via Telegram + waits for response with a bounded timeout (per the security-wall-bypass pattern).
+- **Cross-ATS implication**: any ATS form with required fields the mapper doesn't handle will hang. Pre-S12 this was silently broken (apply marked success). Post-S12 this is loudly broken (apply hangs). Loud broken is better than silent broken — but P0 to fix.
+
 ## Phase 2B finding — TP-27 / Slice S18 — First/Last Name `*`-suffix unmapped
 
 Surfaced in the same Anthropic apply run; S12 invariant made it visible (without S12 this would have been a silent drop).
@@ -1114,13 +1146,13 @@ After Anthropic re-run (process_single_url + direct apply_job invocations):
 
 | SG | Statement | Pre-session | Post-session | Delta |
 |---|---|---|---|---|
-| **1** | Right value for context | ~15% | ~15% | unchanged — needs cross-region URLs (Phase 2C) |
+| **1** | Right value for context | ~15% | **~10%** | **−5pp** — TP-1/S1 PASS retracted to FAIL on production-data check (S19 needed to actually wire profile + JD into the hashes); cross-region URLs still pending (Phase 2C) |
 | **2** | Right mechanism (semantic-first) | ~33% | **~38%** | +5pp — S4 yesno + S13 leak guard confirmed live |
 | **3** | Right across every ATS | ~9% | **~12%** | +3pp — Greenhouse Anthropic now fully validated (was pre-form-fill only) |
-| **4** | Right per real run | ~35% | **~50%** | +15pp — `semantic_decisions.db` proven as primary evidence source |
-| **5** | OPRAL on errors | ~40% | **~45%** | +5pp — TP-26/S17 + TP-27/S18 filed with no bundling |
+| **4** | Right per real run | ~35% | **~55%** | +20pp — `semantic_decisions.db` proven as primary evidence source AND production-data verification (Qdrant payload check, process state inspection) caught two P0 gaps (S1 hash empty + apply hang) that unit tests missed |
+| **5** | OPRAL on errors | ~40% | **~50%** | +10pp — TP-26/S17 + TP-27/S18 + **TP-28/S19 + TP-29/S20** filed with no bundling. Honest downgrade of TP-1 PASS rather than papering over |
 
-**Composite distance**: ~27-31% → **~32-36%**. Goal not yet met; 10 of 11 adapters un-validated.
+**Composite distance**: ~27-31% → **~33-37%**. Goal not yet met; 10 of 11 adapters un-validated; TP-1/S1 reopened. The audit's value-add this session: **catching two P0 gaps (S19, S20) that the slice unit tests didn't cover** — the four-question correctness check + production-data verification was load-bearing.
 
 ## Phase 2B continuation plan (next session entry point)
 
@@ -1135,6 +1167,11 @@ Per the prompt's per-URL budget (45 min/URL × 25 URLs = ~19 hr), Phase 2B needs
 **New slices spun out during this session**:
 - **S17** (P2) — Widen `JobListing.platform` Literal to cover all 11 ATS adapter names. ~30 min implementation; not blocking Phase 2B (workaround: omit platform arg, use generic, let URL detection figure out the actual ATS).
 - **S18** (P1) — Fix First Name / Last Name `*`-suffix unmapped (same root cause as TP-19; could fold with S15). Required-field gap visible thanks to S12 invariant.
+- **S19 (P0)** — TP-28: profile_state_hash + jd_context_hash empty in Qdrant payload because `applicator.PROFILE` and the JD-analyzer aren't populating the source fields S1 hashes. **TP-1 is BACK OPEN** — S1's keying did not actually engage in production despite unit tests passing.
+- **S20 (P0)** — TP-29: `apply_job` hangs after S12 emits `fill ⊘` for required fields. Apply pipeline never reaches terminal status (`queued_for_review` / `applied` / `error`). Either S12 surfaced a pre-existing wait or introduced a new one — must be investigated and resolved.
+
+**Open calibration question** (Phase 2B-2 work):
+- **S13's 0.40 cosine threshold** — this run had 2 `rejected_jd_relevance_low` decisions, both against the `Additional Information*` field where the LLM produced reasonable autobiographical content scoring 0.388. Both rejections were correct in *spirit* (the answer was generic, not tied to JD content) but borderline. Across the next 5+ Phase 2B URLs, collect cosine scores for all `_llm_answer:free_text` decisions and recalibrate the threshold if the false-positive rate exceeds an acceptable bound (TBD). Action item for Phase 2B Session 6+.
 
 **Slices already in the queue** (not yet implemented):
 - **S5** (P1) — Cross-ATS prosecution. THIS IS Phase 2B — the audit work itself.
