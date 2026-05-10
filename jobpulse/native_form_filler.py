@@ -445,6 +445,54 @@ def _classify_fill_failure(result: dict) -> str:
     return "unknown"
 
 
+# Audit 2026-05-10 / Slice S12 / TP-24 — silent field-drop invariant.
+# Surfaced live on Graphcore: a required combobox was scanned but never
+# attempted, with no fill ✓ / fill ✗ log emission. Apply still routed to
+# `queued_for_review` because the fill loop's success accounting only
+# counts attempted fields. This helper computes the diff between scanned
+# fields and attempted fields so callers can emit `fill ⊘` log lines and
+# include the count in agent_fill_stats.
+#
+# `radio` and `custom_dropdown` types are filled by separate loops
+# (_fill_radio_groups / _fill_custom_dropdowns) so absence from the main
+# `attempted_labels` set is expected and not a silent drop.
+def _compute_silent_drops(
+    visible_fields: list[dict],
+    attempted_labels: set[str],
+) -> list[dict]:
+    """Return fields visible to the scanner but never touched by the fill loop.
+
+    Args:
+        visible_fields: scanned field dicts (`{label, type, options, required}`)
+            from `field_scanner.scan(...)`. May omit `type` / `required`.
+        attempted_labels: labels the main fill loop tried (whether they
+            succeeded or failed). Radio/custom_dropdown labels are excluded
+            from this set even when filled — those are handled by their
+            own emission loops downstream.
+
+    Returns:
+        list of `{label, type, required, reason}` dicts for each silent drop.
+        Empty list if every visible field was either attempted or routed to
+        a separate fill loop.
+    """
+    drops: list[dict] = []
+    for field in visible_fields:
+        label = field.get("label", "")
+        if not label or label in attempted_labels:
+            continue
+        ftype = field.get("type", "")
+        # Radio + custom_dropdown have dedicated fill loops; not silent drops.
+        if ftype in ("radio", "custom_dropdown"):
+            continue
+        drops.append({
+            "label": label,
+            "type": ftype,
+            "required": bool(field.get("required", False)),
+            "reason": "no_mapping",
+        })
+    return drops
+
+
 class NativeFormFiller:
     """Playwright-native form filler using locators and LLM calls."""
 
@@ -3610,6 +3658,12 @@ class NativeFormFiller:
         all_agent_mappings: dict[str, str] = {}
         total_fields_attempted = 0
         total_fields_filled = 0
+        # Audit 2026-05-10 / Slice S12 / TP-24 — silent field-drop accounting.
+        # Tracks fields visible to the scanner that no fill loop attempted.
+        # Without this, an apply can succeed (queued_for_review) on a form
+        # with an unfilled required field (Graphcore legal-name regression).
+        total_fields_silently_dropped = 0
+        silently_dropped_labels: list[dict] = []
         total_fill_failures: list[str] = []
         t0 = time.monotonic()
         _prev_fingerprint = ""
@@ -3625,6 +3679,8 @@ class NativeFormFiller:
                 "fields_attempted": total_fields_attempted,
                 "fields_filled": total_fields_filled,
                 "fields_failed": len(total_fill_failures),
+                "fields_silently_dropped": total_fields_silently_dropped,
+                "silently_dropped_labels": silently_dropped_labels,
                 "failed_labels": total_fill_failures,
                 "llm_fallback_count": self._llm_fallback_count,
             }
@@ -4135,12 +4191,27 @@ class NativeFormFiller:
             # 5. Fill each field by label (skip radio — handled by _fill_radio_groups)
             fill_failures = []
             pending_retries: list[dict[str, Any]] = []
+            # Audit 2026-05-10 / S12 — per-page tracker for silent-drop detection.
+            # Every visible field must end up either in `attempted_labels` (we
+            # tried to fill it via this loop, a secondary loop, or LLM recovery)
+            # or in the silent-drops report at end of page.
+            attempted_labels: set[str] = set()
             for label, value in mapping.items():
                 value_text = str(value).strip()
                 if not value_text:
+                    # Empty value = nothing to fill, but still emit so the skip
+                    # is observable. (Was a silent `continue` before S12.)
+                    logger.info(
+                        "fill ⊘ '%s' reason=empty_value", label[:60],
+                    )
+                    attempted_labels.add(label)
                     continue
                 if fields_by_label.get(label, {}).get("type") in ("radio", "custom_dropdown"):
+                    # Routed to _fill_radio_groups / _fill_custom_dropdowns
+                    # below; not silently dropped, just handled elsewhere.
+                    attempted_labels.add(label)
                     continue
+                attempted_labels.add(label)
                 # Apply agent rule overrides from correction history
                 override = _field_overrides.get(label.lower().strip())
                 if override and override["action"] == "override_answer":
@@ -4447,6 +4518,25 @@ class NativeFormFiller:
                             logger.info("Post-fill rescan filled: '%s' → '%s'", lbl, val)
                     except Exception as exc:
                         logger.warning("Post-fill rescan fill failed for '%s': %s", lbl, exc)
+
+            # 7c. Silent-drop accounting — Audit 2026-05-10 / Slice S12 / TP-24.
+            # `fields` is the original page scan; `attempted_labels` tracks every
+            # label the main fill loop touched (filled, skipped-empty, or routed
+            # to radio/custom_dropdown loops). Anything visible to the scanner
+            # but never touched is a silent drop — the bug surfaced live on
+            # Graphcore where a required combobox `'Have you added your full
+            # legal name…?*'` was scanned but never filled, yet the apply still
+            # routed to `queued_for_review` because the success accounting only
+            # counted attempted fields.
+            _page_silent_drops = _compute_silent_drops(fields, attempted_labels)
+            for _drop in _page_silent_drops:
+                logger.warning(
+                    "fill ⊘ '%s' reason=%s required=%s type=%s — visible to scanner, not attempted",
+                    _drop["label"][:60], _drop["reason"],
+                    _drop["required"], _drop["type"],
+                )
+            total_fields_silently_dropped += len(_page_silent_drops)
+            silently_dropped_labels.extend(_page_silent_drops)
 
             # 8. Timing measurement + anti-detection delay
             page_fill_ms = int((time.monotonic() - t_hydration) * 1000) - hydration_ms

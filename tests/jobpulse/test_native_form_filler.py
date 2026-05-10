@@ -376,6 +376,113 @@ def test_classify_unknown():
     assert _classify_fill_failure({"success": False, "error": "timeout"}) == "unknown"
 
 
+# ── Silent field-drop invariant (Audit 2026-05-10 Slice S12 / TP-24) ──
+#
+# Bug surfaced live on Graphcore Greenhouse: a required combobox
+# `'Have you added your full legal name and surname...?*'` was scanned by
+# field_analyzer (options ['Yes','No'] extracted) but never filled — no
+# `fill ✓` or `fill ✗` log line, and the apply still routed to
+# `queued_for_review`. The fill loop has paths that exit silently when
+#   (a) `value_text` is empty,
+#   (b) field type is `radio` / `custom_dropdown` (handled by separate
+#       loops),
+#   (c) the field is visible to the scanner but absent from `mapping`
+#       (no upstream component generated a value for it).
+# Every scanned field MUST exit with one of fill ✓ / fill ✗ / fill ⊘
+# (skip-with-reason) so silent drops are observable.
+
+
+def test_compute_silent_drops_flags_visible_unmapped_fields():
+    """Visible fields not in `attempted_labels` are reported as silent drops."""
+    from jobpulse.native_form_filler import _compute_silent_drops
+
+    visible = [
+        {"label": "Email*", "type": "text", "options": [], "required": True},
+        {"label": "Have you added your full legal name and surname?*",
+         "type": "combobox", "options": ["Yes", "No"], "required": True},
+        {"label": "Country*", "type": "combobox", "options": ["UK", "US"], "required": True},
+    ]
+    attempted = {"Email*", "Country*"}  # legal-name was never tried
+
+    drops = _compute_silent_drops(visible, attempted)
+    labels = [d["label"] for d in drops]
+    assert "Have you added your full legal name and surname?*" in labels
+    assert "Email*" not in labels
+    assert "Country*" not in labels
+    legal = next(d for d in drops if d["label"].startswith("Have you"))
+    assert legal["required"] is True
+    assert legal["reason"] == "no_mapping"
+    assert legal["type"] == "combobox"
+
+
+def test_compute_silent_drops_skips_radio_and_custom_dropdown():
+    """`radio` and `custom_dropdown` types are handled by separate fill loops;
+    not reported as silent drops even when absent from `attempted_labels`."""
+    from jobpulse.native_form_filler import _compute_silent_drops
+
+    visible = [
+        {"label": "Gender", "type": "radio", "options": ["Man", "Woman"], "required": True},
+        {"label": "Visa", "type": "custom_dropdown", "options": ["Yes", "No"], "required": True},
+        {"label": "Phone", "type": "text", "options": [], "required": True},
+    ]
+    attempted: set[str] = set()  # nothing attempted in main loop
+
+    drops = _compute_silent_drops(visible, attempted)
+    labels = [d["label"] for d in drops]
+    assert "Phone" in labels  # text → real silent drop
+    assert "Gender" not in labels  # radio → routed elsewhere
+    assert "Visa" not in labels  # custom_dropdown → routed elsewhere
+
+
+def test_compute_silent_drops_marks_required_separately():
+    """Required vs optional fields are distinguished in the output."""
+    from jobpulse.native_form_filler import _compute_silent_drops
+
+    visible = [
+        {"label": "Required Q*", "type": "combobox",
+         "options": ["A", "B"], "required": True},
+        {"label": "Optional Q", "type": "combobox",
+         "options": ["A", "B"], "required": False},
+    ]
+    drops = _compute_silent_drops(visible, set())
+    by_label = {d["label"]: d for d in drops}
+    assert by_label["Required Q*"]["required"] is True
+    assert by_label["Optional Q"]["required"] is False
+
+
+def test_compute_silent_drops_empty_inputs():
+    """Empty visible list returns empty drops list. Empty attempted with empty
+    visible returns []."""
+    from jobpulse.native_form_filler import _compute_silent_drops
+    assert _compute_silent_drops([], set()) == []
+    assert _compute_silent_drops([], {"some-label"}) == []
+
+
+def test_compute_silent_drops_all_attempted():
+    """If every visible field is in attempted_labels, no silent drops."""
+    from jobpulse.native_form_filler import _compute_silent_drops
+
+    visible = [
+        {"label": "A", "type": "text", "required": True},
+        {"label": "B", "type": "combobox", "required": False},
+    ]
+    drops = _compute_silent_drops(visible, {"A", "B"})
+    assert drops == []
+
+
+def test_compute_silent_drops_handles_missing_optional_keys():
+    """Field dicts may omit `type` / `required` keys — defaults must work."""
+    from jobpulse.native_form_filler import _compute_silent_drops
+
+    visible = [{"label": "Bare label"}]  # no type, no required
+    drops = _compute_silent_drops(visible, set())
+    assert len(drops) == 1
+    assert drops[0]["label"] == "Bare label"
+    assert drops[0]["required"] is False  # defaults to False
+    assert drops[0]["type"] == ""
+    assert drops[0]["reason"] == "no_mapping"
+
+
 # ── PII policy: strategies must not hardcode screening answers (S12 audit) ──
 
 
