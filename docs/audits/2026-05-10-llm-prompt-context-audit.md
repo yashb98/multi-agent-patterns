@@ -146,3 +146,50 @@ Same as the pipeline audit — current branch (`pipeline-correctness-fixes`) is 
 - Doesn't audit the 31 remaining call sites; they're in the inventory and Slice P3 prosecutes them.
 - Doesn't measure prompt quality (does the prompt elicit the right answer in practice?). That's an evals job; reuse `tests/jobpulse/test_semantic_quality.py` golden sets where applicable.
 - Doesn't measure prompt cost. Run `python -m jobpulse.runner cost-report` if you want call-site $ amounts; this audit is structural.
+
+---
+
+## S13 closure of site B (`screening_pipeline._llm_answer`) and cognitive_llm_call(domain="screening_answers")
+
+**Date**: 2026-05-10
+**Branch**: `audit-slice-s13-cognitive-leak`
+**Closes**: TP-1's "❌ Answer content FAIL pending S13" in the pipeline audit; site B's W2/C2 weaknesses remain (unchanged); site B's O2 strengthened.
+
+The pipeline audit's TP-25 entry is the canonical write-up of the cognitive routing leak; what follows is the prompt-context-audit-side classification of the two call sites S13 closed against the 8-dimension table.
+
+### Site B (free-text branch) — post-S13
+
+- **Site**: `jobpulse/screening_pipeline.py:415` (the `else` branch at line 401, free-text questions).
+- **Pre-S13 status**: OK (graceful) for option fields *only*; free-text branch had **no validation guard** so `cognitive_llm_call` orchestration leaks landed verbatim in `screening_semantic_cache.db` at score=1.00 and would have served on every subsequent matching apply (S1 cache-key changes alone would not have prevented this — they would have correctly bucketed the *wrong content* per (profile, JD) pair).
+- **Post-S13 status**: OK (graceful) for both branches.
+- **Prompt audit delta**:
+  - W1 — unchanged (`cognitive_llm_call` ✓).
+  - W2 — unchanged (still flattens; tracked under prompt-audit Slice P1).
+  - C1 — unchanged (profile_summary, options, field_type, anti-AI-leak guard, JD via job_context).
+  - C2 — unchanged (profile_summary still unbounded; tracked under Slice P2).
+  - O1 — unchanged (prompt-instructed; no `response_format`).
+  - **O2 — STRENGTHENED**: free-text branch now gates the LLM answer through `semantic_similarity(question, answer) ≥ 0.40` (BGE-M3 cosine; threshold derived from measured Q/A pairs). Below threshold → return None; caller falls through. **The cache-write path is gated by this same return value**, so leak text cannot poison the screening cache. Wrapped in try/except so BGE-M3 outages degrade to "accept answer", not crash.
+  - R1 — unchanged (upstream `screening_semantic_cache` plus S1 (profile, JD) keying).
+  - R2 — unchanged (`domain="screening_answers"`, `stakes="high"`, returns None on exception).
+
+### Site B's upstream — `cognitive_llm_call(domain="screening_answers")`
+
+- **Site**: `shared/agents.py:1053` (`cognitive_llm_call`) calling into `shared/cognitive/_engine.py` (`CognitiveEngine.think_sync`) → `shared/cognitive/_strategy.py` (`StrategyComposer.compose`) → `shared/memory_layer/_stores.py:393` (`ProceduralMemory.recall`).
+- **Pre-S13 status**: silently returned cross-domain procedural strategies for any `domain` without its own templates. The L0_MEMORY path returned the cross-domain strategy text **verbatim** as `result.answer` whenever a "writing"-domain entry's `success_rate × avg_score` rank put it at the top of the (incorrectly-bled) "best procedures" list.
+- **Post-S13 status**: domain isolation is enforced at the only producer/consumer boundary; cross-domain templates cannot cross.
+- **Prompt audit (delta on the dimensions affected)**:
+  - C1 (context payload) — fixed: the procedural strategies injected into the composed prompt are now strictly in-domain (or empty), so the LLM is no longer "echoing" cross-domain orchestration metadata it saw in the prompt.
+  - O2 (validation) — unchanged at the wrapper level; relies on the caller (site B) to reject off-topic outputs. S13 added that caller-side guard.
+  - F3 (cache key) — N/A at this site (not a caching site itself; closed under S1 for the downstream `screening_semantic_cache`).
+  - H1 (per-decision audit log) — UNVERIFIED (no `data/semantic_decisions.db` row written; closure depends on **S3**, the per-decision audit log slice).
+
+### What S13 did NOT change
+
+- Site B W2 (message flattening) — slice P1 from the original prompt audit remains valid.
+- Site B C2 (`profile_summary` bound) — slice P2 from the original prompt audit remains valid.
+- Sites C / D unchanged.
+- The remaining 31 untouched call sites — slice P3 unchanged.
+
+### Live evidence
+
+`logs/audit/s13_live_evidence.log` — see TP-25 in `2026-05-10-semantic-audit-verified.md` for the quoted excerpt.

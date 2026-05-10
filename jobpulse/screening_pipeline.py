@@ -21,6 +21,21 @@ from typing import Any
 from shared.logging_config import get_logger
 
 
+# Free-text LLM-fallback answers must be at least this cosine-similar to
+# their question to be accepted. Threshold derived from BGE-M3 measurements
+# on real (Q, correct-answer) pairs vs (Q, observed-leak) pairs (S13):
+#
+#   on-topic prose answers      → 0.55–0.81  (mean ≈ 0.66)
+#   off-topic orchestration     → 0.27–0.50  (mean ≈ 0.35)
+#
+# 0.40 cleanly separates the two distributions while keeping the lowest
+# legitimate prose answer (machine-learning experience, sim 0.55) well
+# above the floor. Short option-like answers (e.g. "Man" sim 0.43, "5 -
+# Expert" sim 0.40) are NOT subject to this guard — they go through the
+# option-aligned branch with ``OptionAligner``.
+_LLM_ANSWER_RELEVANCE_THRESHOLD = 0.40
+
+
 from jobpulse.screening_semantic_cache import ScreeningSemanticCache
 from jobpulse.screening_intent import ScreeningIntentClassifier, ScreeningIntent
 from jobpulse.screening_detector import ScreeningDetector
@@ -443,6 +458,35 @@ class ScreeningPipeline:
                     )
                     return None
                 return aligned
+            # Free-text branch: option alignment doesn't apply, but the
+            # cognitive-routing leak ("Enhanced swarm convergence: GRPO
+            # group sampling...") is just as poisonous here — without a
+            # guard it would land in the screening_semantic_cache and
+            # serve at score=1.00 on every subsequent matching apply.
+            # The S13 root cause (cross-domain procedural-recall bleed)
+            # is fixed in shared/memory_layer/_stores.py; this is the
+            # defense-in-depth backstop for any LLM hallucination /
+            # future cross-domain bug shape.
+            from shared.semantic_utils import semantic_similarity
+            try:
+                relevance = semantic_similarity(question, answer)
+            except Exception as exc:
+                logger.debug(
+                    "JD-relevance check failed (%s) — accepting answer "
+                    "without similarity floor",
+                    exc,
+                )
+                return answer
+            if relevance < _LLM_ANSWER_RELEVANCE_THRESHOLD:
+                logger.warning(
+                    "LLM fallback returned %r which has cosine similarity "
+                    "%.3f < %.2f to question %r — treating as miss "
+                    "(S13 leak guard)",
+                    (answer or "")[:80], relevance,
+                    _LLM_ANSWER_RELEVANCE_THRESHOLD,
+                    (question or "")[:60],
+                )
+                return None
             return answer
         except Exception as exc:
             logger.debug("LLM fallback failed: %s", exc)

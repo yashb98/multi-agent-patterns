@@ -391,14 +391,22 @@ class ProceduralMemory:
         self._save()
 
     def recall(self, domain: str, context: str = "", n: int = 5) -> list[ProceduralEntry]:
-        """Retrieve best procedures for a domain and context."""
+        """Retrieve best procedures for a domain.
+
+        Strict domain isolation: when no procedure matches the requested
+        domain, returns ``[]``. The previous "fallback to all procedures"
+        behaviour bled high-scoring orchestration templates (e.g.
+        ``patterns/enhanced_swarm.py``'s ``"Enhanced swarm convergence:
+        GRPO group sampling..."`` written at ``domain="writing"``) into
+        every cognitive call for a domain without its own templates —
+        ``screening_answers``, ``cv_tailoring``, ``form_recovery`` — and
+        the L0 memory-recall path returned that strategy verbatim as the
+        screening answer. Audit-slice S13.
+        """
         relevant = [
             p for p in self.procedures
             if domain.lower() in p.domain.lower()
         ]
-        if not relevant:
-            relevant = self.procedures  # Fallback to all
-
         relevant.sort(
             key=lambda p: p.success_rate * p.avg_score_when_used,
             reverse=True
