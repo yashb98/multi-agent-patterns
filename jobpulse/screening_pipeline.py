@@ -478,31 +478,46 @@ class ScreeningPipeline:
                 else "Return EXACTLY ONE option, using the EXACT option text "
                      "from the list above. No commentary, no explanation."
             )
+            # Audit S21 / TP-30: prompt the LLM AS the candidate, in first
+            # person — not ABOUT the candidate. Pre-S21 the system prompt
+            # said "answering on behalf of the candidate", which made the
+            # LLM produce "As Yash Bishnoi, I have a strong preference..."
+            # — third-person self-reference that recruiters instantly clock
+            # as AI-generated.
             system_prompt = (
-                "You are answering a job application screening question. "
-                "The form field is a closed-set picker — you must select from "
-                "the provided options. Be honest, base on the candidate's "
-                "profile. Never mention that you are an AI."
+                "You ARE the job applicant. You are filling in a screening "
+                "question on a job application form yourself. Answer in "
+                "FIRST PERSON as yourself ('I am', 'I have', 'My...'). "
+                "Never refer to yourself by name in third person (no "
+                "'As [name], I...'). Never mention that you are an AI. "
+                "The form field is a closed-set picker — pick the option "
+                "that's true for you, based on your profile."
             )
             user_prompt = (
-                f"Candidate profile:\n{profile_summary}\n"
+                f"Your profile:\n{profile_summary}\n"
                 f"{context}"
-                f"Screening question: {question}\n\n"
+                f"Screening question on the form: {question}\n\n"
                 f"Available options:\n{options_block}\n\n"
                 f"{instruction}"
             )
         else:
+            # Audit S21 / TP-30: same first-person reframe as the option
+            # branch. Free-text answers were the worst offenders for the
+            # 'As Yash Bishnoi, I...' pattern because they're unconstrained.
             system_prompt = (
-                "You are answering a job application screening question. "
-                "Answer concisely and honestly based on the candidate profile "
-                "provided. Never mention that you are an AI. Give a direct, "
-                "personal-sounding answer."
+                "You ARE the job applicant. You are filling in a screening "
+                "question on a job application form yourself. Answer in "
+                "FIRST PERSON as yourself ('I am', 'I have', 'My...'). "
+                "Never refer to yourself by name in third person (no "
+                "'As [name], I...' or 'As an applicant'). Never mention "
+                "that you are an AI. Be honest, based on your profile."
             )
             user_prompt = (
-                f"Candidate profile:\n{profile_summary}\n"
+                f"Your profile:\n{profile_summary}\n"
                 f"{context}"
-                f"Screening question: {question}\n\n"
-                "Provide a concise answer (1-3 sentences max)."
+                f"Screening question on the form: {question}\n\n"
+                "Write your answer in 1-3 sentences. Start with 'I' or "
+                "'My' — never with 'As [name]' or 'The applicant'."
             )
 
         import time as _time
