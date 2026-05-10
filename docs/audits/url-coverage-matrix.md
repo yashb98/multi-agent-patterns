@@ -84,6 +84,27 @@
 | Oracle Cloud HCM | 1 | **NEW — no adapter exists; must add or verify Generic handles** |
 | **Total** | **26** | Across 11 distinct ATS / portal types |
 
+## Recommended traversal order
+
+Do well-defined adapters first; save **Generic** and **Workday** for last. Rationale:
+- Well-defined adapters surface adapter-specific gaps quickly → fast signal on what's working.
+- Workday is DOM-heavy + React-controlled inputs + varies most across tenants → likeliest to surface unique gaps; running it last means earlier failures don't compound.
+- Generic is the catch-all fallback → running it last lets you compare Generic-handled URLs against adapter-handled ones to isolate which gaps are Generic-specific vs broadly present.
+- If 4-hour real-time guardrail is hit, the well-defined adapters are covered; the harder ones queue cleanly into the continuation plan.
+
+**Order:**
+1. Greenhouse (covered by live-e2e for Anthropic; pick one of the other 3 for cross-Greenhouse comparison)
+2. Lever
+3. Ashby
+4. SmartRecruiters
+5. iCIMS
+6. Reed
+7. LinkedIn (Easy Apply — auth-walled; if SSO blocks, document and continue)
+8. Indeed
+9. Oracle Cloud HCM (no adapter; tests whether it falls through to Generic acceptably or needs new adapter)
+10. **Workday** (last of the well-defined; multi-tenant variance)
+11. **Generic** (final; isolates fallback-specific gaps)
+
 ## Guidance for execution
 
 - **Cross-URL correctness rule**: pick at least two URLs from different ATS where the JD context differs materially (e.g. one UK Greenhouse + one US Lever) and verify Profile-Driven decisions produce *different* answers when context warrants (visa-sponsorship, salary, location-aware fields).

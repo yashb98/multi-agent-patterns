@@ -38,6 +38,7 @@ Enumerate every place the pipeline interprets meaning, classify each by mechanis
    - `docs/audits/2026-05-10-semantic-analysis-pipeline-audit.md` + `2026-05-10-llm-prompt-context-audit.md`
 2. Check active sessions: `git status --short` + `ls -lat docs/superpowers/plans/`. Reference any in-flight plan; do not duplicate (e.g. `docs/superpowers/plans/2026-05-10-live-e2e-dry-run.md`).
 3. Don't edit code on a branch another session owns.
+4. **BGE-M3 reachable + serving 1024-dim** before audit. Test: `curl -sX POST http://localhost:11434/api/embeddings -H "Content-Type: application/json" -d '{"model":"bge-m3:latest","prompt":"x"}' | python3 -c "import json,sys; assert len(json.load(sys.stdin)['embedding'])==1024"`. If fail: STOP — don't run on the silent MiniLM-384 fallback (that fallback IS a sub-goal-2 violation; flag it as a slice, don't benefit from it). See dim A9.
 
 ## Five binding rules (apply to every status, every gap, every fix)
 
@@ -118,13 +119,13 @@ Every entry has all six fields. No prose paragraphs in lieu of fields.
 - **Dimension matrix**: applicable dims from `dimensions.md` with PASS/FAIL/UNVERIFIED/N/A + evidence pointer + correctness check.
 ```
 
-## Dimension framework — 72 dims across 12 categories
+## Dimension framework — 73 dims across 12 categories
 
 Heavy reference + applicability matrix in `dimensions.md`.
 
 | Cat | Concern | # |
 |---|---|---|
-| A | Foundation (models, providers, determinism, embedder singleton, cold-start) | 8 |
+| A | Foundation (models, providers, determinism, embedder singleton, cold-start, BGE-M3 enforcement) | 9 |
 | B | Input Hygiene (sanitisation, truncation, PII, multilingual, encoding) | 7 |
 | C | Anchors & Prototypes (coverage, versioning, golden tests, real-embedder validation) | 7 |
 | D | Mechanism & Threshold (tier order, calibration, OOD, profile+JD context, cache invalidation) | 10 |
@@ -193,7 +194,7 @@ Audits enumerate; they don't fix. Propose **goal-closing slices** — each accep
 
 ## Reference
 
-- **`dimensions.md`** (heavy ref): 72 dimensions, applicability matrix, all rationalisation tables, decision-context tables, worked examples, AI-agent validation guide.
+- **`dimensions.md`** (heavy ref): 73 dimensions, applicability matrix, all rationalisation tables, decision-context tables, worked examples, AI-agent validation guide.
 - `shared/semantic_utils.py` — `_get_embedder()`, `semantic_similarity()`, `best_semantic_match()`, adaptive weights.
 - `form_engine/semantic_matcher.py` — 6-tier cascade.
 - `tests/jobpulse/test_semantic_quality.py` — golden sets (must be promoted to live per dim K8).

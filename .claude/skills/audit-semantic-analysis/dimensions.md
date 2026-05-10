@@ -76,6 +76,7 @@ When this skill is invoked by an AI agent (subagent or future Claude session), t
 | **A6** | Embedder singleton sharing | Every component uses `_get_embedder()` from `shared.semantic_utils` | grep for `MemoryEmbedder()` constructions outside `semantic_utils` — should be zero. |
 | **A7** | Vector dimension consistency | All stored vectors match live embedder's `dims` | On startup, sample-load 1 vector per DB and compare to `embedder.dims`; fail loud on mismatch. |
 | **A8** | Cold-start behaviour | First-run on a brand-new domain produces a usable answer (LLM tier reaches when no learned data) | Run `apply_job` on a domain never seen before; verify decision audit log shows the LLM-tier path fired. |
+| **A9** | BGE-M3 enforcement (no silent MiniLM fallback) | BGE-M3 (1024-dim) is the only embedder used for semantic decisions; MiniLM-384 fallback either removed or made loud-fail (raises, not silently writes 384-dim vectors that mismatch the 1024-dim Qdrant collections) | Live `curl http://localhost:11434/api/embeddings` returns dim=1024; query Qdrant collections after a live run and verify every vector is 1024-dim; grep `_embedder.py` for the MiniLM fallback path — if present and reachable on BGE-M3 unavailable, that's a P1 GAP. The 2026-05-10 live-e2e session reindexed 7,063 vectors to BGE-M3; ongoing protection requires removing or hardening the fallback. |
 
 ## B. Input Hygiene — Sanitization, Truncation, PII, Multilingual
 
@@ -234,7 +235,7 @@ When this skill is invoked by an AI agent (subagent or future Claude session), t
 | Hybrid (embedding → LLM) | All categories | (none) |
 | Structural (DOM, format) | A1 (where embedder used), B (encoding), G, H | C, D, E, F, I (semantic-specific) |
 
-## Total: 72 dimensions across 12 categories.
+## Total: 73 dimensions across 12 categories.
 
 Mark each `PASS / FAIL / UNVERIFIED / N/A`, with a live-run evidence pointer + a correctness-check note.
 
