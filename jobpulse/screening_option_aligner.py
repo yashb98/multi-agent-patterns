@@ -65,6 +65,25 @@ class OptionAligner:
         Returns:
             The aligned option string, or the original answer if no match.
         """
+        import time as _time
+        from shared.semantic_decisions import record_decision
+
+        _t0 = _time.perf_counter()
+
+        def _log(tier: str, output: str | None, conf: float, mechanism: str = "semantic_matcher") -> None:
+            record_decision(
+                agent_name="OptionAligner",
+                call_site="align_answer",
+                decision_type="option_align",
+                mechanism=mechanism,
+                tier_reached=tier,
+                input_value=answer,
+                output_value=output,
+                confidence=conf,
+                field_label=field_type or None,
+                elapsed_ms=(_time.perf_counter() - _t0) * 1000.0,
+            )
+
         if not options:
             return answer.strip()
 
@@ -78,6 +97,7 @@ class OptionAligner:
             learned_norm = self._normalise(learned)
             for opt, opt_norm in [(opt, self._normalise(opt)) for opt in options]:
                 if opt_norm == learned_norm:
+                    _log("learned_mapping", opt, 0.95, mechanism="learned")
                     return opt
 
         answer_norm = self._normalise(answer)
@@ -86,11 +106,13 @@ class OptionAligner:
         # Exact match first
         for opt, opt_norm in options_norm:
             if opt_norm == answer_norm:
+                _log("exact_match", opt, 1.0)
                 return opt  # Return original casing
 
         # Normalised match
         for opt, opt_norm in options_norm:
             if opt_norm == answer_norm:
+                _log("normalised_match", opt, 1.0)
                 return opt
 
         # Embedding similarity (primary semantic tier)
@@ -99,6 +121,7 @@ class OptionAligner:
             emb_match, emb_score = best_semantic_match(answer.strip(), options, min_score=0.70)
             if emb_match is not None:
                 logger.debug("Embedding aligned '%s' -> '%s' (score=%.2f)", answer[:50], emb_match, emb_score)
+                _log("embedding_similarity", emb_match, emb_score, mechanism="embedding")
                 return emb_match
         except Exception:
             pass
@@ -120,6 +143,7 @@ class OptionAligner:
                 best_match,
                 best_score,
             )
+            _log("fuzzy_score", best_match, float(best_score))
             return best_match
 
         # Default to original if no good match
@@ -128,6 +152,7 @@ class OptionAligner:
             answer[:50],
             [o[:30] for o in options],
         )
+        _log("no_alignment", answer.strip(), 0.0)
         return answer.strip()
 
     def is_option_field(self, field: dict[str, Any]) -> bool:

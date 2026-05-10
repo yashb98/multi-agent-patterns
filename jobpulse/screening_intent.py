@@ -321,16 +321,37 @@ class ScreeningIntentClassifier:
 
     def classify(self, question: str) -> tuple[ScreeningIntent, float]:
         """Classify a question into an intent. Returns (intent, confidence)."""
+        import time as _time
+        from shared.semantic_decisions import record_decision
+
+        _t0 = _time.perf_counter()
+
+        def _log(intent: ScreeningIntent, score: float, tier: str) -> None:
+            record_decision(
+                agent_name="ScreeningIntentClassifier",
+                call_site="classify",
+                decision_type="intent_classify",
+                mechanism="embedding",
+                tier_reached=tier,
+                input_value=question,
+                output_value=intent.value if intent else "unknown",
+                confidence=float(score),
+                elapsed_ms=(_time.perf_counter() - _t0) * 1000.0,
+            )
+
         if not question or not question.strip():
+            _log(ScreeningIntent.UNKNOWN, 0.0, "empty_question")
             return ScreeningIntent.UNKNOWN, 0.0
 
         if self._embedder is None or not self._loaded:
+            _log(ScreeningIntent.UNKNOWN, 0.0, "embedder_unavailable")
             return ScreeningIntent.UNKNOWN, 0.0
 
         try:
             query_vec = self._embedder.embed(question.strip())
         except Exception as exc:
             logger.debug("Intent classification embed failed: %s", exc)
+            _log(ScreeningIntent.UNKNOWN, 0.0, "embed_failed")
             return ScreeningIntent.UNKNOWN, 0.0
 
         best_intent: ScreeningIntent = ScreeningIntent.UNKNOWN
@@ -351,7 +372,9 @@ class ScreeningIntentClassifier:
                 best_intent = intent
 
         if best_score >= self._threshold:
+            _log(best_intent, best_score, "above_threshold")
             return best_intent, best_score
+        _log(ScreeningIntent.UNKNOWN, best_score, "below_threshold")
         return ScreeningIntent.UNKNOWN, best_score
 
     def add_intent_example(self, intent: ScreeningIntent, question: str) -> None:

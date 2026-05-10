@@ -412,16 +412,44 @@ class ScreeningPipeline:
                 "Provide a concise answer (1-3 sentences max)."
             )
 
+        import time as _time
+        _t0 = _time.perf_counter()
         try:
             from shared.agents import cognitive_llm_call
+            from shared.semantic_decisions import record_decision
             answer = cognitive_llm_call(
                 task=f"SYSTEM: {system_prompt}\nUSER: {user_prompt}",
                 domain="screening_answers",
                 stakes="high",
             )
+            _elapsed_ms = (_time.perf_counter() - _t0) * 1000.0
             if answer is None:
+                record_decision(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:" + ("option" if is_option_field else "free_text"),
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="llm_returned_none",
+                    input_value=question,
+                    output_value=None,
+                    confidence=0.0,
+                    field_label=question[:120],
+                    elapsed_ms=_elapsed_ms,
+                )
                 return None
             if any(phrase in answer.lower() for phrase in ("as an ai", "i don't have", "i cannot")):
+                record_decision(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:" + ("option" if is_option_field else "free_text"),
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="rejected_ai_leak",
+                    input_value=question,
+                    output_value=answer,
+                    confidence=0.0,
+                    field_label=question[:120],
+                    elapsed_ms=_elapsed_ms,
+                )
                 return None
             # When the field carries options, validate that the LLM picked one
             # of them. Cognitive routing has been seen to leak unrelated text
@@ -441,11 +469,63 @@ class ScreeningPipeline:
                         "option in %s — treating as miss",
                         (answer or "")[:60], [o[:25] for o in options[:5]],
                     )
+                    record_decision(
+                        agent_name="screening_pipeline",
+                        call_site="_llm_answer:option",
+                        decision_type="llm_call",
+                        mechanism="llm",
+                        tier_reached="rejected_option_mismatch",
+                        input_value=question,
+                        output_value=answer,
+                        confidence=0.0,
+                        field_label=question[:120],
+                        elapsed_ms=_elapsed_ms,
+                    )
                     return None
+                record_decision(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:option",
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="ok_option_aligned",
+                    input_value=question,
+                    output_value=aligned,
+                    confidence=0.85,
+                    field_label=question[:120],
+                    elapsed_ms=_elapsed_ms,
+                )
                 return aligned
+            record_decision(
+                agent_name="screening_pipeline",
+                call_site="_llm_answer:free_text",
+                decision_type="llm_call",
+                mechanism="llm",
+                tier_reached="ok_free_text",
+                input_value=question,
+                output_value=answer,
+                confidence=0.85,
+                field_label=question[:120],
+                elapsed_ms=_elapsed_ms,
+            )
             return answer
         except Exception as exc:
             logger.debug("LLM fallback failed: %s", exc)
+            try:
+                from shared.semantic_decisions import record_decision as _rd
+                _rd(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:" + ("option" if is_option_field else "free_text"),
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="exception",
+                    input_value=question,
+                    output_value=repr(exc)[:200],
+                    confidence=0.0,
+                    field_label=question[:120],
+                    elapsed_ms=(_time.perf_counter() - _t0) * 1000.0,
+                )
+            except Exception:
+                pass
             return None
 
     def _profile_summary(self) -> str:
