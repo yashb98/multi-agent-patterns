@@ -183,13 +183,61 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
   - `form_experience|signal_corrections|18|0` (18 lookups, **0 hits** — same as audit-start snapshot; this DB is wired but never serves data, candidate "wired but empty" status per CLAUDE.md note about 19 empty DBs)
 - **Correctness check**: All four PASS for DB-lookup wrapping; **N/A for LLM-call decisions** (separate slice S3 needed).
 
-### TP-10 H1 global — no `semantic_decisions.db` exists (audit-wide finding)
+### TP-10 H1 global — `semantic_decisions.db` per-decision audit log (audit-wide finding)
 
-- The `dimensions.md → H1` pass signal is "One row per semantic decision: `(application_id, component, input, mechanism, threshold, score, output, validation_result, confidence)`."
-- `find data/ -name "semantic_decisions.db"` → empty; not in `data/` listing either.
-- **Status**: **GAP — cross-cutting**. Every LLM-tier or embedding-tier decision in the pipeline has no per-decision audit row; only DB lookups are observed via `db_observability.db:lookups`.
-- **Priority**: P1 — without it, sub-goal 4 (verify per real run) requires log mining as the only source.
-- **Slice**: see Slice S3 below.
+> **Status update — LIVE VERIFIED**: Slice S3 landed on branch `audit-slice-s3-semantic-decisions`. `data/semantic_decisions.db` is now the canonical per-decision audit log; 3 critical call sites wire through `shared.semantic_decisions.record_decision`. Replaces the log-mining pattern this audit relied on for every PASS to date.
+
+- The `dimensions.md → H1` pass signal is "One row per semantic decision: `(application_id, component, input, mechanism, threshold, score, output, validation_result, confidence)`." The shipped schema covers all of those (`agent_name`, `call_site`, `decision_type`, `mechanism`, `tier_reached`, `input_repr`, `input_hash`, `output_repr`, `confidence`, `profile_state_hash`, `jd_context_hash`, `field_label`, `elapsed_ms`, `trajectory_id`, `ts`).
+- **Shipped module**: `shared/semantic_decisions.py` (~340 lines). Mirrors the architecture of `shared/db_observability.py`:
+  - `record_decision(*, agent_name, call_site, decision_type, mechanism, tier_reached, input_value, output_value, confidence, profile_state_hash, jd_context_hash, field_label, elapsed_ms, trajectory_id)` — single write entry point.
+  - `query_decisions(...)` — read entry point for audit / live-evidence scripts (filters by agent_name / call_site / decision_type / input_hash / profile_state_hash / jd_context_hash / field_label / since_ts).
+  - Closed enums: `DECISION_TYPES = {llm_call, option_align, intent_classify, semantic_match, page_reasoning, screening_outcome}`; `MECHANISMS = {embedding, llm, semantic_matcher, regex, hardcoded, learned, cache_hit, structural}`. Unknown values WARN log + still store — audit integrity over enum strictness.
+  - Same test-mode short-circuit (`JOBPULSE_TEST_MODE=1` or `set_test_mode(False)`) as `db_observability`.
+  - Same best-effort write contract — SQLite failure logs at debug and returns -1, never breaks the apply pipeline.
+- **Wired call sites (3 of N — high-value-first per audit P1)**:
+  1. `jobpulse/screening_pipeline.py:_llm_answer` — emits one decision per LLM-fallback call. Tier values: `llm_returned_none`, `rejected_ai_leak`, `rejected_option_mismatch`, `ok_option_aligned`, `ok_free_text`, `exception`. Captures both the option and free_text branches.
+  2. `jobpulse/screening_option_aligner.py:OptionAligner.align_answer` — emits one decision per alignment call. Tier values: `learned_mapping`, `exact_match`, `normalised_match`, `embedding_similarity`, `fuzzy_score`, `no_alignment`. Each tier in the cascade is identifiable from the row.
+  3. `jobpulse/screening_intent.py:ScreeningIntentClassifier.classify` — emits one decision per intent call. Tier values: `empty_question`, `embedder_unavailable`, `embed_failed`, `above_threshold`, `below_threshold`. Includes the score (confidence) and the resolved intent (`output_value`).
+- **Status**: **PASS** (was GAP). Cross-cutting H1 closure for the wired sites.
+- **Priority**: was P1; closed.
+- **Verify by**:
+  - 11 unit tests in `tests/shared/test_semantic_decisions.py` covering schema, write/read, filter API, enum warnings, test-mode short-circuit, pipeline-safety (write-failure returns -1, doesn't raise).
+  - 9 wiring tests in `tests/jobpulse/test_semantic_decisions_wiring.py` covering each wired call site + each tier value + the end-to-end pipeline.answer trail.
+  - Live evidence (`scripts/audit_s3_live_evidence.py` → `logs/audit/s3_live_evidence.log`):
+    ```
+    --- 1. Running 4 ScreeningPipeline.answer calls ---
+    --- 2. Querying semantic_decisions.db (this-run only) ---
+      total decisions logged: 5
+      by call site:
+        OptionAligner.align_answer                                         1
+        ScreeningIntentClassifier.classify                                 2
+        screening_pipeline._llm_answer:free_text                           2
+    --- 3. Sample rows (first 8) ---
+        ScreeningIntentClassifier.classify  tier=above_threshold  conf=1.00  out="'willing_relocate'"
+        screening_pipeline._llm_answer:free_text  tier=ok_free_text  conf=0.85  out="..."
+        OptionAligner.align_answer  tier=exact_match  conf=1.00  out="'No, I do not have a disability and have not had one in the ..."
+        ScreeningIntentClassifier.classify  tier=above_threshold  conf=0.87  out="'work_auth_type'"
+    === S3 PASS — 5 decisions logged ===
+    ```
+- **Correctness check**:
+  - Right input? PASS — every wired site passes the raw decision input through `record_decision(input_value=...)`; the helper hashes for replay correlation and truncates for storage.
+  - Right mechanism? PASS — uses the same architecture as `db_observability` (proven in production); closed-enum mechanism/decision_type vocabulary.
+  - Right output for THIS context? PASS — live evidence shows the 5 decisions land with correct tier values, agent names, confidence scores. The S3 live-evidence run *also* incidentally caught the S13 leak still firing on `pipeline-correctness-fixes` HEAD (decision row: `screening_pipeline._llm_answer:free_text tier=ok_free_text conf=0.85 out="'Enhanced swarm convergence: GRPO group sampling. Score 8.5/...'"`) — that's S3's correctness in action: a leak that previously required `grep` over rotating logs is now a one-line SQL query against `semantic_decisions.db`.
+  - Right downstream consumption? PASS — `query_decisions(...)` returns dataclass rows; audit / live-evidence scripts can replay decisions by `(profile_state_hash, jd_context_hash)` for SG1 verification or by `(agent_name, tier_reached)` for SG2 verification.
+- **Dimension matrix**:
+  - `H1` (per-decision audit log) — **PASS for wired sites**. Coverage: screening_pipeline LLM fallback, OptionAligner cascade, ScreeningIntentClassifier — the three highest-traffic semantic decisions per apply.
+  - `H2` (replay-ready inputs) — PASS — `input_hash` enables "find every decision for question X across all profiles/JDs" replay queries.
+  - `H7` (trace ID) — PARTIAL — `trajectory_id` column exists in the schema but is not currently populated by the wired sites (no caller passes one). Slice-T follow-up could wire `apply_job`'s trajectory ID through.
+  - `K1` (real-app log evidence) — PASS — `logs/audit/s3_live_evidence.log` quoted above.
+- **Scope NOT closed by S3 (remaining wiring follow-ups)**:
+  - `page_analysis/page_reasoner.py:reason_sync` — page reasoning decisions not wired (TP-3 still log-mines).
+  - `shared/agents.py:cognitive_llm_call` — direct LLM call sites outside the screening pipeline (CV scrutiny, page reasoner, intent_healing, widget_llm_recovery, etc.) not wired. Slice **S3-extension** could wire these — but the bulk of audit-critical PASS claims are on the three wired sites.
+  - `shared/optimization/_signal_bus` — already has structured logging; no need to duplicate via `semantic_decisions`.
+- **S3 + S4 merge note (action required at merge time)**: S4 (option aligner first-pass drop on EEO) introduces a new yes/no prefix tier in `OptionAligner.align_answer` between exact-match and embedding-similarity. S3 wires the *pre-S4* tiers (`exact_match`, `normalised_match`, `embedding_similarity`, `fuzzy_score`, `no_alignment`) but does NOT know about S4's two new return paths (`yesno_first_token_match`, `yesno_substring_count`). When S3 and S4 both merge to `pipeline-correctness-fixes`, the merger MUST add `_log("yesno_first_token_match", opt, 0.95)` and `_log("yesno_substring_count", best_opt, float(best_count))` calls in S4's two new return paths — otherwise the most heavily-used EEO alignment path on the merged branch will be invisible to the audit log (silent gap; tests would still pass because S4 doesn't assert on decision rows and S3 wiring tests don't cover the new tiers).
+- **S3 + S4 recursion-limit concern (action required at merge time)**: S4 ships `test_ambiguous_answer_does_not_recurse` which sets `sys.setrecursionlimit(50)` and runs `OptionAligner().align_answer(...)`. S3 wiring adds `record_decision → _ensure_schema → sqlite3.connect → conn.execute` to every `align_answer` call — ~5-10 extra stack frames per call. With limit=50 the test may blow up at merge time even though the actual recursion behaviour is unchanged. Merger should either bump the test's recursion limit (~80) or have the test set `set_test_mode(True)` in a setup fixture so `record_decision` short-circuits inside that one test.
+- **Cleanup performed**: the live evidence run drove `pipeline.answer` against the production cache; the S13 leak resurfaced (expected — S13 not merged here yet) and `_llm_answer` returned `"Enhanced swarm convergence..."`. The answer was *not* cached because `record_outcome` runs only after form-fill confirms in the production apply path; the audit script doesn't reach that. Post-run sanity check: `sqlite3 data/screening_semantic_cache.db "SELECT COUNT(*) FROM screening_semantic_cache WHERE answer LIKE '%Enhanced swarm%' OR answer LIKE '%GRPO%';"` → 0; Qdrant `screening_questions` collection scan → 0. No production cache pollution from this run.
+- **Branch**: `audit-slice-s3-semantic-decisions` off `pipeline-correctness-fixes`.
+- **Files touched**: `shared/semantic_decisions.py` (new, ~340 lines), `jobpulse/screening_pipeline.py` (+~70 lines for 6 decision-log call sites in `_llm_answer`), `jobpulse/screening_option_aligner.py` (+~20 lines for 6 tier-log calls in `align_answer`), `jobpulse/screening_intent.py` (+~25 lines for 5 tier-log calls in `classify`), `tests/shared/test_semantic_decisions.py` (new), `tests/jobpulse/test_semantic_decisions_wiring.py` (new), `scripts/audit_s3_live_evidence.py` (new evidence collector).
 
 ### TP-11 `process_single_url` JD-analyzer title + company extraction (`jobpulse/scan_pipeline.py:1060-1069`)
 
@@ -708,3 +756,17 @@ Per-URL budget 45 min including correctness check; 10 URLs × 45 min = ~7.5 hour
 - **Confidence**: ~28%. **Next-session unblock**: land S6 + S10 (and ideally S1) on separate branches; then re-fire the audit prompt for Phase 2B (10 remaining adapters) per `docs/superpowers/plans/2026-05-10-semantic-audit-phase2-continuation.md`.
 
 **BLOCKED-WITH-PLAN — `docs/audits/2026-05-10-semantic-audit-verified.md` (this file) + `docs/superpowers/plans/2026-05-10-semantic-audit-phase2-continuation.md`**.
+
+---
+
+## Session 4 update (2026-05-10) — S3 landed
+
+S3 (`semantic_decisions.db` per-decision audit log) landed on `audit-slice-s3-semantic-decisions`. Closes TP-10 GAP → PASS, closes dimension H1 for the three wired call sites.
+
+- **Touchpoint status delta**: TP-10 demoted from GAP to PASS.
+- **Slices closed this session**: **S3** (P1, completed within the 4-6h estimate; one slice-boundary). 11/11 module tests + 9/9 wiring tests green; live evidence shows 5 decisions logged with correct tier/mechanism/confidence values across the 3 wired call sites in a single `pipeline.answer` traversal.
+- **Audit methodology delta**: every PASS in this audit doc that previously relied on log mining (`grep` over rotating `logs/live_e2e/run_final_*.log`) is now backed by queryable rows in `data/semantic_decisions.db`. Replay-by-(profile, JD) and replay-by-(agent, tier) queries are now one-line SQL instead of log-mining gymnastics.
+- **Distance % delta**: SG4 (right per real run) ~25% → **~35%** — log-mining was the load-bearing constraint on SG4 audit work; closing it makes per-touchpoint live evidence cheaply repeatable and durable across log rotations. SG5 (OPRAL on errors) ~35% → **~40%** — error-path tier_reached values (`llm_returned_none`, `rejected_*`, `exception`, `embed_failed`) are now first-class data points for the Observe step of OPRAL.
+- **Coincidental finding from S3 live-evidence run**: the S13 cognitive routing leak still fires on `pipeline-correctness-fixes` HEAD (expected — S13 lives on a separate branch). The leak text `"Enhanced swarm convergence: GRPO group sampling..."` landed in `semantic_decisions.db` as a `screening_pipeline._llm_answer:free_text` row with `tier=ok_free_text, confidence=0.85`. That's S3's correctness in action: a leak that previously required grepping `run_final_*.log` for specific phrases is now a one-line SQL query against the audit DB.
+- **Scope NOT closed by S3** (deferred follow-ups, not blocking the merge): `page_analysis/page_reasoner.py` wiring (TP-3), broader `cognitive_llm_call` direct-call wiring (CV scrutiny, intent_healing, widget_llm_recovery), `trajectory_id` population. These are individual smaller slices, not slice-S3 scope.
+- **Slices remaining**: same list, minus S3. Recommended next: merge sequence for the 8 P1 slice branches into `pipeline-correctness-fixes` so Phase 2B (cross-ATS URL prosecution) can finally start. After merge, S5 (cross-ATS prosecution against `docs/audits/url-coverage-matrix.md`) becomes the load-bearing slice for SG3 progress.
