@@ -158,8 +158,83 @@ class ScanLearningEngine:
 
                 CREATE INDEX IF NOT EXISTS idx_learned_rules_platform
                     ON learned_rules (platform, confidence DESC);
+
+                -- Item 8 measurement (2026-05-10): pure observability
+                -- so we can compute (1 - distinct_hashes / total_calls)
+                -- after a week of cron data and decide whether the
+                -- scan_learning LLM call hits the same input often
+                -- enough to justify a cache table.
+                CREATE TABLE IF NOT EXISTS llm_analysis_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    platform TEXT NOT NULL,
+                    signal_set_hash TEXT NOT NULL,
+                    event_count INTEGER NOT NULL,
+                    ts TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_llm_analysis_calls_platform_ts
+                    ON llm_analysis_calls (platform, ts DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_llm_analysis_calls_hash
+                    ON llm_analysis_calls (signal_set_hash);
                 """
             )
+
+    def _record_llm_analysis_call(
+        self, *, platform: str, signal_set_hash: str, event_count: int,
+    ) -> None:
+        """Persist one ``run_llm_analysis`` invocation for hit-rate
+        measurement. Used by the daily summary script — no functional
+        effect on the analysis itself."""
+
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO llm_analysis_calls "
+                "(platform, signal_set_hash, event_count, ts) "
+                "VALUES (?, ?, ?, ?)",
+                (platform, signal_set_hash, event_count,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+
+    def llm_analysis_hit_rate(
+        self, *, days: int = 7, platform: str | None = None,
+    ) -> dict:
+        """Return ``{platform: {total, distinct, hit_rate}}`` over the
+        last N days. ``hit_rate = 1 - distinct/total``. Used by the
+        daily summary to decide whether the cache is justified.
+        """
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+        params: list[Any] = [cutoff]
+        where = "WHERE ts >= ?"
+        if platform:
+            where += " AND platform = ?"
+            params.append(platform)
+        with self._get_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""SELECT platform,
+                          COUNT(*) AS total,
+                          COUNT(DISTINCT signal_set_hash) AS distinct_hashes
+                     FROM llm_analysis_calls
+                     {where}
+                 GROUP BY platform
+                 ORDER BY platform""",
+                params,
+            ).fetchall()
+        result: dict = {}
+        for r in rows:
+            total = int(r["total"])
+            distinct = int(r["distinct_hashes"])
+            hit_rate = 1.0 - (distinct / total) if total else 0.0
+            result[r["platform"]] = {
+                "total": total,
+                "distinct": distinct,
+                "hit_rate": hit_rate,
+            }
+        return result
 
     def record_event(
         self,
@@ -432,7 +507,22 @@ class ScanLearningEngine:
         return total > 0 and total % self._LLM_ANALYSIS_EVERY_N_BLOCKS == 0
 
     def run_llm_analysis(self, platform: str) -> None:
-        """Run GPT-5o-mini analysis on recent events for a platform."""
+        """Run GPT-5o-mini analysis on recent events for a platform.
+
+        Item 8 instrumentation (2026-05-10): every call records
+        ``(platform, signal_set_hash, ts)`` to ``llm_analysis_calls``
+        so we can measure cache hit-rate over a real week of cron
+        scans before deciding whether to add the cache. The plan's
+        decision rule:
+
+          - ≥30% repeat-hash rate over 7 days → add 7-day cache
+          - <30% → close the item with the measurement document
+            ``docs/audits/scan_learning_cache_measurement.md``.
+
+        ``hit_rate`` is computed as ``1 - distinct(signal_set_hash) /
+        total_calls`` per platform.
+        """
+
         with self._get_conn() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -456,6 +546,21 @@ class ScanLearningEngine:
                 f"{r['outcome']} | {r['wall_type'] or 'n/a'}"
             )
         events_table = "\n".join(lines)
+
+        # Measurement-only: hash the input signal set so we can compute
+        # repeat-rate after a week of cron data. Stable digest of the
+        # event-table body (header excluded — it's invariant). No cache
+        # logic gated on this; pure observation.
+        try:
+            self._record_llm_analysis_call(
+                platform=platform,
+                signal_set_hash=hashlib.sha256(
+                    "\n".join(lines[1:]).encode("utf-8"),
+                ).hexdigest()[:16],
+                event_count=len(rows),
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.debug("llm_analysis_calls log failed: %s", exc)
 
         prompt = (
             f"You are analyzing job scraping session data to find patterns that trigger verification walls.\n\n"
