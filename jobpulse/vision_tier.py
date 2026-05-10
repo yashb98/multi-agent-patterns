@@ -114,12 +114,43 @@ _VALID_PAGE_TYPES = {
 }
 
 
-async def classify_page_type_from_screenshot(screenshot_png: bytes) -> str | None:
+async def classify_page_type_from_screenshot(
+    screenshot_png: bytes,
+    *,
+    domain: str | None = None,
+    content_hash: str | None = None,
+) -> str | None:
     """Classify the page type from a rendered screenshot via gpt-4.1-mini.
 
     Used by FormNavigator as a tiebreaker when DOM-based PageReasoner
     confidence is low. Returns None if the API key is missing or call fails.
+
+    Optional ``domain`` + ``content_hash`` enable a 1-hour cache (Item 12)
+    so repeat visits to the same page skip the LLM call. Pass None / None
+    (the legacy signature) and the cache is bypassed — pixel hashing of
+    the screenshot would defeat itself, so we don't cache without a stable
+    DOM-derived key.
     """
+
+    if domain and content_hash:
+        try:
+            from jobpulse.page_analyzer import (
+                _vision_classification_cache_lookup,
+            )
+            cached = _vision_classification_cache_lookup(domain, content_hash)
+            if cached is not None:
+                page_type, _confidence = cached
+                logger.info(
+                    "vision_tier cache hit: %s (domain=%s)",
+                    page_type, domain,
+                )
+                return (
+                    page_type.value if hasattr(page_type, "value")
+                    else str(page_type)
+                )
+        except Exception as exc:
+            logger.debug("vision_tier cache lookup failed: %s", exc)
+
     if not OPENAI_API_KEY:
         logger.debug("vision page-type classifier skipped — no OPENAI_API_KEY")
         return None
@@ -148,7 +179,23 @@ async def classify_page_type_from_screenshot(screenshot_png: bytes) -> str | Non
             return "unknown"
         page_type = raw[0].strip(".,'\" ")
         if page_type not in _VALID_PAGE_TYPES:
-            return "unknown"
+            page_type = "unknown"
+
+        if domain and content_hash and page_type != "unknown":
+            try:
+                from jobpulse.form_models import PageType
+                from jobpulse.page_analyzer import (
+                    _vision_classification_cache_store,
+                )
+                try:
+                    pt_enum = PageType(page_type)
+                except ValueError:
+                    pt_enum = PageType.UNKNOWN
+                _vision_classification_cache_store(
+                    domain, content_hash, pt_enum, 0.85,
+                )
+            except Exception as exc:
+                logger.debug("vision_tier cache store failed: %s", exc)
         return page_type
     except Exception as exc:
         logger.warning("vision page-type classifier failed: %s", exc)

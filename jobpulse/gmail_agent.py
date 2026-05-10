@@ -3,7 +3,7 @@
 import json
 import base64
 from datetime import datetime
-from shared.agents import get_llm, smart_llm_call, get_model_name, is_local_llm
+from shared.agents import is_local_llm
 from langchain_core.messages import HumanMessage
 from jobpulse.config import GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
 from jobpulse import db

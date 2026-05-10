@@ -1141,10 +1141,19 @@ class FormNavigator:
         if action.confidence < 0.7 and act not in NO_VISION_GATE_ACTIONS:
             try:
                 from jobpulse.vision_tier import classify_page_type_from_screenshot
+                from jobpulse.page_analyzer import _vision_cache_key_for
                 page = getattr(self.driver, "page", None)
                 if page is not None:
                     shot = await page.screenshot(type="png")
-                    vision_type = await classify_page_type_from_screenshot(shot)
+                    try:
+                        cache_domain, cache_content = _vision_cache_key_for(ctx.snapshot)
+                    except Exception:
+                        cache_domain, cache_content = None, None
+                    vision_type = await classify_page_type_from_screenshot(
+                        shot,
+                        domain=cache_domain,
+                        content_hash=cache_content,
+                    )
                     if vision_type and vision_type != "unknown" and vision_type != action.page_type:
                         logger.warning(
                             "Vision-DOM disagreement: reasoner=%s vision=%s — escalating",

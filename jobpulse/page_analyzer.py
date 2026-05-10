@@ -163,13 +163,36 @@ class PageAnalyzer:
             logger.debug("Semantic reasoning fallback failed: %s", exc)
 
         # Low confidence — try vision (expensive, screenshot-based)
+        # Cached per (domain, content_hash) for 1 hour. The screenshot
+        # itself is not in the key — pixel-level diffs (cursor,
+        # animations, scroll position) defeat plain image hashing.
+        # Instead we hash the stable DOM features (field count, button
+        # labels, page text head) that determine page-type classification.
         try:
             screenshot_bytes = await self.bridge.screenshot()
             if not screenshot_bytes:
                 logger.warning("Vision fallback skipped: screenshot() returned empty/None")
             else:
+                cache_domain, cache_content = _vision_cache_key_for(snapshot)
+                cached = _vision_classification_cache_lookup(
+                    cache_domain, cache_content,
+                )
+                if cached is not None:
+                    cached_type, cached_conf = cached
+                    if cached_conf > confidence:
+                        logger.info(
+                            "Vision cache hit: %s (confidence=%.2f, domain=%s)",
+                            cached_type, cached_conf, cache_domain,
+                        )
+                        return cached_type
                 logger.debug("Vision fallback: screenshot %d bytes", len(screenshot_bytes))
                 vision_type, vision_confidence = await _vision_detect(screenshot_bytes)
+                try:
+                    _vision_classification_cache_store(
+                        cache_domain, cache_content, vision_type, vision_confidence,
+                    )
+                except Exception as exc:
+                    logger.debug("vision cache store failed: %s", exc)
                 if vision_confidence > confidence:
                     return vision_type
         except Exception as exc:
@@ -255,3 +278,145 @@ class PageAnalyzer:
             if pattern in url_lower:
                 return platform
         return None
+
+
+# ---------------------------------------------------------------------------
+# vision_classification_cache (Item 11) — 1-hour per-(domain, content) cache
+# ---------------------------------------------------------------------------
+#
+# The vision LLM call costs ~$0.001 per screenshot. Repeat visits to
+# the same page (apply-loop retries, navigation step replay, multiple
+# applications to the same domain) hit the same classification, so a
+# (domain, content_hash) cache with the same TTL as PageReasoner (1h)
+# avoids the cost.
+#
+# Key detail: the cache key is NOT the screenshot bytes. Pixel-level
+# differences (cursor, animations, scroll position, even font hinting
+# changes between renders) defeat plain image hashing. We hash the
+# stable DOM features the LLM is actually classifying — number of
+# fields, top button labels, leading page text — same content_hash
+# strategy `PageReasoner._cache_key` uses.
+
+import hashlib as _vc_hashlib  # noqa: E402
+import threading as _vc_threading  # noqa: E402
+from datetime import datetime as _vc_datetime, timedelta as _vc_timedelta  # noqa: E402
+from urllib.parse import urlparse as _vc_urlparse  # noqa: E402
+
+_VISION_CACHE_TTL_SECONDS = 3600
+_VISION_CACHE_LOCK = _vc_threading.Lock()
+
+
+def _vision_cache_key_for(snapshot: dict) -> tuple[str, str]:
+    """Derive (domain, content_hash) from the snapshot dict.
+
+    Domain is the URL host (sans port). Content hash is a stable digest
+    of the page's classification-relevant features. We deliberately
+    exclude live state like cursor position, scroll Y, mouse-move
+    handlers — anything that bumps without the page actually changing.
+    """
+
+    url = str(snapshot.get("url", "") or "")
+    try:
+        domain = _vc_urlparse(url).hostname or "unknown"
+    except Exception:
+        domain = "unknown"
+
+    parts = [
+        url,
+        str(snapshot.get("title", ""))[:160],
+        str(snapshot.get("page_text", ""))[:500],
+        str(len(snapshot.get("fields", []) or [])),
+        ",".join(sorted(
+            str((b or {}).get("label", ""))[:30]
+            for b in (snapshot.get("buttons", []) or [])
+        ))[:300],
+        str(snapshot.get("path", ""))[:160],
+    ]
+    h = _vc_hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+    return domain, h
+
+
+def _vision_cache_init(db) -> None:
+    conn = db._connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS vision_classification_cache ("
+        "domain TEXT NOT NULL, content_hash TEXT NOT NULL, "
+        "page_type TEXT NOT NULL, confidence REAL NOT NULL, "
+        "generated_at TEXT NOT NULL, "
+        "hit_count INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (domain, content_hash))"
+    )
+    conn.commit()
+
+
+def _vision_classification_cache_lookup(
+    domain: str, content_hash: str, *, db=None,
+) -> tuple[PageType, float] | None:
+    """Return ``(page_type, confidence)`` or ``None`` on miss / TTL expiry."""
+
+    import os as _os
+    if not (domain and content_hash):
+        return None
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return None
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    with _VISION_CACHE_LOCK:
+        _vision_cache_init(db)
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT page_type, confidence, generated_at FROM vision_classification_cache "
+            "WHERE domain = ? AND content_hash = ?",
+            (domain, content_hash),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            generated = _vc_datetime.fromisoformat(row["generated_at"])
+            if (_vc_datetime.now() - generated).total_seconds() > _VISION_CACHE_TTL_SECONDS:
+                return None
+        except (ValueError, TypeError):
+            return None
+        try:
+            page_type = PageType(row["page_type"])
+        except ValueError:
+            page_type = PageType.UNKNOWN
+        conn.execute(
+            "UPDATE vision_classification_cache SET hit_count = hit_count + 1 "
+            "WHERE domain = ? AND content_hash = ?",
+            (domain, content_hash),
+        )
+        conn.commit()
+        return page_type, float(row["confidence"])
+
+
+def _vision_classification_cache_store(
+    domain: str, content_hash: str, page_type: PageType, confidence: float,
+    *, db=None,
+) -> None:
+    import os as _os
+    if not (domain and content_hash):
+        return
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return
+    # Don't cache low-confidence guesses — they shouldn't fire if the
+    # next visit's classifier could resolve more confidently.
+    if confidence < 0.5:
+        return
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    with _VISION_CACHE_LOCK:
+        _vision_cache_init(db)
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO vision_classification_cache "
+            "(domain, content_hash, page_type, confidence, generated_at, hit_count) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (
+                domain, content_hash,
+                page_type.value if isinstance(page_type, PageType) else str(page_type),
+                float(confidence),
+                _vc_datetime.now().isoformat(),
+            ),
+        )
+        conn.commit()

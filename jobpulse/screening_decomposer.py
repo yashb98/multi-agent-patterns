@@ -11,8 +11,11 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
+from datetime import datetime, timedelta
 from typing import Optional
 
 from shared.logging_config import get_logger
@@ -49,53 +52,45 @@ class QuestionDecomposer:
     def decompose(self, question: str) -> list[str] | None:
         """Return sub-questions if compound, else None.
 
-        Uses a fast heuristic first; falls back to LLM for ambiguous cases.
+        Resolution order:
+          1. Cheap conjunction gate (regex) — if no "and"/"or"/","/"/" appears
+             at all, the question can't be compound. Skip everything.
+             This is structural keyword-presence detection, not classification.
+          2. LLM decomposition (primary) — semantic decision on whether the
+             conjunction signals a true compound question and, if so, how to
+             split it. Authoritative.
+          3. Heuristic decomposition fallback — if LLM is disabled or
+             unavailable, fall back to the rule-based template patterns.
         """
         if not question or not question.strip():
             return None
 
         q = question.strip()
 
-        # Fast heuristic check
-        if not self._is_likely_compound(q):
+        # Tier 1: cheap conjunction gate — structural pre-filter
+        if not _COMPOUND_INDICATORS.search(q):
             return None
 
-        # Try heuristic decomposition first (zero cost)
-        heuristic = self._heuristic_decompose(q)
-        if heuristic and len(heuristic) > 1:
-            logger.debug("Heuristic decomposition: '%s...' -> %d parts", q[:50], len(heuristic))
-            return heuristic
-
-        # LLM decomposition for ambiguous cases
+        # Tier 2: LLM decomposition — primary classifier for "is this compound?"
         if self._llm_enabled:
             llm_result = self._llm_decompose(q)
-            if llm_result and len(llm_result) > 1:
-                logger.debug("LLM decomposition: '%s...' -> %d parts", q[:50], len(llm_result))
-                return llm_result
+            if llm_result is not None:
+                if len(llm_result) > 1:
+                    logger.debug("LLM decomposition: '%s...' -> %d parts", q[:50], len(llm_result))
+                    return llm_result
+                # LLM said "not compound" → respect that
+                return None
+
+        # Tier 3: heuristic fallback — only when LLM unavailable
+        heuristic = self._heuristic_decompose(q)
+        if heuristic and len(heuristic) > 1:
+            logger.info(
+                "screening_decomposer: heuristic fallback hit for '%s' (LLM unavailable)",
+                q[:50],
+            )
+            return heuristic
 
         return None
-
-    def _is_likely_compound(self, question: str) -> bool:
-        """Fast heuristic: does this look like a compound question?"""
-        # Must have compound indicators
-        if not _COMPOUND_INDICATORS.search(question):
-            return False
-
-        # For experience questions, need multiple skills
-        skills = _SKILL_LIKE.findall(question)
-        if len(skills) >= _MIN_SKILL_COUNT:
-            return True
-
-        # For non-skill questions, check for list patterns
-        list_patterns = [
-            r"\b(list|describe|mention|name)\b.*\b(and|or)\b",
-            r"\d+.*\b(and|or)\b.*\d+",
-        ]
-        for pat in list_patterns:
-            if re.search(pat, question, re.IGNORECASE):
-                return True
-
-        return False
 
     def _heuristic_decompose(self, question: str) -> list[str] | None:
         """Rule-based decomposition for common patterns."""
@@ -139,7 +134,22 @@ class QuestionDecomposer:
         return items
 
     def _llm_decompose(self, question: str) -> list[str] | None:
-        """LLM-based decomposition for ambiguous compound questions."""
+        """LLM-based decomposition for ambiguous compound questions.
+
+        Cached 30 days per question hash — compound-question phrasings
+        are stable across forms; the same "Are you authorised AND willing
+        to relocate?" appears on dozens of ATSes verbatim.
+        """
+
+        cached = _decomposition_cache_lookup(question)
+        if cached is not None:
+            try:
+                parsed = json.loads(cached)
+                if isinstance(parsed, list) and len(parsed) > 1:
+                    return [str(sq).strip() for sq in parsed if str(sq).strip()]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         prompt = (
             "Break this job application screening question into the smallest possible atomic sub-questions.\n"
             "If it is already a single atomic question, return it unchanged as a single-item array.\n"
@@ -165,6 +175,10 @@ class QuestionDecomposer:
                 # Validate: each sub-question should be a string and look like a question
                 cleaned = [str(sq).strip() for sq in sub_questions if str(sq).strip()]
                 if len(cleaned) > 1:
+                    try:
+                        _decomposition_cache_store(question, json.dumps(cleaned))
+                    except Exception as exc:
+                        logger.debug("decomposition cache store failed: %s", exc)
                     return cleaned
             return None
         except Exception as exc:
@@ -217,3 +231,87 @@ def _extract_skill_name(question: str) -> str | None:
         if m:
             return m.group(1).strip().rstrip("?.")
     return None
+
+
+# ---------------------------------------------------------------------------
+# screening_decomposition_cache (Item 9) — 30-day per-question cache
+# ---------------------------------------------------------------------------
+#
+# Compound questions phrasings are stable across forms; the same
+# "Are you authorised to work in the UK and willing to relocate?"
+# appears on dozens of ATSes verbatim. Caching the decomposition keeps
+# the apply pipeline from re-paying the LLM cost each time.
+
+_DECOMP_CACHE_TTL_DAYS = 30
+_DECOMP_CACHE_LOCK = threading.Lock()
+
+
+def _decomposition_question_hash(question: str) -> str:
+    return hashlib.sha256(question.strip().encode("utf-8")).hexdigest()
+
+
+def _decomposition_cache_init(db) -> None:
+    conn = db._connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS screening_decomposition_cache ("
+        "question_hash TEXT PRIMARY KEY, "
+        "sub_questions_json TEXT NOT NULL, "
+        "generated_at TEXT NOT NULL, "
+        "hit_count INTEGER NOT NULL DEFAULT 0)"
+    )
+    conn.commit()
+
+
+def _decomposition_cache_lookup(question: str, *, db=None) -> str | None:
+    """Return cached sub_questions_json or ``None`` on miss / TTL expiry."""
+
+    import os as _os
+    if not question:
+        return None
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return None
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    qh = _decomposition_question_hash(question)
+    with _DECOMP_CACHE_LOCK:
+        _decomposition_cache_init(db)
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT sub_questions_json, generated_at FROM screening_decomposition_cache "
+            "WHERE question_hash = ?", (qh,),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            generated = datetime.fromisoformat(row["generated_at"])
+            if (datetime.now() - generated).days > _DECOMP_CACHE_TTL_DAYS:
+                return None
+        except (ValueError, TypeError):
+            return None
+        conn.execute(
+            "UPDATE screening_decomposition_cache SET hit_count = hit_count + 1 "
+            "WHERE question_hash = ?", (qh,),
+        )
+        conn.commit()
+        return row["sub_questions_json"]
+
+
+def _decomposition_cache_store(question: str, sub_questions_json: str, *, db=None) -> None:
+    import os as _os
+    if not (question and sub_questions_json):
+        return
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    qh = _decomposition_question_hash(question)
+    with _DECOMP_CACHE_LOCK:
+        _decomposition_cache_init(db)
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO screening_decomposition_cache "
+            "(question_hash, sub_questions_json, generated_at, hit_count) "
+            "VALUES (?, ?, ?, 0)",
+            (qh, sub_questions_json, datetime.now().isoformat()),
+        )
+        conn.commit()

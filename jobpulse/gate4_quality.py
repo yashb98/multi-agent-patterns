@@ -258,7 +258,25 @@ def scrutinize_cv_llm(
     required_skills: list[str],
     preferred_skills: list[str],
 ) -> LLMScrutinyResult:
-    """B2: GPT-5o-mini as a FAANG senior recruiter reviewing the CV."""
+    """B2: GPT-5o-mini as a FAANG senior recruiter reviewing the CV.
+
+    Cached 30 days per (cv_hash, jd_hash) — the same CV against the same
+    JD always yields the same review, and rerunning Gate 4 on apply-loop
+    retries previously cost a fresh ~$0.002 LLM call per iteration.
+    """
+
+    cv_hash = _cv_scrutiny_hash(cv_text)
+    jd_hash = _cv_scrutiny_hash(
+        role + "|" + company + "|" + ",".join(required_skills) + "|"
+        + ",".join(preferred_skills),
+    )
+    cached = _cv_scrutiny_cache_lookup(cv_hash, jd_hash)
+    if cached is not None:
+        try:
+            return _cv_scrutiny_from_payload(cached)
+        except Exception as exc:
+            logger.debug("cv_scrutiny_cache: payload parse failed: %s", exc)
+
     prompt = (
         f"You are a senior IT recruiter at Google reviewing a CV for: {role} at {company}.\n\n"
         f"Required skills: {', '.join(required_skills[:15])}\n"
@@ -317,7 +335,7 @@ def scrutinize_cv_llm(
     except Exception:
         threshold = 7.0
 
-    return LLMScrutinyResult(
+    result = LLMScrutinyResult(
         score=score,
         verdict=verdict,
         needs_review=score < threshold,
@@ -330,3 +348,114 @@ def scrutinize_cv_llm(
             "standout": data.get("standout", 0),
         },
     )
+
+    try:
+        _cv_scrutiny_cache_store(cv_hash, jd_hash, _cv_scrutiny_to_payload(result))
+    except Exception as exc:
+        logger.debug("cv_scrutiny_cache: store failed: %s", exc)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# cv_scrutiny_cache (Item 10) — 30-day per-(cv,jd) cache
+# ---------------------------------------------------------------------------
+
+import hashlib as _hashlib  # noqa: E402
+import threading as _threading  # noqa: E402
+from datetime import datetime as _datetime, timedelta as _timedelta  # noqa: E402
+
+_CV_SCRUTINY_CACHE_TTL_DAYS = 30
+_CV_SCRUTINY_CACHE_LOCK = _threading.Lock()
+
+
+def _cv_scrutiny_hash(text: str) -> str:
+    return _hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _cv_scrutiny_to_payload(result: "LLMScrutinyResult") -> str:
+    return _json.dumps({
+        "score": result.score,
+        "verdict": result.verdict,
+        "needs_review": result.needs_review,
+        "strengths": result.strengths,
+        "weaknesses": result.weaknesses,
+        "breakdown": result.breakdown,
+    })
+
+
+def _cv_scrutiny_from_payload(payload: str) -> "LLMScrutinyResult":
+    data = _json.loads(payload)
+    return LLMScrutinyResult(
+        score=data.get("score", 0),
+        verdict=data.get("verdict", "reject"),
+        needs_review=data.get("needs_review", True),
+        strengths=data.get("strengths", []),
+        weaknesses=data.get("weaknesses", []),
+        breakdown=data.get("breakdown", {}),
+    )
+
+
+def _cv_scrutiny_cache_init(db) -> None:
+    conn = db._connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cv_scrutiny_cache ("
+        "cv_hash TEXT NOT NULL, jd_hash TEXT NOT NULL, "
+        "payload TEXT NOT NULL, generated_at TEXT NOT NULL, "
+        "hit_count INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (cv_hash, jd_hash))"
+    )
+    conn.commit()
+
+
+def _cv_scrutiny_cache_lookup(cv_hash: str, jd_hash: str, *, db=None) -> str | None:
+    import os as _os
+    if not (cv_hash and jd_hash):
+        return None
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return None
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    with _CV_SCRUTINY_CACHE_LOCK:
+        _cv_scrutiny_cache_init(db)
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT payload, generated_at FROM cv_scrutiny_cache "
+            "WHERE cv_hash = ? AND jd_hash = ?",
+            (cv_hash, jd_hash),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            generated = _datetime.fromisoformat(row["generated_at"])
+            if (_datetime.now() - generated).days > _CV_SCRUTINY_CACHE_TTL_DAYS:
+                return None
+        except (ValueError, TypeError):
+            return None
+        conn.execute(
+            "UPDATE cv_scrutiny_cache SET hit_count = hit_count + 1 "
+            "WHERE cv_hash = ? AND jd_hash = ?",
+            (cv_hash, jd_hash),
+        )
+        conn.commit()
+        return row["payload"]
+
+
+def _cv_scrutiny_cache_store(cv_hash: str, jd_hash: str, payload: str, *, db=None) -> None:
+    import os as _os
+    if not (cv_hash and jd_hash and payload):
+        return
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    with _CV_SCRUTINY_CACHE_LOCK:
+        _cv_scrutiny_cache_init(db)
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO cv_scrutiny_cache "
+            "(cv_hash, jd_hash, payload, generated_at, hit_count) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (cv_hash, jd_hash, payload, _datetime.now().isoformat()),
+        )
+        conn.commit()

@@ -90,6 +90,48 @@ _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 _OLLAMA_BASE_URL = _OLLAMA_HOST.rstrip("/") + "/v1"
 _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "qwen3.6:35b")
 
+# ── Kimi (Moonshot) — mandatory cloud provider ─────────────────────
+# OpenAI key is exhausted (per the 2026-05-09 plan); every cloud LLM
+# call goes through Kimi via its OpenAI-compatible endpoint. When
+# ``KimiAI_API_KEY`` is set in the env we wire it into both
+# ``get_openai_client`` (raw SDK) and ``_make_openai_llm`` (LangChain
+# ChatOpenAI) so existing callers don't need to change. Caller-supplied
+# ``model="gpt-5-mini"`` arguments are remapped to Moonshot's default
+# (``moonshot-v1-auto``) — gpt-5 is not a Kimi model and would 4xx.
+_KIMI_BASE_URL = os.environ.get(
+    "KIMI_BASE_URL", "https://api.moonshot.ai/v1",
+)
+_KIMI_DEFAULT_MODEL = os.environ.get(
+    "KIMI_DEFAULT_MODEL", "moonshot-v1-auto",
+)
+
+
+def _kimi_api_key() -> str:
+    """Return the configured Kimi key (KimiAI_API_KEY) or empty string.
+
+    Read on every call so tests that monkeypatch the env via
+    ``monkeypatch.setenv`` see the change without reloading the module.
+    """
+    return os.environ.get("KimiAI_API_KEY", "").strip()
+
+
+def _use_kimi() -> bool:
+    """When True, the Kimi key short-circuits any OpenAI fallback —
+    Kimi is mandatory."""
+    return bool(_kimi_api_key())
+
+
+def _kimi_remap_model(model: str | None) -> str:
+    """Remap an OpenAI-style model name (gpt-5-mini, gpt-4o, …) to a
+    Kimi-compatible default. If the model is already a Moonshot/Kimi
+    name, leave it alone."""
+    if not model:
+        return _KIMI_DEFAULT_MODEL
+    m = model.lower()
+    if m.startswith(("kimi", "moonshot", "k2", "k3")):
+        return model
+    return _KIMI_DEFAULT_MODEL
+
 # Hard model override — when set, overrides every caller's model= argument
 # regardless of LLM_PROVIDER. Lets the user point the existing OpenAI client
 # at any OpenAI-compatible provider (Kimi/Moonshot, Together, Anyscale, etc.)
@@ -254,6 +296,11 @@ def get_model_name(default: str = "gpt-5-mini") -> str:
         return _LOCAL_MODEL
     if _LLM_PROVIDER == "together":
         return os.environ.get("TOGETHER_MODEL", default if default != "gpt-5-mini" else "Qwen/Qwen3-30B-A3B-Instruct")
+    # Kimi (mandatory cloud provider) — remap any OpenAI-style default
+    # to the Moonshot equivalent so callers passing model="gpt-5-mini"
+    # don't 4xx against the Moonshot endpoint.
+    if _use_kimi():
+        return _kimi_remap_model(default)
     if _use_fallback_models:
         return _FALLBACK_MODELS.get(default, default)
     return default
@@ -324,6 +371,9 @@ def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens:
 
     When ``LLM_MODEL_OVERRIDE`` is set (Kimi / Together / Anyscale …),
     that wins over every caller-supplied ``model`` and the fallback map.
+    Otherwise, when ``KimiAI_API_KEY`` is set, the model is remapped to
+    a Kimi-compatible default (``moonshot-v1-auto``) and the client is
+    pointed at Moonshot's endpoint — Kimi is mandatory in production.
     Temperature heuristic still defaults to 1 for gpt-5 family — non-OpenAI
     models with a literal ``gpt-5`` prefix would be misclassified, but
     the override path's typical models (kimi-*, together's Qwen, …) don't
@@ -331,12 +381,23 @@ def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens:
     """
     if _MODEL_OVERRIDE:
         effective_model = _MODEL_OVERRIDE
+    elif _use_kimi():
+        effective_model = _kimi_remap_model(model)
     elif _use_fallback_models:
         effective_model = _FALLBACK_MODELS.get(model, model)
     else:
         effective_model = model
     effective_temp = 1 if _requires_fixed_temperature(effective_model) else temperature
     effective_max_tokens = _max_tokens_for_model(effective_model, max_tokens)
+    if _use_kimi() and not _MODEL_OVERRIDE:
+        return ChatOpenAI(
+            model=effective_model,
+            temperature=effective_temp,
+            request_timeout=timeout,
+            openai_api_base=_KIMI_BASE_URL,
+            openai_api_key=_kimi_api_key(),
+            **_token_limit_kwargs(effective_model, effective_max_tokens),
+        )
     return ChatOpenAI(
         model=effective_model,
         temperature=effective_temp,
@@ -562,6 +623,12 @@ def get_openai_client(timeout: float = 180.0) -> OpenAI:
     Centralizes all direct ``OpenAI()`` calls (previously 27 scattered copies).
     When LLM_PROVIDER=local, points at Ollama's OpenAI-compatible endpoint.
 
+    **Cloud provider — Kimi (mandatory).** When ``KimiAI_API_KEY`` is
+    set (it is, in production), the client uses Moonshot's
+    OpenAI-compatible endpoint and the Kimi key. The OpenAI fallback is
+    only reachable when the Kimi key is unset — and we raise if neither
+    is present so calls never silently fail on a stale key.
+
     Default 180s tolerates 32b local models — qwen3:32b (the
     cache-or-llm-audit.md §2.3 Step-0 model) takes 30–60 s on real
     cv_tailor / page-reasoner sized prompts, which the previous 30 s
@@ -575,10 +642,19 @@ def get_openai_client(timeout: float = 180.0) -> OpenAI:
             base_url=_OLLAMA_BASE_URL,
             timeout=timeout,
         )
-    return OpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY", ""),
-        timeout=timeout,
-    )
+    if _use_kimi():
+        return OpenAI(
+            api_key=_kimi_api_key(),
+            base_url=_KIMI_BASE_URL,
+            timeout=timeout,
+        )
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not openai_key:
+        raise RuntimeError(
+            "No LLM credentials configured: set KimiAI_API_KEY (preferred) "
+            "or OPENAI_API_KEY in the env."
+        )
+    return OpenAI(api_key=openai_key, timeout=timeout)
 
 
 # ─── AGENT NODE: RESEARCHER ─────────────────────────────────────
