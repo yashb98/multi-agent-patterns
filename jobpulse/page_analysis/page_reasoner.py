@@ -39,6 +39,14 @@ def smart_llm_call(*args, **kwargs):  # noqa: ANN
     _, _fn = _lazy_import_agents()
     return _fn(*args, **kwargs)
 
+
+def get_optimization_engine():  # noqa: ANN
+    """Lazy proxy for OptimizationEngine — enables `patch(
+    'jobpulse.page_analysis.page_reasoner.get_optimization_engine')`
+    in S2 unit tests. Slice S2 / TP-3."""
+    from shared.optimization import get_optimization_engine as _fn
+    return _fn()
+
 _DB_PATH = Path(__file__).resolve().parents[2] / "data" / "page_reasoning_cache.db"
 
 VALID_ACTIONS = frozenset({
@@ -552,7 +560,15 @@ class PageReasoner:
                 SystemMessage(content=self._system_prompt()),
                 HumanMessage(content=prompt),
             ]
-            llm = get_llm(temperature=0, max_tokens=500, agent_name="page_reasoner")
+            # Audit 2026-05-10 / Slice S2 / TP-3 — bind response_format so
+            # Moonshot returns parseable JSON without prose/markdown wrappers.
+            # Per orchestration-agents.md: "Use response_format=
+            # {'type':'json_object'} when expecting JSON from OpenAI" and
+            # "Never rely on markdown stripping to extract JSON". Live
+            # verified twice on Graphcore: first parse failed every time,
+            # safety net (Fix D) was load-bearing.
+            base_llm = get_llm(temperature=0, max_tokens=500, agent_name="page_reasoner")
+            llm = base_llm.bind(response_format={"type": "json_object"})
             try:
                 response = smart_llm_call(llm, msgs)
             except Exception as local_err:
@@ -566,7 +582,7 @@ class PageReasoner:
                         timeout=30,
                         agent_name="page_reasoner",
                         force_cloud=True,
-                    )
+                    ).bind(response_format={"type": "json_object"})
                     response = smart_llm_call(cloud_llm, msgs)
                 else:
                     raise
@@ -579,6 +595,26 @@ class PageReasoner:
             # usually returns clean output.
             if self._is_parse_failure(action):
                 logger.info("PageReasoner: first parse failed, retrying with strict-JSON prompt")
+                # S2 — emit a `failure` signal so cleanup-retry engagement-rate
+                # is observable in data/optimization.db. Wrapped in try/except
+                # because observability MUST NOT block the apply pipeline.
+                try:
+                    engine = get_optimization_engine()
+                    engine.emit(
+                        "failure",
+                        source_loop="page_reasoner",
+                        domain="page_reasoner",
+                        agent_name="page_reasoner",
+                        severity="warning",
+                        payload={
+                            "reason": "parse_failure_strict_retry",
+                            "raw_snippet": (text or "")[:200],
+                            "error": (action.reasoning or "")[:200],
+                        },
+                    )
+                except Exception as sig_exc:  # noqa: BLE001
+                    logger.debug("PageReasoner: failure signal emit failed: %s", sig_exc)
+
                 strict_msgs = [
                     SystemMessage(content=self._system_prompt()),
                     HumanMessage(content=prompt),

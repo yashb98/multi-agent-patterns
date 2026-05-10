@@ -204,6 +204,16 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 
 ### TP-3 PageReasoner LLM call + JSON parse path (`jobpulse/page_analysis/page_reasoner.py:528,541` + Fix D)
 
+> **Status update — LIVE VERIFIED at network layer**: Slice S2 landed on branch `audit-slice-s2-page-reasoner-json` @ commit `a3074ad`. (1) `_call_llm` now binds `response_format={"type":"json_object"}` to the LLM (per orchestration-agents.md rule); (2) emits `failure` signal to OptimizationEngine when the cleanup-retry path engages, making engagement-rate observable in `data/optimization.db`. 4 new unit tests (TDD red→green); 27 existing reasoner tests still pass.
+>
+> **Direct live verification**: captured the actual HTTP request body sent to `api.moonshot.ai/v1/chat/completions` from `PageReasoner._call_llm`:
+> - `response_format` is present in the request body.
+> - Value: `{'type': 'json_object'}` — Moonshot is being told to return strict JSON.
+> - Reasoner returned `action=click_element confidence=1.0` on **first parse** (no cleanup-retry engagement, no failure signal emitted).
+> - One LLM call total — zero "first parse failed" log lines.
+>
+> The Fix-D safety nets (cleanup-retry + field_count_guard) remain as defense-in-depth but are no longer the primary path. The audit's slice acceptance ("cleanup-retry engagement-rate < 5%") is achievable: on the controlled test, engagement-rate was 0%.
+
 - **Current**: `smart_llm_call` → `_parse_response`. Two-pass parse (strict → cleanup retry). On second failure with ≥3 fillable fields, default to `PageAction(action="fill_form", confidence=0.3)`. Confidence guard further lowered if required fields would be dropped.
 - **Target**: as-is for the safety net; *root-cause* the recurring Kimi malformed-JSON problem so the safety net stops being load-bearing.
 - **Status**: **OK (graceful) WITH UNDERLYING GAP**. The graceful demotion is correct semantic-first design (per SG2 rule). But the *frequency* of the fallback firing on the same URL is a finding, not a feature.
