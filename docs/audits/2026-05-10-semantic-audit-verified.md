@@ -1140,21 +1140,34 @@ User caught this directly during the live Anthropic apply review: form filled wi
 - **Status**: **GAP → FIXED in-session (S21 merged)**.
 - **Slice**: **S21** (P1; merged in-session because trivial diff + immediate user-visible). Branch: `audit-slice-s21-first-person-screening`.
 - **Fix**: reframe both prompts to "You ARE the job applicant. Answer in FIRST PERSON. Never refer to yourself by name in third person (no 'As [name], I...'). Never mention you are an AI. Be honest based on your profile." — and `Candidate profile:` / `Applicant background:` → `Your profile:`. The free-text branch additionally instructs: "Start with 'I' or 'My' — never with 'As [name]' or 'The applicant'."
-- **Live verification (post-fix, real Moonshot call)**:
-  ```
-  Q: 'What are your personal preferences for working environment?'
-  Pre-S21:  'As Yash Bishnoi, I have a strong preference for...'
-  Post-S21: 'My preference for a working environment is one that is collaborative
-            and intellectually stimulating, where I can apply my MSc in Computer
-            Science from the University of Dundee to contribute to innovative projects.'
+- **Live verification — TWO LEVELS** (rule 1 honoured):
 
-  Q: 'Why do you want to work at Anthropic?'
-  Post-S21: 'I am passionate about advancing artificial intelligence and believe
-            that Anthropic's cutting-edge research aligns with my interests and
-            expertise in computer science.'
+  **Level 1 — direct LLM call**: `pipeline._llm_answer()` invoked with synthetic question/profile, hit real Moonshot, returned first-person answers. Proved the fix at the prompt-construction layer.
+
+  **Level 2 — full live URL apply (`apply_job(url=Anthropic, dry_run=True)`)**: ran the production code path against the real Anthropic Greenhouse URL. The screening pipeline fired with the new prompt; LLM-generated answers landed in `data/semantic_decisions.db` rows 93 & 94:
+
   ```
-  Both answers start with "My"/"I am" — natural first-person, no "As Yash Bishnoi" prefix.
-- **Cache cleanup applied**: 5 SQLite rows + 3 Qdrant points containing the `'As Yash Bishnoi...'` leak deleted from `screening_semantic_cache.db` and the `screening_questions` Qdrant collection. The next apply will regenerate with the new prompt rather than serving the poisoned cache.
+  Decision 93 (call_site=_llm_answer:free_text, tier=ok_free_text):
+    'My preference for a working environment is one that is collaborative
+    and intellectually stimulating, where I can apply my MSc in Computer
+    Science from the University of Dundee to contribute to innovative
+    projects. I thrive in settings that encourage continuous learning...'
+
+  Decision 94 (call_site=_llm_answer:free_text, tier=ok_free_text):
+    'I am passionate about advancing artificial intelligence and believe
+    that Anthropic's cutting-edge research aligns with my interests and
+    expertise in computer science. My MSc in Computer Science from the
+    University of Dundee has equipped me with the knowledge and skills
+    to contribute meaningfully...'
+  ```
+
+  Both answers start with **"My"** / **"I am"** — natural first-person, **zero "As Yash Bishnoi" prefix**. Compare to pre-S21 from the same code path 30 minutes earlier (decision rows 88, 68 in the audit DB and apply log lines `fill ✓ '(Optional) Personal Preferences' = 'As Yash Bishnoi, I have a strong preference for...'`).
+
+  Caveat: the apply hung at TP-29/S20 (the known apply-hang issue) before these answers were written to the form fields. So the verification is at the LLM-tier (decisions logged) not at the form-tier (recruiter-visible value). The decision rows are the canonical evidence per the S3 design — LLM produced first-person, S13 guard accepted, semantic_decisions.db captured.
+
+- **Cache cleanup applied** (two passes):
+  - First pass (immediately post-merge): `LIKE '%As Yash%'` matched 5 SQLite rows + 3 Qdrant points → deleted.
+  - Second pass (after the live verification surfaced more variants): `LIKE 'As Mr%'`, `LIKE '%Yash Bishnoi is %'`, `LIKE 'As the candidate%'`, `LIKE 'The applicant %'` matched 2 additional SQLite rows (`'As Mr. Yash Bishnoi, I am currently pursuing...'`, `'Yash Bishnoi is a proactive and motivated individual...'`) + 3 more Qdrant points → deleted. Total cleanup: **7 SQLite + 6 Qdrant rows** removed. The first cleanup pattern was too narrow; lesson: cache cleanup queries must enumerate the full pattern space, not just the most-obvious one.
 - **Tests**: 4 new in `tests/jobpulse/test_screening_first_person_prompt.py` asserting both prompt-construction sites contain "You ARE the job applicant" / "FIRST PERSON" / "Your profile:" and explicitly forbid "As [name], I...". All pass.
 - **Cross-ATS implication**: every URL with free-text screening fields was producing third-person-self-reference answers. Now ATS-agnostic — the fix is at the prompt-construction layer, not the adapter layer.
 
