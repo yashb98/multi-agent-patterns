@@ -35,6 +35,19 @@ def _to_qdrant_id(text: str) -> int:
     return int(hashlib.md5(text.encode()).hexdigest(), 16) % (2 ** 63)
 
 
+def _compose_key(question: str, profile_state_hash: str, jd_context_hash: str) -> str:
+    """Compose the cache-key string from question + profile + JD context.
+
+    Audit S1 (TP-1): the same question can have different correct answers
+    across profile states (visa renewed) and JD contexts (UK vs US JD).
+    Folding both hashes into the cache key produces distinct entries per
+    (profile, JD) pair while keeping the lookup *vector* over question
+    text alone (paraphrase matching survives).
+    """
+    q = (question or "").strip().lower()
+    return f"{q}|{profile_state_hash or ''}|{jd_context_hash or ''}"
+
+
 
 @dataclass
 class CacheHit:
@@ -151,13 +164,16 @@ class ScreeningSemanticCache:
                 ON screening_semantic_cache(question_text)
             """)
 
-            # Migration: add option-aware + embedding columns
+            # Migration: add option-aware + embedding + context-hash columns
             existing = {r[1] for r in conn.execute("PRAGMA table_info(screening_semantic_cache)").fetchall()}
             for col, typ in [
                 ("selected_option", "TEXT DEFAULT ''"),
                 ("field_type", "TEXT DEFAULT ''"),
                 ("field_options_json", "TEXT DEFAULT ''"),
                 ("embedding_vector", "TEXT DEFAULT ''"),
+                # Audit S1 / TP-1: scope cache entries to (profile, JD) context
+                ("profile_state_hash", "TEXT DEFAULT ''"),
+                ("jd_context_hash", "TEXT DEFAULT ''"),
             ]:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE screening_semantic_cache ADD COLUMN {col} {typ}")
@@ -181,12 +197,20 @@ class ScreeningSemanticCache:
         selected_option: str = "",
         field_type: str = "",
         field_options: list[str] | None = None,
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
     ) -> None:
         """Store a question+answer pair in the semantic cache.
 
         For option-based fields (dropdowns, radios, checkboxes), also store
         the exact option text that was selected and the available options,
         so future lookups can align to different option sets.
+
+        ``profile_state_hash`` and ``jd_context_hash`` (audit S1 / TP-1)
+        scope the entry to a single (profile, JD) context. Two callers
+        differing only by profile state or JD context get distinct cache
+        rows; a profile-state mutation invalidates the prior entry by
+        producing a new key.
         """
         if not question or not answer:
             return
@@ -211,7 +235,8 @@ class ScreeningSemanticCache:
             )
             return
 
-        qid = str(_to_qdrant_id(question.strip().lower()))
+        composed_key = _compose_key(question, profile_state_hash, jd_context_hash)
+        qid = str(_to_qdrant_id(composed_key))
         now = datetime.now(UTC).isoformat()
         options_json = json.dumps(field_options) if field_options else ""
 
@@ -245,8 +270,8 @@ class ScreeningSemanticCache:
                 INSERT INTO screening_semantic_cache
                 (qdrant_id, question_text, intent, answer, confidence, times_used,
                  created_at, last_used_at, selected_option, field_type, field_options_json,
-                 embedding_vector)
-                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                 embedding_vector, profile_state_hash, jd_context_hash)
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(qdrant_id) DO UPDATE SET
                     last_used_at = excluded.last_used_at,
                     answer = excluded.answer,
@@ -255,10 +280,13 @@ class ScreeningSemanticCache:
                     selected_option = CASE WHEN excluded.selected_option != '' THEN excluded.selected_option ELSE selected_option END,
                     field_type = CASE WHEN excluded.field_type != '' THEN excluded.field_type ELSE field_type END,
                     field_options_json = CASE WHEN excluded.field_options_json != '' THEN excluded.field_options_json ELSE field_options_json END,
-                    embedding_vector = CASE WHEN excluded.embedding_vector != '' THEN excluded.embedding_vector ELSE embedding_vector END
+                    embedding_vector = CASE WHEN excluded.embedding_vector != '' THEN excluded.embedding_vector ELSE embedding_vector END,
+                    profile_state_hash = excluded.profile_state_hash,
+                    jd_context_hash = excluded.jd_context_hash
                 """,
                 (qid, question.strip(), intent, answer, confidence, now, now,
-                 selected_option, field_type, options_json, vec_json),
+                 selected_option, field_type, options_json, vec_json,
+                 profile_state_hash, jd_context_hash),
             )
 
         # Qdrant upsert (reuses pre-computed vector)
@@ -269,7 +297,7 @@ class ScreeningSemanticCache:
                     collection_name=_COLLECTION_NAME,
                     points=[
                         qm.PointStruct(
-                            id=_to_qdrant_id(question.strip().lower()),
+                            id=_to_qdrant_id(composed_key),
                             vector=vector,
                             payload={
                                 "qdrant_id": qid,
@@ -278,6 +306,8 @@ class ScreeningSemanticCache:
                                 "answer": answer,
                                 "confidence": confidence,
                                 "job_context_hash": job_context_hash,
+                                "profile_state_hash": profile_state_hash,
+                                "jd_context_hash": jd_context_hash,
                                 "selected_option": selected_option,
                                 "field_type": field_type,
                                 # Persist the options that were on the form
@@ -291,18 +321,25 @@ class ScreeningSemanticCache:
             except Exception as exc:
                 logger.debug("Qdrant upsert failed: %s", exc)
 
-    @observe_lookup("screening_semantic_cache", "screening_semantic_cache", key_arg=1)
+    @observe_lookup("screening_semantic_cache", "screening_semantic_cache", key_arg=None)
     def lookup(
         self,
         question: str,
         min_score: float = 0.85,
         field_options: list[str] | None = None,
         field_type: str = "",
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
     ) -> CacheHit | None:
         """Search for a semantically similar question. Returns best match above threshold.
 
         If field_options are provided (dropdown/radio/checkbox), the returned
         answer is aligned to the best-matching option using the OptionAligner.
+
+        ``profile_state_hash`` / ``jd_context_hash`` (audit S1 / TP-1) scope
+        the lookup to entries cached for the same (profile, JD) context.
+        Lookups with no hashes (legacy callers) only match entries that
+        were stored with no hashes — so the migration is safe by construction.
         """
         if not question or not question.strip():
             return None
@@ -335,10 +372,27 @@ class ScreeningSemanticCache:
                         )
                     raise RuntimeError("dim mismatch")
                 from qdrant_client import models as qm
+                # Filter on (profile_state_hash, jd_context_hash) so the
+                # vector search only returns entries scoped to this caller's
+                # context (audit S1 / TP-1). Empty-string hashes match
+                # legacy entries that were stored before the slice landed.
+                qdrant_filter = qm.Filter(
+                    must=[
+                        qm.FieldCondition(
+                            key="profile_state_hash",
+                            match=qm.MatchValue(value=profile_state_hash or ""),
+                        ),
+                        qm.FieldCondition(
+                            key="jd_context_hash",
+                            match=qm.MatchValue(value=jd_context_hash or ""),
+                        ),
+                    ]
+                )
                 limit = 10 if field_options else 1
                 results = self._qdrant.query_points(
                     collection_name=_COLLECTION_NAME,
                     query=vector,
+                    query_filter=qdrant_filter,
                     limit=limit,
                     score_threshold=min_score,
                 )
@@ -370,11 +424,32 @@ class ScreeningSemanticCache:
         if hit is None and self._embedder is not None:
             try:
                 query_vec = self._embedder.embed(question.strip())
+                # Compose the same key the writer used. Two SQLite rows with
+                # different (profile_state_hash, jd_context_hash) live under
+                # different qdrant_ids and remain segregated; the cosine
+                # similarity is still computed over question text so
+                # paraphrases hit, but only within the same context bucket.
+                # We segregate by SUBSTR matching the qdrant_id prefix derived
+                # from the *exact* composed key for the question — paraphrases
+                # of the question text would hash to a different qdrant_id, so
+                # a strict prefix match would lose paraphrase recall. Instead,
+                # we filter rows by their composed key suffix (the
+                # `|profile|jd` tail). This is achieved by storing the
+                # canonical question text alongside and filtering rows whose
+                # `qdrant_id` derives from the same (profile, jd) suffix —
+                # but qdrant_id is a hash, not reversible. So we widen: scan
+                # all rows, then drop ones whose stored profile/jd hashes
+                # don't match. The hash columns were added to SQLite in the
+                # same migration. See the ALTER TABLE in `_init_sqlite`.
                 with self._sqlite_conn() as conn:
                     rows = conn.execute(
                         "SELECT qdrant_id, question_text, intent, answer, confidence,"
-                        " selected_option, field_type, embedding_vector"
+                        " selected_option, field_type, embedding_vector,"
+                        " profile_state_hash, jd_context_hash"
                         " FROM screening_semantic_cache"
+                        " WHERE COALESCE(profile_state_hash, '') = ?"
+                        " AND COALESCE(jd_context_hash, '') = ?",
+                        ((profile_state_hash or ""), (jd_context_hash or "")),
                     ).fetchall()
 
                 best: tuple[float, sqlite3.Row] | None = None
@@ -512,9 +587,21 @@ class ScreeningSemanticCache:
         hit.answer = aligned
         return hit
 
-    def record_outcome(self, question: str, success: bool) -> None:
-        """Update success/correction counters for a cached question."""
-        qid = str(_to_qdrant_id(question.strip().lower()))
+    def record_outcome(
+        self,
+        question: str,
+        success: bool,
+        *,
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
+    ) -> None:
+        """Update success/correction counters for a cached question.
+
+        ``profile_state_hash`` / ``jd_context_hash`` (audit S1) must match
+        the values used at cache() time — counters track outcomes per
+        (profile, JD) context, not globally per question.
+        """
+        qid = str(_to_qdrant_id(_compose_key(question, profile_state_hash, jd_context_hash)))
         with self._sqlite_conn() as conn:
             if success:
                 conn.execute(
@@ -581,13 +668,24 @@ class ScreeningSemanticCache:
                 (now, qdrant_id),
             )
 
-    def _qid_for(self, question: str) -> str:
-        """Return the qdrant_id string for a question."""
-        return str(_to_qdrant_id(question.strip().lower()))
+    def _qid_for(
+        self,
+        question: str,
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
+    ) -> str:
+        """Return the qdrant_id string for a question scoped to a context."""
+        return str(_to_qdrant_id(_compose_key(question, profile_state_hash, jd_context_hash)))
 
-    def increment_usage(self, question: str) -> None:
-        """Increment times_used for a question. Only way to bump the counter."""
-        qid = self._qid_for(question)
+    def increment_usage(
+        self,
+        question: str,
+        *,
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
+    ) -> None:
+        """Increment times_used for a context-scoped cache entry."""
+        qid = self._qid_for(question, profile_state_hash, jd_context_hash)
         with self._sqlite_conn() as conn:
             conn.execute(
                 "UPDATE screening_semantic_cache SET times_used = times_used + 1 WHERE qdrant_id = ?",

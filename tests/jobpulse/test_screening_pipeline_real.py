@@ -185,11 +185,15 @@ class TestCacheBehavior:
         result1 = pipeline.answer(question, job_context=SAMPLE_JOB_CONTEXT)
         assert result1["answer"], "First call should produce an answer"
 
-        # Record the outcome so it gets cached
+        # Record the outcome so it gets cached. job_context must match
+        # the answer() call so the recorded entry lands in the same
+        # (profile, JD) cache bucket the next lookup will query
+        # (audit S1 / TP-1 cache key includes profile + JD hashes).
         pipeline.record_outcome(
             question=question,
             answer=result1["answer"],
             success=True,
+            job_context=SAMPLE_JOB_CONTEXT,
         )
 
         # Second call — should hit the semantic cache
@@ -207,8 +211,12 @@ class TestCacheBehavior:
         t1 = time.perf_counter()
         first_duration = t1 - t0
 
-        # Cache it
-        pipeline.record_outcome(question=question, answer=result1["answer"], success=True)
+        # Cache it (job_context must match the answer() context — see
+        # test_second_call_uses_cache_after_record).
+        pipeline.record_outcome(
+            question=question, answer=result1["answer"], success=True,
+            job_context=SAMPLE_JOB_CONTEXT,
+        )
 
         # Second call — should be substantially faster from cache
         t2 = time.perf_counter()
