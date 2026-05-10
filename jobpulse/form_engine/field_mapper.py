@@ -802,34 +802,17 @@ async def recover_failed_fields_with_vision(
     )
     assert_prompt_has_wrapped_pii(prompt, profile_full, "applicant.profile")
 
-    # Audit 2026-05-10 / Slice S11 / TP-21 — vision recovery uses the
-    # OpenAI-pinned vision client (was using `get_openai_client()` which
-    # routes to Moonshot under the Kimi mandate, then calling
-    # `client.responses.create()` — Moonshot doesn't implement
-    # `/v1/responses` so every engagement 404'd). Chat completions API
-    # is multimodal-compatible across both OpenAI and Moonshot's vision
-    # models; we pin to OpenAI here because cost_tracker doesn't price
-    # Moonshot vision models. Skip cleanly if no OpenAI key.
-    from shared.agents import get_openai_vision_client
-    client = get_openai_vision_client()
-    if client is None:
-        logger.info(
-            "Vision recovery skipped: no OPENAI_API_KEY configured "
-            "(Kimi mandate covers chat completions; vision needs OpenAI)"
-        )
-        return {}, 0
+    client = get_openai_client()
     try:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model="gpt-4.1-mini",
-            messages=[{
+            input=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
+                    {"type": "input_text", "text": prompt},
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{b64_image}",
-                        },
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{b64_image}",
                     },
                 ],
             }],
@@ -839,7 +822,7 @@ async def recover_failed_fields_with_vision(
             record_openai_usage(response, agent_name="vision_recovery", model_hint="gpt-4.1-mini")
         except Exception:
             pass
-        raw = (response.choices[0].message.content or "").strip()
+        raw = response.output_text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         recovered = clean_mapping(json.loads(raw))

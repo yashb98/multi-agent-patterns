@@ -657,33 +657,6 @@ def get_openai_client(timeout: float = 180.0) -> OpenAI:
     return OpenAI(api_key=openai_key, timeout=timeout)
 
 
-def get_openai_vision_client(timeout: float = 60.0) -> "OpenAI | None":
-    """Return an OpenAI client pinned to api.openai.com/v1 for vision tasks.
-
-    Audit 2026-05-10 / Slice S11 / TP-21. Vision recovery in
-    `form_engine/field_mapper.py` was using `get_openai_client()` which
-    routes to Moonshot under the Kimi mandate, then calling
-    `client.responses.create()` — Moonshot doesn't implement
-    OpenAI's `/v1/responses` endpoint, producing a 404 on every engagement.
-
-    The Kimi mandate covers chat completions only; vision is OpenAI-only
-    in this codebase (cost_tracker doesn't price Moonshot vision models).
-    This client pins to `api.openai.com/v1` regardless of `OPENAI_BASE_URL`
-    so the call lands on a real vision endpoint.
-
-    Returns ``None`` when ``OPENAI_API_KEY`` is not set so callers can
-    skip vision recovery cleanly instead of 404-ing under Kimi-only configs.
-    """
-    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not openai_key:
-        return None
-    return OpenAI(
-        api_key=openai_key,
-        base_url="https://api.openai.com/v1",
-        timeout=timeout,
-    )
-
-
 # ─── AGENT NODE: RESEARCHER ─────────────────────────────────────
 
 def researcher_node(state: AgentState) -> dict:
