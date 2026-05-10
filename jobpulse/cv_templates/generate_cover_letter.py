@@ -33,6 +33,7 @@ from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 from jobpulse.config import DATA_DIR
 from jobpulse.cv_templates import build_applicant_identity, get_project_stats, sanitize_pdf as _sanitize_pdf
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -111,6 +112,7 @@ def _cover_letter_cache_init(db) -> None:
     conn.commit()
 
 
+@observe_lookup("applications", "cover_letter_cache", key_arg=0)
 def _cover_letter_cache_lookup(
     company: str, role_archetype: str, inputs_hash: str, *, db=None,
 ) -> "list[tuple[str, str]] | None":

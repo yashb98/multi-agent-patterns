@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
@@ -127,6 +128,7 @@ class GotchasDB:
             conn.commit()
         logger.info("gotchas: stored %s/%s [%s] -> %s", domain, selector_pattern, engine, solution)
 
+    @observe_lookup("form_gotchas", "gotchas", key_arg=1)
     def lookup(self, domain: str, selector_pattern: str, engine: str = "extension") -> dict | None:
         """Look up a gotcha by exact domain + selector + engine. Returns dict or None."""
         with sqlite3.connect(self.db_path) as conn:
@@ -137,6 +139,7 @@ class GotchasDB:
             ).fetchone()
             return dict(row) if row else None
 
+    @observe_lookup("form_gotchas", "gotchas.by_domain", key_arg=1)
     def lookup_domain(self, domain: str, engine: str = "extension") -> list[dict]:
         """Get all gotchas for a domain filtered by engine."""
         with sqlite3.connect(self.db_path) as conn:
@@ -170,6 +173,7 @@ class GotchasDB:
             )
             conn.commit()
 
+    @observe_lookup("form_gotchas", "gotchas.skip_domains", key_arg=None)
     def get_skip_domains(self) -> list[str]:
         """Get domains that should always route to manual review."""
         with sqlite3.connect(self.db_path) as conn:
@@ -206,6 +210,7 @@ class GotchasDB:
             )
             conn.commit()
 
+    @observe_lookup("form_gotchas", "widget_patterns", key_arg=1)
     def get_widget_patterns(self, domain: str) -> list[dict]:
         """Return all stored patterns for a domain, ordered by fix_count desc."""
         with sqlite3.connect(self.db_path) as conn:

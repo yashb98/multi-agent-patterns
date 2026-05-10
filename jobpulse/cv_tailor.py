@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timedelta
 
 from shared.agents import cognitive_llm_call
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 from shared.profile_store import ExperienceEntry
 
@@ -124,6 +125,7 @@ def _tailored_cv_cache_init(db) -> None:
     conn.commit()
 
 
+@observe_lookup("applications", "tailored_cv_cache", key_arg=0)
 def _tailored_cv_cache_lookup(
     role_archetype: str, jd_hash: str, profile_version: str, *, db=None,
 ) -> "TailoredCV | None":

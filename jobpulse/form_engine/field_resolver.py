@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 from shared.pii import pii_json, wrap_pii_value
 
@@ -310,6 +311,7 @@ class LabelMappingStore:
         except Exception as exc:
             logger.debug("Could not load label mappings: %s", exc)
 
+    @observe_lookup("field_label_mappings", "label_mappings", key_arg=1)
     def get(self, label: str) -> str | None:
         return self._mappings.get(label.lower().strip())
 
@@ -437,18 +439,73 @@ _BIGRAM_TO_PROFILE_KEY: list[tuple[tuple[str, str], str]] = [
 ]
 
 
-def fuzzy_label_to_profile_key(label: str) -> str | None:
-    """Match a field label to a profile key using token overlap."""
-    tokens = set(re.sub(r"[^a-z0-9]+", " ", label.lower()).split())
+def _is_sentence_question(label: str, tokens_list: list[str]) -> bool:
+    """Detect whether a label is a sentence-shaped question vs an identity-
+    field label.
 
+    Sentence questions use natural-language phrasing where any single profile
+    keyword (country, email, phone, etc.) is incidental to the actual semantic
+    intent of the question. Identity field labels are typically 1-4 tokens
+    naming the field directly ("Email", "First Name", "City or Town").
+
+    Heuristic signals:
+      - Trailing "?" — almost always a question
+      - Interrogative starter ("are you", "do you", "have you", "would you",
+        "will you", "can you", "is there", etc.)
+      - Length > 4 tokens — very few identity fields exceed this
+    """
+    stripped = (label or "").strip().rstrip("*").rstrip()
+    if stripped.endswith("?"):
+        return True
+    if len(tokens_list) > 4:
+        return True
+    if len(tokens_list) >= 2:
+        head2 = tokens_list[0] + " " + tokens_list[1]
+        if head2 in {
+            "are you", "do you", "have you", "had you",
+            "would you", "will you", "can you", "could you",
+            "is there", "is your", "what is", "what was", "where do",
+            "where are", "where is", "how many", "how do", "how would",
+            "why do", "why are", "tell us", "describe your", "please describe",
+            "please explain", "please provide",
+        }:
+            return True
+    return False
+
+
+def fuzzy_label_to_profile_key(label: str) -> str | None:
+    """Match a field label to a profile key using token overlap.
+
+    Hard correctness rule: profile-key matches do NOT fire on sentence-
+    shaped questions. Without this guard, a long question like
+    "Are you eligible to work in the country you have applied to?"
+    matches "country" → returns profile.country = "United Kingdom" as the
+    answer to a Yes/No question. Words like "country", "phone", "email"
+    appear incidentally in many compound questions whose semantic intent
+    has nothing to do with filling that profile field.
+
+    Both bigram and single-token matches are gated by `_is_sentence_question`,
+    not just length, because some short questions ("Are you a veteran?")
+    can still over-match if we only check length.
+    """
+    tokens_list = re.sub(r"[^a-z0-9]+", " ", label.lower()).split()
+    tokens = set(tokens_list)
+
+    if _is_sentence_question(label, tokens_list):
+        return None
+
+    # Bigram match — specific 2-word phrases like "first name", "phone code".
     for (t1, t2), key in _BIGRAM_TO_PROFILE_KEY:
         if t1 in tokens and t2 in tokens:
             return key
 
+    # Single-token match — gated on label length. ≤ 3 tokens means an
+    # identity-field-shaped label ("Email", "Country", "Postal Code").
     _AMBIGUOUS_SINGLE = {"name", "number", "type", "line"}
-    for token in tokens - _AMBIGUOUS_SINGLE:
-        if token in _TOKEN_TO_PROFILE_KEY:
-            return _TOKEN_TO_PROFILE_KEY[token]
+    if len(tokens_list) <= 3:
+        for token in tokens - _AMBIGUOUS_SINGLE:
+            if token in _TOKEN_TO_PROFILE_KEY:
+                return _TOKEN_TO_PROFILE_KEY[token]
 
     return None
 

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Optional
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -270,6 +271,7 @@ class ScreeningSemanticCache:
             except Exception as exc:
                 logger.debug("Qdrant upsert failed: %s", exc)
 
+    @observe_lookup("screening_semantic_cache", "screening_semantic_cache", key_arg=1)
     def lookup(
         self,
         question: str,
@@ -532,6 +534,7 @@ class ScreeningSemanticCache:
             logger.info("Pruned %d stale screening cache entries", total)
         return total
 
+    @observe_lookup("screening_semantic_cache", "screening_semantic_cache.stats", key_arg=None)
     def get_stats(self) -> dict:
         """Return cache statistics."""
         with self._sqlite_conn() as conn:

@@ -94,6 +94,13 @@ PATH={PYTHON_BIN_DIR}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew
 # CLAUDE.md specifies hourly cadence.
 15 * * * * {RUNNER} optimize >> {PROJECT_DIR}/logs/optimize.log 2>&1
 
+# Daily DB-retrieval drop-rate summary (8:30am) — flags any
+# (db, table) whose returned data is being dropped downstream
+# above 50% over a 7-day window. Emits a `failure` signal to the
+# optimization engine and appends an OPRAL investigation prompt
+# to .claude/mistakes.md.
+30 8 * * * cd {PROJECT_DIR} && {PYTHON} -m scripts.db_observability_summary >> {PROJECT_DIR}/logs/db_observability.log 2>&1
+
 # ── MONITORING ──
 
 # Health watchdog (every 10 min) — alerts if daemon is down

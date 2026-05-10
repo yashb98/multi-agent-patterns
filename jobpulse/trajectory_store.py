@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
@@ -305,6 +306,7 @@ class TrajectoryStore:
                 )
                 return cur.rowcount > 0
 
+    @observe_lookup("trajectory", "field_trajectories", key_arg=1)
     def get_trajectories(self, job_id: str) -> list[FieldTrajectory]:
         """Get all field trajectories for a job, decrypting values."""
         with self._connect() as conn:
@@ -332,6 +334,7 @@ class TrajectoryStore:
             for r in rows
         ]
 
+    @observe_lookup("trajectory", "field_trajectories.domain", key_arg=1)
     def get_domain_trajectories(self, domain: str, *, limit: int = 100) -> list[FieldTrajectory]:
         """Get recent trajectories for a domain (for reflection)."""
         domain = _normalize_domain(domain)
@@ -391,6 +394,7 @@ class TrajectoryStore:
                      strategy.heuristics, strategy.created_at or now),
                 )
 
+    @observe_lookup("trajectory", "application_strategies", key_arg=1)
     def get_strategy(self, job_id: str) -> ApplicationStrategy | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -401,6 +405,7 @@ class TrajectoryStore:
             return None
         return ApplicationStrategy(**{k: row[k] for k in row.keys()})
 
+    @observe_lookup("trajectory", "application_strategies.domain", key_arg=1)
     def get_domain_strategies(
         self, domain: str, *, limit: int = 10,
     ) -> list[ApplicationStrategy]:
@@ -413,6 +418,7 @@ class TrajectoryStore:
             ).fetchall()
         return [ApplicationStrategy(**{k: r[k] for k in r.keys()}) for r in rows]
 
+    @observe_lookup("trajectory", "application_strategies.platform", key_arg=1)
     def get_platform_strategies(
         self, platform: str, *, limit: int = 20,
     ) -> list[ApplicationStrategy]:
@@ -513,6 +519,7 @@ class TrajectoryStore:
                     saved += 1
         return saved
 
+    @observe_lookup("trajectory", "heuristics", key_arg=1)
     def get_heuristics(
         self, domain: str, *, platform: str = "", include_platform: bool = True,
     ) -> list[Heuristic]:

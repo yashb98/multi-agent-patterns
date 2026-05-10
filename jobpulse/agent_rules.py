@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
@@ -333,6 +334,7 @@ class AgentRulesDB:
             logger.debug("Optimization signal failed: %s", e)
         return {"rule_id": rule_id, "field_label": field_label, "action": action}
 
+    @observe_lookup("agent_rules", "agent_rules", key_arg=1)
     def get_active_rules(self, rule_type: str | None = None) -> list[dict]:
         """Return active, non-expired rules, optionally filtered by type."""
         now = datetime.now(UTC).isoformat()
@@ -353,11 +355,13 @@ class AgentRulesDB:
                 ).fetchall()
         return [dict(r) for r in rows]
 
+    @observe_lookup("agent_rules", "agent_rules.exclude_keywords", key_arg=None)
     def get_exclude_keywords(self) -> list[str]:
         """Return keyword values from active blocker_avoidance rules for Gate 0."""
         rules = self.get_active_rules("blocker_avoidance")
         return [r["value"] for r in rules if r["action"] == "exclude_keyword"]
 
+    @observe_lookup("agent_rules", "agent_rules.field_overrides", key_arg=1)
     def get_field_overrides(self, domain: str = "", platform: str = "") -> dict[str, dict]:
         """Return {field_label: {value, action, confidence, rule_id}} for form-fill consumption.
 

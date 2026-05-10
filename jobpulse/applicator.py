@@ -266,6 +266,16 @@ def apply_job(
     platform_key = (ats_platform or "generic").lower()
     total = 0  # fallback when dry_run skips the rate limiter section
 
+    # Drain leftover lookups from any prior apply on this thread so the
+    # current session's mark_fill_outcome calls don't accidentally tag
+    # rows that belonged to a previous job. Anything left over is
+    # written as `unconsumed` (no fill outcome ever claimed it).
+    try:
+        from shared.db_observability import flush_all as _obs_flush_all
+        _obs_flush_all()
+    except Exception:  # pragma: no cover
+        pass
+
     # First-encounter safety: never-seen domains force dry_run regardless of caller.
     # The system can't verify fills properly without a FormExperienceDB record, so we
     # require human review for the first application to a new domain. Future runs to
@@ -479,6 +489,11 @@ def apply_job(
         time.sleep(delay)
 
     result["rate_limited"] = False
+    try:
+        from shared.db_observability import flush_all as _obs_flush_all
+        _obs_flush_all()
+    except Exception:  # pragma: no cover
+        pass
     return result
 
 
@@ -644,5 +659,11 @@ def confirm_application(
         result, ctx, url, platform_key, dry_run=False, claude_fields=claude_count,
         ai_meta=ai_meta,
     )
+
+    try:
+        from shared.db_observability import flush_all as _obs_flush_all
+        _obs_flush_all()
+    except Exception:  # pragma: no cover
+        pass
 
     return result

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 from typing import Any
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -133,6 +134,7 @@ class PageReasoner:
         ).hexdigest()[:16]
         return f"{domain}:{content_hash}"
 
+    @observe_lookup("page_reasoning_cache", "reasoning_cache", key_arg=1)
     def _get_cached(self, key: str) -> PageAction | None:
         try:
             with sqlite3.connect(self._db_path) as conn:
@@ -147,6 +149,7 @@ class PageReasoner:
             pass
         return None
 
+    @observe_lookup("page_reasoning_cache", "reasoning_cache.semantic", key_arg=1)
     def _get_cached_semantic(self, domain: str, page_text: str) -> PageAction | None:
         """Semantic near-miss: find cached entries with similar page understanding."""
         try:

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from shared.agents import get_openai_client, get_model_name, is_local_llm
+from shared.db_observability import observe_lookup
 from shared.pii import assert_prompt_has_wrapped_pii, wrap_pii_value
 
 from jobpulse.applicator import PROFILE, WORK_AUTH
@@ -151,7 +152,10 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # LOCATION & COMMUTE (3 patterns)
     # ===================================================================
     r"current.*location|where.*located|your.*location|what.*city.*live|which.*city|where.*you.*based|based.*in(?!.*uk)|residing|country.*resid": "JOB_LOCATION",
-    r"willing.*relocate|open.*relocation|relocate.*within|relocate.*to": "Yes, within the UK",
+    # Item 5 (2026-05-10): canonical answer is bare "Yes" so closed-set
+    # Yes/No combobox fields don't get the wrong-shape qualifier and
+    # silently fall back to a country autocomplete (see audits/2026-05-09).
+    r"willing.*relocate|open.*relocation|relocate.*within|relocate.*to": "Yes",
     r"commut.*to|commuting.*distance|travel.*to.*office": "Yes",
 
     # ===================================================================
@@ -439,6 +443,7 @@ def _hiring_message_cache_init(db: JobDB) -> None:
     conn.commit()
 
 
+@observe_lookup("applications", "hiring_message_cache", key_arg=0)
 def _hiring_message_cache_lookup(
     company: str, role_archetype: str, *, db: JobDB | None = None,
 ) -> str | None:
@@ -871,6 +876,7 @@ def cache_answer(question: str, answer: str, *, db: JobDB | None = None) -> None
     logger.debug("Cached answer for '%s'", question.strip()[:60])
 
 
+@observe_lookup("applications", "ats_answer_cache", key_arg=0)
 def get_cached_answer(question: str, *, db: JobDB | None = None) -> str | None:
     """Look up a cached answer by question hash. Returns ``None`` on miss."""
     _db = db or JobDB()
@@ -885,11 +891,40 @@ def try_instant_answer(
     input_type: str | None = None,
     platform: str | None = None,
 ) -> str | None:
-    """Pattern match + cache lookup only (no LLM). Returns ``None`` on miss."""
+    """Pattern match + cache lookup only (no LLM). Returns ``None`` on miss.
+
+    Resolution order (Item 4 migration in progress, 2026-05-10):
+
+    1. **Embedding intent classifier** (``ScreeningIntentClassifier``) +
+       ``_INTENT_CANONICAL_ANSWER`` map. ~30 intents covered; cosine
+       threshold 0.78. Wins on paraphrase-robustness ("What's your
+       desired pay?" → ``SALARY_EXPECTED``) where the regex map missed.
+    2. **Legacy ``COMMON_ANSWERS`` regex map** — fallback while the
+       prototype set is grown to full coverage. New intents (DEI, EEO,
+       background-check) are still here; do not add new regex patterns,
+       extend ``_INTENT_CANONICAL_ANSWER`` + ``_SEED_PROTOTYPES``
+       instead.
+    3. **Cached answers** in ``ats_answer_cache`` (per-question
+       persistence from prior fills).
+
+    The regex tier MUST go away once every entry in
+    ``_INTENT_CANONICAL_ANSWER`` has parity coverage in
+    ``_SEED_PROTOTYPES`` (see ``tests/lint/test_no_regex_classification.py``).
+    """
+
     if not question or not question.strip():
         return None
     normalised = question.strip()
 
+    # Tier 1 — embedding intent classifier
+    intent_answer = _try_intent_classifier(
+        normalised, job_context, db=db,
+        input_type=input_type, platform=platform,
+    )
+    if intent_answer is not None:
+        return intent_answer
+
+    # Tier 2 — legacy regex map (kept during migration)
     for pattern, answer in COMMON_ANSWERS.items():
         if re.search(pattern, normalised, re.IGNORECASE):
             if answer is not None:
@@ -899,12 +934,116 @@ def try_instant_answer(
                 )
             return None
 
+    # Tier 3 — per-question cache
     _db = db or JobDB()
     cached = _db.get_cached_answer(normalised)
     if cached is not None:
         return cached
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Intent classifier → canonical answer mapping (Item 4 migration target)
+# ---------------------------------------------------------------------------
+#
+# Each ScreeningIntent maps to either:
+# - a literal answer ("Yes", "No", "Full-time"),
+# - a SCREENING:<key> placeholder resolved against profile_store,
+# - a SENSITIVE:<key> placeholder resolved against the sensitive store,
+# - a dynamic placeholder like CURRENT_SALARY / JOB_LOCATION /
+#   SKILL_EXPERIENCE that ``_resolve_placeholder`` already understands.
+#
+# Adding a new intent: add an enum value in ``screening_intent.py``,
+# seed prototypes in ``_SEED_PROTOTYPES``, and add a row here. **No new
+# regex patterns** — the COMMON_ANSWERS tier is being deleted as soon
+# as the prototype coverage hits parity.
+
+# Lazy import — avoid circular import at module load.
+_INTENT_CANONICAL_ANSWER: dict[str, str] | None = None
+
+
+def _build_intent_answer_map() -> dict[str, str]:
+    from jobpulse.screening_intent import ScreeningIntent
+    return {
+        ScreeningIntent.WORK_AUTH_YES_NO.value: "Yes",
+        ScreeningIntent.SPONSORSHIP.value: "No",
+        ScreeningIntent.VISA_STATUS.value: "SENSITIVE:visa_status",
+        ScreeningIntent.WORK_AUTH_TYPE.value: "SENSITIVE:visa_status",
+        ScreeningIntent.SALARY_CURRENT.value: "CURRENT_SALARY",
+        ScreeningIntent.SALARY_EXPECTED.value: "ROLE_SALARY",
+        ScreeningIntent.NOTICE_PERIOD.value: "SCREENING:notice_period",
+        ScreeningIntent.START_DATE.value: "SCREENING:notice_period",
+        ScreeningIntent.CURRENTLY_EMPLOYED.value: "Yes",
+        ScreeningIntent.CURRENT_JOB_TITLE.value: "SCREENING:current_job_title",
+        ScreeningIntent.CURRENT_EMPLOYER.value: "SCREENING:current_employer",
+        ScreeningIntent.LOCATION_CURRENT.value: "JOB_LOCATION",
+        ScreeningIntent.WILLING_RELOCATE.value: "Yes",
+        ScreeningIntent.COMMUTE.value: "Yes",
+        ScreeningIntent.REMOTE.value: "Yes",
+        ScreeningIntent.OFFICE.value: "Yes",
+        ScreeningIntent.HYBRID.value: "Yes",
+        ScreeningIntent.EXPERIENCE_YEARS.value: "SKILL_EXPERIENCE",
+        ScreeningIntent.EXPERIENCE_SKILL.value: "SKILL_EXPERIENCE",
+        ScreeningIntent.EDUCATION_LEVEL.value: "SENSITIVE:highest_qualification",
+        ScreeningIntent.DEGREE_SUBJECT.value: "SENSITIVE:degree_subject",
+        ScreeningIntent.LANGUAGE_ENGLISH.value: "SENSITIVE:second_language_proficiency",
+        ScreeningIntent.LANGUAGES.value: "SENSITIVE:languages_summary",
+        ScreeningIntent.DRIVING_LICENSE.value: "Yes",
+        ScreeningIntent.WILLING_TRAVEL.value: "Yes",
+        ScreeningIntent.SECURITY_CLEARANCE.value: "None",
+        ScreeningIntent.BACKGROUND_CHECK.value: "Yes",
+    }
+
+
+def _try_intent_classifier(
+    question: str,
+    job_context: dict | None,
+    *,
+    db: JobDB | None,
+    input_type: str | None,
+    platform: str | None,
+) -> str | None:
+    """Embedding-first tier. Returns ``None`` on miss so the caller
+    falls through to the regex tier or cache."""
+
+    global _INTENT_CANONICAL_ANSWER
+    if _INTENT_CANONICAL_ANSWER is None:
+        try:
+            _INTENT_CANONICAL_ANSWER = _build_intent_answer_map()
+        except Exception as exc:  # pragma: no cover
+            logger.debug("intent answer map unavailable: %s", exc)
+            return None
+
+    try:
+        from jobpulse.screening_intent import get_intent_classifier
+        classifier = get_intent_classifier()
+        intent, confidence = classifier.classify(question)
+    except Exception as exc:
+        logger.debug("intent classifier unavailable for '%s...': %s",
+                     question[:60], exc)
+        return None
+
+    if intent.value not in _INTENT_CANONICAL_ANSWER:
+        return None
+    if confidence < 0.78:
+        return None
+
+    answer = _INTENT_CANONICAL_ANSWER[intent.value]
+    if answer is None:
+        return None
+
+    resolved = _resolve_placeholder(
+        answer, question, job_context,
+        input_type=input_type, platform=platform, db=db,
+    )
+    if resolved:
+        logger.debug(
+            "try_instant_answer: intent=%s confidence=%.2f → %r",
+            intent.value, confidence,
+            (resolved[:60] if isinstance(resolved, str) else resolved),
+        )
+    return resolved
 
 
 # ---------------------------------------------------------------------------

@@ -93,6 +93,68 @@ def _is_select_placeholder(value: str) -> bool:
     return bool(_SELECT_PLACEHOLDER_RE.match(value.strip()))
 
 
+async def _resolve_listbox_scope(page, el):
+    """Return a Playwright Page-or-Locator scoped to *this* combobox's own
+    listbox so option-lookup queries don't match unrelated open dropdowns
+    elsewhere on the page.
+
+    Resolution order (most precise first):
+    1. ``aria-controls`` / ``aria-owns`` on the input → ``#<id>`` locator.
+       This is the WAI-ARIA contract for combobox→listbox association,
+       so it fires for any spec-compliant component (Greenhouse React
+       Select sets ``aria-controls`` to the menu's React-generated id).
+    2. ``.select__control`` ancestor → following ``.select__menu`` sibling
+       (React Select's portal-or-sibling pattern when aria-controls is
+       missing on a re-rendered input).
+    3. Closest ancestor with ``role='listbox'`` or class containing
+       ``select__menu`` (other component libraries).
+    4. Last resort: the page itself, returned as-is. Calling code logs a
+       warning when this happens.
+
+    Live evidence (Anthropic Greenhouse, 2026-05-09 run): the visa
+    Yes/No combobox and an iti-0 phone country picker were both open at
+    fill time. Without this scoping the option click matched
+    ``[role='option']`` inside ``iti__country`` and selected ``Norway``
+    for the visa field.
+    """
+
+    try:
+        listbox_id = await el.get_attribute("aria-controls")
+        if not listbox_id:
+            listbox_id = await el.get_attribute("aria-owns")
+    except Exception:
+        listbox_id = None
+    if listbox_id:
+        scoped = page.locator(f"#{listbox_id}")
+        try:
+            if await scoped.count():
+                return scoped
+        except Exception:
+            pass
+
+    try:
+        sibling = el.locator(
+            "xpath=ancestor::*[contains(@class,'select__control')][1]"
+            "/following-sibling::*[contains(@class,'select__menu')][1]"
+        )
+        if await sibling.count():
+            return sibling
+    except Exception:
+        pass
+
+    try:
+        role_listbox = el.locator(
+            "xpath=ancestor-or-self::*"
+            "[@role='listbox' or contains(@class,'select__menu')][1]"
+        )
+        if await role_listbox.count():
+            return role_listbox
+    except Exception:
+        pass
+
+    return page
+
+
 def _align_screening_to_options(
     answer: str, field: dict, label_for_log: str = "",
 ) -> str:
@@ -111,27 +173,55 @@ def _align_screening_to_options(
     match — visa fields end up filled with country names, EEO fields end up
     filled with "No". This helper lets every screening tier fail closed.
     """
+    from shared.db_observability import (
+        DROP_OPTION_MISALIGNMENT,
+        mark_fill_outcome,
+    )
+
     options = field.get("options") or []
     ftype = (field.get("true_type") or field.get("type") or "").lower()
+    field_label = label_for_log or field.get("label", "")
     if not options or ftype not in {
         "select", "combobox", "radio", "checkbox", "custom_dropdown",
         "multiselect",
     }:
+        # Free-text path: any prior DB lookup that produced this answer is
+        # considered consumed (no alignment shaved it).
+        if answer:
+            mark_fill_outcome(field_label, intended=answer, actual=answer)
         return answer
     try:
         from jobpulse.screening_option_aligner import OptionAligner
         aligner = OptionAligner()
         aligned = aligner.align_answer(str(answer), options, ftype)
     except Exception:
+        if answer:
+            mark_fill_outcome(field_label, intended=answer, actual=answer)
         return answer
     opts_lower = {(o or "").lower().strip() for o in options}
     if (aligned or "").lower().strip() in opts_lower:
+        # If alignment changed the value (e.g. "Yes, within the UK" → "Yes"),
+        # mark the underlying lookup as dropped with reason
+        # option_misalignment. If alignment kept the value, mark consumed.
+        if str(answer).strip().casefold() != (aligned or "").strip().casefold():
+            mark_fill_outcome(
+                field_label, intended=answer, actual=aligned,
+                drop_reason=DROP_OPTION_MISALIGNMENT,
+            )
+        else:
+            mark_fill_outcome(field_label, intended=answer, actual=aligned)
         return aligned
     logger.warning(
         "screening answer %r did not align to any option for %r — dropping "
         "(opts=%s)",
-        str(answer)[:60], (label_for_log or field.get("label", ""))[:60],
+        str(answer)[:60], (field_label)[:60],
         [o[:25] for o in options[:5]],
+    )
+    # The aligner couldn't resolve the value at all. Tag the underlying
+    # lookup as dropped — caller will fall through to the next tier.
+    mark_fill_outcome(
+        field_label, intended=answer, actual="",
+        drop_reason=DROP_OPTION_MISALIGNMENT,
     )
     return ""
 
@@ -1693,6 +1783,16 @@ class NativeFormFiller:
             # which the styled component always renders.
             react_select_options: list[str] = []
             react_select_chosen: str | None = None
+            # Pre-initialise so the failure paths inside the React-Select
+            # block (option click missed, exception, etc.) don't surface
+            # as an UnboundLocalError at the `if ax_options:` check below.
+            # Live evidence (2026-05-09 Anthropic Greenhouse run):
+            #   "Field fill failed for 'Are you Hispanic/Latino?': cannot
+            #    access local variable 'ax_options' where it is not
+            #    associated with a value"
+            # masked the actual click-timeout error.
+            ax_options: list[str] = []
+            matched_option: str | None = None
             try:
                 is_react_select = await el.evaluate("""(node) => {
                     if (!node || !node.closest) return false;
@@ -1756,7 +1856,8 @@ class NativeFormFiller:
                                     or react_select_options[0]
                                 )
                         if react_select_chosen:
-                            opt_locator = page.locator(
+                            _scope = await _resolve_listbox_scope(page, el)
+                            opt_locator = _scope.locator(
                                 ".select__option, [role='option']"
                             ).filter(has_text=react_select_chosen).first
                             if await opt_locator.count():
@@ -1796,7 +1897,8 @@ class NativeFormFiller:
                                         if await _parent2.count():
                                             await _parent2.click()
                                         await asyncio.sleep(0.4)
-                                        _opt2 = page.locator(
+                                        _scope2 = await _resolve_listbox_scope(page, el)
+                                        _opt2 = _scope2.locator(
                                             ".select__option, [role='option']"
                                         ).filter(has_text=react_select_chosen).first
                                         if await _opt2.count():
@@ -1877,7 +1979,8 @@ class NativeFormFiller:
                     await asyncio.sleep(0.3)
                     await el.fill("")
                     await asyncio.sleep(0.4)
-                    option = page.get_by_role("option", name=matched_option, exact=True)
+                    _scope = await _resolve_listbox_scope(page, el)
+                    option = _scope.get_by_role("option", name=matched_option, exact=True)
                     if await option.count():
                         await option.first.click()
                     else:
@@ -1891,7 +1994,8 @@ class NativeFormFiller:
                 await el.fill("")
                 await el.type(fill_value, delay=80)
                 await asyncio.sleep(1.2)
-                option_group = page.get_by_role("option")
+                _scope = await _resolve_listbox_scope(page, el)
+                option_group = _scope.get_by_role("option")
                 option_texts: list[str] = []
                 try:
                     for i in range(await option_group.count()):
@@ -1904,7 +2008,7 @@ class NativeFormFiller:
                 matched_option = _best_option_match(label, fill_value, option_texts, store=self._profile_store)
                 if matched_option:
                     expected_value = matched_option
-                    option = page.get_by_role("option", name=matched_option, exact=False)
+                    option = _scope.get_by_role("option", name=matched_option, exact=False)
                     if await option.count():
                         await option.first.click()
                     else:
@@ -1998,6 +2102,21 @@ class NativeFormFiller:
                 (actual or "")[:60], fill_technique,
                 len(options_seen) if options_seen else 0,
             )
+        try:
+            from shared.db_observability import (
+                DROP_VALIDATION_FAILED,
+                mark_fill_outcome,
+            )
+            intended_for_outcome = expected_value or fill_value or ""
+            actual_for_outcome = actual or ""
+            mark_fill_outcome(
+                label,
+                intended=intended_for_outcome,
+                actual=actual_for_outcome,
+                drop_reason=None if verified else DROP_VALIDATION_FAILED,
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.debug("db_observability mark_fill_outcome failed: %s", exc)
         return {
             "success": True,
             "value_set": fill_value,

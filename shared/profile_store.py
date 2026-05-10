@@ -27,6 +27,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -132,6 +133,7 @@ class _SensitiveStore:
         key = _load_or_create_key(key_path)
         self._fernet = Fernet(key)
 
+    @observe_lookup("user_profile", "sensitive_fields", key_arg=1)
     def get(self, key: str) -> str:
         row = self._conn.execute(
             "SELECT value_encrypted FROM sensitive_fields WHERE key = ?",
@@ -157,6 +159,7 @@ class _SensitiveStore:
         )
         self._conn.commit()
 
+    @observe_lookup("user_profile", "sensitive_fields", key_arg=1)
     def get_batch(self, keys: list[str]) -> dict[str, str]:
         """Fetch multiple sensitive fields in a single query."""
         if not keys:
@@ -175,6 +178,7 @@ class _SensitiveStore:
                 result[row[0]] = ""
         return result
 
+    @observe_lookup("user_profile", "sensitive_fields", key_arg=1)
     def get_all(self, category: str | None = None) -> dict[str, str]:
         if category:
             rows = self._conn.execute(
@@ -337,6 +341,7 @@ class ProfileStore:
 
     # ── Identity ──
 
+    @observe_lookup("user_profile", "identity", key_arg=None)
     def identity(self) -> IdentityInfo:
         row = self._conn.execute("SELECT * FROM identity WHERE id = 1").fetchone()
         if row is None:
@@ -368,6 +373,7 @@ class ProfileStore:
 
     # ── Experience ──
 
+    @observe_lookup("user_profile", "experience", key_arg=None)
     def experience(self) -> list[ExperienceEntry]:
         rows = self._conn.execute(
             "SELECT * FROM experience ORDER BY sort_order, id",
@@ -395,6 +401,7 @@ class ProfileStore:
 
     # ── Education ──
 
+    @observe_lookup("user_profile", "education", key_arg=None)
     def education(self) -> list[EducationEntry]:
         rows = self._conn.execute(
             "SELECT * FROM education ORDER BY sort_order, id",
@@ -428,6 +435,7 @@ class ProfileStore:
 
     # ── Certifications ──
 
+    @observe_lookup("user_profile", "certifications", key_arg=None)
     def certifications(self) -> list[CertificationEntry]:
         rows = self._conn.execute(
             "SELECT * FROM certifications ORDER BY sort_order, id",
@@ -447,6 +455,7 @@ class ProfileStore:
 
     # ── Community ──
 
+    @observe_lookup("user_profile", "community", key_arg=None)
     def community(self) -> list[CommunityEntry]:
         rows = self._conn.execute(
             "SELECT * FROM community ORDER BY sort_order, id",
@@ -463,6 +472,7 @@ class ProfileStore:
 
     # ── CV Default Projects ──
 
+    @observe_lookup("user_profile", "cv_projects", key_arg=None)
     def cv_projects(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT * FROM cv_projects ORDER BY sort_order, id",
@@ -485,6 +495,7 @@ class ProfileStore:
 
     # ── Screening Defaults ──
 
+    @observe_lookup("user_profile", "screening_defaults", key_arg=1)
     def screening_default(self, question_type: str) -> str:
         row = self._conn.execute(
             "SELECT answer FROM screening_defaults WHERE question_type = ?",
@@ -492,6 +503,7 @@ class ProfileStore:
         ).fetchone()
         return row["answer"] if row else ""
 
+    @observe_lookup("user_profile", "screening_defaults", key_arg=None)
     def all_screening_defaults(self) -> dict[str, str]:
         rows = self._conn.execute("SELECT * FROM screening_defaults").fetchall()
         return {r["question_type"]: r["answer"] for r in rows}
@@ -507,6 +519,7 @@ class ProfileStore:
 
     # ── Skill Experience (years per skill) ──
 
+    @observe_lookup("user_profile", "skill_experience", key_arg=1)
     def skill_experience(self, skill: str | None = None) -> dict[str, float] | float:
         if skill:
             row = self._conn.execute(
@@ -528,6 +541,7 @@ class ProfileStore:
 
     # ── Role Salary ──
 
+    @observe_lookup("user_profile", "role_salary", key_arg=1)
     def role_salary(self, role: str | None = None) -> dict[str, int] | int:
         if role:
             row = self._conn.execute(
@@ -554,6 +568,7 @@ class ProfileStore:
 
     # ── Base Skills (CV categories) ──
 
+    @observe_lookup("user_profile", "base_skills", key_arg=None)
     def base_skills(self) -> dict[str, str]:
         rows = self._conn.execute("SELECT * FROM base_skills").fetchall()
         return {r["category"]: r["skills"] for r in rows}

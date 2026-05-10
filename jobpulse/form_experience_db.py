@@ -11,6 +11,7 @@ import sqlite3
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
@@ -432,6 +433,7 @@ class FormExperienceDB:
                      time_seconds, int(success), content_hash, now, now),
                 )
 
+    @observe_lookup("form_experience", "form_experience", key_arg=1)
     def lookup(self, domain_or_url: str) -> dict | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -441,6 +443,7 @@ class FormExperienceDB:
             ).fetchone()
         return dict(row) if row else None
 
+    @observe_lookup("form_experience", "form_experience.content_hash", key_arg=1)
     def lookup_by_content_hash(
         self, content_hash: str, exclude_domain: str = "",
     ) -> dict | None:
@@ -523,6 +526,7 @@ class FormExperienceDB:
         return {"trusted": trusted, "match_ratio": match_ratio,
                 "stored": stored, "diverged_fields": diverged}
 
+    @observe_lookup("form_experience", "form_experience.platform_aggregate", key_arg=1)
     def get_platform_aggregate(self, platform: str) -> dict | None:
         """Aggregate form experience across ALL domains for a platform.
 
@@ -583,6 +587,7 @@ class FormExperienceDB:
             "common_screening_questions": sq_counter.most_common(),
         }
 
+    @observe_lookup("form_experience", "form_experience.stats", key_arg=None)
     def get_stats(self) -> dict:
         with sqlite3.connect(self._db_path) as conn:
             total = conn.execute("SELECT COUNT(*) FROM form_experience").fetchone()[0]
@@ -615,6 +620,7 @@ class FormExperienceDB:
                 (self.normalize_domain(domain), platform, failure_type, field_label, selector, details, now),
             )
 
+    @observe_lookup("form_experience", "form_failure_reasons", key_arg=1)
     def get_failure_reasons(self, domain_or_url: str, limit: int = 10) -> list[dict]:
         """Return recent failure reasons for a domain."""
         domain = self.normalize_domain(domain_or_url)
@@ -648,6 +654,7 @@ class FormExperienceDB:
                 return [dict(r) for r in donor_rows]
         return []
 
+    @observe_lookup("form_experience", "form_failure_reasons.platform_stats", key_arg=1)
     def get_platform_failure_stats(self, platform: str) -> dict:
         """Return aggregated failure statistics for a platform."""
         with sqlite3.connect(self._db_path) as conn:
@@ -664,6 +671,7 @@ class FormExperienceDB:
             ).fetchall()
         return {r["failure_type"]: r["cnt"] for r in rows}
 
+    @observe_lookup("form_experience", "field_label_mappings", key_arg=1)
     def get_field_mappings(self, domain_or_url: str) -> dict[str, str]:
         """Return {field_label: profile_key} for a domain."""
         domain = self.normalize_domain(domain_or_url)
@@ -712,6 +720,7 @@ class FormExperienceDB:
                 (domain, field_label, field_type, technique, value_used, int(success), now),
             )
 
+    @observe_lookup("form_experience", "fill_techniques", key_arg=1)
     def get_fill_techniques(self, domain_or_url: str) -> dict[str, dict]:
         """Return {field_label: {technique, value_used, field_type}} for a domain."""
         domain = self.normalize_domain(domain_or_url)
@@ -723,6 +732,7 @@ class FormExperienceDB:
             ).fetchall()
         return {r["field_label"]: dict(r) for r in rows}
 
+    @observe_lookup("form_experience", "fill_techniques.platform", key_arg=1)
     def get_platform_fill_techniques(self, platform: str) -> list[dict]:
         """Return all successful fill techniques for a platform (cross-domain learning)."""
         with sqlite3.connect(self._db_path) as conn:
@@ -763,6 +773,7 @@ class FormExperienceDB:
                 (domain, selector, now),
             )
 
+    @observe_lookup("form_experience", "container_selectors", key_arg=1)
     def get_container(self, domain_or_url: str) -> str | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -819,6 +830,7 @@ class FormExperienceDB:
                     (domain, hydration_ms, fill_ms, transition_ms, now),
                 )
 
+    @observe_lookup("form_experience", "page_timings", key_arg=1)
     def get_timing(self, domain_or_url: str) -> dict | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -861,6 +873,7 @@ class FormExperienceDB:
             )
         logger.debug("Stored scan strategy %s for %s (%d fields)", strategy, domain, field_count)
 
+    @observe_lookup("form_experience", "scan_strategy_preferences", key_arg=1)
     def get_scan_strategy(self, domain_or_url: str) -> dict | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -899,6 +912,7 @@ class FormExperienceDB:
                 (domain, field_label, predicted_confidence, int(actual_correct), now),
             )
 
+    @observe_lookup("form_experience", "field_confidence_log", key_arg=1)
     def get_confidence_calibration(self, domain: str) -> dict:
         with sqlite3.connect(self._db_path) as conn:
             row = conn.execute(
@@ -935,6 +949,7 @@ class FormExperienceDB:
                  content_hash, now, now),
             )
 
+    @observe_lookup("form_experience", "negative_exemplars", key_arg=1)
     def get_negative_exemplars(self, domain: str) -> list[dict]:
         """Return all failed field values for a domain, newest first."""
         with sqlite3.connect(self._db_path) as conn:
@@ -945,6 +960,7 @@ class FormExperienceDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    @observe_lookup("form_experience", "negative_exemplars.content_hash", key_arg=1)
     def get_negative_exemplars_by_hash(self, content_hash: str) -> list[dict]:
         """Return all failed field values matching this structural fingerprint (cross-domain)."""
         if not content_hash:
@@ -983,6 +999,7 @@ class FormExperienceDB:
             domain, field_label, signal_type, transform,
         )
 
+    @observe_lookup("form_experience", "signal_corrections", key_arg=1)
     def get_signal_corrections(
         self, domain: str, field_label: str | None = None,
     ) -> list[dict]:

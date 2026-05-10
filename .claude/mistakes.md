@@ -27,3 +27,31 @@ Append on error. Re-check before committing. Use `semantic_search "mistake <topi
 - [2026-03-24] Never wait for Telegram replies in Claude Code — poll API directly
 - [2026-03-24] Never use Events API for commits — use Commits API per-repo
 - [2026-03-24] Never rewrite a file without grepping for all function names used elsewhere
+
+## DB drop-rate alert — user_profile.screening_defaults (2026-05-10)
+
+DB ``user_profile.screening_defaults`` returned data that was dropped from 7/10 consumed lookups
+(70.0% drop rate over the last 1 day(s)).
+
+Top drop reason: ``option_misalignment`` (7 occurrences).
+
+**OPRAL investigation prompt:**
+- **Observe**: pull a sample of dropped values from
+  ``data/db_observability.db`` where ``db_name='user_profile' AND table_name='screening_defaults' AND status='dropped'``
+- **Plan**: trace which call site produced the lookup and which downstream
+  consumer dropped it. Use ``mcp__code-intelligence__callers_of`` on the
+  accessor.
+- **Reason**: is the data wrong-shape (option_misalignment, validation_failed),
+  or is the consumer buggy?
+- **Act**: fix the source (rewrite stored row, retrain pattern, replace stale
+  default) or the consumer (improve alignment, surface a clearer match).
+- **Learn**: emit ``adaptation`` or ``correction`` signal once fixed; verify
+  drop rate drops on next daily summary.
+
+Sample dropped rows (max 5):
+- field='Are you willing to commute to the office?' intended='Yes, willing to commute to any UK office' actual='' reason='option_misalignment'
+- field='Are you willing to commute to the office?' intended='Yes, willing to commute to any UK office' actual='' reason='option_misalignment'
+- field='Are you willing to relocate to the office in London?' intended='Yes, within the UK' actual='' reason='option_misalignment'
+- field='Are you willing to relocate to the office in London?' intended='Yes, within the UK' actual='' reason='option_misalignment'
+- field='Are you willing to commute to the office?' intended='Yes, willing to commute to any UK office' actual='' reason='option_misalignment'
+

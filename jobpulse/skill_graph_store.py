@@ -14,6 +14,7 @@ from datetime import date
 from pathlib import Path
 
 from mindgraph_app.storage import get_conn, init_db, upsert_entity, upsert_relation
+from shared.db_observability import observe_lookup
 
 # ---------------------------------------------------------------------------
 # Default paths
@@ -179,6 +180,7 @@ class SkillGraphStore:
 
         return pid
 
+    @observe_lookup("skill_graph", "knowledge_entities.skills", key_arg=None)
     def get_skill_profile(self) -> set[str]:
         """All SKILL entity names from DB, normalized."""
         conn = get_conn()
@@ -187,6 +189,7 @@ class SkillGraphStore:
         ).fetchall()
         return {row["name"].lower().strip() for row in rows}
 
+    @observe_lookup("skill_graph", "knowledge_entities.projects", key_arg=1)
     def get_projects_for_skills(self, jd_skills: list[str]) -> list[ProjectMatch]:
         """Find projects demonstrating given skills, ranked by IDF-weighted relevance.
 
@@ -272,6 +275,7 @@ class SkillGraphStore:
         return results
 
 
+    @observe_lookup("skill_graph", "knowledge_entities.stats", key_arg=None)
     def get_profile_stats(self) -> dict:
         """Returns counts of skills, projects, and demonstrates relations."""
         conn = get_conn()
