@@ -1124,6 +1124,40 @@ Octus-specific custom screening questions are still being loaded into the Anthro
 - **Slice**: **S20** (P0). Branch: `audit-slice-s20-apply-hang-on-unmapped-required`. Acceptance: every apply terminates with a `RouteResult` (`queued_for_review` / `applied` / `error_with_reason`) within 15 min, regardless of how many required fields are unmapped. The unmapped-required path either (a) auto-resolves by skipping the required-field constraint with a warning, OR (b) escalates to human via Telegram + waits for response with a bounded timeout (per the security-wall-bypass pattern).
 - **Cross-ATS implication**: any ATS form with required fields the mapper doesn't handle will hang. Pre-S12 this was silently broken (apply marked success). Post-S12 this is loudly broken (apply hangs). Loud broken is better than silent broken — but P0 to fix.
 
+## Phase 2B finding — TP-30 / Slice S21 — Screening LLM prompt frames model as third party (FIXED IN-SESSION)
+
+User caught this directly during the live Anthropic apply review: form filled with `'As Yash Bishnoi, I have a strong preference for...'` and `'As Yash Bishnoi, I prefer working in a collaborative environment...'`. Recruiter reading this instantly clocks it as AI-generated.
+
+- **Trace**: apply log lines from the Anthropic run:
+  ```
+  fill ✓ '(Optional) Personal Preferences' = 'As Yash Bishnoi, I have a strong preference for working on i...'
+  fill ✓ '(Optional) Personal Preferences*' = 'As Yash Bishnoi, I prefer working in a collaborative environ...'
+  ```
+- **Source**: two prompt-construction sites both framed the LLM as a third party answering ABOUT the candidate:
+  - `jobpulse/screening_pipeline.py:_llm_answer` (lines 481-506) — system_prompt: "You are answering a job application screening question... based on the candidate's profile" + user_prompt: "Candidate profile: ..."
+  - `jobpulse/screening_answers.py:_generate_answer` (lines 1187-1192) — task: "Answer this job application screening question... Applicant background: ..."
+- **Root cause**: third-person framing teaches the LLM to write "As [name], ..." or "The applicant ..." answers. The model is doing exactly what the prompt asks — speaking ABOUT the candidate, not AS the candidate.
+- **Status**: **GAP → FIXED in-session (S21 merged)**.
+- **Slice**: **S21** (P1; merged in-session because trivial diff + immediate user-visible). Branch: `audit-slice-s21-first-person-screening`.
+- **Fix**: reframe both prompts to "You ARE the job applicant. Answer in FIRST PERSON. Never refer to yourself by name in third person (no 'As [name], I...'). Never mention you are an AI. Be honest based on your profile." — and `Candidate profile:` / `Applicant background:` → `Your profile:`. The free-text branch additionally instructs: "Start with 'I' or 'My' — never with 'As [name]' or 'The applicant'."
+- **Live verification (post-fix, real Moonshot call)**:
+  ```
+  Q: 'What are your personal preferences for working environment?'
+  Pre-S21:  'As Yash Bishnoi, I have a strong preference for...'
+  Post-S21: 'My preference for a working environment is one that is collaborative
+            and intellectually stimulating, where I can apply my MSc in Computer
+            Science from the University of Dundee to contribute to innovative projects.'
+
+  Q: 'Why do you want to work at Anthropic?'
+  Post-S21: 'I am passionate about advancing artificial intelligence and believe
+            that Anthropic's cutting-edge research aligns with my interests and
+            expertise in computer science.'
+  ```
+  Both answers start with "My"/"I am" — natural first-person, no "As Yash Bishnoi" prefix.
+- **Cache cleanup applied**: 5 SQLite rows + 3 Qdrant points containing the `'As Yash Bishnoi...'` leak deleted from `screening_semantic_cache.db` and the `screening_questions` Qdrant collection. The next apply will regenerate with the new prompt rather than serving the poisoned cache.
+- **Tests**: 4 new in `tests/jobpulse/test_screening_first_person_prompt.py` asserting both prompt-construction sites contain "You ARE the job applicant" / "FIRST PERSON" / "Your profile:" and explicitly forbid "As [name], I...". All pass.
+- **Cross-ATS implication**: every URL with free-text screening fields was producing third-person-self-reference answers. Now ATS-agnostic — the fix is at the prompt-construction layer, not the adapter layer.
+
 ## Phase 2B finding — TP-27 / Slice S18 — First/Last Name `*`-suffix unmapped
 
 Surfaced in the same Anthropic apply run; S12 invariant made it visible (without S12 this would have been a silent drop).
