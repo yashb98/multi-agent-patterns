@@ -1091,3 +1091,56 @@ Octus-specific custom screening questions are still being loaded into the Anthro
 - **SG3** (right across every ATS): ~9% → **~12%** — Greenhouse Anthropic now fully validated (pre-form-fill + form-fill chains both passing). 1.5 of 11 adapters effectively closed.
 - **SG4** (right per real run): ~35% → **~50%** — `semantic_decisions.db` is now demonstrably the load-bearing audit-evidence source; log mining is supplementary, not primary.
 - **SG5** (OPRAL on errors): ~40% → **~45%** — S17 (TP-26 platform Literal) filed as a Phase 2B finding without bundling.
+
+## Phase 2B finding — TP-27 / Slice S18 — First/Last Name `*`-suffix unmapped
+
+Surfaced in the same Anthropic apply run; S12 invariant made it visible (without S12 this would have been a silent drop).
+
+- **Trace**: apply-log lines:
+  ```
+  fill ⊘ 'First Name*' reason=no_mapping required=True type=text — visible to scanner, not attempted
+  fill ⊘ 'Last Name*' reason=no_mapping required=True type=text — visible to scanner, not attempted
+  ```
+- **Source**: same root cause as TP-19 (right-to-work `*`-suffix double-fill). Field-label normalization in `field_resolver._FIELD_LABEL_TO_PROFILE_KEY` doesn't strip the `*` required marker, so `'First Name'` (mapped) and `'First Name*'` (unmapped) are treated as distinct keys. Profile resolution looks up `'First Name*'` literal, misses, returns no mapping.
+- **Status**: GAP — P1 (required field unfilled = form rejected by ATS validator).
+- **S12 doing its job**: pre-S12 these would have been silent drops (no log line, apply marked success). With S12 invariant, both fields emit `fill ⊘` with reason=`no_mapping` required=True. The recorder now captures the gap; the FIX still needs to land.
+- **Slice**: **S18** (P1; second new slice from Phase 2B). Branch: `audit-slice-s18-name-suffix-mapping`. Fix: extend the `*`-suffix normalization (planned for S15/TP-19) to cover First Name, Last Name, AND right-to-work — both have the same root cause. Could fold S15 + S18 into one slice given identical fix.
+
+**S12 PASS verdict** — the invariant fired correctly. TP-24 (silent field-drop) → PASS live. The required-field gap is real but it's now *visible* rather than silent.
+
+## Stage 2 / Phase 2B — end-of-session distance
+
+After Anthropic re-run (process_single_url + direct apply_job invocations):
+
+| SG | Statement | Pre-session | Post-session | Delta |
+|---|---|---|---|---|
+| **1** | Right value for context | ~15% | ~15% | unchanged — needs cross-region URLs (Phase 2C) |
+| **2** | Right mechanism (semantic-first) | ~33% | **~38%** | +5pp — S4 yesno + S13 leak guard confirmed live |
+| **3** | Right across every ATS | ~9% | **~12%** | +3pp — Greenhouse Anthropic now fully validated (was pre-form-fill only) |
+| **4** | Right per real run | ~35% | **~50%** | +15pp — `semantic_decisions.db` proven as primary evidence source |
+| **5** | OPRAL on errors | ~40% | **~45%** | +5pp — TP-26/S17 + TP-27/S18 filed with no bundling |
+
+**Composite distance**: ~27-31% → **~32-36%**. Goal not yet met; 10 of 11 adapters un-validated.
+
+## Phase 2B continuation plan (next session entry point)
+
+Per the prompt's per-URL budget (45 min/URL × 25 URLs = ~19 hr), Phase 2B needs ≥3 more sessions. Recommended ordering:
+
+1. **Session 6 (next)** — Greenhouse Graphcore (~20 min, warm caches), then Lever (3 URLs, ~135 min). Lever is unblocked by S6 (TP-11) so should now reach form-fill. Each Lever URL exercises the same wired touchpoints + the Lever adapter path. Watch for Lever-specific gaps.
+2. **Session 7** — Ashby (2), SmartRecruiters (2), iCIMS (2). Modern ATSes, likely some adapter-specific findings.
+3. **Session 8** — Reed (1), LinkedIn (2), Indeed (2). Auth-walled / redirect handling.
+4. **Session 9** — Workday (2), Generic (5), Oracle Cloud HCM (1). DOM-heavy + fallback path.
+5. **Phase 2C** — cross-region SG1 prosecution. Requires non-UK-coded URLs (US, EU, APAC, etc.) — to be added to URL matrix.
+
+**New slices spun out during this session**:
+- **S17** (P2) — Widen `JobListing.platform` Literal to cover all 11 ATS adapter names. ~30 min implementation; not blocking Phase 2B (workaround: omit platform arg, use generic, let URL detection figure out the actual ATS).
+- **S18** (P1) — Fix First Name / Last Name `*`-suffix unmapped (same root cause as TP-19; could fold with S15). Required-field gap visible thanks to S12 invariant.
+
+**Slices already in the queue** (not yet implemented):
+- **S5** (P1) — Cross-ATS prosecution. THIS IS Phase 2B — the audit work itself.
+- **S7** (P2) — Gate CV/CL gen on `pre-screen tier != 'skip'`.
+- **S8** (P2) — Refuse Notion write for `Unknown Company` sentinel (largely closed by S6 cascade).
+- **S9** (P2) — Enforce Kimi LLM mandate at startup + per-call.
+- **S14** (P1) — `form_experience_db` field-mapping cache scoping (TP-15 — Octus quirk leakage into Anthropic still observed).
+- **S15** (P1) — Right-to-work `*`-suffix label normalization (TP-19; folds with S18).
+- **S16** (P2) — Intent re-classification on cache hit (TP-23).
