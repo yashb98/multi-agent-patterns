@@ -58,10 +58,15 @@ EXCLUDE_PATTERNS = {
     ".coverage",
 }
 
-EMBEDDING_MODEL = "voyage-code-3"
+# Migrated 2026-05-10: Voyage Code 3 → BGE-M3 served via local Ollama.
+# Same 1024-dim output (Voyage code-3 == BGE-M3) so the on-disk
+# embeddings schema and query_embedding_cache stay valid; existing
+# Voyage-era vectors must be reindexed once via scripts/reindex_code_intelligence.py
+# before BGE-M3 queries return sensible neighbors.
+EMBEDDING_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "bge-m3:latest")
 EMBEDDING_DIMENSIONS = 1024
-EMBEDDING_BATCH_SIZE = 128
-EMBEDDING_ENV_VAR = "VOYAGE_API_KEY"
+EMBEDDING_BATCH_SIZE = 32  # Ollama batches are smaller than Voyage's
+EMBEDDING_ENV_VAR = "OLLAMA_BASE_URL"  # presence == endpoint configured
 
 
 def _is_excluded(path: str) -> bool:
@@ -204,23 +209,61 @@ class CodeIntelligence:
         self.conn.commit()
 
     def _get_voyage_client(self):
-        """Lazy-init Voyage client. Returns None if no API key."""
+        """Probe the BGE-M3 (Ollama) endpoint and return a callable adapter
+        with the same shape voyageai.Client used to expose: ``client.embed(
+        texts, model=EMBEDDING_MODEL, input_type=...)`` returns an object
+        with a ``.embeddings`` list. Returns None if Ollama is unreachable.
+
+        Naming kept (`_get_voyage_client`) so call sites don't churn during
+        migration; will be renamed when Voyage code is fully removed.
+        """
         if self._voyage_client is not None:
             return self._voyage_client
 
-        api_key = os.environ.get(EMBEDDING_ENV_VAR)
-        if not api_key:
-            logger.info("VOYAGE_API_KEY not set — using FTS5-only search")
-            return None
-
+        base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+        # Probe — if Ollama isn't reachable, fall back to FTS5-only search.
         try:
-            import voyageai
-
-            self._voyage_client = voyageai.Client(api_key=api_key)
-            return self._voyage_client
-        except ImportError:
-            logger.warning("voyageai package not installed — using FTS5-only search")
+            import urllib.request
+            with urllib.request.urlopen(f"{base}/api/tags", timeout=2) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Ollama probe returned {resp.status}")
+        except Exception as exc:
+            logger.info(
+                "Ollama unreachable at %s (%s) — using FTS5-only search",
+                base, exc,
+            )
             return None
+
+        class _BGEAdapter:
+            """voyageai.Client.embed() shape adapter for Ollama /api/embed."""
+
+            def __init__(self, base_url: str) -> None:
+                self._base = base_url
+
+            def embed(self, texts, model: str, input_type: str | None = None):
+                # input_type is Voyage-specific (query vs document) — Ollama's
+                # BGE-M3 doesn't take one, but the model handles both naturally.
+                import json as _json
+                import urllib.request as _ur
+                req = _ur.Request(
+                    f"{self._base}/api/embed",
+                    data=_json.dumps({"model": model, "input": list(texts)}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with _ur.urlopen(req, timeout=120) as resp:
+                    payload = _json.loads(resp.read())
+
+                class _Result:
+                    pass
+
+                result = _Result()
+                result.embeddings = payload.get("embeddings") or []
+                return result
+
+        self._voyage_client = _BGEAdapter(base)
+        logger.info("Code-intelligence embedder: BGE-M3 via Ollama (%s)", base)
+        return self._voyage_client
 
     def _init_query_cache_table(self):
         """Create disk cache table for Voyage query embeddings."""
