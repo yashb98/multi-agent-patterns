@@ -1056,23 +1056,27 @@ def process_single_url(
 
                 if not jd_text:
                     jd_text = soup.get_text(separator="\n", strip=True)[:5000]
-
-                title_el = soup.select_one("h1, .job-title, .topcard__title")
-                if title_el:
-                    title = title_el.get_text(strip=True)
-
-                company_el = soup.select_one(
-                    ".topcard__org-name-link, .company-name, "
-                    '[data-testid="inlineHeader-companyName"]'
-                )
-                if company_el:
-                    company = company_el.get_text(strip=True)
     except Exception as exc:
         logger.error("process_single_url: failed to fetch JD: %s", exc)
         return {"status": "error", "message": f"Failed to fetch JD: {exc}"}
 
     if not jd_text:
         logger.warning("process_single_url: no JD text extracted — pipeline may underperform")
+
+    # Audit 2026-05-10 / Slice S6 / TP-11 — adapter-agnostic title + company
+    # extraction via LLM over jd_text. Replaces the previous hardcoded
+    # LinkedIn/Indeed CSS selectors (`.topcard__title`, `.topcard__org-name-link`,
+    # etc.) which produced `Unknown Role @ Unknown Company` for every
+    # non-LinkedIn ATS (Lever, Ashby, Greenhouse company-name miss, etc.).
+    # Cached per jd_hash, so each unique JD costs at most one LLM call.
+    if jd_text:
+        try:
+            from jobpulse.jd_metadata_extractor import extract_title_company
+            metadata = extract_title_company(jd_text)
+            title = metadata.get("title", "") or title
+            company = metadata.get("company", "") or company
+        except Exception as exc:  # noqa: BLE001 — graceful fallback to "Unknown"
+            logger.warning("process_single_url: title/company extraction failed: %s", exc)
 
     # 3. Analyze JD
     try:

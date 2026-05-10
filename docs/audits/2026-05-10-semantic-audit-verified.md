@@ -241,6 +241,17 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 
 ### TP-11 `process_single_url` JD-analyzer title + company extraction (`jobpulse/scan_pipeline.py:1060-1069`)
 
+> **Status update — LIVE VERIFIED CROSS-ATS**: Slice S6 landed on branch `audit-slice-s6-title-company-extractor` @ commit `4f1b575`. New module `jobpulse/jd_metadata_extractor.py` (~140 LOC, 13 unit tests) replaces the hardcoded CSS selectors with adapter-agnostic LLM extraction over `jd_text` (cached per `jd_hash`). Live-verified on **3 distinct ATSes**:
+> - Lever Palantir: `'Forward Deployed AI Engineer' @ 'Palantir Technologies'` (was Unknown @ Unknown).
+> - Ashby OpenAI: `'Data Engineer' @ 'OpenAI'` (was Unknown @ Unknown).
+> - Greenhouse Graphcore: `'Automation Engineer' @ 'Graphcore'` (was correct title via `<h1>` but Unknown company).
+>
+> **Cascade closures**:
+> - **TP-22** (CV/CL filename was `Unknown_Company`): now writes to `data/applications/Palantir_Technologies/Yash_Bishnoi_Palantir_Technologies.pdf`. Verified live on Lever.
+> - **TP-13** (Notion shared "Unknown Company" page collision): each distinct company now creates its own Notion page. Verified — 3 distinct pages across 3 ATSes (`35c77c42-6a5f-8130-…` / `…-81d9-…` / `…-8178-…`).
+>
+> Evidence: `logs/audit/s6_verify_lever_*.log`, `s6_verify_ashby_*.log`, `s6_verify_graphcore_*.log`.
+
 - **Current**: hardcoded BeautifulSoup CSS selectors with LinkedIn/Indeed bias:
   ```python
   title_el = soup.select_one("h1, .job-title, .topcard__title")
