@@ -76,13 +76,15 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 > - **`db_observability.lookups`**: 4 new lookups produced **3 distinct `key_hash` values** (UK / US / ILR), versus the 1 distinct value the old `key_arg=1` decorator would have produced.
 > - **UK re-query post-cache-write**: `source=semantic_cache, score=1.00` — context-scoped cache hit confirmed end-to-end.
 >
-> **Acceptance criteria met**:
-> - ✅ UK + US JDs produce 2 distinct cache entries for the visa-sponsorship question.
-> - ✅ `db_observability.lookups` shows distinct `key_hash` per (profile, JD) pair.
-> - ✅ Profile-state mutation (Graduate Visa → ILR) regenerates the cache (does not serve the stale Graduate-Visa cache row).
-> - ⚠️ Cross-ATS coverage (≥5 of 11 adapters): **deferred to Phase 2B** per advisor sequencing. The slice's correctness primary mechanism is live-verified; adapter breadth is the role of Phase 2B's per-adapter loop, which now has the correct cache key to verify against.
+> **Acceptance criteria — partial**:
+> - ✅ **Cache key correctness (D9 / D10 / F3)**: UK + US JDs produce 2 distinct `qdrant_id`s; profile mutation (Graduate Visa → ILR) yields a distinct `profile_state_hash`; UK re-query post-write hits the context-scoped row at `score=1.00`.
+> - ✅ **Observability (acceptance text "distinct `key_hash` per pair")**: 4 lookups, 3 distinct `key_hash` values.
+> - ❌ **Answer content (acceptance text "returning 'No' / 'Yes' respectively per the D9 worked example")**: **FAIL** — the LLM fallback returns `"Enhanced swarm convergence..."` (cognitive-routing leak, see below). The cache *correctly* shapes 2 distinct buckets per the worked example; what those buckets *contain* is wrong because the upstream LLM tier hallucinated. This is not a slice failure — it's the slice's correctness primary mechanism doing its job (forcing context-scoped regeneration) and the upstream bug becoming visible. Closing S1 end-to-end requires S13 (below) to land first.
+> - ⚠️ Cross-ATS coverage (≥5 of 11 adapters): **deferred to Phase 2B** per advisor sequencing.
 >
-> **Out-of-scope finding surfaced during live verification (separate slice candidate)**: when the cache misses (now correctly missing on context-mismatch) and the LLM tier fires for free-text screening questions, `cognitive_llm_call` returns `"Enhanced swarm convergence: GRPO group sampling..."` — leaked langgraph orchestration content. The screening_pipeline already has a comment at `:506` documenting this leak ("Cognitive routing has been seen to leak unrelated text into the answer slot") and a partial mitigation that only fires for **option-bearing** fields (the OptionAligner discards non-option text). For free-text fields like the visa-sponsorship question, the leak still poisons the cache. This is a **pre-existing P1 cognitive-routing bug** orthogonal to S1 (verified by reproducing on the pre-slice main branch). Recommend a follow-up slice (call it S13) to either (a) extend the option-aligner-style guard to free-text fields with a JD-relevance LLM-as-judge or (b) trace and fix the cognitive routing context bleed at source.
+> **Cleanup performed**: the live evidence script wrote the two LLM-hallucinated answers to production `data/screening_semantic_cache.db` + Qdrant `screening_questions` collection with valid context hashes. Without cleanup, the next real `apply_job` UK Greenhouse run would have hit those rows at `score=1.00` and submitted "Enhanced swarm convergence..." as the visa-sponsorship answer. Deleted via `DELETE FROM screening_semantic_cache WHERE answer LIKE 'Enhanced swarm convergence%'` + Qdrant `delete(PointIdsList(...))`. Total 5 rows removed (2 written by S1, 3 legacy from prior sessions). Verified zero remaining via re-query.
+>
+> **Out-of-scope finding surfaced during live verification (separate slice candidate, "S13")**: when the cache misses (now correctly missing on context-mismatch) and the LLM tier fires for free-text screening questions, `cognitive_llm_call` returns `"Enhanced swarm convergence: GRPO group sampling..."` — leaked langgraph orchestration content. The screening_pipeline already has a comment at `:506` documenting this leak ("Cognitive routing has been seen to leak unrelated text into the answer slot") and a partial mitigation that only fires for **option-bearing** fields (the OptionAligner discards non-option text). For free-text fields like the visa-sponsorship question, the leak still poisons the cache. This is a **pre-existing P1 cognitive-routing bug** orthogonal to S1 (verified by reproducing on the pre-slice `pipeline-correctness-fixes` HEAD). Recommend slice **S13** to either (a) extend the option-aligner-style guard to free-text fields with a JD-relevance LLM-as-judge or (b) trace and fix the cognitive routing context bleed at source. **Until S13 lands, S1 closes TP-1's keying GAP only — TP-1's content correctness remains GAP under S13.**
 >
 > **Branch**: `audit-slice-s1-cache-key` off `pipeline-correctness-fixes`. Files touched: `jobpulse/screening_semantic_cache.py`, `jobpulse/screening_pipeline.py`, `tests/jobpulse/test_screening_cache_keying.py` (new), `tests/jobpulse/test_screening_pipeline_real.py` (2-line test update for new contract), `scripts/audit_s1_live_evidence.py` (new evidence collector).
 
@@ -262,7 +264,7 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 - **Priority**: **P1** — direct apply-correctness risk. If a Graphcore form happens to contain the literal label "Do you have any restrictive covenants that would prevent you from working at Octus?" the system would auto-fill the Octus-cached answer.
 - **Verify by**: log line `[jobpulse.native_form_filler] Loaded 52 field mappings for job-boards.greenhouse.io (52 global)` followed by `DIAG field_mapping_keys (first 15): […, '…employed by Octus?*', '…working at Octus?*', …]`.
 - **Correctness check**: input/mechanism/output/downstream all FAIL — the system is loading a Octus-specific answer set into Graphcore's mapping context.
-- **Slice**: ride along with S1 (cache key) — same root design issue.
+- **Slice**: **NOT closed by S1**. S1 (commit `b3a365c`) addressed `screening_semantic_cache.py` only; TP-15 lives in `form_experience_db.py` field-mapping cache (a different layer). The same root design issue applies — store mappings per `(domain, company)` or per `(profile_state_hash, jd_context_hash)` — but the fix needs its own slice, call it **S14**, against `form_experience_db.py`. Original "ride along with S1" plan was incorrect; carrying forward.
 
 ### TP-16 form_experience_db DRIFT DETECTED + LLM fallback (Graphcore log line)
 
@@ -324,7 +326,7 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
   fill ✓ 'Please select your right to work status' = 'Graduate Visa'
   ```
 - **Correctness check**: input/mechanism/output/downstream all FAIL on the `*` instance.
-- **Slice**: ride along with **S1** (cache key with profile-state-hash) — this is the canonical visa-state example from `dimensions.md → D9 worked-example`.
+- **Slice**: **partially addressed by S1** (commit `b3a365c`). The profile-state-blindness root cause is now fixed — a Tier-4 cached answer would not be served to a Graduate-Visa profile because the `profile_state_hash` differs. However, S1 did NOT touch the field-key `*` normalization; the same form rendering the question twice (with/without `*`) would still allow two different fills if the cache writes happened with different normalized labels. Carry forward as **S15** (label normalization) once a fresh apply demonstrates whether S1's profile-state-hash alone resolves this in practice.
 
 ### TP-20 Gender combobox silent fill failure (Graphcore)
 
@@ -398,7 +400,7 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 - **Status**: **GAP** — quality.
 - **Priority**: P2.
 - **Verify by**: log lines `intent=unknown` on every cache hit + the corresponding TP-7 first-pass alignment failure.
-- **Slice**: ride along with S1 (cache key) since this is in the same file.
+- **Slice**: **NOT closed by S1**. S1 (commit `b3a365c`) addressed cache keying only; intent re-classification on hit (or storing the prior classification correctly) is a separate concern in the same file. Carry forward as **S16**.
 
 ---
 
