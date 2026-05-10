@@ -1310,6 +1310,49 @@ After Session 6, Anthropic Greenhouse re-run should:
 **Open calibration question** (Phase 2B-2 work):
 - **S13's 0.40 cosine threshold** — this run had 2 `rejected_jd_relevance_low` decisions, both against the `Additional Information*` field where the LLM produced reasonable autobiographical content scoring 0.388. Both rejections were correct in *spirit* (the answer was generic, not tied to JD content) but borderline. Across the next 5+ Phase 2B URLs, collect cosine scores for all `_llm_answer:free_text` decisions and recalibrate the threshold if the false-positive rate exceeds an acceptable bound (TBD).
 
+## Phase 2B finding — TP-34 / Slice S25 — LLM picks wrong answer for ambiguous Yes/No questions when help-text not in prompt
+
+**P0** — discovered in the post-S21 verification run.
+
+- **Trace**: live apply on Anthropic Greenhouse, `'AI Policy for Application'` combobox (options=['Yes','No']) was filled with `'No'`. The form's help text says "We invite you to review our AI partnership guidelines for candidates and confirm your understanding by selecting 'Yes.'" — the correct answer is unambiguously **Yes**. The LLM picked No because the prompt only contained the bare label "AI Policy for Application" without the help text. With no context, "AI Policy" is ambiguous and the LLM defaulted to "No" (likely interpreting it as "do you have AI policy concerns?").
+- **Cached the wrong answer**: the verification run wrote `'AI Policy for Application' → 'No'` to the screening_semantic_cache. Cleaned in third cache cleanup pass; future apply will regenerate.
+- **Status**: **GAP — P0** (recruiter sees candidate explicitly opted-OUT of AI policy on a required gate question — instant auto-reject signal). Severity: would cause recruiter rejection on every Anthropic apply until fixed.
+- **Slice**: **S25** (P0). Branch: `audit-slice-s25-screening-help-text-context`. Fix: include the field's help text / description (the paragraph below the label) in the screening pipeline's `_llm_answer` prompt. Likely lives in `field_analyzer` output as `help_text` or `description` — propagate it into the `field` dict alongside `options` (folds with S24's options-propagation fix).
+- **Acceptance**: 26-URL matrix produces zero LLM answers that contradict the field's help-text intent. Specifically for AI Policy, the answer must be 'Yes'.
+- **Cross-cutting with TP-31/S22**: same root cause — bare label embeddings/prompts don't carry enough context. S22 fixes the cache lookup side; S25 fixes the LLM prompt side. Both should be solved together.
+
+## Phase 2B finding — TP-35 — S21 partial: LLM still emits `As [role], I...` patterns
+
+- **Trace**: post-S21 cache cleanup found 2 surviving cache rows with third-person framing variants S21's prompt didn't forbid:
+  - `'What Are Your Current Benefits...?' → 'As a current student, I do not receive any bonus benefits. However, I am eager to...'`
+  - `'Publications (e.g. Google Scholar) URL' → 'As a candidate, I have not yet published any research papers on platforms like G...'`
+- **Root cause**: S21's prompt explicitly forbids `"As [name], I..."` but the LLM defaults to other third-person openings: `"As a candidate, I..."`, `"As a current student, I..."`, `"As an applicant, I..."`. The prompt's forbid list is too narrow.
+- **Status**: **PARTIAL GAP** — S21 closed the most-egregious case ("As [legal name], I…") but the broader pattern (`"As a [role/identifier], I..."`) survives. Recruiter still reads "As a candidate, I…" as AI-generated.
+- **Slice**: extension of **S21** (in-place edit; trivial — broaden the forbid clause). OR new slice S26 if user prefers strict slice discipline. Estimate: 5 min (prompt edit) + 5 min (test extension) + 1 live verification run.
+- **Cleanup**: 2 cache rows + 2 Qdrant points deleted in third cleanup pass.
+
+## Live verification of S21 + Phase 2B re-run findings
+
+Ran `apply_job(url=Anthropic, dry_run=True)` post-merge after the doc updates above.
+
+**Confirmed working live**:
+- ✅ **S21** — 0 "As Yash" leaks across all decision rows (decision count grew from 145 to 196 in this run; row 196 is the new pronunciation answer in first person: `'My name, Yash Bishnoi, is pronounced as "Yash" with...'` — first-person `My name`, not third-person `As Yash, my name...`).
+- ✅ **S4** — Veteran Status filled `'I am not a protected veteran'` and Disability Status filled `'No, I do not have a disability...'` first-pass via S4's yesno tier (no AI-assist cache priming).
+- ✅ **S6** — title `'Research Engineer'` + company `'Anthropic'` correctly extracted; CV path `data/applications/Anthropic/Yash_Bishnoi_Anthropic.pdf` (no Unknown_Company).
+- ✅ **S13** — JD-relevance guard fires (no leak text in any decision row).
+
+**Still broken (reproduced in this run)**:
+- ❌ **S20** — apply hung at the same point (post-EEO fills, before free-text fields). Log stops at `Disability Status` fill. ~13 fill ✓ lines total before hang. Free-text fields (Personal Preferences, Why Anthropic, Additional Information) never reached.
+- ❌ **S24** — `'AI Policy for Application*'` had `has_options=False` despite scanner finding `['Yes', 'No']`. Confirmed reproducing — `*`-suffix path drops options metadata.
+- ❌ **S22** — wasn't directly retriggered (apply didn't reach the cross-question fields), but the cache state still has potential collision rows.
+- ❌ **S23** — apply didn't reach the `fill ⊘` phase this run, so no live re-evidence; the field_mapping_keys still show only `*`-suffixed identity field labels at startup, so the bug persists.
+
+**Newly discovered**:
+- 🆕 **TP-34/S25** — wrong answer for AI Policy ('No' instead of 'Yes') because help-text not in prompt
+- 🆕 **TP-35** — S21 partially closed; "As [role], I..." patterns still emitted (cleanup found "As a candidate", "As a current student" surviving in cache)
+
+**Cache hygiene over the session**: 3 cleanup passes total. Pass 1 = 5 SQLite + 3 Qdrant (`%As Yash%` literal). Pass 2 = 2 SQLite + 3 Qdrant (`As Mr%`, `Yash Bishnoi is %`). Pass 3 = 2 SQLite + 2 Qdrant (`As a candidate%`, `As a current student%`) + 1 SQLite + 1 Qdrant (`AI Policy = 'No'` wrong answer) + 1 SQLite + 1 Qdrant (long-free-text in AI Policy* combobox). Total: **11 SQLite + 10 Qdrant rows cleaned**. Lesson reinforced: cache cleanup queries must enumerate the full pattern space — each new run surfaces new poisoned variants.
+
 **Pre-existing queue (carry-over)**:
 - **S5** (P1) — Cross-ATS prosecution. THIS IS Phase 2B — the audit work itself.
 - **S7** (P2) — Gate CV/CL gen on `pre-screen tier != 'skip'`.
