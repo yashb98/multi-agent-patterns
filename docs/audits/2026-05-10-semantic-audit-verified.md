@@ -957,3 +957,15 @@ S4 (option aligner first-pass drop on EEO yes/no) landed on `audit-slice-s4-opti
 ## Session 5 merge note (2026-05-10) — S3 + S4 merge bridge
 
 When S4 merged on top of `pipeline-correctness-fixes` (which already had S3), the new yesno tier in `OptionAligner.align_answer` needed `_log("yesno_first_token_match", opt, 0.95)` and `_log("yesno_substring_count", best_opt, float(best_count))` calls in the two new return paths so the most-traversed EEO alignment tier emits rows into `semantic_decisions.db`. Added at merge time. Also bumped `test_ambiguous_answer_does_not_recurse`'s `sys.setrecursionlimit(50)` to 80 to accommodate the 5-10 stack frames added per `align_answer` call by S3's `record_decision` plumbing.
+
+## Session 5 revert note (2026-05-10) — S11 reverted, redesign as Kimi-vision
+
+S11 (vision recovery — OpenAI pin) merged then reverted (`git revert -m 1 ae09029`). Reason: user directive *"vision should be done via kimi as well"* — S11 chose `api.openai.com/v1/chat/completions` with `gpt-4.1-mini` and a structured-skip when `OPENAI_API_KEY` is unset, citing absent Moonshot-vision pricing in `cost_tracker`. The user wants vision routed through Kimi (Moonshot) like every other chat completion. TP-21 (the underlying root cause — `client.responses.create()` 404s on Moonshot because Moonshot doesn't implement `/v1/responses`) is **still open** post-revert; the redesign is what closes it.
+
+- **Redesign acceptance** (new slice — runs off post-revert `pipeline-correctness-fixes`):
+  - `client.responses.create()` → `client.chat.completions.create()` with multimodal `image_url` content (works on both OpenAI and Moonshot's `/v1/chat/completions`).
+  - Default model from a Moonshot vision-capable model (e.g. `moonshot-v1-32k-vision-preview`); fall back to OpenAI only when Moonshot is unavailable, not by default.
+  - `cost_tracker` adds Moonshot vision pricing (the original blocker S11 cited as justification for the OpenAI pin).
+  - Kimi mandate (`shared/agents.py` lines 100-178) extends to vision endpoints — every chat-completion host (text or vision) routes through `api.moonshot.ai/v1`.
+  - Live verification: 26-URL matrix produces zero `Vision recovery call failed: 404` log lines AND zero `api.openai.com` host hits (when Moonshot is healthy).
+- **Branch**: `audit-slice-s11-kimi-vision` (replaces `audit-slice-s11-vision-recovery`; the original branch's commits are reachable via `git log audit-slice-s11-vision-recovery` for reference).
