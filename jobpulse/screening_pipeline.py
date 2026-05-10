@@ -16,6 +16,8 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from shared.logging_config import get_logger
@@ -54,6 +56,74 @@ class ScreeningPipeline:
         self._option_aligner = option_aligner or OptionAligner()
         self._validator = validator or ScreeningValidator()
         self._pattern_extractor = pattern_extractor or PatternExtractor()
+        # Audit S1 / TP-1: scope the screening cache to (profile, JD) context.
+        # profile_state_hash is stable for the lifetime of this pipeline
+        # instance — profile mutations between sessions yield a new hash
+        # (and therefore a new cache row) on the next ScreeningPipeline.
+        self._profile_state_hash = self._compute_profile_state_hash(profile)
+
+    # Audit S1 / TP-1 helpers --------------------------------------------
+
+    # Profile fields that genuinely determine the right screening answer.
+    # Per dimensions.md → D9 decision-context table: visa, salary, notice,
+    # relocation, languages. Excludes identity/links because their value
+    # doesn't change visa/salary/notice/relocation answers.
+    _PROFILE_HASH_FIELDS: tuple[str, ...] = (
+        "visa_status",
+        "visa_expiry",
+        "visa_type",
+        "right_to_work",
+        "work_auth_type",
+        "current_salary",
+        "expected_salary",
+        "salary_expectation",
+        "notice_period",
+        "location",
+        "current_city",
+        "willing_to_relocate",
+        "languages",
+        "english_proficiency",
+    )
+
+    @classmethod
+    def _compute_profile_state_hash(cls, profile: dict[str, Any]) -> str:
+        """Hash the screening-determining subset of the profile.
+
+        Keeping the input set narrow protects cache hit-rate: irrelevant
+        profile changes (LinkedIn URL, name) don't invalidate visa/salary
+        decisions, while screening-relevant changes (visa renewed,
+        notice period revised) correctly produce a new hash so the prior
+        decision is regenerated on the next live run.
+        """
+        if not profile:
+            return ""
+        subset = {k: profile.get(k) for k in cls._PROFILE_HASH_FIELDS if profile.get(k) not in (None, "")}
+        if not subset:
+            return ""
+        canonical = json.dumps(subset, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+    @classmethod
+    def _jd_context_hash(cls, job_context: dict[str, Any] | None) -> str:
+        """Hash the JD-axes that determine screening answers per D9.
+
+        Country drives visa/work-auth, currency drives salary expectation,
+        role_level drives experience/seniority answers. Skills and
+        required_languages don't determine these answers (the JD's
+        country does, not its skill list), so they're excluded to keep
+        the hash narrow.
+        """
+        if not job_context:
+            return "empty"
+        subset = {
+            "country": (job_context.get("country") or job_context.get("location") or "").lower().strip(),
+            "currency": (job_context.get("currency") or "").upper().strip(),
+            "role_level": (job_context.get("role_level") or job_context.get("seniority") or "").lower().strip(),
+        }
+        if not any(subset.values()):
+            return "empty"
+        canonical = json.dumps(subset, sort_keys=True)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
     def answer(
         self,
@@ -118,10 +188,13 @@ class ScreeningPipeline:
         # Step 2: Semantic Cache (option-aware — passes field options for alignment)
         field_options = field.get("options") if field else None
         field_type = field.get("type", "") if field else ""
+        jd_context_hash = self._jd_context_hash(job_context)
         cache_hit = self._semantic_cache.lookup(
             question,
             field_options=field_options,
             field_type=field_type,
+            profile_state_hash=self._profile_state_hash,
+            jd_context_hash=jd_context_hash,
         )
         if cache_hit:
             # Boost confidence for well-used cache entries
@@ -159,7 +232,12 @@ class ScreeningPipeline:
             resolved = self._resolve_intent_from_profile(intent, job_context)
             if resolved:
                 result["answer"] = resolved
-                result["confidence"] = max(intent_confidence, 0.75)
+                # Clamp to 1.0 — intent classifier cosine similarity in
+                # float32 occasionally exceeds 1.0 by ~1e-7. The cache-hit
+                # path already clamps via min(); the resolver path needs
+                # the same protection so callers see a valid probability.
+                # (Surfaced when slice S1 routed more callers here.)
+                result["confidence"] = min(max(intent_confidence, 0.75), 1.0)
                 result["source"] = "intent_resolver"
                 return result
 
@@ -465,9 +543,22 @@ class ScreeningPipeline:
         field_options: list[str] | None = None,
         field_type: str = "",
         selected_option: str = "",
+        job_context: dict[str, Any] | None = None,
     ) -> None:
-        """Record the outcome of an answered question for learning."""
-        self._semantic_cache.record_outcome(question, success)
+        """Record the outcome of an answered question for learning.
+
+        ``job_context`` is required so the recorded outcome and any
+        cached answer are scoped to the same (profile, JD) context the
+        decision used at lookup time. Callers that don't pass it record
+        against the empty-context bucket (legacy behaviour).
+        """
+        jd_context_hash = self._jd_context_hash(job_context)
+        self._semantic_cache.record_outcome(
+            question,
+            success,
+            profile_state_hash=self._profile_state_hash,
+            jd_context_hash=jd_context_hash,
+        )
         intent, _ = self._intent_classifier.classify(question)
         if success:
             if intent and intent != ScreeningIntent.UNKNOWN:
@@ -482,6 +573,8 @@ class ScreeningPipeline:
                     selected_option=selected_option or answer if field_options else "",
                     field_type=field_type,
                     field_options=field_options,
+                    profile_state_hash=self._profile_state_hash,
+                    jd_context_hash=jd_context_hash,
                 )
 
 
