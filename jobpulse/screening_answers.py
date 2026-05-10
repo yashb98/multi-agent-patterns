@@ -1184,10 +1184,19 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
     except Exception:
         pass
 
+    # Audit S21 / TP-30: prompt the LLM AS the candidate in first person.
+    # Pre-S21 'Applicant background:' framed the LLM as a third party
+    # answering ABOUT the candidate; live evidence on Anthropic Greenhouse
+    # showed answers like 'As Yash Bishnoi, I have a strong preference...'
+    # — third-person self-reference that recruiters instantly clock as
+    # AI-generated.
     task = (
-        "Answer this job application screening question concisely (1-3 sentences). "
-        f"Be professional and positive. Question: {question}.{context_line} "
-        f"Applicant background: {profile_summary}"
+        "You ARE the job applicant filling out a screening question on a "
+        "job application form. Answer in FIRST PERSON as yourself "
+        "('I am', 'I have', 'My...'). Never refer to yourself by name in "
+        "third person (no 'As [name], I...'). Be professional and "
+        f"positive. Answer in 1-3 sentences. Question: {question}.{context_line} "
+        f"Your profile: {profile_summary}"
         f"{correction_context}"
     )
     assert_prompt_has_wrapped_pii(task, prompt_profile, "screening")
