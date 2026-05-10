@@ -255,6 +255,13 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 
 ### TP-17 BGE-M3 silent MiniLM fallback observed live mid-run (`shared/memory_layer/_embedder.py`)
 
+> **Status update — LIVE VERIFIED**: Slice S10 landed on branch `audit-slice-s10-bgem3-loud-fail` @ commit `733d192`. New `EmbedderUnavailableError` + retry-with-backoff (3 attempts, exponential 1/2/4s) + class-level circuit breaker (default threshold: 3 consecutive batch failures). After threshold, raises instead of silently corrupting the cache via dim mismatch. Below threshold, persistent failures still fall back to MiniLM with structured ERROR logs including `DIM MISMATCH RISK: 384 != 1024`. Successful BGE-M3 batches reset the counter. **Live-verified with bogus `OLLAMA_BASE_URL`**:
+> - Batch 1: 3 retry attempts → MiniLM fallback (`consecutive_failures=1/3`).
+> - Batch 2: same flow (`consecutive_failures=2/3`).
+> - Batch 3: circuit trips → `EmbedderUnavailableError` raised with descriptive message.
+>
+> 7 new unit tests in `tests/shared/memory_layer/test_embedder_loud_fail.py`; 7 existing `test_embedder.py` tests still pass. Env-tunable via `MEMORY_EMBEDDER_CIRCUIT_THRESHOLD` / `MEMORY_EMBEDDER_RETRY_ATTEMPTS` / `MEMORY_EMBEDDER_RETRY_BASE`. Backwards-compat: callers previously getting silent MiniLM under persistent BGE outage now receive an exception; cache layers were already raising on dim mismatch, so they fail earlier + louder now.
+
 - **Current**: pre-flight check verified BGE-M3 returns 1024-dim. **However, live mid-run on Graphcore**, BGE-M3 returned HTTP 500 and the embedder silently fell back to MiniLM (384-dim). Log line:
   ```
   [shared.memory_layer._embedder] BGE-M3 embed failed, falling back to minilm: HTTP Error 500: Internal Server Error
