@@ -349,6 +349,8 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 
 ### TP-24 Silent field-drop on Graphcore — required `Have you added your full legal name…?*` was scanned but never filled, application still queued
 
+> **Status update (post-audit)**: Slice S12 implementation landed on branch `audit-slice-s12-fill-loop-invariant` (this session). 6 unit tests for `_compute_silent_drops` pass; integration into `native_form_filler` fill loop wires the new `fill ⊘` log emissions + `fields_silently_dropped` / `silently_dropped_labels` in `agent_fill_stats`. Live verification on the Graphcore URL pending — confirming the legal-name field now emits a visible `fill ⊘` line.
+
 - **Current**: Graphcore form had a required combobox `'Have you added your full legal name and surname (including any middle names)?*'` with options `['Yes', 'No']`. The field_analyzer extracted its options at scan-time (log line 64). The fill loop **never tried it** — there is **no `fill ✓` or `fill ✗` log line for this field anywhere in the entire 174-line apply log**. Yet the apply concluded with `status: queued_for_review` and ATS score 97% — i.e., the form-fill agent considered the form complete.
 - **Target**: every required field that survives field_analyzer must either fill (✓) or fail (✗) — never be silently dropped. If the fill loop has a code path that lets a scanned-but-unselected combobox exit without log emission, that path is a P1 correctness leak.
 - **Status**: **GAP — P1, observed live this session, NOT covered by any other touchpoint**.
