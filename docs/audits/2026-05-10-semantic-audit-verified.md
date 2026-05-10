@@ -323,6 +323,10 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 
 ### TP-21 Vision recovery 404 on Moonshot endpoint (`shared/.../vision_recovery`)
 
+> **Status update — LIVE VERIFIED at HTTP layer**: Slice S11 landed on branch `audit-slice-s11-vision-recovery` @ commit `6c0e139`. (1) New `shared/agents.get_openai_vision_client()` factory pinned to `api.openai.com/v1` (bypasses any `OPENAI_BASE_URL` pointing at Moonshot); returns `None` when `OPENAI_API_KEY` is unset so callers skip cleanly; (2) `recover_failed_fields_with_vision` switches from `client.responses.create()` (Moonshot 404) to `client.chat.completions.create()` with multimodal `image_url` content type. 5 new unit tests; 10 existing vision tests still pass.
+>
+> **Direct live verification**: with `OPENAI_API_KEY=""` forced, vision recovery skips with 0 HTTP requests and structured log `"Vision recovery skipped: no OPENAI_API_KEY configured (Kimi mandate covers chat completions; vision needs OpenAI)"`. With OpenAI key present (default state), HTTP request lands on `api.openai.com/v1/chat/completions` (verified via real 429 quota response — that's a real OpenAI response, not the 404 we used to see). **Zero `moonshot.ai` calls. Zero `/v1/responses` calls.**
+
 - **Current**: Vision recovery tier (used when DOM classifier confidence < 0.7) tried to POST to `https://api.moonshot.ai/v1/responses` and got 404. Log:
   ```
   POST https://api.moonshot.ai/v1/responses "HTTP/1.1 404 Not Found"
