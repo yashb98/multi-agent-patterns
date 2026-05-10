@@ -3,7 +3,7 @@
 Exposes CodeIntelligence query methods as MCP tools for Claude Code.
 Auto-started via .claude/settings.json MCP configuration.
 
-IMPORTANT: All heavy imports (code_intelligence, numpy, voyageai, langchain)
+IMPORTANT: All heavy imports (code_intelligence, numpy, langchain)
 are deferred to first tool call so the MCP server can respond to `initialize`
 in <100ms. This prevents Claude Code from timing out the connection.
 
@@ -621,7 +621,7 @@ def create_mcp_server():  # type: ignore[return]
     """Create and configure the MCP Server with 13 Code Intelligence tools.
 
     The server responds to `initialize` immediately (<100ms). Heavy imports
-    (numpy, voyageai, code_intelligence) are deferred to the first tool call.
+    (numpy, code_intelligence) are deferred to the first tool call.
     """
     from mcp.server import Server
     from mcp.types import TextContent, Tool

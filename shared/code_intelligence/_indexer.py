@@ -274,19 +274,19 @@ def _populate_search_index(ci: CodeIntelligence) -> None:
         except Exception as exc:
             logger.debug("Failed to add %s to search index: %s", qname, exc)
 
-    _compute_voyage_embeddings(ci)
+    _compute_embeddings(ci)
 
 
-def _compute_voyage_embeddings(ci: CodeIntelligence) -> None:
-    """Batch embed all documents via Voyage-code-3 and store as packed floats.
+def _compute_embeddings(ci: CodeIntelligence) -> None:
+    """Batch embed all documents via BGE-M3 (Ollama) and store as packed floats.
 
-    Gracefully does nothing if VOYAGE_API_KEY is not set or voyageai is not installed.
-    Uses smaller batch size (32) to stay under Voyage's 120K token/batch limit.
-    Filters empty strings to avoid API validation errors.
+    Gracefully does nothing if Ollama is unreachable.
+    Uses small batch size (32) to keep individual /api/embed requests responsive.
+    Filters empty strings to avoid validation errors.
     """
     from shared.code_intelligence import EMBEDDING_MODEL
 
-    client = ci._get_voyage_client()
+    client = ci._get_embed_client()
     if client is None:
         return
 
@@ -328,7 +328,7 @@ def _compute_voyage_embeddings(ci: CodeIntelligence) -> None:
                 )
                 vectors = result.embeddings
             except Exception as exc:
-                logger.warning("Voyage embedding batch failed: %s", exc)
+                logger.warning("BGE-M3 embedding batch failed: %s", exc)
                 continue
 
             rows_to_insert = []
