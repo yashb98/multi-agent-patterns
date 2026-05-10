@@ -593,6 +593,20 @@ def canonicalize_country_value(label: str, value: str, locale: LocaleProfile | N
 
     norm_value = _normalize_match_text(value)
 
+    # The original "country in label" check is too loose — labels like
+    # "Will you ... require employment visa sponsorship to work in the
+    # **country** in which the job ..." trigger canonicalization on
+    # answer 'No', which then matches Norway's ISO 'no' abbreviation
+    # and returns 'Norway'. Verified live (visa Yes/No → 'Norway' bug,
+    # 2026-05-10 run1.2 + run2). Bail out for unambiguous Yes/No
+    # answers — they are never country names.
+    if norm_value in ("yes", "no", "y", "n", "true", "false"):
+        return value
+    # Bail for visa/work-auth labels regardless of length — they ask
+    # WHERE you'll work, not what country you ARE.
+    if any(kw in norm_label for kw in ("visa", "sponsorship", "right to work", "authorized to work", "will you require")):
+        return value
+
     # Try locale country first
     if locale and locale.country:
         for canonical, abbrevs in _COUNTRY_DATA.items():
@@ -681,10 +695,17 @@ def best_option_match(
         if norm_opt == norm_value:
             return opt
 
-    # Starts with
-    for opt, norm_opt in zip(options, normalized_options):
-        if norm_opt.startswith(norm_value):
-            return opt
+    # Starts with — guarded for short values to prevent "No" matching "Norway"
+    # when option scoping leaks (the visa Yes/No → 'Norway' bug, 2026-05-10).
+    # Short ≤2-char values must match as a whole word, not a prefix substring.
+    if len(norm_value) >= 3:
+        for opt, norm_opt in zip(options, normalized_options):
+            if norm_opt.startswith(norm_value):
+                return opt
+    else:
+        for opt, norm_opt in zip(options, normalized_options):
+            if norm_opt == norm_value or norm_opt.startswith(norm_value + " "):
+                return opt
 
     # Contains (for values >= 4 chars)
     if len(norm_value) >= 4:

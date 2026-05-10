@@ -191,6 +191,15 @@ def _tailored_cv_cache_store(
     from jobpulse.job_db import JobDB
     db = db or JobDB()
     payload = json.dumps(_tailored_cv_to_payload(cv), ensure_ascii=False)
+    # Length cap (DB safety, 2026-05-10): a legitimate tailored CV payload
+    # is ~3-8 KB. 64 KB cap blocks pathological LLM output bloating the
+    # cache table without rejecting any real-world result.
+    if len(payload) > 65536:
+        logger.warning(
+            "tailored_cv_cache: skipping store — payload %d chars exceeds 64 KB cap",
+            len(payload),
+        )
+        return
     with _TAILORED_CV_CACHE_LOCK:
         _tailored_cv_cache_init(db)
         conn = db._connect()

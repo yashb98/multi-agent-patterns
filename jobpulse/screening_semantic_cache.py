@@ -191,6 +191,26 @@ class ScreeningSemanticCache:
         if not question or not answer:
             return
 
+        # Length cap (DB safety, 2026-05-10): refuse to cache pathological
+        # values that would bloat the table if Kimi or any future LLM ever
+        # returns garbage. 8 KB is well above the largest legitimate
+        # cover-letter-style answer we've seen (~1.5 KB) and below the
+        # bloat threshold. Also caps the field_options blob.
+        _MAX_STR = 8192
+        if len(question) > _MAX_STR or len(answer) > _MAX_STR:
+            logger.warning(
+                "screening_cache: skipping store — value over %d-char cap "
+                "(question=%d, answer=%d). Likely an LLM output anomaly.",
+                _MAX_STR, len(question), len(answer),
+            )
+            return
+        if field_options and sum(len(o) for o in field_options) > _MAX_STR:
+            logger.warning(
+                "screening_cache: skipping store — field_options blob over %d-char cap",
+                _MAX_STR,
+            )
+            return
+
         qid = str(_to_qdrant_id(question.strip().lower()))
         now = datetime.now(UTC).isoformat()
         options_json = json.dumps(field_options) if field_options else ""

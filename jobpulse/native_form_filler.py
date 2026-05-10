@@ -132,6 +132,40 @@ async def _resolve_listbox_scope(page, el):
         except Exception:
             pass
 
+    # React Select standard pattern: listbox id is `react-select-{input_id}-listbox`
+    # — Anthropic / other Greenhouse forms don't set aria-controls but follow this
+    # naming. Verified live on 2026-05-10: visa combobox input has id
+    # 'question_4089394008', listbox has id 'react-select-question_4089394008-listbox'.
+    try:
+        input_id = await el.get_attribute("id")
+    except Exception:
+        input_id = None
+    if input_id:
+        rs_listbox_id = f"react-select-{input_id}-listbox"
+        rs_scoped = page.locator(f"#{rs_listbox_id}")
+        try:
+            if await rs_scoped.count():
+                return rs_scoped
+        except Exception:
+            pass
+
+    # React Select wraps both .select__control and .select__menu inside the
+    # same .select-shell container, but they are NOT siblings — the menu is
+    # a separate child of .select-shell rendered when open. The previous
+    # following-sibling XPath returned count=0 on Anthropic's structure;
+    # descend from .select-shell to find the menu.
+    try:
+        descendant_menu = el.locator(
+            "xpath=ancestor::*[contains(@class,'select-shell')][1]"
+            "//*[contains(@class,'select__menu')][1]"
+        )
+        if await descendant_menu.count():
+            return descendant_menu
+    except Exception:
+        pass
+
+    # Older fallback path (kept for non-shell React Select variants where
+    # the menu IS a following sibling of the .select__control).
     try:
         sibling = el.locator(
             "xpath=ancestor::*[contains(@class,'select__control')][1]"

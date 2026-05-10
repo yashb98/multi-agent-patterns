@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from dataclasses import dataclass, field as dc_field
@@ -420,6 +421,34 @@ class PageReasoner:
         prompt = self._build_prompt(url, page_text, dialog_text, button_summary, field_summary, wall_info)
         action = self._call_llm(prompt)
 
+        # Option 2: if the LLM produced unparseable JSON twice AND the page
+        # snapshot clearly shows form fields, default to fill_form with low
+        # confidence. The downstream confidence-gate cross-check will run
+        # vision classification to verify, so we don't blindly trust the
+        # heuristic — but we also don't abort a page that obviously needs
+        # filling. Verified live (Kimi malformed-JSON regression on Anthropic
+        # Greenhouse, 2026-05-10): the page has 50 form fields, but the
+        # reasoner aborts on parse failure → navigator gives up before fill.
+        fillable = [f for f in fields if f.get("label") and "honeypot" not in (f.get("label") or "").lower()]
+        if self._is_parse_failure(action) and len(fillable) >= 3:
+            logger.warning(
+                "PageReasoner: parse failed after retry, but %d fillable fields detected — "
+                "defaulting to fill_form (confidence=0.3)",
+                len(fillable),
+            )
+            action = PageAction(
+                page_understanding=(
+                    f"LLM JSON parse failed twice; defaulting to fill_form "
+                    f"because the page has {len(fillable)} fillable fields"
+                ),
+                action="fill_form",
+                target_text="",
+                reasoning=action.reasoning,
+                confidence=0.3,
+                page_type="application_form",
+                expected_outcome="fields_filled",
+            )
+
         action = self._apply_zero_fields_guard(action, fields, buttons)
         action = self._apply_field_count_guard(action, fields)
         action = self._apply_advance_button_guard(action)
@@ -542,7 +571,31 @@ class PageReasoner:
                 else:
                     raise
             text = response.content if hasattr(response, "content") else str(response)
-            return self._parse_response(text)
+            action = self._parse_response(text)
+
+            # Option 1: on parse failure, retry once with a stricter "JSON only"
+            # instruction. Verified live (run3/5/6 2026-05-10): Kimi occasionally
+            # emits prose+JSON or structurally broken JSON; a second strict pass
+            # usually returns clean output.
+            if self._is_parse_failure(action):
+                logger.info("PageReasoner: first parse failed, retrying with strict-JSON prompt")
+                strict_msgs = [
+                    SystemMessage(content=self._system_prompt()),
+                    HumanMessage(content=prompt),
+                    HumanMessage(content=(
+                        "Your last response could not be parsed. "
+                        "Return ONLY a valid JSON object — no prose, no markdown fences, "
+                        "no comments, no trailing commas. Use double quotes for strings. "
+                        "Escape control characters (use \\\\n not raw newline inside strings)."
+                    )),
+                ]
+                try:
+                    retry_response = smart_llm_call(llm, strict_msgs)
+                    retry_text = retry_response.content if hasattr(retry_response, "content") else str(retry_response)
+                    action = self._parse_response(retry_text)
+                except Exception as retry_exc:
+                    logger.warning("PageReasoner retry failed: %s", retry_exc)
+            return action
         except Exception as exc:
             logger.warning("PageReasoner LLM call failed: %s", exc)
             return PageAction(
@@ -553,6 +606,19 @@ class PageReasoner:
                 confidence=0.0,
                 page_type="unknown",
             )
+
+    @staticmethod
+    def _is_parse_failure(action: "PageAction") -> bool:
+        """True when ``action`` came from the parse-failure branch in
+        ``_parse_response`` (confidence 0, abort, page_understanding starts
+        with the failure prefix). Exposed so callers can apply targeted
+        fallbacks instead of treating all aborts the same.
+        """
+        return (
+            action.action == "abort"
+            and action.confidence == 0.0
+            and (action.page_understanding or "").startswith("Failed to parse LLM response")
+        )
 
     @staticmethod
     def _system_prompt() -> str:
@@ -628,7 +694,21 @@ class PageReasoner:
         try:
             if "{" in text:
                 text = text[text.index("{"):text.rindex("}") + 1]
-            data = json.loads(text)
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                # Common Kimi/Moonshot reasoning model JSON glitches:
+                # trailing commas, // comments, /* */ block comments, and
+                # raw control chars (\x00-\x1f) leaking from the model's
+                # internal token stream into string values. Apply
+                # progressively more aggressive cleanup, then parse with
+                # strict=False which permits raw control chars inside
+                # strings — Kimi's `reasoning` field often contains raw
+                # tabs/newlines that strict mode rejects.
+                cleaned = re.sub(r",(\s*[}\]])", r"\1", text)
+                cleaned = re.sub(r"//[^\n]*", "", cleaned)
+                cleaned = re.sub(r"/\*[\s\S]*?\*/", "", cleaned)
+                data = json.loads(cleaned, strict=False)
             action = data.get("action", "abort")
             if action not in VALID_ACTIONS:
                 action = "abort"

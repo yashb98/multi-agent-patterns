@@ -177,6 +177,26 @@ async def upload_pdf(locator: Any, file_path: str) -> None:
         )
         return
 
+    # Readback returned -1 / 0. -1 typically means the locator is no longer
+    # resolvable — Greenhouse's React file widget swaps the <input> for an
+    # "uploaded" state element after set_input_files succeeds. Check the
+    # page DOM directly for the filename before declaring failure.
+    if files_attached == -1:
+        try:
+            page = locator.page
+            filename_visible = await page.evaluate(
+                "name => document.body.innerText.includes(name)", p.name,
+            )
+        except Exception:  # pragma: no cover
+            filename_visible = False
+        if filename_visible:
+            logger.info(
+                "upload_pdf: ✓ uploaded %s — input was re-rendered post-upload, "
+                "filename visible in page DOM",
+                p.name,
+            )
+            return
+
     # Not attached on first pass. Try the Attach-button retry once.
     logger.warning(
         "upload_pdf: first pass did not attach %s (files.length=%s) — "
