@@ -1187,44 +1187,134 @@ Surfaced in the same Anthropic apply run; S12 invariant made it visible (without
 
 **S12 PASS verdict** — the invariant fired correctly. TP-24 (silent field-drop) → PASS live. The required-field gap is real but it's now *visible* rather than silent.
 
+## Phase 2B P0 finding — TP-31 / Slice S22 — Cache returns wrong-question→answer (cross-question contamination)
+
+User-observed in browser after the second Anthropic apply: form's `Additional Information*` field (with help text "Add a cover letter or anything else you want to share") was filled with `'My name is pronounced as "Yash Bishnoi," with \'Yash\' rhyming with \'bash\' and \'Bishnoi\' pronounced as \'Bish-noy\'.'` — a name-pronunciation answer landed in a free-text "additional info" textarea.
+
+- **Trace**: cache row inspection shows the source row was keyed on a *different* question entirely:
+  ```
+  qdrant_id=116748030264959554
+  question_text='How should we pronounce your name? (optional)'
+  answer='My name is pronounced as "Yash Bish-noi." Thank you for asking!'
+  intent='unknown'
+  ```
+  At lookup time, the Qdrant `query_points(vector=embed("Additional Information*"), score_threshold=0.85)` returned this pronunciation row as a top match. The two questions are short, both prefixed with "personal" generic semantics, and BGE-M3 ranked them above the 0.85 cosine cutoff.
+- **Root cause**: `screening_semantic_cache.lookup` uses `min_score=0.85` Qdrant cosine on the question-text embedding alone. The threshold is too permissive for short, generic question prompts (`Additional Information`, `Personal Preferences`, `How should we pronounce...`) where embeddings cluster tightly. Field help-text (the actual signal — "Add a cover letter or anything else you want to share") is **not** included in the embed input. Field options aren't either. So the match collapses on the bare label.
+- **Why S13 didn't catch this**: S13's leak guard (`rejected_jd_relevance_low`) runs only on the LLM-fallback path (`_llm_answer:free_text`). When the cache returns a stale answer, that's a **cache-hit path** — S13 never gets called. The screening pipeline trusts the cache hit and serves the wrong answer directly.
+- **Status**: **GAP — P0** (recruiter sees an obviously wrong answer in a key free-text field; signals "this person can't read prompts").
+- **Slice**: **S22** (P0). Branch: `audit-slice-s22-cache-cross-question-mismatch`. Two-pronged fix:
+  1. **Tighten the threshold** for short questions — `min_score` should scale with question length / embedding tightness, OR fall through to a stricter token-overlap check on cache hits below a hardness floor.
+  2. **Include field help-text + field_options in the embed input** — the cache key today is `embed(question.strip())`; should be `embed(question + " | " + field_help_text + " | " + " ".join(field_options[:5]))`. Two questions with the same label but different help-text/options will then produce different vectors and miss each other cleanly.
+  3. **Apply S13-style relevance guard on cache hits** too — query semantic_similarity(question_now, answer_returned) and reject if below threshold (same 0.40 floor as S13). Cheap (one BGE-M3 call); catches cross-question contamination at serve time even when the upstream embed match was wrong.
+- **Cross-ATS implication**: every ATS form with short generic-labelled free-text fields is at risk. Greenhouse / Ashby / Lever all use labels like "Additional Information" / "Comments" / "Anything else?" — all vulnerable to cross-question pollution.
+- **Acceptance**: 26-URL matrix produces zero cache hits where `semantic_similarity(question_now, cached_answer) < 0.40`; manual spot-check of 10 free-text fields per URL shows answer matches the question's intent.
+
+## Phase 2B P1 finding — TP-32 / Slice S23 — Identity field labels (`Email`, `Phone`, `First Name` etc.) drop the `*`-suffix mismatch
+
+- **Trace**: in the second Anthropic apply, the field_mapping cache loaded these keys at startup:
+  ```
+  ['Email*', 'First Name*', 'Last Name*', 'Phone*', 'LinkedIn Profile URL*', ...]
+  ```
+  But the form scanner found the bare versions on the page (`Email`, `First Name`, `Last Name`, `Phone`, `LinkedIn Profile`, `GitHub URL`, `Website`, `Publications (e.g. Google Scholar) URL`, etc.). The fill loop emitted `fill ⊘ no_mapping` for all of them. None of the basic identity fields got filled. CV upload also `fill ⊘`'d for the same reason (`'Attach' reason=no_mapping`).
+- **Root cause**: same as TP-19 (right-to-work) and TP-27 (First Name `*`) — label normalization in `field_resolver._FIELD_LABEL_TO_PROFILE_KEY` doesn't treat `'Email'` and `'Email*'` as the same key. The `*` is a UI marker for "required", not part of the semantic label.
+- **Status**: **GAP — P1** (form would be submitted with empty Email, Phone, Name, links, CV — recruiter sees an empty application).
+- **Slice**: **S23** (P1, but folds naturally with S15+S18 — all three are the *same* normalization gap on different label families). Branch: `audit-slice-s23-label-suffix-normalization` OR fold into a single `audit-slice-s15-suffix-normalization` covering all of TP-19, TP-27, TP-32. Fix: in `field_resolver`, normalize labels by stripping `*`, trailing `?`, `[required]` suffix, and `(optional)` suffix before lookup.
+- **Acceptance**: on Anthropic Greenhouse re-run, every basic identity field (Email, Phone, First Name, Last Name, links) gets `fill ✓` regardless of `*` suffix presence.
+
+## Phase 2B P0 finding — TP-33 / Slice S24 — Combobox false-positive fill (options metadata lost between scanner and LLM)
+
+User-observed via screenshot of the live form: the **`AI Policy for Application*`** required combobox displays "Select…" (empty). Apply log shows the system claimed to fill it:
+
+```
+fill ✓ 'AI Policy for Application*' = 'I understand the importance of AI policy and its application'
+        [tech=combobox_type_to_search, expected='I understand the importance of AI policy and its application']
+```
+
+But the scanner had already extracted the field's options correctly:
+```
+✓ 'AI Policy for Application*' → 2 options: ['Yes', 'No']
+```
+
+Three layered failures, all independently critical:
+
+- **Layer 1 — Options metadata lost between scanner and `_llm_answer`**: the scanner found `options=['Yes', 'No']` but by the time the screening pipeline asked the LLM, the field info was:
+  ```
+  DIAG _llm_answer: question='AI Policy for Application*' field_type='combobox' has_options=False n_options=0 is_option_field=False
+  ```
+  `has_options=False` — the options were stripped on the way from the scanner / field_analyzer to `_llm_answer`. The LLM was therefore asked an open-ended question and produced a 60-char free-text answer instead of being constrained to `['Yes', 'No']`. Had the options been passed, OptionAligner would have routed the LLM's "I understand..." through the option-aligned path and selected `Yes`.
+- **Layer 2 — Combobox fill silently fails on non-option text**: `combobox_type_to_search` typed the long sentence into the combobox search input, no option matched, the combobox stayed empty. No `fill ✗`. No retry. No recovery via vision tier.
+- **Layer 3 — Verifier didn't catch the disagreement**: the post-fill verifier `_verify_action` reads `actual_value` from the DOM and is supposed to compare against expected. With `expected="I understand…"` and `actual_value=""` (combobox empty), the comparison should fail and emit `fill ✗`. It either didn't run for this combobox or the comparison was bypassed.
+- **Status**: **GAP — P0** (Anthropic recruiter sees AI-Policy field empty on a required gate question — application reads as either incomplete or "candidate refused to confirm AI guidelines"; auto-rejected by ATS).
+- **Slice**: **S24** (P0). Branch: `audit-slice-s24-combobox-options-propagation`. Fix priority: Layer 1 first (root cause), then Layer 3 (verifier hardening). Layer 2 is a downstream symptom that disappears once Layer 1 is fixed.
+- **Layer 1 fix scope**: trace `field_analyzer` → `field_mapper` → `screening_pipeline.answer()`'s `field={'options': ...}` arg. Confirm where the `options` key gets dropped. Likely candidate: `field_mapper` builds a stripped-down `field` dict that omits options, then passes to the screening call. Check `_llm_answer`'s caller at `jobpulse/form_engine/field_mapper.py:_resolve_screening_answer` (or wherever the call site is).
+- **Layer 3 fix scope**: in `combobox_type_to_search` execution path, after typing + Enter, read back the combobox's selected-option text from DOM and compare against the value the type-and-search was meant to produce. On mismatch, emit `fill ✗` and route to vision recovery.
+- **Cross-ATS implication**: every ATS combobox with short option list and a question the LLM can answer free-text is at risk. EEO comboboxes work today only because S4 (yesno tier) catches the most-common case in OptionAligner — but that's downstream of the options-dropping bug; if S4 didn't exist, EEO would also break this way.
+- **Acceptance**: 26-URL matrix produces zero combobox `fill ✓` lines where `actual_value` doesn't equal one of the field's known options.
+
 ## Stage 2 / Phase 2B — end-of-session distance
 
 After Anthropic re-run (process_single_url + direct apply_job invocations):
 
 | SG | Statement | Pre-session | Post-session | Delta |
 |---|---|---|---|---|
-| **1** | Right value for context | ~15% | **~10%** | **−5pp** — TP-1/S1 PASS retracted to FAIL on production-data check (S19 needed to actually wire profile + JD into the hashes); cross-region URLs still pending (Phase 2C) |
-| **2** | Right mechanism (semantic-first) | ~33% | **~38%** | +5pp — S4 yesno + S13 leak guard confirmed live |
-| **3** | Right across every ATS | ~9% | **~12%** | +3pp — Greenhouse Anthropic now fully validated (was pre-form-fill only) |
-| **4** | Right per real run | ~35% | **~55%** | +20pp — `semantic_decisions.db` proven as primary evidence source AND production-data verification (Qdrant payload check, process state inspection) caught two P0 gaps (S1 hash empty + apply hang) that unit tests missed |
-| **5** | OPRAL on errors | ~40% | **~50%** | +10pp — TP-26/S17 + TP-27/S18 + **TP-28/S19 + TP-29/S20** filed with no bundling. Honest downgrade of TP-1 PASS rather than papering over |
+| **1** | Right value for context | ~15% | **~8%** | **−7pp** — TP-1/S1 PASS retracted (S19); TP-31 (S22) shows the cache is *also* serving cross-question matches independent of the keying gap; cross-region URLs still pending (Phase 2C) |
+| **2** | Right mechanism (semantic-first) | ~33% | **~35%** | +2pp — S4 yesno + S13 leak guard + S21 first-person prompt all confirmed live; **−3pp** because TP-33 (S24) shows `field_options` are dropped between scanner and LLM, defeating semantic-first option matching for comboboxes |
+| **3** | Right across every ATS | ~9% | **~12%** | +3pp — Greenhouse Anthropic exercised end-to-end |
+| **4** | Right per real run | ~35% | **~58%** | +23pp — `semantic_decisions.db` proven as primary evidence source AND production-data verification (Qdrant payload check, process state inspection, user-visible browser screenshot review) caught **5** P0/P1 gaps unit tests missed (S19, S20, S22, S23, S24). User-driven verification (catching "As Yash" leak + AI Policy empty + wrong-answer-in-Additional-Info) was the highest-value evidence channel of the session |
+| **5** | OPRAL on errors | ~40% | **~55%** | +15pp — 7 new slices filed cleanly without bundling (S17/S18/S19/S20/S22/S23/S24); 1 fixed in-session (S21). Every finding traced to root cause + slice scoped before moving on |
 
-**Composite distance**: ~27-31% → **~33-37%**. Goal not yet met; 10 of 11 adapters un-validated; TP-1/S1 reopened. The audit's value-add this session: **catching two P0 gaps (S19, S20) that the slice unit tests didn't cover** — the four-question correctness check + production-data verification was load-bearing.
+**Composite distance**: ~27-31% → **~34-38%** (slight rise — gains in SG4/SG5 outpace SG1/SG2 regressions, but the audit's *honest* picture is "we found more P0 bugs than we fixed"). Goal not yet met; **10 of 11 adapters un-validated**; **5 P0 bugs open** in the screening + form-fill chain.
 
 ## Phase 2B continuation plan (next session entry point)
 
-Per the prompt's per-URL budget (45 min/URL × 25 URLs = ~19 hr), Phase 2B needs ≥3 more sessions. Recommended ordering:
+**Critical reordering — fix-the-pipeline before more URL prosecution.** Phase 2B can't prosecute new ATS URLs efficiently while the existing apply pipeline has 5 open P0 gaps. Each new URL would just re-confirm the same broken behaviors. Stage the next sessions around closing the P0s first.
 
-1. **Session 6 (next)** — Greenhouse Graphcore (~20 min, warm caches), then Lever (3 URLs, ~135 min). Lever is unblocked by S6 (TP-11) so should now reach form-fill. Each Lever URL exercises the same wired touchpoints + the Lever adapter path. Watch for Lever-specific gaps.
-2. **Session 7** — Ashby (2), SmartRecruiters (2), iCIMS (2). Modern ATSes, likely some adapter-specific findings.
-3. **Session 8** — Reed (1), LinkedIn (2), Indeed (2). Auth-walled / redirect handling.
-4. **Session 9** — Workday (2), Generic (5), Oracle Cloud HCM (1). DOM-heavy + fallback path.
-5. **Phase 2C** — cross-region SG1 prosecution. Requires non-UK-coded URLs (US, EU, APAC, etc.) — to be added to URL matrix.
+### Session 6 (next) — close the P0s that block useful Phase 2B prosecution
 
-**New slices spun out during this session**:
-- **S17** (P2) — Widen `JobListing.platform` Literal to cover all 11 ATS adapter names. ~30 min implementation; not blocking Phase 2B (workaround: omit platform arg, use generic, let URL detection figure out the actual ATS).
-- **S18** (P1) — Fix First Name / Last Name `*`-suffix unmapped (same root cause as TP-19; could fold with S15). Required-field gap visible thanks to S12 invariant.
-- **S19 (P0)** — TP-28: profile_state_hash + jd_context_hash empty in Qdrant payload because `applicator.PROFILE` and the JD-analyzer aren't populating the source fields S1 hashes. **TP-1 is BACK OPEN** — S1's keying did not actually engage in production despite unit tests passing.
-- **S20 (P0)** — TP-29: `apply_job` hangs after S12 emits `fill ⊘` for required fields. Apply pipeline never reaches terminal status (`queued_for_review` / `applied` / `error`). Either S12 surfaced a pre-existing wait or introduced a new one — must be investigated and resolved.
+Priority order — deliberately *not* doing more URLs until these land:
+
+1. **S20 (P0) — `apply_job` hangs after `fill ⊘` for required fields**. Highest priority because it gates all live verification: until apply reaches a terminal status, every other "live verified" claim is partial. Trace: `application_orchestrator` post-fill phase, look for `wait_for` / `await` patterns gated on field-fill state. Estimate 1-2 hr.
+2. **S24 (P0) — combobox `field_options` lost between scanner and `_llm_answer`**. Trace `field_analyzer` → `field_mapper` → `screening_pipeline.answer()` arg path. Find where `options` gets stripped from the field dict. Likely a single-line fix in `field_mapper`. Add Layer 3 verifier hardening as part of the same slice. Estimate 2 hr.
+3. **S22 (P0) — cache cross-question contamination**. Apply S13-style relevance guard on cache hits + include field help-text + options in embed input. Estimate 2-3 hr.
+4. **S19 (P0) — S1 hashes empty in production**. Wire `applicator.PROFILE` to populate from `data/profile.db` at runtime; ensure JD-analyzer populates `country` / `currency` / `role_level`. Estimate 1-2 hr.
+5. **S15 + S18 + S23 (P1, fold) — `*`-suffix label normalization**. Single normalization pass in `field_resolver` covering all three label families. Estimate 1 hr.
+
+After Session 6, Anthropic Greenhouse re-run should:
+- Reach terminal status (S20 fix)
+- Fill all identity fields including Email/Phone/Names (S15+S18+S23 fix)
+- Fill AI Policy combobox correctly (S24 fix)
+- Not serve cross-question cache hits (S22 fix)
+- Have profile_state_hash / jd_context_hash actually populated (S19 fix)
+
+### Sessions 7+ — resume URL prosecution
+
+7. **Session 7** — Greenhouse Graphcore re-verify, Lever (3 URLs). Lever is unblocked by S6 (TP-11).
+8. **Session 8** — Ashby (2), SmartRecruiters (2), iCIMS (2).
+9. **Session 9** — Reed (1), LinkedIn (2), Indeed (2).
+10. **Session 10** — Workday (2), Generic (5), Oracle Cloud HCM (1).
+11. **Phase 2C** — cross-region SG1 prosecution (UK + US + EU + APAC URLs).
+
+### Slice queue summary
+
+**New slices spun out this session (not yet implemented)**:
+- **S17** (P2) — Widen `JobListing.platform` Literal. Workaround in place.
+- **S18** (P1) — First/Last Name `*`-suffix → fold with S15.
+- **S19** (P0) — Wire `applicator.PROFILE` + JD analyzer for S1 hashes.
+- **S20** (P0) — `apply_job` hang post-`fill ⊘`.
+- **S22** (P0) — Cache cross-question contamination.
+- **S23** (P1) — Identity field `*`-suffix → fold with S15+S18.
+- **S24** (P0) — Combobox `field_options` propagation + verifier hardening.
+
+**Closed in-session**: **S21** (P1, TP-30) — first-person screening prompts. Live verified at LLM tier on Anthropic; form-tier verification deferred to S20 fix.
 
 **Open calibration question** (Phase 2B-2 work):
-- **S13's 0.40 cosine threshold** — this run had 2 `rejected_jd_relevance_low` decisions, both against the `Additional Information*` field where the LLM produced reasonable autobiographical content scoring 0.388. Both rejections were correct in *spirit* (the answer was generic, not tied to JD content) but borderline. Across the next 5+ Phase 2B URLs, collect cosine scores for all `_llm_answer:free_text` decisions and recalibrate the threshold if the false-positive rate exceeds an acceptable bound (TBD). Action item for Phase 2B Session 6+.
+- **S13's 0.40 cosine threshold** — this run had 2 `rejected_jd_relevance_low` decisions, both against the `Additional Information*` field where the LLM produced reasonable autobiographical content scoring 0.388. Both rejections were correct in *spirit* (the answer was generic, not tied to JD content) but borderline. Across the next 5+ Phase 2B URLs, collect cosine scores for all `_llm_answer:free_text` decisions and recalibrate the threshold if the false-positive rate exceeds an acceptable bound (TBD).
 
-**Slices already in the queue** (not yet implemented):
+**Pre-existing queue (carry-over)**:
 - **S5** (P1) — Cross-ATS prosecution. THIS IS Phase 2B — the audit work itself.
 - **S7** (P2) — Gate CV/CL gen on `pre-screen tier != 'skip'`.
 - **S8** (P2) — Refuse Notion write for `Unknown Company` sentinel (largely closed by S6 cascade).
 - **S9** (P2) — Enforce Kimi LLM mandate at startup + per-call.
 - **S14** (P1) — `form_experience_db` field-mapping cache scoping (TP-15 — Octus quirk leakage into Anthropic still observed).
-- **S15** (P1) — Right-to-work `*`-suffix label normalization (TP-19; folds with S18).
+- **S15** (P1) — Right-to-work `*`-suffix label normalization (TP-19; folds with S18+S23).
 - **S16** (P2) — Intent re-classification on cache hit (TP-23).
