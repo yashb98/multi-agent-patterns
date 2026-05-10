@@ -37,8 +37,21 @@ _PAGE_TYPE_ANCHORS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Compiled regexes (derived from page_analyzer.py heuristic rules)
+# Compiled regexes — STRUCTURAL FEATURE EXTRACTION, not classification
 # ---------------------------------------------------------------------------
+#
+# Note on the no-regex-for-classification rule: the patterns below extract
+# binary features (has_apply_button, has_login_button, has_confirmation_text,
+# etc.) that feed into a weighted softmax classifier whose weights also
+# include embedding similarity scores (`_compute_embedding_scores`). The
+# regex DOESN'T determine the page type by itself — it contributes one
+# feature among ~20. Final classification is the weighted ensemble.
+#
+# Where the regex is fragile (button text in a non-English locale, or
+# unusual phrasings like "I'm Interested" instead of "Apply"), the
+# embedding similarity to `_PAGE_TYPE_ANCHORS` carries the classifier
+# through. Button-intent matching also has an embedding fallback in
+# `_button_matches_intent()` below for the same reason.
 
 _APPLY_BUTTONS = re.compile(
     r"^(easy\s*apply|apply\s*(now|for\s*this)?|submit\s*application|start\s*application"
@@ -183,6 +196,40 @@ _SITE_PROMPT_PATTERNS = re.compile(
 )
 
 
+# Canonical button-intent anchors for embedding fallback. When the regex
+# misses (localized text, unusual phrasings like "I'm Interested"), we
+# compare the button text against these anchors via embedding similarity.
+_BUTTON_INTENT_ANCHORS: dict[str, str] = {
+    "apply": "apply for this job submit application now start application",
+    "login": "sign in or log in to your existing account",
+    "signup": "create a new account or register or join now",
+}
+
+
+def _button_matches_intent(
+    button_text: str, regex_pattern: re.Pattern[str], intent: str,
+) -> bool:
+    """Return True if button text matches the given intent.
+
+    Tier 1: regex exact-shape match (cheap, deterministic).
+    Tier 2: embedding similarity to canonical anchor (catches localized
+    or unusual phrasings the regex misses, e.g. "I'm Interested" for
+    apply, "Mein Konto erstellen" for signup).
+    """
+    if not button_text:
+        return False
+    if regex_pattern.search(button_text):
+        return True
+    anchor = _BUTTON_INTENT_ANCHORS.get(intent, "")
+    if not anchor:
+        return False
+    try:
+        from shared.semantic_utils import semantic_similarity
+        return semantic_similarity(button_text[:80], anchor) >= 0.72
+    except Exception:
+        return False
+
+
 @dataclass
 class PageFeatures:
     """Extracted features from a page snapshot."""
@@ -274,10 +321,10 @@ class PageTypeClassifier:
             has_application_labels=has_application_labels,
             has_file_inputs=snapshot_dict.get("has_file_inputs", False),
             has_login_button=any(
-                _LOGIN_BUTTONS.search(t) for t in button_texts if t
+                _button_matches_intent(t, _LOGIN_BUTTONS, "login") for t in button_texts if t
             ),
             has_signup_button=any(
-                _SIGNUP_BUTTONS.search(t) for t in button_texts if t
+                _button_matches_intent(t, _SIGNUP_BUTTONS, "signup") for t in button_texts if t
             ),
             password_count=password_count,
             confirmation_signals=_find_matches(_CONFIRMATION_PATTERNS, page_text),
@@ -293,7 +340,7 @@ class PageTypeClassifier:
             url_path=url,
             verification_wall_present=verification_wall is not None,
             has_apply_button=any(
-                _APPLY_BUTTONS.search(t) for t in button_texts if t
+                _button_matches_intent(t, _APPLY_BUTTONS, "apply") for t in button_texts if t
             ),
             has_email_field=has_email_field,
             has_accept_button=any(

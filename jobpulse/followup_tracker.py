@@ -18,14 +18,23 @@ logger = get_logger(__name__)
 
 
 def _sender_name() -> str:
+    """ProfileStore → config env → empty + warning. No hardcoded names."""
     try:
         from shared.profile_store import get_profile_store
-        name = get_profile_store().identity().full_name
+        name = (get_profile_store().identity().full_name or "").strip()
         if name:
             return name
     except Exception:
         pass
-    return "Yash Bishnoi"
+    try:
+        from jobpulse.config import APPLICANT_FIRST_NAME, APPLICANT_LAST_NAME
+        full = f"{APPLICANT_FIRST_NAME} {APPLICANT_LAST_NAME}".strip()
+        if full:
+            return full
+    except Exception:
+        pass
+    logger.warning("followup_tracker._sender_name: no name in ProfileStore/config")
+    return ""
 
 
 _DEFAULT_DB_PATH = str(DATA_DIR / "followups.db")

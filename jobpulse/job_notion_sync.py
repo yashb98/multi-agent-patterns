@@ -24,14 +24,25 @@ logger = get_logger(__name__)
 
 
 def _file_name_prefix() -> str:
+    """ProfileStore.identity().file_name_prefix → config env → 'Resume'.
+    Never hardcodes a real name in source per pii-policy.md.
+    """
     try:
         from shared.profile_store import get_profile_store
-        prefix = get_profile_store().identity().file_name_prefix
+        prefix = (get_profile_store().identity().file_name_prefix or "").strip()
         if prefix:
             return prefix
     except Exception:
         pass
-    return "Yash_Bishnoi"
+    try:
+        from jobpulse.config import APPLICANT_FIRST_NAME, APPLICANT_LAST_NAME
+        prefix = f"{APPLICANT_FIRST_NAME}_{APPLICANT_LAST_NAME}".strip("_")
+        if prefix:
+            return prefix
+    except Exception:
+        pass
+    logger.warning("job_notion_sync._file_name_prefix: no name in ProfileStore/config")
+    return "Resume"
 
 
 _NOTION_UNKNOWN_PROPERTY_RE = re.compile(
@@ -389,14 +400,66 @@ def get_notion_page_status(page_id: str) -> str | None:
     return None
 
 
-def find_application_page(company: str, title: str) -> str | None:
-    """Search the Job Tracker DB for an existing page matching company + title.
+def find_application_page(
+    company: str, title: str, url: str | None = None,
+) -> str | None:
+    """Search the Job Tracker DB for an existing page matching this job.
+
+    Resolution order (most-precise first):
+      1. URL-based match — when *url* is provided, dedup by canonicalized URL.
+         Stable across uk.linkedin.com vs www.linkedin.com host variants and
+         tracking-param differences.
+      2. Company + role-prefix substring — legacy fallback. Fragile on company
+         name drift ('IG Group' vs 'IG group') but matches the previous
+         behavior so we don't regress for jobs without URL tracking.
 
     Returns the Notion page ID if found, None otherwise.
     """
-    if not NOTION_APPLICATIONS_DB_ID or not company:
+    if not NOTION_APPLICATIONS_DB_ID:
         return None
 
+    # 1. URL-based dedup using the same canonicalization as job_id generation.
+    #    LinkedIn 'linkedin.com:job:NNN' canonical key matches across host
+    #    variants; we look up Notion pages whose stored JD URL canonicalizes
+    #    to the same key.
+    if url:
+        try:
+            from jobpulse.jd_analyzer import _canonicalize_url
+            target = _canonicalize_url(url)
+        except Exception:
+            target = ""
+
+        if target:
+            # Notion API doesn't support custom equality on URL property in a
+            # cheap way, so we do a coarser query and filter client-side. We
+            # search by company first (still cheap) then check URL canonicals.
+            if company:
+                body: dict = {
+                    "page_size": 25,
+                    "filter": {"property": "Company", "title": {"equals": company}},
+                }
+                result = _notion_api("POST", f"/databases/{NOTION_APPLICATIONS_DB_ID}/query", body)
+                for row in result.get("results", []):
+                    row_url = (row.get("properties", {})
+                                  .get("JD URL", {}).get("url") or "")
+                    if not row_url:
+                        continue
+                    try:
+                        from jobpulse.jd_analyzer import _canonicalize_url as _c
+                        if _c(row_url) == target:
+                            page_id = row.get("id")
+                            logger.info(
+                                "find_application_page: URL-canonical match %s for %s — %s",
+                                page_id, company, title,
+                            )
+                            return page_id
+                    except Exception:
+                        continue
+
+    if not company:
+        return None
+
+    # 2. Legacy company+role-prefix fallback (unchanged behavior)
     role_prefix = re.split(r"[,\-–—:|/]", title or "")[0].strip()[:30]
     filters: list[dict] = [{"property": "Company", "title": {"equals": company}}]
     if role_prefix:
@@ -406,7 +469,7 @@ def find_application_page(company: str, title: str) -> str | None:
     rows = result.get("results", [])
     if rows:
         page_id = rows[0].get("id")
-        logger.info("find_application_page: found %s for %s — %s", page_id, company, title)
+        logger.info("find_application_page: company+role match %s for %s — %s", page_id, company, title)
         return page_id
     return None
 
@@ -564,7 +627,7 @@ def create_application_page(job: JobListing) -> str | None:
         logger.warning("NOTION_APPLICATIONS_DB_ID not set — skipping Notion sync")
         return None
 
-    existing = find_application_page(job.company, job.title)
+    existing = find_application_page(job.company, job.title, url=getattr(job, "url", None))
     if existing:
         logger.info(
             "create_application_page: reusing existing page %s for %s @ %s",
@@ -612,27 +675,38 @@ def update_application_page(page_id: str, **kwargs) -> bool:
 
         if result.get("object") == "error" and result.get("status") == 400:
             msg = str(result.get("message", ""))
-            m = _NOTION_UNKNOWN_PROPERTY_RE.search(msg)
-            if not m:
-                m = _NOTION_TYPE_MISMATCH_RE.search(msg)
-            if not m:
-                m = _NOTION_EXPECTED_TYPE_RE.search(msg)
-            bad: str | None = None
-            if m:
-                bad = m.group("prop").strip()
-            elif _NOTION_BAD_STATUS_OPTION_RE.search(msg) and "Status" in properties:
-                # The Notion Status column is missing the option we tried to
-                # write (e.g. "Skipped"). Drop the Status update and let the
-                # rest of the payload through; the user can add the option
-                # to the Notion DB to re-enable status writes.
-                bad = "Status"
-            if bad and bad in properties:
+            # Notion combines multiple validation issues into ONE line joined by
+            # ". ", so a single regex that anchors to end-of-line never matches
+            # past the first sentence. Split into sentence-shaped chunks and
+            # extract every offending property name from each chunk.
+            bad_props: set[str] = set()
+            chunks = re.split(r"\.\s+", msg)
+            for chunk in chunks:
+                # Re-add the trailing period that split() consumed, so anchored
+                # regexes (matching `\.?$`) still hit.
+                if not chunk.endswith("."):
+                    chunk = chunk + "."
+                for rx in (
+                    _NOTION_UNKNOWN_PROPERTY_RE,
+                    _NOTION_EXPECTED_TYPE_RE,
+                    _NOTION_TYPE_MISMATCH_RE,
+                ):
+                    m = rx.search(chunk)
+                    if m:
+                        bad_props.add(m.group("prop").strip())
+                        break
+            if _NOTION_BAD_STATUS_OPTION_RE.search(msg) and "Status" in properties:
+                bad_props.add("Status")
+
+            stripped = [b for b in bad_props if b in properties]
+            if stripped:
                 logger.warning(
-                    "Notion property %r rejected (missing, wrong type, or unknown option) — omitting and retrying page %s",
-                    bad,
-                    page_id,
+                    "Notion properties %s rejected (missing, wrong type, or unknown option) — "
+                    "omitting and retrying page %s",
+                    sorted(stripped), page_id,
                 )
-                del properties[bad]
+                for b in stripped:
+                    del properties[b]
                 if not properties:
                     logger.error(
                         "Notion update for %s: no properties left after schema mismatch",

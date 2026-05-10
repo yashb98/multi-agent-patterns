@@ -34,6 +34,12 @@ def test_apply_job_triggers_hook(
         "screening_questions": ["Salary expectation?"],
     }
 
+    # post_apply_hook now verifies status via get_application after
+    # mark_applied. Mock the readback so verification passes and the
+    # defensive retry path doesn't fire (otherwise mark_applied is called
+    # twice and the assertion fails).
+    mock_job_db.return_value.get_application.return_value = {"status": "Applied"}
+
     # Patch rate limiter to allow the apply (RateLimiter is imported locally inside apply_job)
     with patch("jobpulse.rate_limiter.RateLimiter") as MockLimiter:
         limiter = MockLimiter.return_value

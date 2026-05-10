@@ -14,14 +14,22 @@ logger = get_logger(__name__)
 
 
 def _first_name() -> str:
+    """ProfileStore → APPLICANT_FIRST_NAME env → empty + warning. No hardcoded names."""
     try:
         from shared.profile_store import get_profile_store
-        name = get_profile_store().identity().first_name
+        name = (get_profile_store().identity().first_name or "").strip()
         if name:
             return name
     except Exception:
         pass
-    return "Yash"
+    try:
+        from jobpulse.config import APPLICANT_FIRST_NAME
+        if APPLICANT_FIRST_NAME.strip():
+            return APPLICANT_FIRST_NAME.strip()
+    except Exception:
+        pass
+    logger.warning("morning_briefing._first_name: no name in ProfileStore/config")
+    return ""
 
 
 def build_and_send(trigger: str = "cron_morning"):

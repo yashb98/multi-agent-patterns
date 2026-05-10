@@ -552,8 +552,7 @@ async def main() -> int:
         # On macOS, aggressively bring the browser to the foreground
         if _is_mac:
             import subprocess
-            import time
-            time.sleep(1)  # Give the app time to launch
+            await asyncio.sleep(1)  # Give the app time to launch (non-blocking)
             for app in ("Google Chrome", "Microsoft Edge", "Chromium"):
                 try:
                     subprocess.run(

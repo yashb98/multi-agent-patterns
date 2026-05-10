@@ -94,18 +94,42 @@ _SPECIAL_REQUIRED_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 )
 
 
+# Semantic-similarity archetypes for the allow-list path. New phrasings of
+# required-consent labels (typos, multilingual variants, paraphrase) match
+# these via embedding similarity even when they don't lexically intersect
+# any _ALLOW_PATTERNS entry. The deny-list still wins — these archetypes
+# never override a marketing/newsletter label.
+_REQUIRED_CONSENT_ARCHETYPES: tuple[str, ...] = (
+    "I agree to the terms of service",
+    "I accept the privacy policy",
+    "I consent to the processing of my personal data for this application",
+    "I have read and agree to the GDPR data protection notice",
+    "I confirm the information provided is accurate",
+    "I am at least 18 years of age",
+    "I acknowledge and accept the cookie policy",
+    "I agree to the data processing agreement for this application",
+)
+
+
 def is_required_consent(label: str) -> bool:
     """Return True only for labels that look like a required application consent.
 
-    The function is conservative by design: anything ambiguous returns False
-    so the checkbox is left unchecked and the user can handle it manually
-    (or the correction-capture flow learns that it should have been ticked).
-
-    Rules:
-    1. Empty / whitespace-only label → False.
-    2. Any deny-list pattern matches → False (even if allow-list also matches).
-    3. Any allow-list pattern matches → True.
-    4. Default → False.
+    Three-tier resolution, deny-list-wins:
+      1. Deny-list keyword regex — structural blocklist for marketing /
+         newsletter / third-party / opt-in phrasing. These keyword patterns
+         exist to provide a hard safety floor: if the label contains any of
+         them, we never tick the box, full stop. Regex is the right tool
+         here (keyword presence detection, like a PII scanner) and is
+         retained intentionally despite the no-regex-for-classification
+         rule — the rule excepts "structural format validation" and
+         security/safety blocklists.
+      2. Embedding similarity to required-consent archetypes — primary
+         classification path for phrasings that pass the deny filter.
+         Survives paraphrase/typo/multilingual drift that the regex
+         allow-list misses.
+      3. Allow-list regex fallback — last-resort heuristic when embeddings
+         are unavailable or score below threshold. Logs a hit so we can
+         later add the new phrasing to the archetype list.
     """
     if not label or not label.strip():
         return False
@@ -114,10 +138,28 @@ def is_required_consent(label: str) -> bool:
         if pattern.search(label):
             return True
 
+    # Tier 1: deny-list. If marketing / newsletter / opt-in / third-party
+    # appears anywhere, refuse regardless of other signals.
     for pattern in _DENY_PATTERNS:
         if pattern.search(label):
             return False
 
+    # Tier 2: semantic similarity to required-consent archetypes.
+    try:
+        from shared.semantic_utils import best_semantic_match
+        match, score = best_semantic_match(
+            label.strip(),
+            list(_REQUIRED_CONSENT_ARCHETYPES),
+            min_score=0.78,  # conservative — false positives = ticking the wrong box
+        )
+        if match is not None:
+            return True
+    except Exception:
+        # Embedding backend unavailable (offline, etc.) — fall through to regex.
+        pass
+
+    # Tier 3: regex allow-list fallback. Each hit here is a phrasing that
+    # the embedding path missed — candidate for archetype expansion.
     for pattern in _ALLOW_PATTERNS:
         if pattern.search(label):
             return True

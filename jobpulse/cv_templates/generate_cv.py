@@ -2,14 +2,15 @@
 
 Matches the reference design: teal section headers, clean spacing,
 proper bullet alignment, 5 skill categories, 8 certifications,
-Community & Leadership section, References.
+Community & Leadership section.
 
 Usage:
     from jobpulse.cv_templates.generate_cv import generate_cv_pdf
-    path = generate_cv_pdf(company="OakNorth", location="London, UK")
+    path = generate_cv_pdf(company="OakNorth")
 """
 
 import os
+import re
 from pathlib import Path
 from xml.sax.saxutils import escape as _xml_escape
 from reportlab.lib.pagesizes import A4
@@ -388,9 +389,39 @@ def get_role_profile(role_title: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+_COUNTRY_SYNONYMS = {
+    "uk": "united kingdom", "u.k.": "united kingdom", "gb": "united kingdom",
+    "usa": "united states", "u.s.": "united states", "us": "united states",
+}
+
+
+def _build_applicant_location_line() -> str:
+    """Build TIH-format 'City, Country, Postcode' from APPLICANT_* config.
+
+    Case-insensitive dedup: if APPLICANT_LOCATION already names the country
+    (e.g. 'Dundee, UK'), don't append APPLICANT_COUNTRY again. Postcode is
+    appended verbatim. Returns empty string if no location data configured.
+    """
+    from jobpulse.config import APPLICANT_LOCATION, APPLICANT_POSTCODE, APPLICANT_COUNTRY
+    loc = (APPLICANT_LOCATION or "").strip()
+    country = (APPLICANT_COUNTRY or "").strip()
+    postcode = (APPLICANT_POSTCODE or "").strip()
+
+    seen = set()
+    for segment in re.split(r"[,;]\s*", loc.lower()):
+        seg = segment.strip()
+        if seg:
+            seen.add(_COUNTRY_SYNONYMS.get(seg, seg))
+    if country and _COUNTRY_SYNONYMS.get(country.lower(), country.lower()) in seen:
+        country = ""
+
+    parts = [p for p in (loc, country, postcode) if p]
+    return ", ".join(parts)
+
+
 def generate_cv_pdf(
     company: str,
-    location: str = "London, UK",
+    location: str | None = None,
     tagline: str | None = None,
     summary: str | None = None,
     projects: list[dict] | None = None,
@@ -400,10 +431,16 @@ def generate_cv_pdf(
 ) -> Path:
     """Generate a tailored CV PDF matching the reference design.
 
+    `location` defaults to the applicant's City/Country/Postcode pulled from
+    config (TIH expects the candidate's location in the contact line, not
+    the job's). Pass an explicit value to override.
+
     Returns Path to generated PDF.
     """
     _register_fonts()
     identity = build_applicant_identity()
+    if not location:
+        location = _build_applicant_location_line()
 
     # Helper: normalise Unicode + escape XML/HTML special chars so dynamic
     # text from ProfileStore or LLM tailoring can't break ReportLab's
@@ -440,7 +477,7 @@ def generate_cv_pdf(
         }
 
     F = 'MyArial'
-    SZ = 9.5
+    SZ = 10
     PW = A4[0] - 28 * mm
     LN = 11.5
     LW = 29 * mm
@@ -466,8 +503,6 @@ def generate_cv_pdf(
                         spaceAfter=0, leading=LN, textColor=TEXT_COLOR)
     it = ParagraphStyle('I', fontName=F, fontSize=SZ, spaceAfter=1,
                         leading=LN, textColor=TEXT_COLOR, leftIndent=0)
-    center_s = ParagraphStyle('Cn', fontName=F, fontSize=SZ, alignment=TA_CENTER,
-                              spaceAfter=1, leading=LN, textColor=LINK_COLOR)
     comm_s = ParagraphStyle('Co', fontName=F, fontSize=SZ, spaceAfter=2,
                             leading=LN, textColor=TEXT_COLOR, alignment=TA_LEFT)
 
@@ -635,10 +670,6 @@ def generate_cv_pdf(
         text_safe = _safe(item["text"])
         el.append(Paragraph(
             f'{B(f"{i+1}.  {title_safe}")}  {text_safe}', comm_s))
-
-    # ── REFERENCES ──
-    section('References')
-    el.append(Paragraph(f'{B(I("Available upon request"))}', center_s))
 
     doc.build(el)
 

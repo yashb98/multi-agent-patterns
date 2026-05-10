@@ -52,7 +52,7 @@ def test_approve_jobs_starts_live_review(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_start_live_review(payload):
+    def fake_start_live_review(payload, **_kwargs):
         captured["payload"] = payload
         return {"started": True, "message": "ok"}
 
@@ -97,7 +97,7 @@ def test_approve_jobs_with_pending_rows_skips_file_queue(monkeypatch):
 
     monkeypatch.setattr(job_autopilot, "JobDB", lambda: FakeDB())
 
-    def fake_start_live_review(payload):
+    def fake_start_live_review(payload, **_kwargs):
         return {"started": True, "message": "ok"}
 
     monkeypatch.setattr(
@@ -248,6 +248,7 @@ def test_load_actionable_pending_rebuilds_from_notion_when_cache_empty(monkeypat
 
 def test_get_active_review_falls_back_to_persisted_file(monkeypatch, tmp_path):
     from jobpulse import live_review_applicator
+    import os, time
 
     review_file = tmp_path / "live_review_active.json"
     review_file.write_text(
@@ -255,6 +256,11 @@ def test_get_active_review_falls_back_to_persisted_file(monkeypatch, tmp_path):
             {
                 "session_id": "sess-1",
                 "url": "https://example.com/jobs/1",
+                # pid + started_at required by _load_persisted_review's
+                # freshness/owner check (added in production after the
+                # original test was written).
+                "pid": os.getpid(),
+                "started_at": time.time(),
                 "job": {
                     "job_id": "job-1",
                     "title": "Backend Engineer",
@@ -283,6 +289,7 @@ def test_get_active_review_falls_back_to_persisted_file(monkeypatch, tmp_path):
 def test_resume_persisted_review_action_rejects_and_restores_pending(monkeypatch, tmp_path):
     from jobpulse import live_review_applicator
 
+    import os, time
     review_file = tmp_path / "live_review_active.json"
     review_file.write_text(
         json.dumps(
@@ -290,6 +297,8 @@ def test_resume_persisted_review_action_rejects_and_restores_pending(monkeypatch
                 "session_id": "sess-1",
                 "url": "https://example.com/jobs/1",
                 "approval_page_url": "https://example.com/jobs/1/apply",
+                "pid": os.getpid(),
+                "started_at": time.time(),
                 "job": {
                     "job_id": "job-1",
                     "title": "Backend Engineer",

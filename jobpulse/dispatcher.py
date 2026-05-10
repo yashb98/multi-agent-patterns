@@ -22,6 +22,32 @@ logger = get_logger(__name__)
 _cancel_event = process_event("jobpulse_dispatch_cancel")
 
 
+# Embedding-based sub-intent helpers replacing per-handler regex shortcuts.
+# These migrated from `re.search(r"compar|vs|versus", ...)` style checks so
+# paraphrased requests ("how does this week stack up", "trend over time")
+# also route correctly. Falls back to keyword presence if embeddings are
+# unavailable.
+_COMPARISON_ARCHETYPE = (
+    "compare this period to last period side by side weekly comparison "
+    "trend versus previous week change difference"
+)
+
+
+def _is_comparison_request(text: str) -> bool:
+    if not text or not text.strip():
+        return False
+    try:
+        from shared.semantic_utils import semantic_similarity
+        if semantic_similarity(text[:200], _COMPARISON_ARCHETYPE) >= 0.55:
+            return True
+    except Exception:
+        pass
+    # Cheap structural fallback when embeddings unavailable: literal keyword
+    # presence (lowercased substring), not regex.
+    t = text.lower()
+    return any(k in t for k in ("compar", "vs ", "versus", "stack up", "trend"))
+
+
 def dispatch(cmd: ParsedCommand) -> str:
     """Execute the right agent for a classified command. Returns reply text."""
 
@@ -360,12 +386,14 @@ def _handle_set_budget(cmd: ParsedCommand) -> str:
 
 
 def _handle_show_budget(cmd: ParsedCommand) -> str:
-    import re
     from jobpulse.budget_agent import get_week_summary, get_today_spending
     from jobpulse.budget_agent import format_week_summary, format_today
 
-    # If user asked for comparison
-    if re.search(r"compar|vs|versus", cmd.raw, re.IGNORECASE):
+    # Sub-intent: did the user ask for week-over-week comparison?
+    # Migrated from regex to embedding similarity so paraphrases ("how does
+    # this week stack up against last week", "is my spending trending up")
+    # route correctly without keyword drift.
+    if _is_comparison_request(cmd.raw):
         from jobpulse.budget_tracker import get_weekly_comparison
         return get_weekly_comparison()
 
@@ -457,11 +485,17 @@ def _handle_file_ops(cmd: ParsedCommand) -> str:
     import re
     from jobpulse.file_ops import show_file, show_logs, show_errors, continue_pagination
     raw = cmd.raw.strip().lower()
-    if re.match(r"^(more|next)\s*$", raw):
+    # Sub-intent dispatch within FILE_OPS. Each branch is a literal keyword
+    # set the user types verbatim — there's no semantic ambiguity for "logs"
+    # vs "errors" vs "more". The structural-keyword set lookup below is
+    # equivalent to a switch on input string. Format-validation regex (the
+    # final filepath extractor) extracts a structural argument, not a
+    # classification — both are explicitly allowed by the no-regex rule.
+    if raw in {"more", "next"}:
         return continue_pagination()
-    if re.match(r"^(logs?|show logs?|tail logs?)\s*$", raw):
+    if raw in {"logs", "log", "show logs", "show log", "tail logs", "tail log"}:
         return show_logs()
-    if re.match(r"^(errors?|show errors?|recent errors?)\s*$", raw):
+    if raw in {"errors", "error", "show errors", "show error", "recent errors"}:
         return show_errors()
     # File path extraction: "show: path" / "read: path" / "cat: path" / "view: path"
     m = re.match(r"^(show|read|cat|view):\s*(.+)", raw)
@@ -551,13 +585,18 @@ def _handle_recurring_budget(cmd: ParsedCommand) -> str:
     )
 
     raw = cmd.raw.strip()
+    raw_lower = raw.lower()
 
-    # List recurring
-    if re.match(r"^(show |list )recurring", raw, re.IGNORECASE):
+    # Sub-intent: list recurring. Literal keyword presence — these are
+    # 2-word fixed commands ("show recurring", "list recurring"), not
+    # semantic classification.
+    if raw_lower.startswith(("show recurring", "list recurring")):
         items = list_recurring()
         return format_recurring(items)
 
-    # Stop/cancel/remove recurring
+    # Sub-intent: stop/cancel/remove recurring. Format-validation regex —
+    # extracts the description argument after a known verb prefix. This
+    # is structural argument extraction, allowed by the no-regex rule.
     m = re.match(r"^(stop|cancel|remove) recurring[:\s]*(.+)", raw, re.IGNORECASE)
     if m:
         desc = m.group(2).strip()

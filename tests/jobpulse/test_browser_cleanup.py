@@ -45,9 +45,10 @@ class TestFlushBrowserCaches:
         page.url = "https://example.com"
         page.context.new_cdp_session = AsyncMock(return_value=cdp)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            flush_browser_caches(page)
-        )
+        # Use asyncio.run instead of asyncio.get_event_loop().run_until_complete
+        # — the latter is deprecated in Py3.12+ and breaks test isolation when
+        # earlier async tests in the suite have closed the default loop.
+        result = asyncio.run(flush_browser_caches(page))
         assert result["clear_cache"] is True
         assert result["gc"] is True
 
@@ -55,9 +56,7 @@ class TestFlushBrowserCaches:
         page = MagicMock()
         page.context.new_cdp_session = AsyncMock(side_effect=RuntimeError("no CDP"))
 
-        result = asyncio.get_event_loop().run_until_complete(
-            flush_browser_caches(page)
-        )
+        result = asyncio.run(flush_browser_caches(page))
         assert result == {"cdp_session": False}
 
 

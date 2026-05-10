@@ -1,8 +1,9 @@
 """Semantic answer cache for job application screening questions.
 
-Uses sentence-transformer embeddings stored in SQLite for cosine-similarity matching.
-Gracefully degrades to SHA-256 hash-based pseudo-embeddings when sentence-transformers
-is not installed (fallback mode: only exact matches will score above threshold).
+Uses the shared MemoryEmbedder (BGE-M3 via Ollama, MiniLM fallback) stored in
+SQLite for cosine-similarity matching. Gracefully degrades to SHA-256 hash-based
+pseudo-embeddings when no embedder is reachable (fallback mode: only exact
+matches will score above threshold).
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from jobpulse.config import DATA_DIR
 logger = get_logger(__name__)
 
 _DEFAULT_DB = DATA_DIR / "semantic_cache.db"
-_MODEL_NAME = "all-MiniLM-L6-v2"
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -89,22 +89,22 @@ class SemanticAnswerCache:
     # ------------------------------------------------------------------
 
     def _get_model(self) -> object | None:
-        """Lazy-load the SentenceTransformer model.
+        """Lazy-load the shared MemoryEmbedder.
 
-        Sets _fallback_mode=True and returns None if the package is missing.
+        Sets _fallback_mode=True and returns None if no embedder backend is reachable.
         """
         if self._model_loaded:
             return self._model
 
         self._model_loaded = True
         try:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import]
+            from shared.memory_layer._embedder import MemoryEmbedder
 
-            self._model = SentenceTransformer(_MODEL_NAME)
-            logger.info("semantic_cache: loaded model %s", _MODEL_NAME)
+            self._model = MemoryEmbedder()
+            logger.info("semantic_cache: using shared MemoryEmbedder")
         except Exception as exc:
             logger.warning(
-                "semantic_cache: sentence-transformers unavailable (%s). "
+                "semantic_cache: MemoryEmbedder unavailable (%s). "
                 "Falling back to hash-based pseudo-embeddings — only exact matches will work.",
                 exc,
             )
@@ -116,19 +116,23 @@ class SemanticAnswerCache:
     def _embed(self, text: str) -> list[float]:
         """Return a float embedding for *text*.
 
-        Uses the sentence-transformer model when available; otherwise produces a
-        32-float pseudo-embedding derived from the SHA-256 hash of the text.
+        Uses MemoryEmbedder when available; otherwise produces a 32-float
+        pseudo-embedding derived from the SHA-256 hash of the text.
         The pseudo-embedding is deterministic: identical text → identical vector,
         so only exact matches will clear the cosine threshold in fallback mode.
         """
         model = self._get_model()
         if model is not None:
-            # SentenceTransformer.encode() returns a numpy array
-            vec = model.encode(text, convert_to_numpy=True)  # type: ignore[attr-defined]
-            return [float(v) for v in vec]
+            try:
+                return model.embed(text)  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.warning(
+                    "semantic_cache: MemoryEmbedder.embed failed (%s). "
+                    "Falling back to hash-based pseudo-embedding for this call.",
+                    exc,
+                )
 
-        # Fallback: SHA-256 → 32 floats in [0, 1]
-        digest = hashlib.sha256(text.encode()).hexdigest()  # 64 hex chars
+        digest = hashlib.sha256(text.encode()).hexdigest()
         return [int(digest[i : i + 2], 16) / 255.0 for i in range(0, 64, 2)]
 
     # ------------------------------------------------------------------

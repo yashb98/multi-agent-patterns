@@ -3,10 +3,10 @@
     "case_id": "flow-001",
     "flow": "classify_command",
     "input": {
-      "text": "show drafts"
+      "text": "show pending jobs"
     },
     "expected": {
-      "intent": "show_drafts"
+      "intent": "show_jobs"
     }
   },
   {

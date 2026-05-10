@@ -139,10 +139,13 @@ def test_polish_returns_refined_points():
         '{"header": "FastAPI Proficiency:", "detail": "detail3 refined"}, '
         '{"header": "GraphRAG Skills:", "detail": "detail4 refined"}]'
     )
+    # Production switched from safe_openai_call to cognitive_llm_call.
+    # Patch at the source module — the call site does a local import so the
+    # patch must apply at shared.agents, not at jobpulse.utils.safe_io.
     with patch(
-        "jobpulse.utils.safe_io.safe_openai_call",
+        "shared.agents.cognitive_llm_call",
         return_value=polished_json,
-    ) as mock_call, patch("openai.OpenAI"):
+    ):
         result = polish_points_llm(original, "SWE", "Acme", ["Python"])
     assert result[0][0] == "Python Expertise:"
     assert "refined" in result[0][1]

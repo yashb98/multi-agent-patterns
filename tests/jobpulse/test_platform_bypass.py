@@ -82,9 +82,19 @@ class TestResolveDirectUrl:
 
     @pytest.mark.asyncio
     async def test_ats_pattern_hit(self, bypass):
+        """Updated 2026-05-03: production now uses httpx.get with body
+        verification (commit 93faec7). Mock must return a realistic body
+        that passes the 3-stage check: size >= 15KB, no catch-all markers
+        in H1/title, and the H1/title references the company slug/token."""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        with patch("httpx.head", return_value=mock_resp):
+        mock_resp.text = (
+            "<html><head><title>Acme Careers</title></head>"
+            "<body><h1>Acme Careers</h1>"
+            + ("<p>real careers content</p>" * 1000)  # ~28KB body
+            + "</body></html>"
+        )
+        with patch("httpx.get", return_value=mock_resp):
             result = await bypass.resolve_direct_url(
                 {"company": "Acme", "title": "Engineer"},
                 "https://indeed.com/viewjob?jk=123",
@@ -94,7 +104,7 @@ class TestResolveDirectUrl:
 
     @pytest.mark.asyncio
     async def test_all_strategies_exhausted(self, bypass):
-        with patch("httpx.head", side_effect=Exception("timeout")):
+        with patch("httpx.get", side_effect=Exception("timeout")):
             result = await bypass.resolve_direct_url(
                 {"company": "UnknownCorp12345", "title": "Dev"},
                 "https://indeed.com/viewjob?jk=123",

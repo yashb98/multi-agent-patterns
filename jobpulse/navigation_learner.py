@@ -27,9 +27,22 @@ class NavigationLearner:
         self._db_path = db_path or _DEFAULT_DB
         self._init_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Open a connection with a busy_timeout so concurrent writers wait
+        instead of immediately raising 'database is locked'. WAL alone isn't
+        enough — without busy_timeout, any contention fails fast."""
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        return conn
+
     def _init_db(self):
-        with sqlite3.connect(self._db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
+        with self._connect() as conn:
+            # WAL mode is a file-level setting that persists; tolerate
+            # contention from another thread also initialising the DB.
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError as exc:
+                logger.debug("navigation_learner: WAL pragma contention: %s", exc)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sequences (
                     domain TEXT PRIMARY KEY,
@@ -75,7 +88,7 @@ class NavigationLearner:
     def get_sequence(self, domain_or_url: str) -> list[dict] | None:
         """Get a successful navigation sequence for a domain. Returns None if none exists or expired."""
         domain = self._normalize_domain(domain_or_url)
-        with sqlite3.connect(self._db_path) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT steps, updated_at FROM sequences WHERE domain = ? AND success = 1",
                 (domain,),
@@ -92,7 +105,7 @@ class NavigationLearner:
             return json.loads(row[0])
         transfer = self._transfer_engine.get_transfer_data(domain, "navigation_flow")
         if transfer:
-            with sqlite3.connect(self._db_path) as conn:
+            with self._connect() as conn:
                 donor_row = conn.execute(
                     "SELECT steps FROM sequences WHERE domain = ? AND success = 1",
                     (transfer["donor_domain"],),
@@ -108,7 +121,7 @@ class NavigationLearner:
 
         # Don't overwrite a non-empty successful sequence with empty steps
         if not steps and success:
-            with sqlite3.connect(self._db_path) as conn:
+            with self._connect() as conn:
                 row = conn.execute(
                     "SELECT steps FROM sequences WHERE domain = ? AND success = 1",
                     (domain,),
@@ -119,7 +132,7 @@ class NavigationLearner:
 
         steps_json = json.dumps(steps)
 
-        with sqlite3.connect(self._db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 """INSERT INTO sequences (domain, steps, success, created_at, updated_at, platform, content_hash)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -153,7 +166,7 @@ class NavigationLearner:
         from collections import Counter
 
         exclude = self._normalize_domain(exclude_domain) if exclude_domain else ""
-        with sqlite3.connect(self._db_path) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT steps FROM sequences WHERE platform = ? AND success = 1 AND domain != ?",
                 (platform, exclude),
@@ -187,7 +200,7 @@ class NavigationLearner:
         if not content_hash:
             return None
         exclude = self._normalize_domain(exclude_domain) if exclude_domain else ""
-        with sqlite3.connect(self._db_path) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 """SELECT steps FROM sequences
                    WHERE content_hash = ? AND domain != ? AND success = 1
@@ -201,7 +214,7 @@ class NavigationLearner:
     def get_failed_sequences(self, domain_or_url: str) -> list[dict]:
         """Return all failed sequences for a domain."""
         domain = self._normalize_domain(domain_or_url)
-        with sqlite3.connect(self._db_path) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT steps, updated_at, content_hash FROM sequences WHERE domain = ? AND success = 0",
                 (domain,),
@@ -214,7 +227,7 @@ class NavigationLearner:
     def mark_failed(self, domain_or_url: str):
         """Mark a learned sequence as failed. Purges after 3 consecutive failures."""
         domain = self._normalize_domain(domain_or_url)
-        with sqlite3.connect(self._db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "UPDATE sequences SET success = 0, fail_count = fail_count + 1 WHERE domain = ?",
                 (domain,),
@@ -241,14 +254,14 @@ class NavigationLearner:
     def increment_replay(self, domain_or_url: str):
         """Track that a sequence was replayed."""
         domain = self._normalize_domain(domain_or_url)
-        with sqlite3.connect(self._db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "UPDATE sequences SET replay_count = replay_count + 1 WHERE domain = ?",
                 (domain,),
             )
 
     def get_stats(self) -> dict:
-        with sqlite3.connect(self._db_path) as conn:
+        with self._connect() as conn:
             total = conn.execute("SELECT COUNT(*) FROM sequences").fetchone()[0]
             successful = conn.execute("SELECT COUNT(*) FROM sequences WHERE success = 1").fetchone()[0]
         return {"total_domains": total, "successful_domains": successful}

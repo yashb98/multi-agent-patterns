@@ -15,249 +15,84 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-def _multi_agent_entry() -> dict:
-    """Build multi-agent-patterns portfolio entry with current project stats."""
-    from jobpulse.cv_templates import get_project_stats
-    s = get_project_stats()
-    loc = s.get("loc_display", "142,500+")
-    tests = s.get("tests_display", "3,350+")
-    files = s.get("python_files", 680)
-    dbs = s.get("databases", 57)
-    return {
-        "title": "Multi-Agent Orchestration System | Python | LangGraph | OpenAI",
-        "url": "https://github.com/yashb98/multi-agent-patterns",
-        "priority": 1,
-        "bullets": [
-            f'Built a <b>{loc} LOC</b> production AI system with <b>{tests} tests</b>, <b>{files} files</b>, and <b>{dbs} databases</b>, shipping <b>10+ autonomous agents</b> (Gmail, Calendar, GitHub, Notion, Budget) running <b>24/7</b> via Telegram with <b>99.9%</b> uptime.',
-            'Designed <b>4 LangGraph</b> orchestration patterns with GRPO experiential learning, persona evolution, and <b>A/B testing</b>, reducing LLM costs by <b>96%</b> ($5.63 - $0.23/month) through hybrid rule-based + ML classification.',
-            'Engineered <b>5-gate pre-screen pipeline</b> with statistical correlation engine, adaptive rate limiting, and <b>17-signal verification wall learning</b>, processing <b>200+ JDs/day</b> with <b>92%+</b> skill match threshold.',
-            'Built multi-source <b>fact-checking</b> pipeline using Semantic Scholar API with <b>9.5/10</b> accuracy gate, SQLite caching, and automated <b>Google Drive</b> integration for document management.',
-        ],
-    }
+# Note: _multi_agent_entry() previously built a hardcoded portfolio entry
+# for one specific repo. Removed 2026-05-04 — the data lives in
+# user_profile.db.cv_projects via the nightly profile-sync.
 
 
 # ---------------------------------------------------------------------------
-# Portfolio — repo name → CV-ready entry
+# Portfolio — DB-first loader, with the static dict below as a one-time
+# bootstrap fallback for fresh installs.
+#
+# CANONICAL SOURCE OF TRUTH: data/user_profile.db → cv_projects table,
+# accessed via shared.profile_store.ProfileStore.cv_projects(). Code below
+# tries that first; only falls back to the static dict if the DB is empty
+# (e.g. before profile-sync has run).
+#
+# Per pii-policy.md: project URLs / titles / bullets are PII (they reveal
+# the user's GitHub username, employment history, and technical specifics).
+# We keep the legacy dict in code only as a bootstrap so the system isn't
+# broken pre-DB-init; production runs always read from the DB.
 # ---------------------------------------------------------------------------
 
-PORTFOLIO: dict[str, dict] = {
-    "yashb98/multi-agent-patterns": _multi_agent_entry(),
-    "yashb98/Velox_AI": {
-        "title": "Velox AI - Enterprise AI Voice Agent Platform | Python | FastAPI | Docker | GCP",
-        "url": "https://github.com/yashb98/Velox_AI",
-        "bullets": [
-            'Built real-time <b>dashboards</b> tracking performance across <b>1,000+</b> concurrent sessions, reducing anomaly detection by <b>70%</b>.',
-            'Automated analysis of <b>50K+</b> daily session metrics via <b>API</b>-driven pipelines, cutting manual reporting by <b>80%</b>.',
-            'Delivered <b>sub-150ms</b> response times at scale through statistical analysis and optimisation on <b>GCP</b>.',
-        ],
-    },
-    "yashb98/nexusmind": {
-        "title": "Cloud Sentinel - AI Cloud Security Platform | Python | React | Docker | Redis | Pinecone",
-        "url": "https://github.com/yashb98/nexusmind",
-        "bullets": [
-            'Built <b>NLP</b> pipelines extracting insights from <b>10K+</b> unstructured documents with <b>94%</b> retrieval precision.',
-            'Developed <b>clustering</b> workflows grouping <b>500+</b> policy documents by topic, risk level, and compliance status.',
-            'Reduced manual review time by <b>55%</b> through automated dashboards surfacing compliance metrics.',
-            'Optimised vector insertion pipeline, reducing indexing time by <b>60%</b> through batch processing.',
-        ],
-    },
-    "yashb98/DataMind": {
-        "title": "DataMind - AI Analytics Platform | Python | FastAPI | Next.js | LangGraph",
-        "url": "https://github.com/yashb98/DataMind",
-        "bullets": [
-            'Built AI analytics platform with <b>48-agent</b> Digital Labor Workforce for autonomous data processing, handling<b>ETL</b>, anomaly detection, and reporting across structured and unstructured data sources.',
-            'Designed <b>8-layer</b> anti-hallucination stack with NLI scoring and chain-of-thought auditing, achieving <b>95%+</b> factual accuracy on generated insights.',
-            'Implemented multi-cloud lakehouse with <b>Apache Kafka</b> for real-time streaming, <b>DuckDB</b> for analytical queries, and <b>Pinecone</b> for vector search, processing<b>1M+</b> records with sub-second query latency.',
-        ],
-    },
-    "yashb98/LetsBuild": {
-        "title": "LetsBuild - Autonomous Portfolio Factory | Python | Anthropic SDK | Docker",
-        "url": "https://github.com/yashb98/LetsBuild",
-        "bullets": [
-            'Architected <b>10-layer</b> agentic pipeline using Anthropic Claude SDK with <b>tool_use</b> for structured output.',
-            'Implemented <b>Docker</b> sandbox management with compiled policy gates and self-learning ReasoningBank.',
-            'Built <b>RLM</b> recursive language model for processing million-token contexts via sub-LM orchestration.',
-        ],
-    },
-    "yashb98/90Days_Machine_learinng": {
-        "title": "90 Days Machine Learning | Python | SQL | Scikit-learn",
-        "url": "https://github.com/yashb98/90Days_Machine_learinng",
-        "bullets": [
-            '<b>30+ projects</b> spanning NLP, web scraping, clustering, forecasting, and statistical testing, building scraping pipelines collecting <b>100K+ records</b> from multiple sources using BeautifulSoup and Scrapy.',
-            'Ran statistical tests (t-test, chi-squared, ANOVA) across <b>15+ datasets</b>, improving prediction accuracy by <b>12%</b> and standardising data cleaning workflows resolving format issues in <b>40%</b> of raw inputs.',
-            'Implemented <b>ML pipelines</b> with feature engineering, cross-validation, and hyperparameter tuning using <b>Scikit-learn</b>, including regression, random forest, gradient boosting, and K-means clustering.',
-            'Automated <b>SQL</b> data extraction and <b>EDA</b> workflows with Pandas profiling, generating reproducible analysis reports across <b>20+</b> business domains.',
-        ],
-    },
-    "yashb98/Deep-Learning-for-Facial-3D-Reconstruction---Simulator": {
-        "title": "Deep Learning for Facial 3D Reconstruction | PyTorch | Computer Vision",
-        "url": "https://github.com/yashb98/Deep-Learning-for-Facial-3D-Reconstruction---Simulator",
-        "bullets": [
-            'Built custom encoder-decoder in <b>PyTorch</b> achieving <b>0.89 SSIM</b>, outperforming baseline by <b>15%</b>.',
-            'Generated <b>10,000+</b> synthetic samples with automated pipelines, identifying spatial patterns across <b>3</b> coordinate systems.',
-            'Presented findings to academic panel, translating complex architectures into clear visual narratives.',
-        ],
-    },
-    "yashb98/Fintech_customer_churn": {
-        "title": "Fintech Customer Churn Prediction | Python | Scikit-learn | Pandas",
-        "url": "https://github.com/yashb98/Fintech_customer_churn",
-        "bullets": [
-            'Built churn prediction model achieving <b>87%</b> accuracy using gradient boosting and feature engineering, analysing<b>10K+</b> customer records identifying <b>5</b> key churn drivers through correlation and cohort analysis.',
-            'Delivered actionable retention strategies reducing predicted churn by <b>18%</b>, with automated <b>A/B test</b> simulation to validate intervention effectiveness before deployment.',
-            'Designed end-to-end <b>ML pipeline</b> with data ingestion, feature selection (mutual information + RFE), model training, and <b>SHAP</b>-based explainability reports for stakeholder presentations.',
-        ],
-    },
-    "yashb98/Credit_Card_Fraud_Detection": {
-        "title": "Credit Card Fraud Detection | Python | Scikit-learn | Imbalanced Learning",
-        "url": "https://github.com/yashb98/Credit_Card_Fraud_Detection",
-        "bullets": [
-            'Built fraud detection model with <b>99.2%</b> precision on highly imbalanced dataset (<b>0.17%</b> fraud rate).',
-            'Applied SMOTE oversampling and ensemble methods, reducing false positives by <b>35%</b>.',
-            'Processed <b>284K+</b> transactions with automated feature engineering pipeline.',
-        ],
-    },
-    "yashb98/Credit_risk_analysis": {
-        "title": "Credit Risk Analysis | Python | Statistical Modelling | Pandas",
-        "url": "https://github.com/yashb98/Credit_risk_analysis",
-        "bullets": [
-            'Built risk scoring model analysing <b>30K+</b> loan applications with logistic regression and decision trees.',
-            'Identified <b>8</b> key risk factors through statistical analysis, improving default prediction by <b>22%</b>.',
-            'Automated report generation cutting analyst prep time by <b>40%</b>.',
-        ],
-    },
-    "yashb98/Mlops_Image_classification-Project": {
-        "title": "MLOps Image Classification Pipeline | Python | Docker | AWS | MLflow",
-        "url": "https://github.com/yashb98/Mlops_Image_classification-Project",
-        "bullets": [
-            'Built end-to-end <b>MLOps</b> pipeline with <b>Docker</b> containerisation, <b>MLflow</b> tracking, and <b>AWS</b> deployment.',
-            'Automated model training, evaluation, and deployment with <b>CI/CD</b> pipeline integration.',
-            'Achieved <b>94%</b> classification accuracy with automated hyperparameter tuning.',
-        ],
-    },
-    "yashb98/Text-Summarizer-Project": {
-        "title": "Text Summarisation Pipeline | Python | NLP | Transformers",
-        "url": "https://github.com/yashb98/Text-Summarizer-Project",
-        "bullets": [
-            'Built abstractive text summarisation pipeline using <b>Hugging Face</b> transformers with <b>ROUGE-L 0.42</b>.',
-            'Processed <b>5K+</b> documents with automated preprocessing and evaluation pipeline.',
-            'Deployed via <b>FastAPI</b> endpoint with <b>Docker</b> containerisation for production readiness.',
-        ],
-    },
-    "yashb98/movies-recommender-system": {
-        "title": "Movie Recommender System | Python | Scikit-learn | Content-Based Filtering",
-        "url": "https://github.com/yashb98/movies-recommender-system",
-        "bullets": [
-            'Built content-based recommendation engine analysing <b>5K+</b> movies using cosine similarity.',
-            'Implemented TF-IDF vectorisation on plot descriptions, achieving <b>78%</b> recommendation relevance.',
-            'Deployed interactive demo with Streamlit for real-time movie suggestions.',
-        ],
-    },
-    "yashb98/Foresight": {
-        "title": "Foresight - AI Forecasting Platform | Python | FastAPI | Docker",
-        "url": "https://github.com/yashb98/Foresight",
-        "bullets": [
-            'Built time-series forecasting platform with <b>ARIMA</b>, <b>Prophet</b>, and deep learning models.',
-            'Automated data ingestion from <b>5+</b> sources with scheduled pipeline runs via <b>Docker</b>.',
-            'Delivered <b>15%</b> improvement in forecast accuracy over naive baseline through ensemble methods.',
-        ],
-    },
-    # --- Added: repos from last 1 year not previously in PORTFOLIO ---
-    "yashb98/LetsFineTune": {
-        "title": "LetsFineTune - LLM Fine-Tuning Collection | Python | LoRA | Unsloth | Hugging Face",
-        "url": "https://github.com/yashb98/LetsFineTune",
-        "bullets": [
-            'Fine-tuned multiple language models using <b>LoRA/QLoRA</b> with <b>Unsloth</b> and Hugging Face Transformers, building reproducible training pipelines from dataset preparation to evaluation.',
-            'Implemented parameter-efficient fine-tuning reducing training compute by <b>90%+</b> compared to full fine-tuning, with configurable hyperparameter sweeps.',
-            'Built end-to-end notebooks covering data preprocessing, tokenisation, model training, and automated metrics logging.',
-        ],
-    },
-    "yashb98/code-graph-mcp": {
-        "title": "Code Graph MCP Server | TypeScript | OXC Parser | Graphology",
-        "url": "https://github.com/yashb98/code-graph-mcp",
-        "bullets": [
-            'Built type-aware code knowledge graph <b>MCP server</b> for TypeScript/TSX projects using OXC parser and graphology, enabling structural analysis of imports, exports, and symbols.',
-            'Implemented <b>Louvain</b> community detection algorithm for automatic module clustering and codebase architecture discovery.',
-            'Designed MCP tool interface exposing <b>20+</b> graph queries for code navigation, dependency analysis, and symbol resolution.',
-        ],
-    },
-    "yashb98/agentforge-arena": {
-        "title": "AgentForge Arena - AI Agent Competition Platform | Python",
-        "url": "https://github.com/yashb98/agentforge-arena",
-        "bullets": [
-            'Built AI agent competition platform where autonomous agents compete to build projects and win hackathons with automated evaluation.',
-            'Designed multi-agent evaluation framework with scoring and ranking across multiple challenge categories.',
-            'Implemented agent orchestration with sandboxed execution environments for safe autonomous code generation.',
-        ],
-    },
-    "yashb98/SoloQuest": {
-        "title": "SoloQuest - Full-Stack Application | TypeScript",
-        "url": "https://github.com/yashb98/SoloQuest",
-        "bullets": [
-            'Built full-stack TypeScript application with modern development practices and type-safe architecture.',
-            'Implemented end-to-end feature development with component-based UI and API integration.',
-        ],
-    },
-    "yashb98/AIEngine-Hackathon": {
-        "title": "RegBot - AI Compliance Agent for SMEs | TypeScript | Next.js | Vercel",
-        "url": "https://github.com/yashb98/AIEngine-Hackathon",
-        "bullets": [
-            'Built AI-powered compliance agent for Scottish SMEs, automating regulatory deadline tracking and admin reduction by <b>50%</b>.',
-            'Designed conversational AI interface for compliance queries, deployed on <b>Vercel</b> with Next.js for production availability.',
-            'Won hackathon recognition for practical SME tooling addressing real regulatory compliance gaps.',
-        ],
-    },
-    "yashb98/Prism": {
-        "title": "PRISM - Recursive Language Model Research Agent | Python | LangGraph",
-        "url": "https://github.com/yashb98/Prism",
-        "bullets": [
-            'Built production-grade agentic research system using <b>Recursive Language Model</b> paradigm, decomposing million-token corpora into verifiable reasoning chains.',
-            'Implemented step-level monitoring with process-recursive inference, enabling transparent audit trails for every research conclusion.',
-            'Designed multi-stage decomposition pipeline turning complex research queries into atomic, verifiable sub-tasks.',
-        ],
-    },
-    "yashb98/AI-ML-interview-Prep": {
-        "title": "AI/ML Interview Preparation | Python | Machine Learning",
-        "url": "https://github.com/yashb98/AI-ML-interview-Prep",
-        "bullets": [
-            'Curated comprehensive AI/ML interview preparation covering algorithms, system design, and practical coding problems.',
-            'Built implementations of core ML algorithms including neural networks, decision trees, and ensemble methods.',
-        ],
-    },
-    "yashb98/Machine-Learning_University_of_Dundee": {
-        "title": "Machine Learning Coursework | Python | Scikit-learn | NumPy",
-        "url": "https://github.com/yashb98/Machine-Learning_University_of_Dundee",
-        "bullets": [
-            'Completed <b>15+</b> lab exercises and assignments covering supervised learning, unsupervised learning, and neural networks at the University of Dundee.',
-            'Implemented classification, regression, and clustering algorithms from scratch using <b>NumPy</b> and <b>Scikit-learn</b>.',
-            'Built practical ML pipelines with cross-validation, feature engineering, and model evaluation workflows.',
-        ],
-    },
-    "yashb98/BrainWave": {
-        "title": "BrainWave - Modern UI/UX Website | React.js | Tailwind CSS",
-        "url": "https://github.com/yashb98/BrainWave",
-        "bullets": [
-            'Built modern UI/UX website with <b>React.js</b> and <b>Tailwind CSS</b>, featuring seamless animations and responsive design.',
-            'Implemented component-based architecture with Vite for fast development and optimised production builds.',
-        ],
-    },
-    "yashb98/pytorch": {
-        "title": "PyTorch Deep Learning Notebooks | Python | PyTorch",
-        "url": "https://github.com/yashb98/pytorch",
-        "bullets": [
-            'Built deep learning implementations in <b>PyTorch</b> covering CNNs, RNNs, and transfer learning architectures.',
-            'Implemented training pipelines with custom datasets, data augmentation, and performance benchmarking.',
-        ],
-    },
-    "yashb98/genvoice-connect": {
-        "title": "GenVoice Connect - AI Voice Assistant | TypeScript | Next.js | Generative AI",
-        "url": "https://github.com/yashb98/genvoice-connect",
-        "bullets": [
-            'Built intelligent virtual assistant enabling website navigation through conversational <b>voice commands</b> using Generative AI.',
-            'Designed voice-to-action pipeline replacing traditional skill-based interfaces with natural language understanding.',
-            'Deployed with <b>Next.js</b> for production-ready server-side rendering and real-time voice interaction.',
-        ],
-    },
-}
+
+def _load_portfolio_from_db() -> dict[str, dict]:
+    """Load all CV-ready project entries from user_profile.db at runtime.
+
+    Returns: dict keyed by `<github_user>/<repo_slug>` (extracted from URL),
+    each value matching the static-dict schema (`title`, `url`, `bullets`).
+    Empty dict if ProfileStore is unavailable or DB has no entries.
+    """
+    out: dict[str, dict] = {}
+    try:
+        from shared.profile_store import get_profile_store
+        store = get_profile_store()
+        for proj in store.cv_projects() or []:
+            url = (proj.get("url") or "").strip()
+            if not url:
+                continue
+            # Extract `<owner>/<repo>` from a github URL — the static dict uses
+            # this as its key, so we match the same convention so callers see
+            # identical lookup semantics.
+            tail = url.rstrip("/").rsplit("github.com/", 1)[-1]
+            if "/" not in tail:
+                continue
+            key = "/".join(tail.split("/")[:2])
+            out[key] = {
+                "title": (proj.get("title") or "").strip(),
+                "url": url,
+                "bullets": list(proj.get("bullets") or []),
+            }
+    except Exception as exc:
+        logger.debug("project_portfolio: DB load failed: %s — using static fallback", exc)
+    return out
+
+
+# Module-level cache populated on first lookup. Reset by tests with monkeypatch
+# if needed. Cleared on every run because the DB can be updated externally
+# (profile sync, manual SQL).
+_PORTFOLIO_DB_CACHE: dict[str, dict] | None = None
+
+
+def _portfolio_lookup(repo_name: str) -> dict | None:
+    """DB-first portfolio lookup. Falls back to the legacy static dict only
+    when the DB has no entry for this repo (e.g. fresh install)."""
+    global _PORTFOLIO_DB_CACHE
+    if _PORTFOLIO_DB_CACHE is None:
+        _PORTFOLIO_DB_CACHE = _load_portfolio_from_db()
+    if repo_name in _PORTFOLIO_DB_CACHE:
+        return _PORTFOLIO_DB_CACHE[repo_name]
+    return _LEGACY_PORTFOLIO_FALLBACK.get(repo_name)
+
+
+# Legacy static fallback — only consulted when the DB has no matching entry.
+# DO NOT add new entries here; populate user_profile.db.cv_projects instead.
+_LEGACY_PORTFOLIO_FALLBACK: dict[str, dict] = {}
+# All project data lives in user_profile.db.cv_projects (loaded via
+# _load_portfolio_from_db). To re-populate after a fresh install run:
+#   python -m jobpulse.runner profile-sync
+# The empty fallback dict above is intentional — it forces every lookup
+# through the DB so PII never re-enters source code.
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +101,12 @@ PORTFOLIO: dict[str, dict] = {
 
 
 def get_project_entry(repo_name: str) -> dict | None:
-    """Look up a single project's CV entry by repo name."""
-    return PORTFOLIO.get(repo_name)
+    """Look up a single project's CV entry by repo name.
+
+    DB-first via `_portfolio_lookup`. Returns None if the repo isn't in the
+    DB or the static fallback dict.
+    """
+    return _portfolio_lookup(repo_name)
 
 
 def get_best_projects_for_jd(
@@ -303,7 +142,7 @@ def get_best_projects_for_jd(
 
     prioritized = []
     for match in matches:
-        entry = PORTFOLIO.get(match.name)
+        entry = _portfolio_lookup(match.name)
         if not entry:
             entry = get_auto_entry(match.name)
         if entry:
@@ -335,3 +174,44 @@ def get_best_projects_for_jd(
         return DEFAULT_PROJECTS
 
     return selected
+
+
+# ---------------------------------------------------------------------------
+# Backwards compatibility — `PORTFOLIO` was historically a static dict.
+# External callers (e.g. github_profile_sync.py) may still reference it.
+# We expose a property-like merged view: DB entries override / extend the
+# legacy fallback dict. Mutations against this view do NOT propagate to the
+# DB; new entries should be inserted via `cv_projects` table directly.
+# ---------------------------------------------------------------------------
+
+
+def _portfolio_merged_view() -> dict[str, dict]:
+    db_entries = _load_portfolio_from_db()
+    merged = dict(_LEGACY_PORTFOLIO_FALLBACK)  # legacy first
+    merged.update(db_entries)                  # DB wins on conflict
+    return merged
+
+
+# Module-level proxy that re-evaluates the merged view on every access. This
+# preserves the historical `from project_portfolio import PORTFOLIO` import
+# pattern without locking the module state to an old DB snapshot.
+class _PortfolioProxy(dict):
+    def __getitem__(self, key):
+        return _portfolio_merged_view()[key]
+    def __contains__(self, key):
+        return key in _portfolio_merged_view()
+    def get(self, key, default=None):
+        return _portfolio_merged_view().get(key, default)
+    def items(self):
+        return _portfolio_merged_view().items()
+    def keys(self):
+        return _portfolio_merged_view().keys()
+    def values(self):
+        return _portfolio_merged_view().values()
+    def __iter__(self):
+        return iter(_portfolio_merged_view())
+    def __len__(self):
+        return len(_portfolio_merged_view())
+
+
+PORTFOLIO: dict[str, dict] = _PortfolioProxy()  # type: ignore[assignment]

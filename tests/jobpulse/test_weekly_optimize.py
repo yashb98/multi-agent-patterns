@@ -154,6 +154,11 @@ class TestAnalyzeProjectSelection:
 class TestAnalyzeCorrections:
     def test_suggests_profile_update(self, tmp_path):
         db_path = tmp_path / "field_corrections.db"
+        # Use a recent timestamp (within the rolling 7-day cutoff) so the
+        # query picks it up regardless of when the test runs.
+        from datetime import datetime, timezone, timedelta
+        recent_ts = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
         with sqlite3.connect(db_path) as conn:
             conn.execute("""
                 CREATE TABLE field_corrections (
@@ -166,7 +171,7 @@ class TestAnalyzeCorrections:
             for i in range(5):
                 conn.execute(
                     "INSERT INTO field_corrections VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (i + 1, "greenhouse", "gh", "salary", "40000", "45000", "2026-04-25T12:00:00"),
+                    (i + 1, "greenhouse", "gh", "salary", "40000", "45000", recent_ts),
                 )
 
         opt = WeeklyOptimizer()

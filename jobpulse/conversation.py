@@ -9,11 +9,24 @@ logger = get_logger(__name__)
 
 
 def _first_name() -> str:
+    """Return the user's first name from ProfileStore. Never hardcode a name —
+    falls back to env var APPLICANT_FIRST_NAME, then empty + warning.
+    """
     try:
         from shared.profile_store import get_profile_store
-        return get_profile_store().identity().first_name or "Yash"
+        n = (get_profile_store().identity().first_name or "").strip()
+        if n:
+            return n
     except Exception:
-        return "Yash"
+        pass
+    try:
+        from jobpulse.config import APPLICANT_FIRST_NAME
+        if APPLICANT_FIRST_NAME.strip():
+            return APPLICANT_FIRST_NAME.strip()
+    except Exception:
+        pass
+    logger.warning("conversation._first_name: no name in ProfileStore/config")
+    return ""
 
 
 # In-memory conversation history (resets on daemon restart)

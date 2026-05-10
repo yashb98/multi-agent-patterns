@@ -148,11 +148,25 @@ def _ensure_loaded():
             model = _load_model()
             if model is not None:
                 data = np.load(str(EMBEDDINGS_CACHE), allow_pickle=True)
-                _intent_embeddings = data["embeddings"]
-                _intent_names = list(data["names"])
-                _loaded = True
-                logger.info("Loaded %d cached embeddings", len(_intent_names))
-                return
+                cached_embeddings = data["embeddings"]
+                # Verify cached embedding dim matches the current model.
+                # If the model changed (e.g. MiniLM 384 → Voyage 1024), the
+                # cache is stale — discard and rebuild rather than crash on
+                # the first dot-product.
+                probe = model.encode(["dim_probe"], normalize_embeddings=True)
+                expected_dim = probe.shape[1]
+                cached_dim = cached_embeddings.shape[1] if cached_embeddings.ndim == 2 else 0
+                if cached_dim != expected_dim:
+                    logger.info(
+                        "Embedding dim changed (cache=%d, model=%d) — rebuilding",
+                        cached_dim, expected_dim,
+                    )
+                else:
+                    _intent_embeddings = cached_embeddings
+                    _intent_names = list(data["names"])
+                    _loaded = True
+                    logger.info("Loaded %d cached embeddings", len(_intent_names))
+                    return
         except (OSError, ValueError, KeyError) as e:
             logger.debug("Embeddings cache invalid, rebuilding: %s", e)
 

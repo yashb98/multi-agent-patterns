@@ -39,3 +39,9 @@ Thumbs.db
 credentials.json
 token.json
 .clone/
+
+# Runtime artifacts (added 2026-05-10) — DB backups, locks, machine-local config
+exports/backup_*.tar.gz
+.claude/scheduled_tasks.lock
+.python_path
+data/backups/

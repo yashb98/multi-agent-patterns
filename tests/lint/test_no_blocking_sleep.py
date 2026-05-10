@@ -14,7 +14,14 @@ def _workspace_root() -> Path:
 def _violations(root: Path) -> list[tuple[str, int, str]]:
     violations: list[tuple[str, int, str]] = []
     for path in root.rglob("*.py"):
-        if any(part in {".git", ".venv", "node_modules", "__pycache__"} for part in path.parts):
+        # Skip worktree mirrors — they contain stale copies of production code
+        # that get cleaned up out-of-band; lint should only enforce on the
+        # active checkout.
+        if any(
+            part in {".git", ".venv", "node_modules", "__pycache__",
+                     ".worktrees", ".claude"}
+            for part in path.parts
+        ):
             continue
         try:
             source = path.read_text(encoding="utf-8")

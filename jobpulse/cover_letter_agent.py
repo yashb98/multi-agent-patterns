@@ -21,25 +21,37 @@ if TYPE_CHECKING:
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "Cover letter template.md"
 
 def _build_profile() -> dict:
-    """Build profile dict from ProfileStore with applicator fallback."""
+    """Build profile dict from ProfileStore with config fallback. No hardcoded names."""
     try:
         from shared.profile_store import get_profile_store
         ps = get_profile_store()
         ident = ps.identity()
-        name = ident.full_name or "Yash B"
+        name = (ident.full_name or "").strip()
         visa = ps.sensitive("visa_status") or ""
         edu_entries = ps.education()
         exp_entries = ps.experience()
-        education = [f"{e.degree}, {e.institution} ({e.dates})" for e in edu_entries] or [ident.education]
+        education = [f"{e.degree}, {e.institution} ({e.dates})" for e in edu_entries] or (
+            [ident.education] if ident.education else []
+        )
         experience = [f"{e.title}, {e.company} ({e.dates})" for e in exp_entries]
     except Exception as _exc:
         from shared.logging_config import get_logger as _gl
-        _gl(__name__).debug("ProfileStore unavailable, falling back to applicator: %s", _exc)
-        from jobpulse.applicator import PROFILE as _AP
-        name = f"{_AP.get('first_name', '')} {_AP.get('last_name', '')}".strip() or "Yash B"
+        _gl(__name__).debug("ProfileStore unavailable, falling back to config: %s", _exc)
+        try:
+            from jobpulse.config import APPLICANT_FIRST_NAME, APPLICANT_LAST_NAME
+            name = f"{APPLICANT_FIRST_NAME} {APPLICANT_LAST_NAME}".strip()
+        except Exception:
+            name = ""
         visa = ""
         education = []
         experience = []
+
+    if not name:
+        from shared.logging_config import get_logger as _gl
+        _gl(__name__).warning(
+            "cover_letter_agent: no name in ProfileStore or config — letter "
+            "header will be blank"
+        )
 
     return {"name": name, "education": education, "experience": experience, "visa": visa}
 
