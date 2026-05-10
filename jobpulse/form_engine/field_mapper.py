@@ -3,12 +3,21 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from typing import Any, TYPE_CHECKING
 
 from shared.agents import get_openai_client, get_model_name
 from shared.logging_config import get_logger
 from shared.pii import assert_prompt_has_wrapped_pii
+
+# Audit S11 (redesign) / TP-21. Vision recovery uses a Moonshot
+# vision-capable chat-completion model so the Kimi mandate
+# (`shared/agents.py`:_use_kimi) extends to vision endpoints. Override
+# via env var if a future Moonshot model name supersedes this one.
+_VISION_MODEL = os.environ.get(
+    "VISION_MODEL", "moonshot-v1-32k-vision-preview",
+)
 
 from jobpulse.form_engine.field_resolver import (
     _FIELD_LABEL_TO_PROFILE_KEY,
@@ -802,27 +811,33 @@ async def recover_failed_fields_with_vision(
     )
     assert_prompt_has_wrapped_pii(prompt, profile_full, "applicant.profile")
 
+    # Audit 2026-05-10 / Slice S11 (redesign) / TP-21. Vision routes
+    # through the Kimi mandate: get_openai_client() already points at
+    # Moonshot's OpenAI-compatible endpoint. The original code called
+    # client.responses.create() (OpenAI Responses API), which Moonshot
+    # doesn't implement → 404. Switching to chat.completions.create()
+    # with multimodal image_url content works against both providers.
     client = get_openai_client()
     try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[{
+        response = client.chat.completions.create(
+            model=_VISION_MODEL,
+            messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": prompt},
+                    {"type": "text", "text": prompt},
                     {
-                        "type": "input_image",
-                        "image_url": f"data:image/png;base64,{b64_image}",
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64_image}"},
                     },
                 ],
             }],
         )
         try:
             from shared.cost_tracker import record_openai_usage
-            record_openai_usage(response, agent_name="vision_recovery", model_hint="gpt-4.1-mini")
+            record_openai_usage(response, agent_name="vision_recovery", model_hint=_VISION_MODEL)
         except Exception:
             pass
-        raw = response.output_text.strip()
+        raw = (response.choices[0].message.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         recovered = clean_mapping(json.loads(raw))
@@ -886,25 +901,25 @@ async def vision_map_unlabeled_fields(
 
     client = get_openai_client()
     try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[{
+        response = client.chat.completions.create(
+            model=_VISION_MODEL,
+            messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": prompt},
+                    {"type": "text", "text": prompt},
                     {
-                        "type": "input_image",
-                        "image_url": f"data:image/png;base64,{b64_image}",
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64_image}"},
                     },
                 ],
             }],
         )
         try:
             from shared.cost_tracker import record_openai_usage
-            record_openai_usage(response, agent_name="vision_unlabeled", model_hint="gpt-4.1-mini")
+            record_openai_usage(response, agent_name="vision_unlabeled", model_hint=_VISION_MODEL)
         except Exception:
             pass
-        raw = response.output_text.strip()
+        raw = (response.choices[0].message.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         vision_map = json.loads(raw)
@@ -942,26 +957,26 @@ async def review_form(page: "Page") -> tuple[dict, int]:
 
     client = get_openai_client()
     try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[{
+        response = client.chat.completions.create(
+            model=_VISION_MODEL,
+            messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": prompt},
+                    {"type": "text", "text": prompt},
                     {
-                        "type": "input_image",
-                        "image_url": f"data:image/png;base64,{b64}",
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
                     },
                 ],
             }],
         )
         try:
             from shared.cost_tracker import record_openai_usage
-            record_openai_usage(response, agent_name="field_mapper", model_hint="gpt-4.1-mini")
+            record_openai_usage(response, agent_name="field_mapper", model_hint=_VISION_MODEL)
         except Exception:
             pass
 
-        raw = response.output_text.strip()
+        raw = (response.choices[0].message.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         return json.loads(raw), 1
