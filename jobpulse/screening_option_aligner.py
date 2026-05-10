@@ -115,6 +115,52 @@ class OptionAligner:
                 _log("normalised_match", opt, 1.0)
                 return opt
 
+        # Yes/No prefix tier — EEO-style options like
+        # "No, I do not have a disability..." or "I am not a protected
+        # veteran" are routinely paired with short "Yes"/"No" answers
+        # that the embedding tier (threshold 0.70) and fuzzy tier both
+        # score below the floor due to length disparity. Audit-slice S4
+        # (TP-7): observed live on Anthropic Greenhouse — first-pass
+        # drop on Veteran + Disability EEO fields, recovered only via
+        # ai_assist cache hits from prior corrections. Match on the
+        # first token of the option after stripping trailing punctuation;
+        # fall back to a NO/YES substring-count for options whose first
+        # token is "I" but the negation lives later in the sentence
+        # ("I am not a protected veteran"). Self-contained — does not
+        # delegate to BoolFieldHandler to avoid mutual-recursion risk.
+        if answer_norm in {"yes", "no"}:
+            import string as _string
+            for opt, opt_norm in options_norm:
+                tokens = opt_norm.split()
+                if not tokens:
+                    continue
+                first_token = tokens[0].rstrip(_string.punctuation)
+                if first_token == answer_norm:
+                    logger.debug(
+                        "Yes/No first-token aligned %r -> %r",
+                        answer, opt,
+                    )
+                    _log("yesno_first_token_match", opt, 0.95)
+                    return opt
+            target_patterns = (
+                BoolFieldHandler.YES_PATTERNS if answer_norm == "yes"
+                else BoolFieldHandler.NO_PATTERNS
+            )
+            best_opt = None
+            best_count = 0
+            for opt, opt_norm in options_norm:
+                count = sum(1 for p in target_patterns if p in opt_norm)
+                if count > best_count:
+                    best_count = count
+                    best_opt = opt
+            if best_opt is not None and best_count > 0:
+                logger.debug(
+                    "Yes/No substring-count aligned %r -> %r (count=%d)",
+                    answer, best_opt, best_count,
+                )
+                _log("yesno_substring_count", best_opt, float(best_count))
+                return best_opt
+
         # Embedding similarity (primary semantic tier)
         try:
             from shared.semantic_utils import best_semantic_match

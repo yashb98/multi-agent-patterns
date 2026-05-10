@@ -261,15 +261,36 @@ Methodology: a touchpoint **advances** a sub-goal when the four-question correct
 
 ### TP-7 ScreeningOptionAligner mis-alignment (`jobpulse/screening_option_aligner.py`)
 
-- **Current**: per live-e2e doc, `_fuzzy_score` bug fixed; embedding fallback wired.
-- **Status seen on `run_final`**: **GAP — observed live**. Two fields dropped on first try:
-  - `Veteran Status` — answer "No" did not align to options `['I am not a protected vete…', 'I identify as one or more', 'I don't wish to answer']`.
-  - `Disability Status` — answer "No" did not align to options `['Yes, I have a disability…', 'No, I do not have a disab…', 'I do not want to answer']`.
-- The system *recovered* a few log lines later via `screening_cache: hit on 'Veteran Status' (score=1.00, intent=ai_assist, option_aligned=True) — skipping LLM alignment` — i.e. someone (Kimi/AI assist or human) had previously corrected this and the cache served the corrected answer on the **second pass** of the form. The first-pass drop is the gap.
-- **Priority**: **P1** — first-pass drop on EEO fields means the form would have been submitted with those fields empty if the second pass weren't executed (which is form-flow-dependent).
-- **Verify by**: log lines `screening answer 'No' did not align to any option for 'Veteran Status' — dropping`.
-- **Correctness check**: input was `"No"`, mechanism failed to map to `"I am not a protected veteran"` despite that being the negative-disclosure option; output was DROPPED (no fill on first pass); downstream consumed the second-pass cached answer correctly.
-- **Dimension matrix**: `D6` (tie-breaker / escalation) FAIL on first pass, `D2` (threshold calibration) UNVERIFIED, `I3` (learning consumption) PASS — the cached `intent=ai_assist` row proves a prior correction taught the system, *but only after the first attempt failed*.
+> **Status update — LIVE VERIFIED**: Slice S4 landed on branch `audit-slice-s4-option-aligner-eeo`. The first-pass drop on EEO fields is closed at the alignment-cascade layer; first-pass success no longer depends on a prior `ai_assist` correction sitting in `screening_semantic_cache`.
+
+- **Current** (pre-S4): the alignment cascade dropped `"No"` and `"Yes"` against EEO option text like `"No, I do not have a disability..."` or `"I am not a protected veteran"`. The embedding tier scored 0.48–0.53 against full option text (below the 0.70 `min_score` floor), and the fuzzy tier scored even lower due to length disparity; cascade returned the raw answer; caller checked it wasn't in `options` and discarded.
+- **Post-S4**: a yes/no prefix tier sits between exact-match and embedding. Two sub-mechanisms (self-contained, no delegation back through `BoolFieldHandler`):
+  1. **First-token match**: strips trailing punctuation off the option's first normalised token and matches against `"yes"` / `"no"`. Handles `"No, I do not have a disability..."`, `"Yes, I am Hispanic or Latino"`, `"Yes, I have a disability..."`, etc.
+  2. **Substring-count fallback**: for options that don't *start* with yes/no but semantically carry the negation/affirmation (e.g. `"I am not a protected veteran"`), counts how many `YES_PATTERNS` / `NO_PATTERNS` appear in the option text and picks the highest-count option. Handles the Veteran case where the negation lives in `"... not ..."` later in the sentence.
+- **Status**: **PASS** (was GAP) — first-pass alignment now works without a cache prerequisite.
+- **Priority**: was P1; closed.
+- **Verify by**:
+  - `scripts/audit_s4_live_evidence.py` → `logs/audit/s4_live_evidence.log`:
+    ```
+    [OK] Veteran Status: answer='No' → 'I am not a protected veteran' (in_options=True)
+    [OK] Disability Status: answer='No' → 'No, I do not have a disability and have not had one in the past' (in_options=True)
+    [OK] Hispanic / Latino: answer='No' → 'No, I am not Hispanic or Latino' (in_options=True)
+    [OK] Hispanic / Latino (Yes path): answer='Yes' → 'Yes, I am Hispanic or Latino' (in_options=True)
+    === S4 PASS — 4 / 4 cases aligned correctly ===
+    ```
+  - 9 new tests in `tests/jobpulse/test_screening_option_aligner_eeo.py` (Veteran/Disability/Hispanic-Latino yes+no paths, simple binary yes/no regression, normalised-case `"no"` / `"YES"`, non-yes/no substantive answer guard, no-recursion guard with `sys.setrecursionlimit(50)`).
+- **Correctness check**:
+  - Right input? PASS — yes/no answer is now matched against the EEO option's first token after punctuation stripping, then against pattern-substring count as a backstop. Both are properties of the option text alone, no profile/JD dependence (consistent with EEO field semantics — the candidate's choice doesn't depend on the JD).
+  - Right mechanism? PASS — semantic-first with structural tie-break; no regex on the *answer*, only on whitespace-token normalisation of the *option* text (rule-2 safe).
+  - Right output for THIS context? PASS — all 4 live-reproduced cases align to the expected option. Includes the original TP-7 failure cases (Veteran + Disability) verbatim.
+  - Right downstream consumption? PASS — `screening_pipeline._llm_answer`'s `aligned.lower().strip() not in opts_lower` guard now passes for these cases (the aligned value IS in options); first-pass cache write fires; subsequent applies hit the cache cleanly.
+- **Dimension matrix**:
+  - `D6` (tie-breaker / escalation) — PASS post-fix; first-token tie-break is deterministic and resolves the embedding-tier ambiguity (0.480 = 0.480 tied between correct and decoy for the Veteran "No" case).
+  - `D2` (threshold calibration) — UNVERIFIED still — the embedding tier's 0.70 `min_score` floor is now irrelevant for yes/no answers (the prefix tier catches them first) but remains for other short answers. Slice-S follow-up could recalibrate the floor against measured data; out of scope for S4.
+  - `I3` (learning consumption) — unchanged; learned corrections still preempt the cascade at tier 1, which is correct.
+- **Branch**: `audit-slice-s4-option-aligner-eeo` off `pipeline-correctness-fixes`.
+- **Files touched**: `jobpulse/screening_option_aligner.py` (+47 lines including comment, no deletions), `tests/jobpulse/test_screening_option_aligner_eeo.py` (new), `scripts/audit_s4_live_evidence.py` (new).
+- **Known edge case (S5 surface area)**: the substring-count fallback picks the first option whose count is highest. On Anthropic's option ordering `[deny, identify, decline]` this resolves correctly because the deny option contains the negation substring and the decline option doesn't. If a different ATS orders the same options as `[decline, deny, identify]` AND both `decline` and `deny` happen to contain the same number of `NO_PATTERNS` substrings (rare — typical decline phrasings like `"I do not wish to answer"` score `"no"` once via `"not"`, same as `"I am not a protected veteran"`), the fallback would pick the *decline* option as the first-with-highest-count. The first-token tier catches this for `"No, ..."` / `"Yes, ..."`-prefixed options (the common shape across Greenhouse / Ashby / Lever / SmartRecruiters EEO); the substring-count fallback only fires for the harder `"I am not ..."` / `"I do not ..."` shape. Slice **S5** (cross-ATS prosecution) is where this would surface as a concrete failure on a real adapter; this slice's scope is the live-observed Anthropic case. Don't add a per-ATS tiebreaker here — that violates rule 3 (dynamic-only). The right fix if S5 surfaces a counter-example is a longer-match preference (count + length penalty for decline-style phrasings), not an ATS branch.
 
 ### TP-8 PageReasoner first-pass abort + Fix D recovery (run_final field_count_guard)
 
@@ -906,3 +927,17 @@ S13 (cognitive routing context-leak fix) landed on `audit-slice-s13-cognitive-le
 ## Session 5 merge note (2026-05-10) — S13 + S3 merge bridge
 
 When S13 merged on top of `pipeline-correctness-fixes` (which already had S3), the free-text branch in `_llm_answer` needed an additional `record_decision(tier_reached="rejected_jd_relevance_low", ...)` call so that the new S13 reject path emits a row into `semantic_decisions.db`. This was added at merge time so the most-traversed free-text rejection tier is visible to the audit log. Tests added by S13 (`test_screening_llm_jd_relevance.py`, `test_procedural_recall_domain_isolation.py`) verified post-merge.
+
+## Session 4 update (2026-05-10) — S4 landed
+
+S4 (option aligner first-pass drop on EEO yes/no) landed on `audit-slice-s4-option-aligner-eeo`. Closes TP-7 GAP → PASS.
+
+- **Touchpoint status delta**: TP-7 demoted from GAP to PASS.
+- **Slices closed this session**: **S4** (P1). Live evidence 4/4 EEO cases align correctly; 9/9 new unit tests green; 102/102 broader screening + option-aligner suite passes.
+- **Distance % delta**: SG2 (right mechanism) — TP-7 was a mechanism-tier ordering issue (embedding tier scored 0.48–0.53 against EEO option text, below the 0.70 `min_score` floor; cascade fell through to "return original answer" instead of a structural prefix-match tier that should have caught yes/no answers). With S4, the yes/no prefix tier sits between exact-match and embedding, closing one of the highest-impact alignment GAPs cross-ATS (EEO fields exist on every Greenhouse / Ashby / Lever / SmartRecruiters / iCIMS / Workday job — this fix moves SG3 needle indirectly by removing one of the four most-common form-fill failure modes).
+- **Cross-ATS implications**: TP-7 was Greenhouse-observed but the fix is ATS-agnostic — it's at the alignment-cascade layer, not the adapter layer. Once S5 (cross-ATS prosecution) runs, Ashby / Lever / SmartRecruiters EEO fields should also align without ai_assist-cache priming.
+- **Slices remaining**: same list, minus S4. Recommended next: **S3** (semantic_decisions.db per-decision audit log — closes H1 globally; every PASS in this audit currently depends on log-mining and S3 makes the PASSes durable).
+
+## Session 5 merge note (2026-05-10) — S3 + S4 merge bridge
+
+When S4 merged on top of `pipeline-correctness-fixes` (which already had S3), the new yesno tier in `OptionAligner.align_answer` needed `_log("yesno_first_token_match", opt, 0.95)` and `_log("yesno_substring_count", best_opt, float(best_count))` calls in the two new return paths so the most-traversed EEO alignment tier emits rows into `semantic_decisions.db`. Added at merge time. Also bumped `test_ambiguous_answer_does_not_recurse`'s `sys.setrecursionlimit(50)` to 80 to accommodate the 5-10 stack frames added per `align_answer` call by S3's `record_decision` plumbing.
