@@ -1,4 +1,4 @@
-"""MemoryEmbedder — BGE-M3 (Ollama) primary, MiniLM fallback. Voyage available."""
+"""MemoryEmbedder — BGE-M3 (Ollama) primary, MiniLM fallback."""
 
 import json as _json
 import os
@@ -10,7 +10,6 @@ from shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 _BGE_DIMS = 1024
-_VOYAGE_DIMS = 1024
 _MINILM_DIMS = 384
 _minilm_model = None
 
@@ -24,11 +23,10 @@ def _get_minilm():
 
 
 class MemoryEmbedder:
-    """Triple-mode embedder with automatic fallback.
+    """Dual-mode embedder with automatic fallback.
 
     Modes:
       - bge:    BGE-M3 served by local Ollama (1024 dims). Default.
-      - voyage: Voyage 3 Large via voyageai SDK (1024 dims).
       - minilm: sentence-transformers MiniLM-L6-v2 (384 dims). Always-local fallback.
     """
 
@@ -39,28 +37,12 @@ class MemoryEmbedder:
     ):
         self._primary = primary
         self._fallback = fallback
-        self._voyage_client = None
 
     @property
     def dims(self) -> int:
         if self._primary == "bge":
             return _BGE_DIMS
-        if self._primary == "voyage":
-            return _VOYAGE_DIMS
         return _MINILM_DIMS
-
-    def _get_voyage(self):
-        if self._voyage_client is None:
-            import voyageai
-            self._voyage_client = voyageai.Client(
-                api_key=os.environ.get("VOYAGE_API_KEY", ""),
-            )
-        return self._voyage_client
-
-    def _embed_voyage(self, texts: list[str]) -> list[list[float]]:
-        client = self._get_voyage()
-        result = client.embed(texts, model="voyage-3-large")
-        return result.embeddings
 
     def _embed_minilm(self, texts: list[str]) -> list[list[float]]:
         model = _get_minilm()
@@ -85,8 +67,6 @@ class MemoryEmbedder:
         return embeddings
 
     def _run_fallback(self, texts: list[str]) -> list[list[float]]:
-        if self._fallback == "voyage":
-            return self._embed_voyage(texts)
         if self._fallback == "bge":
             return self._embed_bge(texts)
         return self._embed_minilm(texts)
@@ -100,12 +80,6 @@ class MemoryEmbedder:
                 return self._embed_bge(texts)
             except (urllib.error.URLError, OSError, RuntimeError, TimeoutError) as e:
                 logger.warning("BGE-M3 embed failed, falling back to %s: %s", self._fallback, e)
-                return self._run_fallback(texts)
-        if self._primary == "voyage":
-            try:
-                return self._embed_voyage(texts)
-            except Exception as e:
-                logger.warning("Voyage embed failed, falling back to %s: %s", self._fallback, e)
                 return self._run_fallback(texts)
         return self._embed_minilm(texts)
 

@@ -779,8 +779,8 @@ def _build_three_engine_kit(
         MEMORY_SQLITE_PATH=...      — override SQLite DB location
         MEMORY_QDRANT_URL=...       — e.g. http://localhost:6333 (empty=skip)
         MEMORY_NEO4J_URI=...        — e.g. bolt://localhost:7687 (empty=skip)
-        MEMORY_EMBED_PRIMARY=voyage | minilm  (default: voyage)
-        MEMORY_EMBED_FALLBACK=minilm | voyage (default: minilm)
+        MEMORY_EMBED_PRIMARY=bge | minilm     (default: bge)
+        MEMORY_EMBED_FALLBACK=minilm | bge    (default: minilm)
     """
     kit: dict = {"sqlite_store": None, "qdrant": None, "neo4j": None, "embedder": None}
 
@@ -810,7 +810,7 @@ def _build_three_engine_kit(
     try:
         from shared.memory_layer._embedder import MemoryEmbedder
         kit["embedder"] = MemoryEmbedder(
-            primary=os.environ.get("MEMORY_EMBED_PRIMARY", "voyage"),
+            primary=os.environ.get("MEMORY_EMBED_PRIMARY", "bge"),
             fallback=os.environ.get("MEMORY_EMBED_FALLBACK", "minilm"),
         )
     except Exception as exc:

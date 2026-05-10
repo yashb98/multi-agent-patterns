@@ -35,7 +35,7 @@ Two perspectives on the memory system:
 - `_sqlite_store.py` — Source of truth CRUD, WAL mode, thread-safe
 - `_qdrant_store.py` — Filtered HNSW vector search, one collection per tier
 - `_neo4j_store.py` — Graph traversal, signals (degree, downstream score, similarity count)
-- `_embedder.py` — Voyage 3 Large (1024 dims) + MiniLM fallback (384 dims)
+- `_embedder.py` — BGE-M3 via local Ollama (1024 dims) + MiniLM fallback (384 dims)
 - `_linker.py` — Autonomous graph linking (A-MEM), 7-rule relationship classification
 - `_forgetting.py` — 6-signal decay + lifecycle promotion/demotion
 - `_query.py` — QueryRouter picks engine(s) per query type
@@ -48,7 +48,7 @@ Two perspectives on the memory system:
 
 ## Rules
 - ALL memory access through MemoryManager — never query engines directly. Cognitive consumers use `get_procedural_entries` / `get_episodic_entries` / `get_semantic_entries`; pre-S7 these read JSON-capped stores while writes went to SQLite, but as of S7 reads are SQLite-first with JSON fallback (`pipeline-bugs.md` M-11.C / W-11.5).
-- Embeddings via Voyage 3 Large (fallback: MiniLM)
+- Embeddings via BGE-M3 over local Ollama (fallback: MiniLM)
 - Lifecycle: STM → MTM → LTM → Cold → Archive
 - Forgetting sweep runs hourly — 6-signal decay score. The 3 graph signals (`connectivity` / `impact` / `uniqueness`) require Neo4j edges; `SyncService._sync_entry` now invokes `AutonomousLinker.link_with_neighbors` after every secondary-sync write to populate them (pipeline-bugs.md S6).
 - Tests use tmp_path for SQLite, MagicMock for Qdrant/Neo4j
