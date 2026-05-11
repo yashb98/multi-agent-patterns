@@ -1662,3 +1662,84 @@ URL: `https://job-boards.greenhouse.io/graphcore/jobs/8539033002` (Bristol/UK-co
 - **Read-accuracy spot-check**: 16 passed verdicts include `UK right-to-work='Yes'`, `Graduate Visa`, `Asian (Indian, Pakistani, Bangladeshi…)`, `Man`, `LinkedIn https://www.linkedin.com/in/yash-bishnoi`, `Website https://yashbishnoi.io`. All match user profile. 2 mismatches both legit: (a) phone-field claim/observed format diff (filler/cache delta), and (b) duplicate `*`-suffix variant for right-to-work — the unstarred variant passed at `Graduate Visa`, the starred variant flagged as filler-didn't-fill the duplicate. **Read accuracy on cross-checked Graphcore fields = 100%.**
 
 **Outcome 5 ✅ VERIFIED** — same verifier code works adapter-agnostically across two distinct Greenhouse instances (Anthropic + Graphcore). Non-Greenhouse adapters (Lever / Ashby / etc.) deferred to `S26-follow-up-A`.
+
+---
+
+## S26-follow-up-E — STATUS: **BLOCKED-WITH-PLAN** (2026-05-11)
+
+Slice attempted: bake `profile_state_hash` + `jd_context_hash` into the screening_semantic_cache key so the visa-No mismatch surfaced in S26 RUN 4/5 stops recurring on US JDs.
+
+Per RULE A (trace before fix) + RULE C (don't silently expand): the trace surfaced that **the cache layer is not the fix point for this symptom**. The cache slice would be a no-op against the visa-No bug.
+
+### RULE A trace artefacts (this session, 2026-05-11)
+
+Static trace:
+- `mcp callers_of ScreeningSemanticCache.cache/lookup` + `grep_search` enumerated **6 write sites** (`screening_pipeline.py:719`, `screening_answers.py:844`, `ai_assist_logger.py:773`, `screening_feedback_loop.py:118`, `screening_outcome_recorder.py:55`, `screening_outcome_recorder.py:125`) and **1 production lookup site** (`screening_pipeline.py:207`).
+- The cache layer (`screening_semantic_cache.py`) **already accepts** `profile_state_hash` + `jd_context_hash` and folds them into both the SQLite `WHERE` filter and the Qdrant `query_filter`. The keying mechanism is correct.
+- `ScreeningPipeline._answer_single` and `record_outcome` **already thread** both hashes. The 5 other write sites do not — they default the hash args to empty strings.
+
+Live diagnostic (temp `logger.info` at `cache.cache` + `cache.lookup` entry points + ONE probe-call against the production import chain; loggers reverted before this entry was written):
+- Production paths produce **non-empty** hashes:
+  - Path 1 (`field_mapper.py:517` with `APPLICANT_PROFILE`): `profile_state_hash='68e5b4b853d8d79b'` (driven by `location='Dundee, UK'` which IS in `_PROFILE_HASH_FIELDS`).
+  - Path 2 (`screening_answers._get_v2_pipeline` with merged profile): `profile_state_hash='cd6f8210cadd5c92'`.
+  - JD context: US → `'e1991e33bd4de1ca'`, UK → `'367cf2652fd5dc1a'`, None/{} → `'empty'` (literal sentinel string, NOT empty string).
+- `cache.lookup` with `('', '')` HITS the legacy "No" row. But **no production lookup queries `('','')`** — both production paths produce non-empty profile hashes (location alone is enough), and JD context returns the literal `'empty'` not `''` when null.
+- DB query: 288 cache rows total, **all 288 with both hashes empty string**. These are zombies — written by the 5 unhashed write paths, **never served** because no production lookup uses `('','')`.
+
+### Where the wrong "No" actually comes from
+
+Same diagnostic, `pipeline.answer(visa_q, field={options:[Yes,No]}, job_context=us_ctx)`:
+
+| Path | Profile content | JD | Source | Answer |
+|---|---|---|---|---|
+| 1 (APPLICANT_PROFILE — `field_mapper.py:517`) | no visa fields populated | US | LLM (decomposer) | **Yes** ✓ |
+| 1 | same | UK | LLM (decomposer) | No ✓ |
+| 2 (merged — `screening_answers.py:1063-1070`) | `visa_sponsorship_required="No"` hardcoded | US | LLM (decomposer) | **No** ✗ |
+| 2 | same | UK | LLM (decomposer) | No ✓ |
+
+Every lookup MISSED on the visa question; every answer came from `_llm_answer` via the `QuestionDecomposer` path (`source='decomposed_aligned'`). The cache rows in the DB never served any of these answers.
+
+### Root cause(s) — both upstream of the cache
+
+1. **`jobpulse/screening_answers.py:1066`** hardcodes `merged["visa_sponsorship_required"] = "No" if not WORK_AUTH.get("requires_sponsorship") else "Yes"`. `WORK_AUTH.requires_sponsorship` is a UK-only flag (`WORK_AUTH_REQUIRES_SPONSORSHIP=false` because the user has UK Graduate Visa, so doesn't need sponsorship **in the UK**). This baked answer then dominates the LLM's reasoning when the JD is in a different country. The merged profile lies to the LLM about a country-dependent question.
+
+2. **`jobpulse/jd_analyzer.py:215-258` (`extract_location`)** defaults to `"United Kingdom"` when no UK-city match is found, even for JDs explicitly located in non-UK cities. For Anthropic's "San Francisco / Seattle / NYC" JD, this would return "United Kingdom", so `_jd_context_hash` would compute the UK hash and the LLM would receive `Job context: {'country': 'United Kingdom', ...}` — pointing it at a UK answer for a US role. (Whether this fired in S26 RUN 4 wasn't captured in the verifier JSON, which only records claimed vs observed; the screening pipeline source was not logged. The bug-shape exists regardless.)
+
+Either root cause alone is sufficient to produce a wrong "No" for a US JD with this profile.
+
+### Why the cache slice would be a no-op for this symptom
+
+- Cache writes happen WITHOUT hashes from 5 paths → 288 zombie rows. ✅ real gap.
+- Cache lookups happen WITH non-empty hashes → never match zombies. ✅ no live impact.
+- The wrong "No" originates in `_llm_answer` from a profile that lies (root cause #1) and/or a JD that's been mis-located (root cause #2). The cache is not on the answer-producing path for this case.
+
+Fixing the cache-keying gap would tighten cache hygiene (preventing a future regression where a sparse-context lookup leaks zombies) but would **not change** the answer the verifier observed as `mismatch_detected`. Outcome 5 of the slice (visa-class `mismatch_detected = 0` after fix) would fail.
+
+### Decision: BLOCKED-WITH-PLAN — STOP the slice
+
+Per the task prompt's RULE C decision tree:
+> "Cache fix is a no-op without the upstream fix → STOP this slice, file the upstream slice first, return after it lands. Audit doc records BLOCKED-WITH-PLAN."
+
+This slice produces **no substantive code commit**. The two temporary `logger.info` diagnostic statements added to `jobpulse/screening_semantic_cache.py` have been reverted; `git diff` for the file is empty.
+
+### Follow-ups filed
+
+| ID | P | Scope | Why now |
+|---|---|---|---|
+| **S26-follow-up-F** | **P0** | Remove the hardcoded `visa_sponsorship_required` field from `screening_answers.py:1063-1070`. Either drop the key entirely (let the LLM reason from `visa_status` + JD country) OR make it `f(visa_status, jd_country)` not `f(WORK_AUTH.requires_sponsorship)` alone. Verify via the same probe used here — `pipeline.answer(visa_q, job_context=us_ctx)` must return "Yes" and `…uk_ctx` must return "No" for the same UK Graduate-Visa profile. Land FIRST. | Confirmed-firing root cause from this session's diagnostic. Closes the visa-No symptom for path 2. Highest-leverage of the two upstream fixes since it affects every JD via `try_screening_v2`. |
+| **S26-follow-up-G** | P1 (conditional) | Fix `jd_analyzer.extract_location` UK-default fallback. Either return `None` / `"Unknown"` (and have `_jd_context_hash` honour that), or call the LLM to extract country when the rule-based scan misses. **Gated on F's outcome**: land F, re-run the vision verifier on Anthropic. If visa-class `mismatch_detected = 0` → G is a real bug that didn't fire in RUN 4/5; reprioritise on its own merits (not as an E blocker). If visa-class `mismatch_detected > 0` still → G confirmed firing, promote to P0. | Bug-shape exists regardless, but firing not confirmed in S26 artefacts — verifier JSON only records claim/observed, not screening-pipeline source. Don't speculate priority; let F's outcome decide. |
+| **S26-follow-up-E** (this slice — re-attempt) | **P3 (hygiene)** | Original cache-keying slice — thread `profile_state_hash` + `jd_context_hash` through the 5 unhashed write sites; consider expanding `_PROFILE_HASH_FIELDS` per Outcome 4 dimension spec. Optional cleanup of the 288 zombie rows. | The 288 zombie rows are **inert** — no production lookup queries `('','')`, so they're never served. This slice is now correctly classified as hygiene: tightens future-proofing against a sparse-context lookup leak, but closes zero current correctness gaps. Land only after F (and possibly G) close the actual symptom, on a regression run that has spare cycles. |
+
+### Sub-goal distance delta (no movement this slice)
+
+| SG | Before | After | Δ | Note |
+|---|---|---|---|---|
+| 1 Right value for context | ~12% | ~12% | 0 | No code change; bug identified but not fixed. |
+| 4 Right per real run | ~65% | ~67% | +2pp | Live evidence captured 2026-05-11 for the visa-question root-cause attribution. Verifier-driven diagnosis works for upstream root-cause hunting, not just symptom flagging. |
+| 5 OPRAL on errors | ~68% | ~70% | +2pp | RULE A trace + RULE C exit performed as prescribed; demonstrates the discipline catches "fix point is upstream" cleanly without burning the slice. |
+
+### What to read this entry as evidence of
+
+- The vision verifier is doing its job: it surfaced a real cross-JD-context bug **as a `mismatch_detected` at the truth layer**, which then drove RULE A trace + RULE C scoping to its actual upstream cause. This is the architectural pivot working as designed.
+- The cache slice **needed** the diagnostic probe to disambiguate (A)/(B)/(C). Static analysis alone pointed at the cache; live evidence pointed two layers upstream. RULE A's "ONE live apply or its equivalent" requirement paid off.
+- A no-op slice closed cleanly per RULE C is a SUCCESS, not a failure — it means the discipline gates worked before the substantive work locked in the wrong fix.
