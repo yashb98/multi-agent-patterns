@@ -73,6 +73,7 @@ DECISION_TYPES = frozenset({
     "semantic_match",
     "page_reasoning",
     "screening_outcome",
+    "vision_verification",
 })
 
 MECHANISMS = frozenset({

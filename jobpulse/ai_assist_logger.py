@@ -75,7 +75,7 @@ _DEFAULT_DB_PATH = str(DATA_DIR / "ai_assist_sessions.db")
 # Data models
 # ---------------------------------------------------------------------------
 
-VALID_AGENTS = frozenset({"kimi", "claude", "codex", "openai", "custom"})
+VALID_AGENTS = frozenset({"kimi", "claude", "codex", "openai", "custom", "vision_verifier"})
 VALID_FIX_CATEGORIES = frozenset({
     "value_correction",
     "strategy",

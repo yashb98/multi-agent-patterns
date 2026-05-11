@@ -13,10 +13,15 @@ from shared.pii import assert_prompt_has_wrapped_pii
 
 # Audit S11 (redesign) / TP-21. Vision recovery uses a Moonshot
 # vision-capable chat-completion model so the Kimi mandate
-# (`shared/agents.py`:_use_kimi) extends to vision endpoints. Override
-# via env var if a future Moonshot model name supersedes this one.
+# (`shared/agents.py`:_use_kimi) extends to vision endpoints.
+# Slice S26 (2026-05-11): default upgraded from
+# `moonshot-v1-32k-vision-preview` → `kimi-k2.6` after observed
+# sustained 429s on the preview model line during S26 RUN 1–3
+# while the production `kimi-k2.6` engine responded normally.
+# Env override (`VISION_MODEL`) lets a future Kimi vision model
+# name supersede this one without code changes.
 _VISION_MODEL = os.environ.get(
-    "VISION_MODEL", "moonshot-v1-32k-vision-preview",
+    "VISION_MODEL", "kimi-k2.6",
 )
 
 from jobpulse.form_engine.field_resolver import (

@@ -4546,6 +4546,35 @@ class NativeFormFiller:
             if page_delay > 0:
                 await asyncio.sleep(page_delay * random.uniform(0.8, 1.2))
 
+            # 8b. Vision-canonical verification — Audit 2026-05-11 / Slice S26.
+            # Treats the rendered form as the source of truth. Reads what is
+            # actually visible in the screenshot and compares against the
+            # filler's claim. Runs every page (not just submit page) so
+            # mid-form mismatches are caught before the candidate clicks
+            # Next. Best-effort; verifier failures never break the apply.
+            # Kill switch: VISION_VERIFICATION_ENABLED.
+            try:
+                from jobpulse.form_engine.vision_verifier import verify_form_page
+                vv_result = await verify_form_page(
+                    self._page,
+                    dict(mapping),
+                    page_url=page_url,
+                    platform=platform,
+                    page_num=page_num,
+                    fill_callback=self._fill_by_label,
+                )
+                if vv_result.mismatches or vv_result.vision_unavailable:
+                    logger.warning(
+                        "vision_verifier: page %d mismatches=%d corrections_ok=%d "
+                        "corrections_fail=%d unavailable=%s",
+                        page_num, vv_result.mismatches,
+                        vv_result.corrections_applied,
+                        vv_result.corrections_failed,
+                        vv_result.vision_unavailable,
+                    )
+            except Exception as exc:
+                logger.debug("vision_verifier hook skipped: %s", exc)
+
             # 9. Pre-submit review — SKIP for known domains
             if await self._is_submit_page():
                 if dry_run:
