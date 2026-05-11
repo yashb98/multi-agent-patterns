@@ -1743,3 +1743,145 @@ This slice produces **no substantive code commit**. The two temporary `logger.in
 - The vision verifier is doing its job: it surfaced a real cross-JD-context bug **as a `mismatch_detected` at the truth layer**, which then drove RULE A trace + RULE C scoping to its actual upstream cause. This is the architectural pivot working as designed.
 - The cache slice **needed** the diagnostic probe to disambiguate (A)/(B)/(C). Static analysis alone pointed at the cache; live evidence pointed two layers upstream. RULE A's "ONE live apply or its equivalent" requirement paid off.
 - A no-op slice closed cleanly per RULE C is a SUCCESS, not a failure — it means the discipline gates worked before the substantive work locked in the wrong fix.
+
+---
+
+## S26-follow-up-F — STATUS: ✅ SHIPPED PARTIAL (2026-05-11)
+
+Scope landed: remove the hardcoded `visa_sponsorship_required` field from `jobpulse/screening_answers.py:1063-1070` so the screening LLM tier reasons from `visa_status` + JD country instead of trusting a UK-only static field.
+
+Outcome: **Outcomes 1, 2, 4 ✅. Outcome 3 (live verifier on Anthropic) ✗ — the live apply still filled "No" for the visa question via an upstream path NOT closed by F.** Synthetic-probe correctness gate met; live-symptom correctness gate failed. F is honest progress on one of multiple layers; the visa-No symptom requires additional follow-ups documented below.
+
+### Diff summary
+
+Single-file change: `jobpulse/screening_answers.py:1066` — the line `merged["visa_sponsorship_required"] = "No" if not WORK_AUTH.get("requires_sponsorship") else "Yes"` was removed (replaced by an explanatory comment block citing this audit entry).
+
+`right_to_work` retained — RULE A scope contract was `visa_sponsorship_required` only.
+
+### RULE A trace artefacts
+
+`mcp__code-intelligence__grep_search` for `visa_sponsorship_required` enumerated **2 non-LLM consumers** (beyond the LLM-prompt rendering):
+
+- `jobpulse/screening_pipeline.py:362` — `ScreeningIntent.SPONSORSHIP: ["visa_sponsorship_required"]` in `_resolve_intent_from_profile`. Reads the value verbatim when SPONSORSHIP intent matches.
+- `jobpulse/screening_validator.py:210-211` — `_check_profile_consistency` reads `profile.get("visa_sponsorship_required")` to gate LLM answers against profile consistency.
+
+Both handle a missing key gracefully: validator skips the check (`if profile_sponsorship is not None`); resolver returns None (loop doesn't match), and the caller falls through to the LLM tier. Decision: safe to drop the producer line — no semantic consumer needs re-scope.
+
+Also surfaced (audit scripts, not production runtime — NO scope impact on F): `scripts/audit_s3_live_evidence.py:92`, `scripts/audit_s13_live_evidence.py:118` (same merge pattern in audit replicas), and three tests (`test_screening_llm_jd_relevance.py:39`, `test_screening_pipeline_real.py:66`, `test_screening_v2.py:79,455`) which set `visa_sponsorship_required` explicitly in fixture profiles — unaffected by the production-merge change.
+
+### RULE B1 impact_analysis
+
+30 functions in `screening_answers.py` flagged by the blast-radius traversal, all contained within the same file. No cross-module caller of `_get_v2_pipeline` reads or sets `visa_sponsorship_required` directly. Max risk in the impact set: 0.75 (`_generate_answer`, `_resolve_placeholder`) — neither touches the dropped key.
+
+### RULE B2 pytest
+
+```
+tests/jobpulse/test_screening_pipeline_real.py: 32 warnings
+tests/jobpulse/test_screening_v2.py: 13 warnings
+tests/jobpulse/test_screening_llm_jd_relevance.py: 5 warnings
+tests/jobpulse/test_screening_cache_keying.py: 2 warnings
+tests/jobpulse/test_semantic_decisions_wiring.py: 7 warnings
+
+114 passed, 71 warnings in 506.91s (0:08:26)
+```
+
+All 114 tests pass. No NEW failures. Test fixtures that explicitly set `visa_sponsorship_required` unaffected (they set their own profiles, not the production merge).
+
+### RULE B3 synthetic probe (real BGE-M3 + Kimi LLM, real Qdrant/SQLite cache, fresh singleton)
+
+| Country JD | Expected | Got | Source | Verdict |
+|---|---|---|---|---|
+| US (United States, USD, mid) | Yes | **Yes** | decomposed_aligned | ✅ |
+| UK (United Kingdom, GBP, mid) | No | **No** | decomposed_aligned | ✅ |
+| DE (Germany, EUR, mid) | Yes | **No** | decomposed_aligned | ❌ — H follow-up |
+| CA (Canada, CAD, mid) | Yes | **Yes** | decomposed_aligned | ✅ |
+
+Three of four pass — the **US Yes / UK No contract is MET** per F's spec. The DE failure is a **NEW finding**: with the merged profile carrying `right_to_work="Yes"` (a UK-only signal hardcoded the same way `visa_sponsorship_required` was), the LLM apparently treats UK right-to-work as covering EU territory, returning No for Germany. CA correctly returns Yes — so the rule isn't "any non-UK → No" but specifically "EU-shaped JD context confuses the LLM via the right_to_work field." Filed as follow-up-H below.
+
+Merged profile post-fix (the actual `_v2_pipeline._profile`):
+
+```
+['address', 'country', 'education', 'email', 'first_name', 'github', 'last_name',
+ 'linkedin', 'location', 'notice_period', 'phone', 'phone_code', 'phone_device_type',
+ 'phone_extension', 'portfolio', 'postcode', 'right_to_work', 'salary_expectation',
+ 'title', 'visa_status']
+```
+
+`visa_sponsorship_required` absent (was previously present with the UK-only "No" baked in). `visa_status` retained as the dynamic signal the LLM reasons from.
+
+### RULE B4 live verifier on Anthropic Greenhouse
+
+URL: `https://job-boards.greenhouse.io/anthropic/jobs/4017331008` (US-located role per JD body: "San Francisco / Seattle / NYC").
+
+Direct `apply_job(...dry_run=True)` invocation with `VISION_VERIFICATION_ENABLED=true`. Process ran ~22 min before the slice's effective time cap forced termination. Form-fill telemetry was captured BEFORE the vision verifier got a clean run (`vision_verifier: vision call failed (attempt 1, transient=False): Request timed out.`).
+
+**Pre-verifier fill output for the visa question**:
+
+```
+[jobpulse.native_form_filler] fill ✓ 'Will you now or will you in the future require employment vi' = 'No' [tech=combobox_type_to_search, expected='No']
+[jobpulse.native_form_filler] fill ✓ 'Will you now or will you in the future require employment vi' = 'No' [tech=combobox_type_to_search, expected='No']  # duplicate * variant
+```
+
+**No `DIAG _llm_answer` log line was emitted for the visa question** during the live apply, while DIAG lines fired for 7 other questions (`AI Policy for Application*`, `Why Anthropic?*`, `(Optional) Personal Preferences*`, `Have you ever interviewed at Anthropic before?*`, `Why do you want to work at Anthropic?`, `How do you pronounce your name?`, `Please identify your race`). This means `_llm_answer` was NOT called for the visa question — the answer came from cache OR intent_resolver OR decomposer-sub-question short-circuit.
+
+**3 new cache rows** written during the apply (`screening_semantic_cache.db`):
+- `(Optional) Personal Preferences*` → LLM-generated text
+- `Additional Information*` → LLM-generated text
+- `(Optional) Personal Preferences` → LLM-generated text
+
+All 3 with empty hashes (written by an unhashed path, per the S26-follow-up-E entry — the cache-keying slice that's still P3-hygiene deferred). Notably, **no new row for the visa question** — so its "No" came from a pre-existing path (lookup against legacy rows, or non-cache resolver).
+
+Given the synthetic probe's path 1 (sparse APPLICANT_PROFILE) returns "Yes" for US JD with proper context, but the live apply (which uses `field_mapper.screen_questions(APPLICANT_PROFILE, ...)`) returns "No" without an LLM call, there is at least one additional upstream "No" source not yet traced. Most likely candidates: (a) decomposer sub-question matching a cached legacy row with a different sub-question shape; (b) job_context content in the live apply differs from the synthetic probe (e.g. country not present, role_level not present), changing the JD hash and unmasking different cache behaviour; (c) a separate stored-answer path. Tracing this is **follow-up-J** scope, not F.
+
+### Outcome 4 (`right_to_work` co-firing assessment)
+
+The DE failure in RULE B3 strongly indicates `right_to_work="Yes"` is misleading the LLM on EU JDs (LLM appears to treat UK right-to-work as covering EU). Same bug shape as `visa_sponsorship_required` — a profile field hardcoded from a UK-only env flag (`WORK_AUTH.right_to_work_uk`). Out of scope for F per the slice contract — filed as **S26-follow-up-H** below.
+
+### Data cleanup landed in this slice
+
+`data/agent_rules.db` row 4 deleted (factually wrong + regex pattern; user-confirmed during slice execution):
+
+```
+rule_id     = 4
+rule_type   = screening_override
+source      = user_feedback (2026-04-20)
+pattern     = visa.*sponsorship|require.*visa|right.*work    ← regex (violates project rule)
+action      = prefer_option
+value       = "No, I have permanent residency / right to work in the UK"  ← factually wrong: user has Graduate Visa, NOT permanent residency
+active      = 0 (already inactive — would not have fired)
+times_applied = 0
+```
+
+Row was inactive (`active=0`) so it was not the source of the live-apply "No". Deletion is data hygiene + project-rule compliance. The remaining 3 active=0 rules in `agent_rules.db` also have regex patterns and need migration → **S26-follow-up-I** below.
+
+### Follow-ups filed by this slice
+
+| ID | P | Scope | Trigger |
+|---|---|---|---|
+| **S26-follow-up-H** | **P0** | Remove the `right_to_work` hardcoding from `screening_answers.py:1067` (and any equivalent in `field_mapper.screen_questions` profile-source path). Same bug shape as F: `WORK_AUTH.right_to_work_uk` is a UK-only env flag baked into a country-independent profile field. Verify via RULE B3 probe across US/UK/DE/CA — all four must produce the right f(profile, JD) answer for visa-sponsorship after H lands. | Surfaced by F's RULE B3 DE failure on 2026-05-11. The merged profile post-F still carries `right_to_work="Yes"`, and the LLM treats this as covering EU JDs (DE returns No when it should be Yes). |
+| **S26-follow-up-I** | P1 | Migrate all regex-pattern rules in `data/agent_rules.db` to embedding/semantic matching per `.claude/rules/jobpulse.md` "No Regex for Classification (MANDATORY)". Currently 3 inactive rules remain post-F-cleanup: rule_id=1 (`programming.*language\|backend.*language`), rule_id=2 (`adtech\|advertising\|ad.*tech\|targeting.*bidding`), rule_id=7 (`post.*code\|postal.*code\|zip`). All `active=0`, so this is hygiene/project-rule-compliance, not symptom-closing. | Surfaced by F's RULE A pattern-survey on 2026-05-11. The `screening_override` rule_type itself is a category that historically encoded UK-only assumptions in regex — pattern-survey should also check whether re-enabling any rule risks reintroducing the F-class bug. |
+| **S26-follow-up-J** | P1 | Trace where the live apply's "No" for the visa question actually originates given that (a) the merged-profile fix is in place; (b) `_llm_answer` was demonstrably NOT called for the visa question (no `DIAG _llm_answer` line); (c) the cache lookup with non-empty hashes shouldn't match the empty-hash legacy rows per the e5e7177 diagnostic. Most likely the decomposer breaks the visa question into sub-questions whose cache-lookup hashes resolve differently, or `job_context` in `field_mapper.screen_questions` is sparser than the synthetic probe assumed. Repeat the diagnostic with `DIAG cache.lookup` + `DIAG cache.cache` loggers re-armed AND a `DIAG _resolve_intent_from_profile` log on the SPONSORSHIP path, then re-run the live apply. | Surfaced by F's RULE B4 on 2026-05-11. Without this trace, the visa-No symptom cannot be closed for the Anthropic live verifier; closing F's spec Outcome 3 depends on J's finding. |
+
+The earlier-filed `S26-follow-up-G` (jd_analyzer `extract_location` UK-default) remains: **P1 (conditional)**, gated on whether J's finding shows JD-country mis-parsing as one of the contributing layers. If J's trace confirms jd_analyzer's UK-default is producing the wrong JD hash for Anthropic, G promotes to P0; otherwise G remains conditional.
+
+### SG distance delta
+
+| SG | Before | After | Δ | Note |
+|---|---|---|---|---|
+| 1 Right value for context | ~12% | **~14%** | +2pp | Synthetic-probe correctness now holds for path 2 across US/UK/CA (3 of 4 country contexts). Live apply still wrong, so the production-correctness gate hasn't fully advanced — but one of the two confirmed-firing root causes is closed. |
+| 2 Right mechanism | ~42% | ~42% | 0 | No change — F closes a hardcoded constant, doesn't change the underlying mechanism mix. |
+| 3 Right across every ATS | ~9% | ~9% | 0 | Only Greenhouse exercised; non-Greenhouse adapters still uncovered. |
+| 4 Right per real run | ~67% | **~70%** | +3pp | Three live diagnostic runs this slice (synthetic-probe + diagnostic earlier + live apply); evidence-driven RULE C scoping caught H + I + J before they shipped as silent bugs. |
+| 5 OPRAL on errors | ~70% | **~72%** | +2pp | Live apply surfaced a NEW root cause (J) and confirmed the dynamic-vs-hardcoded principle violation in `agent_rules.db` (H + I); ship-partial-with-three-follow-ups is the discipline working as designed. |
+
+### What this slice did NOT achieve
+
+- **Live verifier visa-class `mismatch_detected = 0` (Outcome 3)** — the Anthropic apply still filled "No" for the visa question via a path not yet traced (`_llm_answer` was not called per log). Outcome 3 requires follow-up J at minimum, possibly H too.
+- **Right answer on EU JDs (RULE B3 DE)** — `right_to_work` co-firing surfaced; follow-up H needed.
+- **Full ATS coverage** — still only Greenhouse exercised; non-Greenhouse adapters remain S26-follow-up-A scope.
+
+### What to read this entry as evidence of
+
+- **F's contract is genuinely met** for the synthetic-probe acceptance criterion. The `screening_answers.py:1066` hardcoding was a real root cause, and removing it correctly flips path 2's US visa answer from No to Yes. Anyone re-reading this slice for "did F's promise hold?" should answer **yes — within F's scope**.
+- The visa-No symptom is a **5+ layer propagation chain** (cache zombies, screening_answers hardcode [F closed], right_to_work hardcode [H], jd_analyzer UK default [G], live-path mystery [J], agent_rules regex [I]). Closing F alone doesn't close the live symptom — and that's exactly what RULE C exists to surface honestly. Better than the alternative (ship F + claim victory + watch the live verifier keep flagging visa mismatches).
+- The vision verifier remains the truth layer that catches these as live `mismatch_detected` evidence at the form-fill DOM, regardless of which upstream layer is producing the wrong answer. SG4 advances every time the verifier catches a new layer.

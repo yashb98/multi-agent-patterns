@@ -1063,7 +1063,15 @@ def _get_v2_pipeline():
         from jobpulse.screening_pipeline import ScreeningPipeline
         merged = dict(PROFILE)
         merged["visa_status"] = str(WORK_AUTH.get("visa_status", ""))
-        merged["visa_sponsorship_required"] = "No" if not WORK_AUTH.get("requires_sponsorship") else "Yes"
+        # S26-follow-up-F (2026-05-11): visa_sponsorship_required was previously
+        # hardcoded from WORK_AUTH.requires_sponsorship — a UK-only flag — which
+        # then dominated the LLM tier's reasoning on non-UK JDs (the LLM trusted
+        # the static "No" even when JD country was US, EU, etc.). Diagnostic in
+        # commit e5e7177 proved this was the firing root cause of the Anthropic
+        # Greenhouse visa-No mismatch surfaced by S26 RUN 4/5. Removed so the
+        # LLM tier reasons from visa_status + job_context.country instead;
+        # answer is now f(profile, JD), not a profile constant. See audit doc
+        # section "S26-follow-up-F" for the live-evidence trail.
         merged["right_to_work"] = "Yes" if WORK_AUTH.get("right_to_work_uk") else "No"
         merged["notice_period"] = str(WORK_AUTH.get("notice_period", ""))
         merged["salary_expectation"] = str(WORK_AUTH.get("salary_expectation", ""))
