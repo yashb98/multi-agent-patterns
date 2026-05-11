@@ -4562,6 +4562,7 @@ class NativeFormFiller:
                     platform=platform,
                     page_num=page_num,
                     fill_callback=self._fill_by_label,
+                    field_metadata=getattr(self, "_fields_by_label", None),
                 )
                 if vv_result.mismatches or vv_result.vision_unavailable:
                     logger.warning(

@@ -41,6 +41,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
@@ -125,17 +126,132 @@ _WEBP_LOSSLESS = os.environ.get("VISION_VERIFIER_WEBP_LOSSLESS", "1").lower() in
 _WEBP_QUALITY = int(os.environ.get("VISION_VERIFIER_WEBP_QUALITY", "92"))
 
 
-_CHUNK_OVERLAP_PX = int(os.environ.get("VISION_VERIFIER_CHUNK_OVERLAP", "200"))
-_MAX_CHUNKS = int(os.environ.get("VISION_VERIFIER_MAX_CHUNKS", "5"))
+# Per-field margin (px) around each crop. Auto-shrinks to ``_MIN_CROP_MARGIN``
+# if the composite would exceed ``_COMPOSITE_HEIGHT_CAP``.
+_CROP_MARGIN = int(os.environ.get("VISION_VERIFIER_CROP_MARGIN", "12"))
+_MIN_CROP_MARGIN = 4
+_COMPOSITE_HEIGHT_CAP = int(os.environ.get("VISION_VERIFIER_HEIGHT_CAP", "4000"))
+# Caption strip placed above each crop carrying the ordinal label so vision
+# can map cleanly back to the prompt's claim list even when the crop's own
+# label region is partially clipped.
+_CAPTION_STRIP_PX = 28
+
+# Required-marker stripper (same shape as
+# native_form_filler._strip_required_marker). Structural normalization;
+# acceptable per "regex only for format normalization, not semantic
+# classification" rule.
+_REQUIRED_MARKER_RE = re.compile(
+    r"\s*(?:\*|\(\s*required\s*\)|\brequired\b|\(\s*\*\s*\))\s*$",
+    re.IGNORECASE,
+)
 
 
-def _compress_for_vision(raw_png: bytes) -> bytes:
-    """Back-compat single-blob API. Returns the FIRST chunk of
-    ``_prepare_for_vision`` — i.e. the whole image if it fits, else the
-    top section. Tests use this when they don't care about multi-chunk
-    aggregation, only encoder behaviour."""
-    chunks = _prepare_for_vision(raw_png)
-    return chunks[0] if chunks else raw_png
+def _strip_required_marker(label: str) -> str:
+    if not label:
+        return label
+    return _REQUIRED_MARKER_RE.sub("", label).rstrip()
+
+
+# JS that computes the document-relative bounding box for a form-input
+# element by unioning the input rect with its associated <label> rect and
+# any aria-describedby help-text rect. Returns ``null`` if no rect could
+# be measured (off-screen / display:none).
+_FIELD_BBOX_JS = """
+(el) => {
+  // Discipline (S26-follow-up-K post-review): only TRUST direct DOM
+  // label associations — el.labels[0] (set by <label for=>) and
+  // aria-labelledby. The speculative parentElement walk had a high
+  // false-positive rate on free-text textareas without proper labels
+  // (Anthropic free-text fields → bbox union pulled in JD body text
+  // from the nearest <h2>; ~14/19 panels in the live Anthropic
+  // artifact contained "Diversity & inclusion" / "Your safety matters"
+  // section headings instead of field labels). Without the walk,
+  // unlabeled fields get an input-only crop — small but clean.
+
+  // Walk up to a visibly-rendered ancestor when the input element
+  // itself is degenerate (React-select / shadow-DOM combobox patterns
+  // use a 1×1 hidden <input> with the actual visible widget rendered
+  // as a sibling DIV). Without this, the verifier crops a 1×1 region
+  // whose pixels in the full-page screenshot happen to be whatever JD
+  // body text sat behind the hidden input.
+  let target = el;
+  for (let depth = 0; depth < 5; depth++) {
+    const r = target.getBoundingClientRect();
+    if (r.width >= 40 && r.height >= 20) break;
+    if (!target.parentElement) break;
+    target = target.parentElement;
+  }
+  const ir = target.getBoundingClientRect();
+  let lbl = null;
+  try { if (el.labels && el.labels.length) lbl = el.labels[0]; } catch (e) {}
+  if (!lbl) {
+    const aby = el.getAttribute('aria-labelledby');
+    if (aby) {
+      for (const id of aby.split(/\\s+/)) {
+        const e = document.getElementById(id);
+        if (e) { lbl = e; break; }
+      }
+    }
+  }
+  let lr = lbl ? lbl.getBoundingClientRect() : null;
+  // Reject labels that aren't actually field labels:
+  //   1. Wrapper labels that fully contain the input (Greenhouse free-
+  //      text textareas have <label> blocks wrapping JD body + the
+  //      textarea — label.height is several hundred px and includes
+  //      paragraph text).
+  //   2. Labels far away from the input top (> 80 px gap on both
+  //      sides — not adjacent, so probably not associated).
+  //   3. Labels taller than 60 px (real field labels are 1–2 lines;
+  //      tall labels are wrappers or section blocks).
+  if (lr) {
+    const wraps_input = (
+      lr.top <= ir.top + 2 && lr.bottom >= ir.bottom - 2
+      && lr.left <= ir.left + 2 && lr.right >= ir.right - 2
+    );
+    const too_tall = lr.height > 60;
+    const far_above = (ir.top - lr.bottom) > 80;
+    const far_below = (lr.top - ir.bottom) > 80;
+    if (wraps_input || too_tall || far_above || far_below) {
+      lr = null;
+    }
+  }
+  let dr = null;
+  const dby = el.getAttribute('aria-describedby');
+  if (dby) {
+    for (const id of dby.split(/\\s+/)) {
+      const e = document.getElementById(id);
+      if (e) {
+        const r = e.getBoundingClientRect();
+        // Help-text rect must be within 100 px of input — otherwise
+        // it's likely a global help block, not field-scoped.
+        if (r.width > 0 && r.height > 0
+            && Math.abs(r.top - ir.bottom) < 100
+            && Math.abs(ir.top - r.bottom) < 100) {
+          dr = r;
+          break;
+        }
+      }
+    }
+  }
+  const rects = [ir, lr, dr].filter(r => r && r.width > 0 && r.height > 0);
+  if (rects.length === 0) return null;
+  const x_min = Math.min(...rects.map(r => r.left));
+  const y_min = Math.min(...rects.map(r => r.top));
+  const x_max = Math.max(...rects.map(r => r.right));
+  const y_max = Math.max(...rects.map(r => r.bottom));
+  // Hard height cap — defends against pathological textareas / wrapper
+  // divs whose computed bbox spans an entire form section. Crop the
+  // input + ≤ 250 px context, no more.
+  const h_raw = y_max - y_min;
+  const h = Math.min(h_raw, 250);
+  return {
+    x: Math.max(0, x_min + window.scrollX),
+    y: Math.max(0, y_min + window.scrollY),
+    width: Math.max(1, x_max - x_min),
+    height: Math.max(1, h)
+  };
+}
+"""
 
 
 def _encode_webp(img) -> bytes:
@@ -149,36 +265,15 @@ def _encode_webp(img) -> bytes:
     return buf.getvalue()
 
 
-def _prepare_for_vision(raw_png: bytes) -> list[bytes]:
-    """Prepare the screenshot for vision — preserve detail by chunking
-    instead of cropping/downscaling.
+def _compress_for_vision(raw_png: bytes) -> bytes:
+    """Encode a single PNG to WebP, downscaling only if width exceeds Kimi's
+    4K rec. Used by callers that already have a pre-sized image (e.g. an
+    individual chunk handed to ``_call_vision`` directly).
 
-    Strategy (in order):
-      1. Decode PNG once.
-      2. If width > 4096, scale uniformly down so width ≤ 4096
-         (rarely triggered — most ATS forms are ≤ 1700 px wide). This
-         is the only place we lose horizontal detail, and it only
-         happens on forms wider than Kimi's 4K recommendation.
-      3. If height ≤ 4096, encode the whole image as lossless WebP →
-         single chunk, full detail.
-      4. If height > 4096, split vertically into ≤ N chunks of ~4096 px
-         each with a small overlap so a field that lands on a chunk
-         boundary still appears intact in one of them. Each chunk is
-         encoded losslessly — no spatial-detail loss anywhere.
-      5. Hard cap on chunk count (``_MAX_CHUNKS`` × ~$0.0003 each =
-         ~$0.0015 per page worst case) so an unusually long form can't
-         bust Outcome 4's $0.05/apply ceiling.
-
-    User intent (S26 RUN3 feedback): "use CNN for compression rather than
-    cropping so quality of detail stays the same". WebP's encoder is a
-    learned-block predictor (closer to a CNN-style content-aware codec
-    than JPEG's static DCT) and in ``lossless=True`` mode preserves all
-    pixel-level detail. Chunking avoids the bilinear/Lanczos resize that
-    would otherwise be required to fit a 9000+ px form into a single 4K
-    image.
-
-    Returns a list of WebP byte blobs, in top-to-bottom order. Empty list
-    iff PIL isn't available (caller falls back to vision_unavailable).
+    Pre-S26-follow-up-K this function vertically chunked tall screenshots.
+    The K rewrite folded chunking into the field-crop composite pipeline,
+    so the chunking branch was removed (`_prepare_for_vision` no longer
+    exists). Kept as a single-blob primitive for tests + direct callers.
     """
     try:
         import io
@@ -189,60 +284,334 @@ def _prepare_for_vision(raw_png: bytes) -> list[bytes]:
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
         w, h = img.size
-
         if w > _MAX_LONG_EDGE:
             scale = _MAX_LONG_EDGE / float(w)
             img = img.resize(
                 (_MAX_LONG_EDGE, max(1, int(h * scale))), Image.LANCZOS,
             )
-            w, h = img.size
-
-        if h <= _MAX_LONG_EDGE:
-            return [_encode_webp(img)]
-
-        chunks: list[bytes] = []
-        chunk_h = _MAX_LONG_EDGE
-        step = chunk_h - _CHUNK_OVERLAP_PX
-        y = 0
-        while y < h and len(chunks) < _MAX_CHUNKS:
-            bottom = min(y + chunk_h, h)
-            piece = img.crop((0, y, w, bottom))
-            chunks.append(_encode_webp(piece))
-            if bottom >= h:
-                break
-            y += step
-        return chunks
+        return _encode_webp(img)
     except Exception as exc:
-        logger.debug("vision_verifier: prepare fallback to raw PNG: %s", exc)
-        return [raw_png]
+        logger.debug("vision_verifier: compress fallback to raw PNG: %s", exc)
+        return raw_png
 
 
-async def _screenshot_form_area(page: "Page") -> bytes:
-    """Screenshot the form container if locatable, else viewport.
+async def _full_page_screenshot(page: "Page") -> bytes:
+    """One screenshot of the whole scrollable form, in document coords.
 
-    Mirrors ``field_mapper._screenshot_form_area`` but kept local so the
-    verifier doesn't depend on internal field-mapper helpers.
+    Document-relative coords (from ``getBoundingClientRect() +
+    window.scrollX/Y``) line up 1:1 with the pixels of a full_page
+    screenshot, so each field's crop region is computable without
+    per-element scroll-into-view + per-element screenshot RPCs.
     """
-    for selector in ("form", "[role='form']", "#application", ".application-form"):
+    return await page.screenshot(type="png", full_page=True)
+
+
+async def _resolve_label_locator(
+    page: "Page",
+    label: str,
+    field_metadata: dict | None,
+):
+    """Locator resolution cascade mirroring `_fill_by_label`'s primitives.
+
+    Returns a Playwright Locator (with `.count() > 0`) or ``None``.
+    The mirroring is intentional: the verifier's bbox extraction succeeds
+    exactly when the filler could have re-resolved the same field, so
+    unresolvable claims are also unverifiable claims — surfacing them as
+    `vision_unavailable` is the right signal.
+    """
+    stripped = _strip_required_marker(label)
+
+    if field_metadata:
+        meta = field_metadata.get(label) or field_metadata.get(stripped)
+        if meta:
+            sel = meta.get("selector")
+            if sel:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count():
+                        return loc
+                except Exception:
+                    pass
+            attached = meta.get("locator")
+            if attached is not None:
+                try:
+                    if await attached.count():
+                        return attached
+                except Exception:
+                    pass
+
+    for builder in (
+        lambda: page.get_by_label(stripped, exact=False).first,
+        lambda: page.get_by_placeholder(stripped, exact=False).first,
+    ):
         try:
-            loc = page.locator(selector).first
-            if await loc.count() and await loc.is_visible():
-                return await loc.screenshot(type="png")
+            loc = builder()
+            if await loc.count():
+                return loc
         except Exception:
             continue
-    return await page.screenshot(type="png")
+
+    for role in ("textbox", "combobox", "spinbutton", "checkbox", "radio"):
+        try:
+            loc = page.get_by_role(role, name=stripped).first
+            if await loc.count():
+                return loc
+        except Exception:
+            continue
+    return None
 
 
-def _build_prompt(claim_rows: list[tuple[str, str]]) -> str:
+async def _extract_field_bboxes(
+    page: "Page",
+    claim_rows: list[tuple[str, str]],
+    field_metadata: dict | None,
+) -> list[dict]:
+    """Resolve a locator per filled label, extract document-relative bbox.
+
+    Returns one entry per claim in the same order, each with keys:
+      - ``ordinal`` (1-indexed)
+      - ``label`` (original, including any required marker)
+      - ``value`` (claimed value)
+      - ``bbox`` (dict {x,y,width,height}) or ``None`` if unresolvable
+    """
+    entries: list[dict] = []
+    for idx, (label, value) in enumerate(claim_rows, start=1):
+        entry = {
+            "ordinal": idx,
+            "label": label,
+            "value": value,
+            "bbox": None,
+        }
+        locator = await _resolve_label_locator(page, label, field_metadata)
+        if locator is None:
+            entries.append(entry)
+            continue
+        try:
+            box = await locator.evaluate(_FIELD_BBOX_JS)
+        except Exception as exc:
+            logger.debug("vision_verifier: bbox js failed for %r: %s", label[:60], exc)
+            box = None
+        if isinstance(box, dict) and all(k in box for k in ("x", "y", "width", "height")):
+            entry["bbox"] = {
+                "x": float(box["x"]),
+                "y": float(box["y"]),
+                "width": float(box["width"]),
+                "height": float(box["height"]),
+            }
+        entries.append(entry)
+    return entries
+
+
+def _composite_font():
+    """Best-effort font for ordinal markers. ImageFont.load_default works
+    everywhere but the glyph is small; we try a few common system fonts
+    first."""
+    try:
+        from PIL import ImageFont
+
+        for candidate in (
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ):
+            try:
+                return ImageFont.truetype(candidate, 16)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _build_composite(
+    screenshot_png: bytes,
+    bbox_entries: list[dict],
+) -> tuple[bytes | None, list[dict]]:
+    """Crop each filled field from the full-page screenshot, stamp an
+    ordinal caption, vertically tile into one WebP composite.
+
+    Returns ``(composite_bytes, panels)`` where ``panels`` is the subset of
+    ``bbox_entries`` that produced a valid crop. ``composite_bytes`` is
+    ``None`` if no field could be cropped (caller falls back to the whole
+    screenshot via ``_compress_for_vision``).
+    """
+    try:
+        import io
+
+        from PIL import Image, ImageDraw
+    except Exception as exc:
+        logger.debug("vision_verifier: PIL unavailable: %s", exc)
+        return None, []
+
+    try:
+        img = Image.open(io.BytesIO(screenshot_png))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+    except Exception as exc:
+        logger.debug("vision_verifier: screenshot decode failed: %s", exc)
+        return None, []
+
+    img_w, img_h = img.size
+    if img_w == 0 or img_h == 0:
+        return None, []
+
+    panels_with_bbox = [e for e in bbox_entries if e.get("bbox")]
+    if not panels_with_bbox:
+        return None, []
+
+    panels_with_bbox.sort(key=lambda e: (e["bbox"]["y"], e["bbox"]["x"]))
+
+    # First pass with full margin; shrink if the projected composite would
+    # exceed the height cap (rarely fires on Greenhouse forms).
+    margin = _CROP_MARGIN
+    while True:
+        total_h = 0
+        for e in panels_with_bbox:
+            b = e["bbox"]
+            crop_h = max(1, int(b["height"] + 2 * margin))
+            total_h += crop_h + _CAPTION_STRIP_PX + 6  # 6 px gap
+        if total_h <= _COMPOSITE_HEIGHT_CAP or margin <= _MIN_CROP_MARGIN:
+            break
+        margin = max(_MIN_CROP_MARGIN, margin - 4)
+
+    crops: list[dict] = []
+    max_w = 0
+    for e in panels_with_bbox:
+        b = e["bbox"]
+        x0 = max(0, int(b["x"] - margin))
+        y0 = max(0, int(b["y"] - margin))
+        x1 = min(img_w, int(b["x"] + b["width"] + margin))
+        y1 = min(img_h, int(b["y"] + b["height"] + margin))
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            continue
+        crop = img.crop((x0, y0, x1, y1))
+        crops.append({"entry": e, "crop": crop})
+        if crop.width > max_w:
+            max_w = crop.width
+
+    if not crops:
+        return None, []
+    if max_w > _MAX_LONG_EDGE:
+        # Edge-case: a single field wider than the Kimi 4K rec — scale just
+        # the offending crops, not the whole composite, so non-wide fields
+        # stay 1:1.
+        for c in crops:
+            if c["crop"].width > _MAX_LONG_EDGE:
+                scale = _MAX_LONG_EDGE / float(c["crop"].width)
+                nw = _MAX_LONG_EDGE
+                nh = max(1, int(c["crop"].height * scale))
+                c["crop"] = c["crop"].resize((nw, nh), Image.LANCZOS)
+        max_w = min(max_w, _MAX_LONG_EDGE)
+
+    total_h = sum(c["crop"].height + _CAPTION_STRIP_PX + 6 for c in crops)
+    composite = Image.new("RGB", (max_w + 6, total_h + 6), color=(255, 255, 255))
+    draw = ImageDraw.Draw(composite)
+    font = _composite_font()
+
+    y_cursor = 3
+    panels_meta: list[dict] = []
+    for c in crops:
+        entry = c["entry"]
+        crop = c["crop"]
+        ordinal = entry["ordinal"]
+        # Caption strip carrying the ordinal marker — kept short so vision
+        # can read it without OCR drama. Stripping label here is fine:
+        # the prompt already enumerates the full label per ordinal.
+        caption = f"[{ordinal:02d}]"
+        # Caption strip is pale-blue band so vision sees a clear panel
+        # boundary even when crops have similar backgrounds.
+        draw.rectangle(
+            (0, y_cursor, max_w + 6, y_cursor + _CAPTION_STRIP_PX),
+            fill=(228, 238, 255),
+        )
+        if font is not None:
+            try:
+                draw.text(
+                    (8, y_cursor + 4),
+                    caption,
+                    fill=(20, 60, 140),
+                    font=font,
+                )
+            except Exception:
+                pass
+        y_cursor += _CAPTION_STRIP_PX
+        composite.paste(crop, (3, y_cursor))
+        # Thin red border around each crop so vision can clearly tell
+        # where one field ends and the next begins.
+        draw.rectangle(
+            (2, y_cursor - 1, 3 + crop.width + 1, y_cursor + crop.height + 1),
+            outline=(220, 30, 30),
+            width=1,
+        )
+        y_cursor += crop.height + 6
+        panels_meta.append({**entry, "ordinal": ordinal})
+
+    try:
+        composite_bytes = _encode_webp(composite)
+    except Exception as exc:
+        logger.debug("vision_verifier: composite encode failed: %s", exc)
+        return None, []
+
+    return composite_bytes, panels_meta
+
+
+def _build_prompt(claim_rows: list[tuple[str, str]], *, ordinals: bool = True) -> str:
     """Build the vision prompt. Only claim mapping + instructions — no profile.
 
     The whole point of vision verification is that the rendered form (in
     the screenshot) is the source of truth. Adding profile data into the
     prompt would re-introduce the metadata-pipeline failures this layer
     is meant to bypass.
+
+    When ``ordinals=True`` (default, the S26-follow-up-K composite path),
+    each claim is prefixed by a 2-digit ordinal matching the caption strip
+    above each field crop in the composite image. The vision model can
+    then key its verdicts by ordinal instead of full label text — robust
+    against duplicate labels, trailing required markers, and long
+    question text.
     """
-    lines = [f'  - "{label}": "{value}"' for label, value in claim_rows]
+    if ordinals:
+        lines = [
+            f'  [{i:02d}] "{label}": "{value}"'
+            for i, (label, value) in enumerate(claim_rows, start=1)
+        ]
+    else:
+        lines = [f'  - "{label}": "{value}"' for label, value in claim_rows]
     claim_block = "\n".join(lines) if lines else "  (no fields claimed filled)"
+    if ordinals:
+        return (
+            "You are auditing a job-application form. The image below is a "
+            "TILED EVIDENCE SHEET — vertically stacked CROPS of individual "
+            "form fields the candidate's automated filler just finished "
+            "filling. Each crop is one form field showing its label + filled "
+            "value (and any help-text near the field). Crops are separated "
+            "by thin red borders, and each crop has a pale-blue CAPTION "
+            "STRIP directly above it carrying an ordinal marker like [01], "
+            "[02], [03] ... read those marks to map a crop to the claim "
+            "list below.\n\n"
+            "Claimed fills (ordinal → label → value):\n"
+            f"{claim_block}\n\n"
+            "For each ordinal you can locate in the image, return one "
+            "verdict object with these keys:\n"
+            "  - ordinal: the integer marker shown above the crop (1..N)\n"
+            "  - label: the exact label string from the claim list at that "
+            "ordinal\n"
+            '  - observed_value: the value visibly entered in the field, '
+            'or "<empty>" if blank, or "<not found>" if you cannot locate '
+            "the value within that crop\n"
+            "  - matches_claim: true if observed_value semantically matches "
+            "the claimed value (case/whitespace differences are fine), "
+            "false otherwise\n"
+            "  - contradicts_help_text: true ONLY if there is help-text or "
+            "a description visible near the field whose meaning is "
+            "contradicted by the claimed value (e.g. help-text says 'select "
+            "Yes' and claim is 'No'), false otherwise\n"
+            "  - reason: one short sentence explaining your verdict\n\n"
+            'Return STRICT JSON only, in this shape: {"verdicts": [{...}, '
+            '{...}]}. No prose, no markdown fences. Include one verdict per '
+            "claim ordinal — if a particular crop is missing from the image, "
+            'set observed_value to "<not found>".'
+        )
     return (
         "You are auditing a job-application form. The screenshot below is the "
         "form a candidate's automated filler just finished filling. Below are "
@@ -285,25 +654,29 @@ def _domain_from_url(url: str) -> str:
 
 def _save_artifact(
     *,
-    screenshot_png: bytes | list[bytes],
+    composite: bytes | None,
+    fallback_screenshot: bytes | None,
     domain: str,
     page_num: int,
     verdicts: list[FieldVerdict],
+    panels: list[dict],
     page_url: str,
     platform: str,
     cost_usd: float,
     elapsed_ms: float,
+    chunks_used: int,
+    composite_layout: dict | None,
 ) -> str | None:
-    """Persist the screenshot + verdicts JSON for replayable human spot-check.
+    """Persist the image + verdicts JSON for replayable human spot-check.
 
-    Without this, the screenshot vision worked from is consumed and gone —
-    the human cannot retroactively verify Outcome 1 (≥95% read accuracy).
-    Saved to ``data/audits/vision_verifier/<ts>_<domain>_p<N>.{ext,json}``
-    where ``<ext>`` matches the actual MIME (``png``, ``webp``, ``jpg``).
-    The bytes saved are the **same bytes vision processed** — so when the
-    human spot-checks accuracy, they're inspecting the exact image vision
-    interpreted, not a higher-fidelity precursor.
-    Best-effort: failure to save never breaks the apply.
+    Two image blobs may be saved:
+      - ``<base>_composite.webp`` — the field-evidence sheet vision saw
+        (S26-follow-up-K). One per page, NEVER chunked.
+      - ``<base>_fallback.png`` — only when composite couldn't be built and
+        the verifier sent a whole-page screenshot to vision instead.
+
+    The JSON sidecar records ``chunks_used`` so the SHIPPED audit doc can
+    machine-check Outcome 1 ("single-shot") without re-reading the binary.
     """
     if os.environ.get("VISION_VERIFIER_SAVE_ARTIFACTS", "1").lower() in {"0", "false", "no"}:
         return None
@@ -311,23 +684,18 @@ def _save_artifact(
         os.makedirs(_ARTIFACT_DIR, exist_ok=True)
         ts = int(time.time())
         safe_domain = domain.replace("/", "_") or "unknown"
-        chunks = (
-            screenshot_png
-            if isinstance(screenshot_png, list)
-            else [screenshot_png]
-        )
-        ext_map = {
-            "image/png": "png",
-            "image/jpeg": "jpg",
-            "image/webp": "webp",
-            "image/gif": "gif",
-        }
         base = os.path.join(_ARTIFACT_DIR, f"{ts}_{safe_domain}_p{page_num}")
-        for i, blob in enumerate(chunks):
-            ext = ext_map.get(_mime_for(blob), "bin")
-            suffix = "" if len(chunks) == 1 else f"_c{i}"
-            with open(f"{base}{suffix}.{ext}", "wb") as fh:
-                fh.write(blob)
+        composite_path = None
+        fallback_path = None
+        if composite is not None:
+            composite_path = f"{base}_composite.webp"
+            with open(composite_path, "wb") as fh:
+                fh.write(composite)
+        if fallback_screenshot is not None:
+            ext = "png" if _mime_for(fallback_screenshot) == "image/png" else "webp"
+            fallback_path = f"{base}_fallback.{ext}"
+            with open(fallback_path, "wb") as fh:
+                fh.write(fallback_screenshot)
         payload = {
             "ts": ts,
             "page_url": page_url,
@@ -336,6 +704,23 @@ def _save_artifact(
             "page_num": page_num,
             "cost_usd": cost_usd,
             "elapsed_ms": elapsed_ms,
+            "chunks_used": chunks_used,
+            "composite_path": (
+                os.path.basename(composite_path) if composite_path else None
+            ),
+            "fallback_path": (
+                os.path.basename(fallback_path) if fallback_path else None
+            ),
+            "composite_layout": composite_layout,
+            "panels": [
+                {
+                    "ordinal": p.get("ordinal"),
+                    "label": p.get("label"),
+                    "value": p.get("value"),
+                    "bbox": p.get("bbox"),
+                }
+                for p in panels
+            ],
             "verdicts": [
                 {
                     "label": v.label,
@@ -379,33 +764,54 @@ def _mime_for(blob: bytes) -> str:
     return "image/png"
 
 
+# Per-vision-call timeout (s). Moonshot's vision queue intermittently
+# stalls past 60 s even on small composites (S26-follow-up-K live run
+# evidence: 19/19 fields cropped to a 30 KB WebP and the call still hit
+# the 180 s read timeout). A 90 s ceiling fails-fast on those stalls,
+# letting the verifier surface ``vision_unavailable`` quickly instead of
+# burning 9+ minutes on compound retries.
+_VISION_CALL_TIMEOUT_S = float(os.environ.get("VISION_VERIFIER_CALL_TIMEOUT_S", "90"))
+
+
 async def _call_vision(
     screenshot_png: bytes, prompt: str
 ) -> tuple[str | None, float, float]:
-    """Single Moonshot vision call with retry on 429 / transient errors.
+    """Single Moonshot vision call with bounded retry on transient errors.
 
     Returns ``(raw_text, cost_usd, elapsed_ms)`` on success.
     Returns ``(None, 0.0, elapsed)`` after exhausting retries — caller
     maps to ``vision_unavailable``. Cost is best-effort via
     ``record_openai_usage``.
 
-    Retry policy: 3 attempts with exponential backoff (2s, 5s, 12s) on
-    429 / engine_overloaded / transient errors. Without this layer, every
-    transient Moonshot overload silently zeros the verifier out — the
-    initial S26 live run hit this and emitted 19 ``vision_unavailable``
-    rows in a row, demonstrating the gap. OPRAL rule 5: if it can recur,
-    fix is incomplete.
+    Retry policy (S26-follow-up-K tightening): TWO total attempts, with
+    a 4 s backoff between them, and ``max_retries=0`` on the OpenAI
+    client so its built-in 2× retry doesn't compound with this loop.
+    Per-attempt timeout is ``_VISION_CALL_TIMEOUT_S``. Worst case wall
+    clock: ``2 × _VISION_CALL_TIMEOUT_S + 4`` s (vs 36 minutes under the
+    pre-K compound-retry stack).
+
+    OPRAL rule 5: if a Moonshot stall can recur (it can, daily), the
+    fix is "fail fast and emit vision_unavailable", not "wait longer".
     """
     started = time.monotonic()
     mime = _mime_for(screenshot_png)
     b64_image = base64.b64encode(screenshot_png).decode("ascii")
     try:
-        client = get_openai_client()
+        client = get_openai_client(timeout=_VISION_CALL_TIMEOUT_S)
+        # OpenAI client's default max_retries=2 would compound with the
+        # backoff loop below into up to 4 × 3 × timeout = 36 min worst
+        # case (S26-follow-up-K live evidence: Anthropic run ate 9 min
+        # before falling through to vision_unavailable). Disable it so
+        # this loop is the only retry layer.
+        try:
+            client.max_retries = 0
+        except Exception:
+            pass
     except Exception as exc:
         logger.warning("vision_verifier: client init failed: %s", exc)
         return None, 0.0, (time.monotonic() - started) * 1000
 
-    backoffs = [2.0, 5.0, 12.0]
+    backoffs = [4.0]
     response = None
     last_exc: Exception | None = None
     for attempt, backoff in enumerate(backoffs + [0.0]):
@@ -427,9 +833,14 @@ async def _call_vision(
         except Exception as exc:
             last_exc = exc
             msg = str(exc).lower()
+            # Live evidence: openai SDK raises ``APITimeoutError`` with
+            # str() = "Request timed out." — note the absence of the
+            # word "timeout" with the literal substring. Add "timed out"
+            # to the transient list so kimi stalls retry once.
             is_transient = (
                 "429" in msg or "overloaded" in msg or "rate" in msg
-                or "timeout" in msg or "temporarily" in msg
+                or "timeout" in msg or "timed out" in msg
+                or "temporarily" in msg
             )
             if not is_transient or attempt >= len(backoffs):
                 logger.warning(
@@ -556,8 +967,24 @@ async def verify_form_page(
     correction_enabled: bool | None = None,
     fill_callback: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
     trajectory_id: str | None = None,
+    field_metadata: dict[str, dict] | None = None,
 ) -> VerifierResult:
     """Run vision verification on the current form page.
+
+    Field-evidence pipeline (S26-follow-up-K, single-shot):
+      1. Take ONE full-page screenshot.
+      2. Resolve each filled label to its DOM input element (via the same
+         locator cascade `_fill_by_label` uses).
+      3. JS-evaluate each input's document-relative bbox (input + label +
+         help-text rects, unioned).
+      4. Crop each field from the screenshot and tile into ONE composite
+         WebP-lossless image with ordinal caption strips.
+      5. ONE kimi vision call with ordinal-indexed claim list.
+      6. Parse verdicts keyed by ordinal back into the claim row order.
+
+    When no field can be resolved, the verifier falls back to a single
+    whole-page screenshot + single call (still chunks_used=1), so live
+    visibility doesn't regress.
 
     Args:
         page: Playwright Page positioned on the just-filled form page.
@@ -573,6 +1000,12 @@ async def verify_form_page(
             mismatched fields. Required when correction_enabled is True.
             Typically ``NativeFormFiller._fill_by_label``.
         trajectory_id: Optional trajectory ID for decision-row linkage.
+        field_metadata: Optional per-label metadata dict (e.g. native_form
+            filler's ``_fields_by_label``). When supplied, the verifier
+            consults attached selectors before falling back to
+            ``page.get_by_label``. Speeds locator resolution + handles
+            shadow-DOM-attached fields (SmartRecruiters, react-select)
+            that ``get_by_label`` misses.
 
     Returns:
         VerifierResult with per-field verdicts and aggregate counts.
@@ -584,7 +1017,6 @@ async def verify_form_page(
     if not filled_mapping:
         return result
 
-    # Outcome 6 — skipped fields stay visible but don't get sent to vision.
     skipped: list[tuple[str, str]] = []
     claim_rows: list[tuple[str, str]] = []
     for label, value in filled_mapping.items():
@@ -596,7 +1028,6 @@ async def verify_form_page(
     domain = _domain_from_url(page_url)
     started = time.monotonic()
 
-    # Skipped fields → decision rows with skipped_no_expected_value, no vision call.
     for label, value in skipped:
         verdict = FieldVerdict(
             label=label,
@@ -621,17 +1052,9 @@ async def verify_form_page(
         result.elapsed_ms = (time.monotonic() - started) * 1000
         return result
 
+    # 1) Screenshot the whole scrollable form once.
     try:
-        raw_png = await _screenshot_form_area(page)
-        chunks = _prepare_for_vision(raw_png)
-        logger.info(
-            "vision_verifier: screenshot %d bytes raw → %d chunk(s) "
-            "(total %d bytes, mime %s) page=%d domain=%s",
-            len(raw_png), len(chunks),
-            sum(len(c) for c in chunks),
-            _mime_for(chunks[0]) if chunks else "<none>",
-            page_num, domain,
-        )
+        screenshot_png = await _full_page_screenshot(page)
     except Exception as exc:
         logger.warning("vision_verifier: screenshot failed: %s", exc)
         result.vision_unavailable = True
@@ -658,55 +1081,52 @@ async def verify_form_page(
         result.elapsed_ms = (time.monotonic() - started) * 1000
         return result
 
-    prompt = _build_prompt(claim_rows)
-    # Issue chunk calls in parallel via asyncio.gather so the per-page
-    # latency is dominated by the slowest single chunk, not the sum.
-    # Live evidence (S26 RUN4): 3 sequential chunks on Anthropic took
-    # 189s end-to-end (≈63s/chunk on kimi-k2.6) — 3.16× over Outcome 4's
-    # 60s budget. Parallel: 1 × 63s = within budget. Total cost is
-    # identical either way; only wall-clock changes.
-    async def _verify_chunk(idx: int, blob: bytes):
-        ctx_prompt = prompt
-        if len(chunks) > 1:
-            ctx_prompt = (
-                f"(Form chunk {idx + 1}/{len(chunks)} — only verify "
-                "fields visible in this slice; skip any field you cannot "
-                "locate, it will be in a sibling chunk.)\n\n"
-            ) + prompt
-        raw, cost, ms = await _call_vision(blob, ctx_prompt)
-        return idx, raw, cost, ms
-
-    chunk_results = await asyncio.gather(
-        *[_verify_chunk(i, b) for i, b in enumerate(chunks)],
-        return_exceptions=False,
+    # 2-3) Resolve locators + extract bboxes per filled field.
+    bbox_entries = await _extract_field_bboxes(page, claim_rows, field_metadata)
+    resolved = sum(1 for e in bbox_entries if e.get("bbox"))
+    logger.info(
+        "vision_verifier: bbox resolution %d/%d fields  page=%d domain=%s",
+        resolved, len(bbox_entries), page_num, domain,
     )
-    parsed: dict | None = None
-    call_ms = 0.0
-    aggregated_verdicts: list[dict] = []
-    seen_labels: set[str] = set()
-    # Chunks may complete out of order. Re-sort by chunk index so a
-    # later chunk's verdict cannot override an earlier chunk's (overlap
-    # zones surface in the EARLIER chunk first — matches DOM reading
-    # order).
-    for chunk_idx, raw, chunk_cost, chunk_ms in sorted(chunk_results, key=lambda x: x[0]):
-        result.cost_usd += chunk_cost
-        call_ms = max(call_ms, chunk_ms)  # wall-clock = slowest chunk
-        chunk_parsed = _safe_json(raw) if raw is not None else None
-        if chunk_parsed and isinstance(chunk_parsed.get("verdicts"), list):
-            for entry in chunk_parsed["verdicts"]:
-                if not isinstance(entry, dict):
-                    continue
-                label = str(entry.get("label", "")).strip()
-                if not label or label in seen_labels:
-                    continue
-                obs = str(entry.get("observed_value", ""))
-                if obs in {"<not found>", "<not reported>", ""}:
-                    continue
-                entry["_chunk"] = chunk_idx
-                aggregated_verdicts.append(entry)
-                seen_labels.add(label)
-            parsed = {"verdicts": aggregated_verdicts}
 
+    # 4) Build the composite. If no bbox was resolvable, fall back to
+    #    sending the whole-page screenshot (still single-shot).
+    composite_bytes, panels = _build_composite(screenshot_png, bbox_entries)
+    used_composite = composite_bytes is not None
+    if used_composite:
+        vision_input = composite_bytes
+        ordered_for_prompt = [(p["label"], p["value"]) for p in panels]
+        prompt = _build_prompt(ordered_for_prompt, ordinals=True)
+        composite_layout = {
+            "panels_total": len(panels),
+            "panels_unresolved": len(bbox_entries) - len(panels),
+            "image_bytes": len(composite_bytes),
+        }
+    else:
+        # Fallback: whole page, no ordinals — same shape as pre-K verifier
+        # but still single-call. Vision keys verdicts by label text.
+        vision_input = _compress_for_vision(screenshot_png)
+        ordered_for_prompt = list(claim_rows)
+        prompt = _build_prompt(ordered_for_prompt, ordinals=False)
+        composite_layout = {
+            "panels_total": 0,
+            "panels_unresolved": len(bbox_entries),
+            "image_bytes": len(vision_input),
+            "fallback_reason": "no_field_bboxes_resolved",
+        }
+        panels = []
+
+    logger.info(
+        "vision_verifier: %s %d bytes (composite=%s) → 1 chunk(s) page=%d domain=%s",
+        "composite" if used_composite else "fallback_full_page",
+        len(vision_input), used_composite, page_num, domain,
+    )
+
+    # 5) ONE kimi call.
+    raw, cost, call_ms = await _call_vision(vision_input, prompt)
+    result.cost_usd += cost
+
+    parsed = _safe_json(raw) if raw is not None else None
     if parsed is None or not isinstance(parsed.get("verdicts"), list):
         logger.warning(
             "vision_verifier: vision unavailable or unparseable on page %d (domain=%s)",
@@ -734,30 +1154,45 @@ async def verify_form_page(
                 trajectory_id=trajectory_id,
             )
         result.elapsed_ms = (time.monotonic() - started) * 1000
-        # Save artifact even on unavailability so the human can diagnose
-        # whether screenshot quality is the issue or whether the provider
-        # was genuinely down.
         result.artifact_path = _save_artifact(
-            screenshot_png=chunks,
+            composite=composite_bytes,
+            fallback_screenshot=None if used_composite else vision_input,
             domain=domain,
             page_num=page_num,
             verdicts=result.verdicts,
+            panels=panels,
             page_url=page_url,
             platform=platform,
             cost_usd=result.cost_usd,
             elapsed_ms=result.elapsed_ms,
+            chunks_used=1,
+            composite_layout=composite_layout,
         )
         return result
 
-    claim_by_label = {label: value for label, value in claim_rows}
-    verdicts_by_label: dict[str, dict[str, Any]] = {}
+    # 6) Map verdicts back to claim rows.
+    # Composite path: key by ordinal first (most robust), else by label.
+    # Fallback path: key by label text only.
+    by_ordinal: dict[int, dict] = {}
+    by_label: dict[str, dict] = {}
     for entry in parsed["verdicts"]:
         if not isinstance(entry, dict):
             continue
+        ordinal = entry.get("ordinal")
+        if isinstance(ordinal, int):
+            by_ordinal[ordinal] = entry
+        elif isinstance(ordinal, str) and ordinal.strip().isdigit():
+            by_ordinal[int(ordinal.strip())] = entry
         label = str(entry.get("label", "")).strip()
-        if not label or label not in claim_by_label:
-            continue
-        verdicts_by_label[label] = entry
+        if label:
+            by_label.setdefault(label, entry)
+            stripped = _strip_required_marker(label)
+            if stripped != label:
+                by_label.setdefault(stripped, entry)
+
+    panel_ordinal_by_label: dict[str, int] = {
+        p["label"]: p["ordinal"] for p in panels
+    }
 
     correct = correction_enabled if correction_enabled is not None else _correction_enabled()
     if correct and fill_callback is None:
@@ -766,13 +1201,14 @@ async def verify_form_page(
         )
         correct = False
 
-    # Phase 1 — build all initial verdicts (no vision calls). For
-    # mismatches that need a correction proposal, record their chunk
-    # reference so we can issue all proposals in parallel below.
     verdicts: list[FieldVerdict] = []
-    correction_queue: list[tuple[int, int]] = []  # (verdict_idx, chunk_idx)
+    correction_queue: list[int] = []
     for label, claimed in claim_rows:
-        entry = verdicts_by_label.get(label)
+        entry: dict | None = None
+        if used_composite and label in panel_ordinal_by_label:
+            entry = by_ordinal.get(panel_ordinal_by_label[label])
+        if entry is None:
+            entry = by_label.get(label) or by_label.get(_strip_required_marker(label))
         if entry is None:
             verdict = FieldVerdict(
                 label=label,
@@ -805,30 +1241,24 @@ async def verify_form_page(
         if tier == "mismatch_detected":
             result.mismatches += 1
             if correct and fill_callback is not None:
-                chunk_idx = entry.get("_chunk", 0)
-                if not isinstance(chunk_idx, int) or not 0 <= chunk_idx < len(chunks):
-                    chunk_idx = 0
-                correction_queue.append((len(verdicts) - 1, chunk_idx))
+                correction_queue.append(len(verdicts) - 1)
 
-    # Phase 2 — issue all correction PROPOSALS in parallel. Re-fill
-    # itself must stay sequential (form state changes after each
-    # callback), but the vision proposals are independent. Live evidence
-    # (S26 RUN5): 5 mismatches × ~30s sequential vision proposals = 150s
-    # added latency. Parallel: ≈30s for the slowest. Cost is unchanged.
+    # Correction proposals — feed the composite (vision can still see all
+    # fields in context, but the prompt names ONE specific ordinal/label).
     proposals: dict[int, str | None] = {}
     if correct and correction_queue:
         proposal_tasks = [
             _attempt_correction(
-                screenshot_png=chunks[chunk_idx],
+                screenshot_png=vision_input,
                 label=verdicts[v_idx].label,
                 claimed=verdicts[v_idx].claimed_value,
                 observed=verdicts[v_idx].observed_value,
                 reason=verdicts[v_idx].reason,
             )
-            for v_idx, chunk_idx in correction_queue
+            for v_idx in correction_queue
         ]
         proposed_values = await asyncio.gather(*proposal_tasks, return_exceptions=True)
-        for (v_idx, _chunk_idx), proposed in zip(correction_queue, proposed_values):
+        for v_idx, proposed in zip(correction_queue, proposed_values):
             if isinstance(proposed, Exception):
                 logger.debug(
                     "vision_verifier: correction proposal raised for '%s': %s",
@@ -838,8 +1268,6 @@ async def verify_form_page(
             else:
                 proposals[v_idx] = proposed
 
-    # Phase 3 — sequentially re-fill the fields with non-null proposals,
-    # then update tiers + record decisions.
     for v_idx, verdict in enumerate(verdicts):
         if (
             verdict.tier_reached == "mismatch_detected"
@@ -895,14 +1323,18 @@ async def verify_form_page(
 
     result.elapsed_ms = (time.monotonic() - started) * 1000
     result.artifact_path = _save_artifact(
-        screenshot_png=chunks,
+        composite=composite_bytes,
+        fallback_screenshot=None if used_composite else vision_input,
         domain=domain,
         page_num=page_num,
         verdicts=result.verdicts,
+        panels=panels,
         page_url=page_url,
         platform=platform,
         cost_usd=result.cost_usd,
         elapsed_ms=result.elapsed_ms,
+        chunks_used=1,
+        composite_layout=composite_layout,
     )
     logger.info(
         "vision_verifier: page %d (%s) — verified=%d mismatches=%d "

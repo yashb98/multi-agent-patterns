@@ -329,7 +329,6 @@ def test_retry_on_transient_429_then_success(_enable_verifier, monkeypatch):
 
     create_mock = MagicMock(side_effect=[
         _Transient("Error code: 429 - engine_overloaded_error"),
-        _Transient("Error code: 429 overloaded"),
         _vision_response(payload),
     ])
     with patch.object(vv, "get_openai_client") as mock_client:
@@ -340,7 +339,8 @@ def test_retry_on_transient_429_then_success(_enable_verifier, monkeypatch):
                 page_url="https://x.example/y", platform="greenhouse",
             )
         )
-    assert create_mock.call_count == 3
+    # S26-follow-up-K tightened retry to 2 total attempts (was 4).
+    assert create_mock.call_count == 2
     assert result.vision_unavailable is False
     assert result.verdicts[0].tier_reached == "passed"
 
@@ -358,8 +358,8 @@ def test_retry_exhausted_returns_unavailable(_enable_verifier, monkeypatch):
                 page_url="https://x.example/y", platform="greenhouse",
             )
         )
-    # 3 backoffs + 1 final attempt = 4 calls
-    assert create_mock.call_count == 4
+    # S26-follow-up-K tightened to 1 backoff + 1 final = 2 calls.
+    assert create_mock.call_count == 2
     assert result.vision_unavailable is True
 
 
@@ -381,48 +381,41 @@ def test_non_transient_error_does_not_retry(_enable_verifier, monkeypatch):
     assert result.vision_unavailable is True
 
 
-def test_chunking_aggregates_verdicts_across_chunks(_enable_verifier, monkeypatch):
-    """Tall screenshot splits into ≥2 chunks; verdicts from each chunk
-    aggregate by label, first non-skip wins."""
+def test_single_shot_call_count_tall_screenshot(_enable_verifier):
+    """S26-follow-up-K invariant — even a tall screenshot produces ONE
+    kimi call (the old verifier chunked vertically; the new one crops
+    per-field into a composite or falls back to single-shot whole-page).
+    """
     import io
     from PIL import Image
 
-    # 1000x10000 image with text — forces chunking (10000 > 4096 cap)
-    monkeypatch.setattr(vv, "_MAX_LONG_EDGE", 2000)
     img = Image.new("RGB", (1000, 6000), color=(255, 255, 255))
     buf = io.BytesIO(); img.save(buf, "PNG"); raw = buf.getvalue()
 
-    page = MagicMock()
-    locator = MagicMock()
-    locator.count = AsyncMock(return_value=1)
-    locator.is_visible = AsyncMock(return_value=True)
-    locator.screenshot = AsyncMock(return_value=raw)
-    sub_locator = MagicMock(); sub_locator.first = locator
-    page.locator = MagicMock(return_value=sub_locator)
+    page = _fake_page_with_screenshot()
     page.screenshot = AsyncMock(return_value=raw)
 
-    chunk1 = _vision_response({
-        "verdicts": [{
-            "label": "Email",
-            "observed_value": "yash@example.com",
-            "matches_claim": True,
-            "contradicts_help_text": False,
-            "reason": "in chunk 1",
-        }]
-    })
-    chunk2 = _vision_response({
-        "verdicts": [{
-            "label": "AI Policy",
-            "observed_value": "No",
-            "matches_claim": False,
-            "contradicts_help_text": True,
-            "reason": "in chunk 2",
-        }]
+    response = _vision_response({
+        "verdicts": [
+            {
+                "label": "Email",
+                "observed_value": "yash@example.com",
+                "matches_claim": True,
+                "contradicts_help_text": False,
+                "reason": "ok",
+            },
+            {
+                "label": "AI Policy",
+                "observed_value": "No",
+                "matches_claim": False,
+                "contradicts_help_text": True,
+                "reason": "form requires Yes",
+            },
+        ]
     })
     with patch.object(vv, "get_openai_client") as mock_client:
-        mock_client.return_value.chat.completions.create = MagicMock(
-            side_effect=[chunk1, chunk2, chunk1, chunk2]  # generous in case of >2 chunks
-        )
+        create_mock = MagicMock(return_value=response)
+        mock_client.return_value.chat.completions.create = create_mock
         result = asyncio.run(
             vv.verify_form_page(
                 page,
@@ -430,8 +423,63 @@ def test_chunking_aggregates_verdicts_across_chunks(_enable_verifier, monkeypatc
                 page_url="https://x.example/y", platform="greenhouse",
             )
         )
+    assert create_mock.call_count == 1
     tiers = {v.label: v.tier_reached for v in result.verdicts}
     assert tiers == {"Email": "passed", "AI Policy": "mismatch_detected"}
+
+
+def test_composite_built_when_field_bboxes_resolve(_enable_verifier, tmp_path):
+    """When bbox extraction succeeds the verifier builds a composite WebP
+    and sends ONE kimi call keyed by ordinal — Outcome 2 evidence."""
+    import io
+    from PIL import Image
+
+    img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
+    buf = io.BytesIO(); img.save(buf, "PNG"); raw = buf.getvalue()
+
+    page = _fake_page_with_screenshot()
+    page.screenshot = AsyncMock(return_value=raw)
+
+    # get_by_label returns a locator that resolves to a bbox.
+    fake_locator = MagicMock()
+    fake_locator.count = AsyncMock(return_value=1)
+    fake_locator.evaluate = AsyncMock(
+        return_value={"x": 100.0, "y": 100.0, "width": 200.0, "height": 30.0},
+    )
+    fake_locator.first = fake_locator
+    page.get_by_label = MagicMock(return_value=fake_locator)
+    page.get_by_placeholder = MagicMock(return_value=fake_locator)
+    page.get_by_role = MagicMock(return_value=fake_locator)
+
+    response = _vision_response({
+        "verdicts": [
+            {
+                "ordinal": 1,
+                "label": "Email",
+                "observed_value": "yash@example.com",
+                "matches_claim": True,
+                "contradicts_help_text": False,
+                "reason": "ordinal 01",
+            },
+        ]
+    })
+    with patch.object(vv, "get_openai_client") as mock_client:
+        create_mock = MagicMock(return_value=response)
+        mock_client.return_value.chat.completions.create = create_mock
+        result = asyncio.run(
+            vv.verify_form_page(
+                page,
+                {"Email": "yash@example.com"},
+                page_url="https://x.example/y", platform="greenhouse",
+            )
+        )
+    assert create_mock.call_count == 1
+    # The image MIME sent to vision is WebP (composite path) not PNG (fallback)
+    sent_args = create_mock.call_args.kwargs["messages"][0]["content"]
+    image_url = sent_args[1]["image_url"]["url"]
+    assert image_url.startswith("data:image/webp"), \
+        "composite path should send WebP"
+    assert result.verdicts[0].tier_reached == "passed"
 
 
 def test_decision_rows_written(_enable_verifier):
