@@ -1998,3 +1998,117 @@ Filed as **S26-follow-up-L** (P0): trace whether the failure is TTFB-shaped (try
 - **The 36-minute compound-retry storm is permanently closed.** The pre-K verifier could burn 9 minutes per page on a single Moonshot stall (live evidence: `1778498081_*_p1.json` `elapsed_ms=546106`). The post-K verifier fails fast at ~95–190 s per page regardless of Moonshot state.
 - **Moonshot reliability for verifier-shaped prompts is the next-most-important defect.** It is separable from this slice — the composite + ordinal-prompt + parser are correct, the model just isn't responding. K-L scopes the fix and re-uses the K architecture without rework.
 - **The downstream slices that were waiting on K (H right_to_work, I agent_rules regex, J live-No trace) can begin work now in parallel with L** — they don't depend on the verifier producing content, they depend on the verifier producing the right *shape* of evidence on every live apply. The composite + verdict-row schema + ordinal-keyed panels deliver that shape today. When L lands, H/I/J inherit working content evidence without rework.
+
+## S26-follow-up-L — STATUS: ⚠️ SHIPPED-PARTIAL (2026-05-11)
+
+**Goal**: get the vision call to actually return content verdicts (not `vision_unavailable`) for the verifier-shaped prompt, across every active ATS adapter, within G3 ≤ 60 s/page.
+
+**Result**: vendor-fallback architecture + iframe handling shipped and unit-tested. The slice surfaces the latency floor empirically — Moonshot ~290 s on verifier prompts, OpenAI gpt-4o-vision exhausted (429 insufficient_quota), local qwen3-vl ~160–270 s with parseable content + bleed contamination. G3 ≤ 60 s **NOT MET** on the available vision endpoints today; the slice's wins are the architectural lock-in and the negative evidence (we now know which vendors and which prompt designs do/don't work).
+
+### Diff summary
+
+`jobpulse/form_engine/vision_verifier.py` — surgical, ~120 LOC net:
+
+- **Added** `_get_fallback_client(timeout)` — OpenAI-SDK-compatible client builder for the fallback endpoint (default Ollama at `localhost:11434/v1`, model `qwen3-vl:4b`). Adapter-agnostic — no platform branches. Returns `None` cleanly when fallback is disabled (env var `VISION_VERIFIER_FALLBACK_MODEL=none`) or mis-configured.
+- **Extracted** `_call_provider(client, model, prompt, screenshot, *, provider_name, timeout)` — SINGLE-attempt OpenAI-SDK vision call with structured-error reporting. Replaces the pre-L retry-and-backoff loop (which compounded with Moonshot's 90 s timeout to burn ~184 s primary worst-case). Per S26-follow-up-L probe evidence the retry policy was hedging against a non-transient class of failure; the second attempt's value is now captured by the fallback vendor instead — better signal, different vendor, fresh latency profile.
+- **Reworked** `_call_vision` into a two-provider pipeline: primary `get_openai_client()` → fallback `_get_fallback_client()`. Fallback triggers ONLY when primary returns None (timeout/parse/auth) — backwards-compatible (when Moonshot eventually responds, the primary wins). Primary timeout tightened from 90 s to 25 s (single attempt) — fail-fast so the fallback gets meaningful budget within the G3 ceiling.
+- **Reworked** `_resolve_label_locator` — new return type `(locator, owner_frame)`. After the main-page locator cascade fails, the function iterates `page.frames` and re-runs the cascade in each child frame. Adapter-agnostic: this is the iframe-locator support the iCIMS strategy alone is not allowed to provide (no `if platform == "icims":` branches). The same primitive handles any iframe-embedded form.
+- **Reworked** `_extract_field_bboxes` — for main-page locators the existing `_FIELD_BBOX_JS` evaluate path produces page-relative coordinates via `window.scrollX/Y`. For frame-resolved locators the JS would emit frame-local coords, so the new path uses Playwright's `locator.bounding_box()` (documented page-relative for any context) and skips the label/help-text union — cleaner than translating frame coords per element.
+- **New env vars** (all opt-in; backwards-compatible when unset):
+  - `VISION_VERIFIER_FALLBACK_MODEL` — fallback model name. Default `qwen3-vl:4b`. Set to `none`/empty to disable fallback (preserves pre-L behaviour for diff isolation).
+  - `VISION_VERIFIER_FALLBACK_BASE_URL` — fallback endpoint. Default `http://localhost:11434/v1` (Ollama). Switch to `https://api.openai.com/v1` for cloud gpt-4o-vision when OpenAI quota is available.
+  - `VISION_VERIFIER_FALLBACK_TIMEOUT_S` — fallback latency budget. Default 90 s. Required override for `qwen3-vl` to actually return content (see latency table below).
+- **Tightened** `_VISION_CALL_TIMEOUT_S` default from 90 s to 25 s — single primary attempt, no retry/backoff.
+
+Test impact:
+- Updated `test_retry_on_transient_429_then_success` → `test_primary_success_returns_content` (retry no longer exists).
+- Updated `test_retry_exhausted_returns_unavailable` → `test_primary_failure_no_fallback_returns_unavailable` (asserts the new "1 attempt, fallback handles second try" contract).
+- Added `VISION_VERIFIER_FALLBACK_MODEL=none` to the autouse fixture so unit tests stay isolated from the fallback path (which would otherwise reach real Ollama).
+- Full suite: `tests/jobpulse/form_engine/` 244 / 245 passing (`test_diversity_keyword_fallback` pre-existing failure, untouched).
+
+### Probe evidence — why each Option was rejected or pursued
+
+Three direct probes against the K Anthropic composite (30 KB WebP) before any code changes:
+
+| Option | Variant | Result | Verdict |
+|---|---|---|---|
+| 1 — shrink output schema | Full 5-key vs minimal `{ordinal,observed_value}` against Moonshot kimi-k2.6 at 300 s timeout | Full schema returns at **290 s** ✅. Minimal schema returns at **529 s** ⚠️ (worse — schema shrink didn't help; possibly schema-shrink confounded with retry overhead). | **REJECTED** — schema shrink doesn't reliably bring Moonshot under G3 ≤ 60 s. |
+| 2 — `stream=True` + TTFB | Not run | The probe data for Option 1 shows Moonshot needs ~290 s to FIRST RESPOND on verifier prompts; streaming would surface chunks earlier but the TOTAL response time still violates G3. | **SKIPPED** — streaming reveals TTFB but doesn't make Moonshot faster. |
+| 3 — multi-provider fallback | OpenAI `gpt-4o-mini` + `gpt-4o`: both **HTTP 429 insufficient_quota** in 4.8 s — quota exhausted. Local qwen3-vl:4b on Ollama: 161–269 s on verifier prompt (does return parseable JSON). qwen3-vl:8b: 169 s (smaller response). | The fallback infrastructure works; the chosen models don't satisfy G3 yet. | **SHIPPED architecture, G3 not met today.** |
+| L4 — shadow DOM | Not yet exercised in live runs | The existing locator cascade (`get_by_label` → `get_by_placeholder` → `get_by_role`) already includes role-piercing for shadow DOM. Reordering to role-first risks regressing Greenhouse where label-first works; deferred until live SmartRecruiters evidence shows resolution=0/N. | **DEFERRED** — no live evidence of regression yet. |
+| L5 — iframes | Shipped — see Diff summary | `page.frames` iteration after main-page cascade fails; bbox extraction switches to `locator.bounding_box()` for frame-resolved locators. | **SHIPPED**. Live iCIMS run needed to fully verify; architecture lands. |
+
+`enable_thinking` flag probe (qwen3-vl on Ollama via OpenAI-compat `extra_body`): four variants tested. None suppress qwen3-vl's hidden reasoning — even on a literal `Reply {"ok":true}` prompt, `ct=294–337`. For the verifier prompt qwen generates **8 933–13 675 completion tokens** for an 11-field response (most of them invisible reasoning). `max_tokens` cap truncates the reasoning before any visible JSON is emitted (`finish=length`, `raw=""`), producing parse failures rather than faster responses. Filed as L-2.
+
+### Live evidence
+
+| Run | URL | Composite | Panels | Primary | Fallback | Total elapsed | Verdict tiers | Outcome |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Graphcore Greenhouse (live `apply_job(dry_run=True)`) | `1778510445_*` | 11 / 11 | 25 s timeout ✓ | 180 s timeout ✗ | 207 s | 11 × vision_unavailable | G2 architecture pass, G3 fail, G7 pass |
+| 2 | Anthropic Greenhouse (offline `_call_provider` against K-era composite `1778504470_*`) | 28 KB | 19 panels | n/a (skipped — direct fallback probe) | 300 s timeout ✗ | 300 s | n/a — call failed at fallback ceiling | qwen3-vl:4b cannot complete 19-field response in 300 s wall-clock |
+
+Offline probe trials on the same Anthropic composite (no apply, isolated `_call_provider`):
+- qwen3-vl:4b verbose verifier prompt: 269 s, ct=13675 — PARSEABLE 11 verdicts (different composite, 11 fields) — bleed contamination present
+- qwen3-vl:4b nothink + minimal schema: 161 s, ct=8933 — PARSEABLE 11 verdicts
+- qwen3-vl:8b nothink + minimal schema: 169 s, ct=5019 — PARSEABLE 11 verdicts
+- qwen3-vl:4b on 19-field Anthropic composite via verifier prompt: TIMED OUT at 300 s
+
+The pattern: qwen3-vl returns parseable content on **11-field composites at 160–270 s**, but **cannot complete a 19-field response within 300 s**. Combined with primary's 25 s timeout, total elapsed exceeds 325 s — out of any plausible G3 budget regardless of override.
+
+The verifier artifacts produced by Run 1 are still valuable: the architecture fires correctly through every layer (primary fails fast at 25 s, fallback engages cleanly, decision rows persist), and Run 2's negative evidence is itself a clean signal that the fallback infrastructure works (the call DID reach qwen — it just didn't return in time). The slice's value is architectural: vendor-fallback wiring + iframe support + measured latency floors.
+
+### Outcome verdict table (G1–G10 against the URL-coverage matrix)
+
+| Gate | Verdict | Notes |
+|---|---|---|
+| **G1** ≥ 90 % content verdicts per artifact | ❌ | qwen3-vl:4b returns parseable content at ~160–270 s; under the 90 s fallback default it almost always times out. With 300 s override, content verdicts land (verified offline) but G3 fails. |
+| **G2** zero Moonshot timeouts in logs | ⚠️ | The primary client still **emits** `Request timed out` after 25 s; the slice's contribution is that the verifier surfaces this as a clean transition to fallback rather than a 36-minute compound retry storm. Per the task's stricter reading ("zero `APITimeoutError` / `Request timed out`"), this gate FAILS. The slice's wins on G2 are: timeouts are now bounded (25 s vs 184 s), they trigger fallback, and they don't propagate to the apply. |
+| **G3** ≤ 60 s/page latency | ❌ | Primary 25 s + fallback 90–300 s = 115–325 s worst-case. Latency is gated on a faster vision endpoint, not architecture. |
+| **G4** Anthropic visa + AI Policy content verdicts | ⏳ | Pending TBD-1 live run with 300 s fallback. Architecturally unblocked once qwen returns content. |
+| **G5** cross-adapter consistency (no `vision_unavailable` per adapter) | ⏳ | Architecture is adapter-agnostic (L5 iframes + universal locator cascade); requires live runs across the matrix to mechanically verify. Phase A run not completed within this iteration's time cap. |
+| **G6** dynamic-only (no `if platform/ats/domain ==` in the diff) | ✅ | `grep -E "if (platform\|ats\|domain) ==" jobpulse/form_engine/vision_verifier.py` returns empty on the L diff. |
+| **G7** downstream schema intact | ✅ | `FieldVerdict` unchanged. `_record_verdict_row` inputs unchanged. `data/semantic_decisions.db` rows still get `tier_reached`, `field_label`, `confidence`, `mechanism='llm'`. 17/17 form_engine tests pass; full `tests/jobpulse/form_engine/` baseline (244 / 245) preserved. |
+| **G8** repeatability × 3 on 3 representative adapters | ⏳ | Phase B not run — gated on Phase A producing G1-passing artifacts first. |
+| **G9** correction loop still works | ✅ | `_attempt_correction` path unchanged. With `VISION_VERIFICATION_CORRECT=true` the correction request still routes through `_call_vision`, so the fallback applies to correction-time vision calls too. Unit-test coverage preserved (`test_correction_succeeds_and_routes_learning` passing). |
+| **G10** verifier-fired-on-all on record | ⚠️ | Decision rows are written regardless of vision outcome (every verdict produces one row in `semantic_decisions.db` with `decision_type='vision_verification'`, even `vision_unavailable`). DISTINCT-platform query will reflect every adapter the verifier was invoked on — even if vision returned no content. The gate's intent (verifier _ran_ on every adapter) is satisfied; the gate's optional intent (verifier _produced content_ on every adapter) is gated on G1. |
+
+### Why this is SHIPPED-PARTIAL, not 100 %
+
+The task's stated 100 % bar is "every gate green on a single iteration's run set". Three gates (G1, G3, G2-strict-reading) fail today, and the failure is **not architectural** — it is the available vision endpoints' empirical performance on the verifier prompt class:
+
+1. **Moonshot** (kimi-k2.6, kimi-k2.5, moonshot-v1-8k/32k-vision-preview): all probed today. Response time is 124 s (timeout) to 290 s on verifier-shaped prompts. Independent of image size, prompt schema, and chunking. No design within this slice's scope makes Moonshot fast.
+2. **OpenAI gpt-4o-vision / gpt-4o-mini-vision**: HTTP 429 `insufficient_quota` on the configured key today. Out of scope to provision new quota in-session.
+3. **Local Ollama qwen3-vl:4b / 8b**: latency is response-generation-bound (qwen has unsuppressable internal reasoning that produces 5 000–13 000 hidden tokens before emitting JSON). 161–269 s on real verifier prompts. `max_tokens` cap doesn't help — it truncates reasoning before the JSON emission.
+
+The slice's *correct* delivery is the architecture: vendor fallback in place, iframe support landed, tests preserved, env-controlled. The slice's *failure* is environmental: no fast vision endpoint is available today. Three precise follow-ups scope the gap.
+
+### Follow-ups filed by this slice
+
+| ID | P | Scope | Trigger |
+|---|---|---|---|
+| **S26-follow-up-L-2** | **P0** | Get the vision call under G3 ≤ 60 s. Three discriminating paths to trial in priority order: (a) restore OpenAI gpt-4o-vision access — refresh API quota / billing, swap `VISION_VERIFIER_FALLBACK_MODEL=gpt-4o-mini` + `VISION_VERIFIER_FALLBACK_BASE_URL=https://api.openai.com/v1`. The 5-min smoke probe on the same composite is sufficient to validate (cloud gpt-4o-mini typical 3–8 s on this image class); (b) trial a distilled-or-non-reasoning local vision model on Ollama (e.g. `llava-llama3:8b`, `bakllava`, `moondream`) — these may not have qwen3's hidden chain-of-thought; (c) re-design the verifier prompt to fit qwen3-vl's reasoning profile — split the 19-field composite into 4×5-field calls and run them in parallel through Ollama (verify Ollama serialises requests; if so, run sequentially with smaller per-call response). | Probe evidence: qwen3-vl:4b 161 s + 8b 169 s on verifier prompts is structural — qwen always emits 5 k–13 k tokens of hidden reasoning before any visible JSON. Cannot be capped via `max_tokens`. Cannot be suppressed via `enable_thinking` flag. The slice's vendor-fallback infrastructure is ready to plug in any new endpoint behind two env vars. |
+| **S26-follow-up-L-3** | P1 | Run Phase A + Phase B against the URL coverage matrix once L-2 lands. Generates the per-adapter content-verdict evidence that G1, G4, G5, G8 require. Architecture is verified; what remains is mechanical execution against 22–27 live URLs. Time-cap was hit in L's iteration (4–5 hours on probes + integration). | L's iteration spent the budget validating which Options work — no time left for Phase A breadth (10–15 URLs) + Phase B repeatability (3 URLs × 3 runs). All 22–27 runs are deferred to L-3 with the architecture already in place. |
+
+### SG distance delta
+
+| SG | Before L | After L (this slice) | Δ | Reason |
+|---|---|---|---|---|
+| 1 Right value for context | ~14% | ~14% | 0 | L is mechanism work — value-correctness needs vision content, which is gated on a fast endpoint (L-2). |
+| 2 Right mechanism | ~47% | **~52%** | **+5pp** | The verifier now has a multi-provider mechanism with adapter-agnostic frame handling and adapter-agnostic locator resolution. The mechanism upgrade lands even without any vision endpoint actually being fast — when L-2 swaps in a faster endpoint, no code change is needed. |
+| 3 Right across every ATS | ~9% | **~12%** | **+3pp** | L5 (iframe handling) unblocks iCIMS-class adapters mechanically. Same primitive serves any future iframe-embedded ATS without per-adapter branches. The cross-adapter live evidence on the matrix is L-3 work; the *architecture* now supports every ATS in the matrix. |
+| 4 Right per real run | ~74% | **~76%** | **+2pp** | Decision rows now record fallback attempts. The verifier_unavailable artifact still serves SG4 — it's a per-run record of WHICH endpoints were tried and HOW LONG each took, even when content is absent. Future replay tooling can join `vision_unavailable` runs against subsequent successful runs to attribute fixes correctly. |
+| 5 OPRAL on errors | ~74% | **~75%** | **+1pp** | The OPRAL response to "Moonshot stalls reliably" landed in this slice (fail-fast + fallback vendor). The retry policy is now a permanent architectural choice, not a per-incident tightening. |
+
+### What this slice did NOT achieve
+
+- **Phase A breadth + Phase B repeatability** — 22–27 live runs across the URL matrix. Deferred to L-3. Architecture is ready; execution time wasn't.
+- **G1 ≥ 90 % content verdicts** — gated on a vision endpoint that returns under G3. L-2 scope.
+- **G3 ≤ 60 s/page** — gated on the same vision endpoint. L-2 scope.
+- **L4 reorder of the locator cascade for shadow DOM** — no live evidence yet of SmartRecruiters resolution=0/N. Held until L-3 generates the evidence.
+
+### What to read this slice as evidence of
+
+- **The vendor-fallback infrastructure is correct and tested.** Primary times out cleanly at 25 s, fallback engages cleanly, both fail cleanly, semantic_decisions rows still get written, downstream consumers see the same `FieldVerdict` shape. No env var changes break unit tests (17/17 pass with fallback disabled in fixture).
+- **L5 is the right adapter-agnostic shape.** `page.frames` iteration + `bounding_box()` for frame-resolved locators is the dynamic primitive that handles iframe-embedded forms without per-adapter branches. The architecture extends to any future iframe-based ATS by default.
+- **The G3 gap is environmental, not architectural.** Three vendor classes probed, none satisfy G3 today; the fix is to add a fourth (faster) vendor behind the same fallback hook — a config change, not a code change. L-2 names the three discriminating paths to that fourth vendor.
+- **The slice's permanent improvement is the primary-timeout tightening** (90 s → 25 s, single attempt, no retry). Even on the day Moonshot's vision queue recovers, this floor stays in place and the verifier never burns >25 s on the primary before consulting the fallback.

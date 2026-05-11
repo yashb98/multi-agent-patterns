@@ -34,6 +34,18 @@ def _isolate_decisions_db(tmp_path, monkeypatch):
     semantic_decisions.set_test_mode(False)
     monkeypatch.setenv("JOBPULSE_TEST_MODE", "0")
     monkeypatch.setenv("VISION_VERIFIER_SAVE_ARTIFACTS", "0")
+    # S26-follow-up-L: the production verifier now has a fallback vendor
+    # behind ``VISION_VERIFIER_FALLBACK_MODEL`` (default qwen3-vl:4b on
+    # local Ollama). Tests mock the primary OpenAI client, but the
+    # fallback path constructs a SEPARATE client which would either hit
+    # real Ollama or raise — neither is appropriate in unit tests.
+    # Disable the fallback so tests only exercise the primary path,
+    # which is what they assert against.
+    monkeypatch.setenv("VISION_VERIFIER_FALLBACK_MODEL", "none")
+    # Re-read the module-level constants so the override takes effect
+    # for this test (vision_verifier.py reads them at import time).
+    import jobpulse.form_engine.vision_verifier as vv
+    vv._FALLBACK_MODEL = "none"
     yield
     semantic_decisions.set_test_mode(None)
 
@@ -306,46 +318,12 @@ def test_mime_detection():
     assert vv._mime_for(b"unknown") == "image/png"  # fallback
 
 
-def test_retry_on_transient_429_then_success(_enable_verifier, monkeypatch):
-    """OPRAL fix for the live-run 429 storm: the verifier retries on
-    transient 429 / overloaded errors with exponential backoff before
-    declaring vision_unavailable."""
-    # Speed up the retry sleeps for the test.
-    monkeypatch.setattr(vv.asyncio, "sleep", AsyncMock(return_value=None))
-
-    page = _fake_page_with_screenshot()
-    payload = {
-        "verdicts": [{
-            "label": "Email",
-            "observed_value": "yash@example.com",
-            "matches_claim": True,
-            "contradicts_help_text": False,
-            "reason": "ok",
-        }]
-    }
-
-    class _Transient(Exception):
-        pass
-
-    create_mock = MagicMock(side_effect=[
-        _Transient("Error code: 429 - engine_overloaded_error"),
-        _vision_response(payload),
-    ])
-    with patch.object(vv, "get_openai_client") as mock_client:
-        mock_client.return_value.chat.completions.create = create_mock
-        result = asyncio.run(
-            vv.verify_form_page(
-                page, {"Email": "yash@example.com"},
-                page_url="https://x.example/y", platform="greenhouse",
-            )
-        )
-    # S26-follow-up-K tightened retry to 2 total attempts (was 4).
-    assert create_mock.call_count == 2
-    assert result.vision_unavailable is False
-    assert result.verdicts[0].tier_reached == "passed"
-
-
-def test_retry_exhausted_returns_unavailable(_enable_verifier, monkeypatch):
+def test_primary_failure_no_fallback_returns_unavailable(_enable_verifier, monkeypatch):
+    """S26-follow-up-L tightening: ONE primary attempt, no retry. When
+    fallback is disabled (test default), a primary 429 / timeout
+    surfaces as vision_unavailable without burning a second attempt on
+    the same provider — retry is now provided by the fallback vendor,
+    not by a same-provider re-roll."""
     monkeypatch.setattr(vv.asyncio, "sleep", AsyncMock(return_value=None))
     page = _fake_page_with_screenshot()
 
@@ -358,9 +336,36 @@ def test_retry_exhausted_returns_unavailable(_enable_verifier, monkeypatch):
                 page_url="https://x.example/y", platform="greenhouse",
             )
         )
-    # S26-follow-up-K tightened to 1 backoff + 1 final = 2 calls.
-    assert create_mock.call_count == 2
+    assert create_mock.call_count == 1
     assert result.vision_unavailable is True
+
+
+def test_primary_success_returns_content(_enable_verifier):
+    """Happy-path: primary returns content on the single attempt — no
+    backoff sleep, no second call. Replaces the pre-L retry-success
+    test (the retry no longer exists)."""
+    page = _fake_page_with_screenshot()
+    payload = {
+        "verdicts": [{
+            "label": "Email",
+            "observed_value": "yash@example.com",
+            "matches_claim": True,
+            "contradicts_help_text": False,
+            "reason": "ok",
+        }]
+    }
+    create_mock = MagicMock(return_value=_vision_response(payload))
+    with patch.object(vv, "get_openai_client") as mock_client:
+        mock_client.return_value.chat.completions.create = create_mock
+        result = asyncio.run(
+            vv.verify_form_page(
+                page, {"Email": "yash@example.com"},
+                page_url="https://x.example/y", platform="greenhouse",
+            )
+        )
+    assert create_mock.call_count == 1
+    assert result.vision_unavailable is False
+    assert result.verdicts[0].tier_reached == "passed"
 
 
 def test_non_transient_error_does_not_retry(_enable_verifier, monkeypatch):

@@ -306,6 +306,37 @@ async def _full_page_screenshot(page: "Page") -> bytes:
     return await page.screenshot(type="png", full_page=True)
 
 
+async def _try_locator_cascade(ctx, stripped: str):
+    """Run the label/placeholder/role cascade against a Page or Frame context.
+
+    The cascade is intentionally adapter-agnostic — the same primitive
+    chain handles main-page forms (Greenhouse, Lever, Ashby, Generic),
+    shadow-DOM forms (SmartRecruiters via the role tier piercing
+    shadow boundaries), and iframe-embedded forms (iCIMS via the
+    surrounding ``_resolve_label_locator`` iterating ``page.frames``).
+    No ``if platform == "X"`` branches: dynamic primitives carry the
+    coverage.
+    """
+    for builder in (
+        lambda: ctx.get_by_label(stripped, exact=False).first,
+        lambda: ctx.get_by_placeholder(stripped, exact=False).first,
+    ):
+        try:
+            loc = builder()
+            if await loc.count():
+                return loc
+        except Exception:
+            continue
+    for role in ("textbox", "combobox", "spinbutton", "checkbox", "radio"):
+        try:
+            loc = ctx.get_by_role(role, name=stripped).first
+            if await loc.count():
+                return loc
+        except Exception:
+            continue
+    return None
+
+
 async def _resolve_label_locator(
     page: "Page",
     label: str,
@@ -313,11 +344,21 @@ async def _resolve_label_locator(
 ):
     """Locator resolution cascade mirroring `_fill_by_label`'s primitives.
 
-    Returns a Playwright Locator (with `.count() > 0`) or ``None``.
+    Returns a tuple ``(locator, owner_frame)`` (``owner_frame`` is ``None``
+    for main-page locators; otherwise it is the Frame object the locator
+    was resolved inside). Returns ``None`` when no context produced a
+    match.
+
     The mirroring is intentional: the verifier's bbox extraction succeeds
     exactly when the filler could have re-resolved the same field, so
     unresolvable claims are also unverifiable claims — surfacing them as
-    `vision_unavailable` is the right signal.
+    ``vision_unavailable`` is the right signal.
+
+    Iframe handling (S26-follow-up-L5): after the main-page cascade
+    fails, we iterate ``page.frames`` and try the same cascade in each
+    child frame. This is adapter-agnostic — the iCIMS strategy declares
+    an ``icims_content_iframe`` but the same primitive serves any future
+    iframe-based ATS. No platform branches.
     """
     stripped = _strip_required_marker(label)
 
@@ -329,35 +370,40 @@ async def _resolve_label_locator(
                 try:
                     loc = page.locator(sel).first
                     if await loc.count():
-                        return loc
+                        return loc, None
                 except Exception:
                     pass
             attached = meta.get("locator")
             if attached is not None:
                 try:
                     if await attached.count():
-                        return attached
+                        return attached, None
                 except Exception:
                     pass
 
-    for builder in (
-        lambda: page.get_by_label(stripped, exact=False).first,
-        lambda: page.get_by_placeholder(stripped, exact=False).first,
-    ):
+    loc = await _try_locator_cascade(page, stripped)
+    if loc is not None:
+        return loc, None
+
+    try:
+        frames = page.frames
+        if not isinstance(frames, list):
+            frames = []
+    except Exception:
+        frames = []
+    for frame in frames:
         try:
-            loc = builder()
-            if await loc.count():
-                return loc
+            if frame is page.main_frame:
+                continue
+        except Exception:
+            pass
+        try:
+            loc = await _try_locator_cascade(frame, stripped)
+            if loc is not None:
+                return loc, frame
         except Exception:
             continue
 
-    for role in ("textbox", "combobox", "spinbutton", "checkbox", "radio"):
-        try:
-            loc = page.get_by_role(role, name=stripped).first
-            if await loc.count():
-                return loc
-        except Exception:
-            continue
     return None
 
 
@@ -373,6 +419,22 @@ async def _extract_field_bboxes(
       - ``label`` (original, including any required marker)
       - ``value`` (claimed value)
       - ``bbox`` (dict {x,y,width,height}) or ``None`` if unresolvable
+
+    Bbox-coordinate handling depends on whether the locator resolved in
+    the main page or inside an iframe:
+      * **Main page** — ``locator.evaluate(_FIELD_BBOX_JS)`` runs in the
+        page's window, unioning input + ``el.labels[0]`` + ``aria-
+        describedby``. Coords are document-relative via
+        ``window.scrollX/Y`` — which lines up 1:1 with the
+        ``page.screenshot(full_page=True)`` pixel grid.
+      * **Inside an iframe** — the same JS would return *frame-local*
+        coords (the iframe has its own ``window``). The page screenshot
+        captures the iframe's rendered pixels at the iframe element's
+        page-relative position, so we must translate. Playwright's
+        ``locator.bounding_box()`` is documented to return main-page
+        coords for locators inside any frame, so we use it as a single
+        source of truth for iframe-resolved locators and skip the
+        label/help union (cleaner than translating coords per element).
     """
     entries: list[dict] = []
     for idx, (label, value) in enumerate(claim_rows, start=1):
@@ -382,15 +444,29 @@ async def _extract_field_bboxes(
             "value": value,
             "bbox": None,
         }
-        locator = await _resolve_label_locator(page, label, field_metadata)
-        if locator is None:
+        result = await _resolve_label_locator(page, label, field_metadata)
+        if result is None:
             entries.append(entry)
             continue
-        try:
-            box = await locator.evaluate(_FIELD_BBOX_JS)
-        except Exception as exc:
-            logger.debug("vision_verifier: bbox js failed for %r: %s", label[:60], exc)
-            box = None
+        locator, owner_frame = result
+
+        box: dict | None = None
+        if owner_frame is None:
+            try:
+                box = await locator.evaluate(_FIELD_BBOX_JS)
+            except Exception as exc:
+                logger.debug("vision_verifier: bbox js failed for %r: %s", label[:60], exc)
+                box = None
+        else:
+            try:
+                box = await locator.bounding_box()
+            except Exception as exc:
+                logger.debug(
+                    "vision_verifier: iframe bounding_box failed for %r: %s",
+                    label[:60], exc,
+                )
+                box = None
+
         if isinstance(box, dict) and all(k in box for k in ("x", "y", "width", "height")):
             entry["bbox"] = {
                 "x": float(box["x"]),
@@ -764,122 +840,258 @@ def _mime_for(blob: bytes) -> str:
     return "image/png"
 
 
-# Per-vision-call timeout (s). Moonshot's vision queue intermittently
-# stalls past 60 s even on small composites (S26-follow-up-K live run
-# evidence: 19/19 fields cropped to a 30 KB WebP and the call still hit
-# the 180 s read timeout). A 90 s ceiling fails-fast on those stalls,
-# letting the verifier surface ``vision_unavailable`` quickly instead of
-# burning 9+ minutes on compound retries.
-_VISION_CALL_TIMEOUT_S = float(os.environ.get("VISION_VERIFIER_CALL_TIMEOUT_S", "90"))
+# Per-vision-call timeout (s). S26-follow-up-L probe evidence:
+# Moonshot kimi-k2.6 returns at ~290 s on verifier-shaped prompts and
+# ~10 s on tiny prompts — i.e. for the verifier's actual workload it
+# almost always blows the G3 ≤ 60 s budget. The slice's fix is to keep
+# Moonshot as primary (per spec — backwards compat for the day kimi's
+# vision queue recovers) but FAIL FAST so the fallback path has budget
+# remaining within G3. 25 s per attempt × 1 attempt = 25 s primary
+# worst-case; fallback then has up to ~35 s of the G3 budget left.
+_VISION_CALL_TIMEOUT_S = float(os.environ.get("VISION_VERIFIER_CALL_TIMEOUT_S", "25"))
+
+# Fallback vision endpoint — engaged ONLY after the primary (Moonshot
+# via ``get_openai_client``) exhausts its retry budget. Backed by an
+# OpenAI-SDK-compatible endpoint so the same ``chat.completions.create``
+# call works with no special-cased branches.
+#
+# Default values target local Ollama with qwen3-vl:4b — Ollama exposes an
+# OpenAI-compat API at /v1, the model is multimodal (vision + text), and
+# it has no rate limits / network jitter. Override either:
+#   - ``VISION_VERIFIER_FALLBACK_MODEL`` — model name (e.g. "gpt-4o", "qwen3-vl:8b").
+#     Set to empty string or "none" to disable fallback entirely.
+#   - ``VISION_VERIFIER_FALLBACK_BASE_URL`` — base URL. Default localhost:11434/v1.
+#     For OpenAI cloud: set to "https://api.openai.com/v1".
+#
+# Adapter-agnostic: the fallback hits the SAME ``_call_provider`` helper
+# as the primary, so all of the verifier's prompt + parse + tier
+# classification logic applies unchanged. Per S26-follow-up-L Gate G6,
+# the fallback never inspects ``platform`` / ``ats`` / ``domain``.
+_FALLBACK_MODEL = os.environ.get("VISION_VERIFIER_FALLBACK_MODEL", "qwen3-vl:4b").strip()
+_FALLBACK_BASE_URL = os.environ.get(
+    "VISION_VERIFIER_FALLBACK_BASE_URL", "http://localhost:11434/v1",
+).strip()
+# Fallback latency budget — measured behaviour of qwen3-vl on Mac via
+# Ollama on the actual verifier prompt + 10–30 KB composite:
+#   * 4b nothink + minimal schema, 11-field Graphcore composite (10 KB):
+#     161 s elapsed, ct=8933 — PARSEABLE 11 verdicts (bleed-contaminated).
+#   * 4b verbose prompt, same composite:
+#     269 s elapsed, ct=13675 — PARSEABLE 11 verdicts.
+#   * 8b nothink + minimal schema, same composite:
+#     169 s elapsed, ct=5019 — PARSEABLE 11 verdicts.
+#   * Trial B (full 30 KB composite + TINY prompt): 3 s, ct=92.
+#     i.e. qwen vision encoding is fast; the slowness is response
+#     generation including ~5000–13000 hidden "thinking" tokens that
+#     ``enable_thinking=False`` does NOT suppress.
+#
+# G3-budget consequence: ``primary 25 s + fallback 90 s = 115 s`` worst
+# case — over the G3 ≤ 60 s bar. SHIPPED-PARTIAL framing: the verifier
+# architecture, vendor-fallback wiring, iframe support (L5), and decision-
+# row writes all land; latency remains the dominant gap pending faster
+# vision endpoints (OpenAI quota refresh, larger Ollama model, or future
+# distilled qwen variant). Filed as **S26-follow-up-L-2** in the audit.
+#
+# 90 s is the default ceiling: enough budget for many real qwen calls
+# to actually return (we've measured 161–268 s, but 8b on smaller forms
+# can come in below 90 s); short enough that the verifier surfaces
+# ``vision_unavailable`` deterministically instead of stalling the apply.
+_FALLBACK_CALL_TIMEOUT_S = float(
+    os.environ.get("VISION_VERIFIER_FALLBACK_TIMEOUT_S", "90")
+)
 
 
-async def _call_vision(
-    screenshot_png: bytes, prompt: str
-) -> tuple[str | None, float, float]:
-    """Single Moonshot vision call with bounded retry on transient errors.
+def _fallback_enabled() -> bool:
+    return bool(_FALLBACK_MODEL) and _FALLBACK_MODEL.lower() != "none"
 
-    Returns ``(raw_text, cost_usd, elapsed_ms)`` on success.
-    Returns ``(None, 0.0, elapsed)`` after exhausting retries — caller
-    maps to ``vision_unavailable``. Cost is best-effort via
-    ``record_openai_usage``.
 
-    Retry policy (S26-follow-up-K tightening): TWO total attempts, with
-    a 4 s backoff between them, and ``max_retries=0`` on the OpenAI
-    client so its built-in 2× retry doesn't compound with this loop.
-    Per-attempt timeout is ``_VISION_CALL_TIMEOUT_S``. Worst case wall
-    clock: ``2 × _VISION_CALL_TIMEOUT_S + 4`` s (vs 36 minutes under the
-    pre-K compound-retry stack).
+def _get_fallback_client(timeout: float):
+    """Construct the fallback vision client (OpenAI SDK).
 
-    OPRAL rule 5: if a Moonshot stall can recur (it can, daily), the
-    fix is "fail fast and emit vision_unavailable", not "wait longer".
+    Returns the constructed client, or ``None`` if the fallback is
+    disabled / mis-configured. Never raises.
+
+    Authentication strategy:
+      * Ollama (``localhost`` in base_url): pass api_key="ollama" (the
+        SDK requires a non-empty key but Ollama ignores its value).
+      * OpenAI cloud (``api.openai.com`` in base_url): pull
+        ``OPENAI_API_KEY``; return None if absent so the verifier
+        surfaces vision_unavailable cleanly rather than crashing.
+    """
+    if not _fallback_enabled():
+        return None
+    try:
+        from openai import OpenAI
+    except Exception as exc:
+        logger.debug("vision_verifier: openai SDK import failed: %s", exc)
+        return None
+    try:
+        base_lower = _FALLBACK_BASE_URL.lower()
+        if "localhost" in base_lower or "127.0.0.1" in base_lower or "ollama" in base_lower:
+            return OpenAI(api_key="ollama", base_url=_FALLBACK_BASE_URL, timeout=timeout)
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            logger.debug(
+                "vision_verifier: fallback OPENAI_API_KEY missing for base_url=%s",
+                _FALLBACK_BASE_URL,
+            )
+            return None
+        return OpenAI(api_key=api_key, base_url=_FALLBACK_BASE_URL, timeout=timeout)
+    except Exception as exc:
+        logger.debug("vision_verifier: fallback client init failed: %s", exc)
+        return None
+
+
+async def _call_provider(
+    client,
+    model: str,
+    prompt: str,
+    screenshot_png: bytes,
+    *,
+    provider_name: str,
+    timeout: float,
+) -> tuple[str | None, float, float, Exception | None]:
+    """Call ONE OpenAI-SDK-compatible vision endpoint with bounded retry.
+
+    Returns ``(raw_text, cost_usd, elapsed_ms, last_exception)`` —
+    ``raw_text`` is None on failure (caller decides whether to fall
+    back), ``last_exception`` carries the final failure for logging.
+
+    Retry policy: TWO attempts with a 4 s backoff between, transient-
+    only retries (429 / overloaded / timeout / rate). The OpenAI client
+    is built with ``max_retries=0`` so its internal retry doesn't
+    compound with this loop (S26-follow-up-K live evidence: a 9-min
+    burn on the pre-K compound stack). Worst-case wall-clock per
+    provider: ``2 × timeout + 4`` s.
     """
     started = time.monotonic()
     mime = _mime_for(screenshot_png)
     b64_image = base64.b64encode(screenshot_png).decode("ascii")
-    try:
-        client = get_openai_client(timeout=_VISION_CALL_TIMEOUT_S)
-        # OpenAI client's default max_retries=2 would compound with the
-        # backoff loop below into up to 4 × 3 × timeout = 36 min worst
-        # case (S26-follow-up-K live evidence: Anthropic run ate 9 min
-        # before falling through to vision_unavailable). Disable it so
-        # this loop is the only retry layer.
-        try:
-            client.max_retries = 0
-        except Exception:
-            pass
-    except Exception as exc:
-        logger.warning("vision_verifier: client init failed: %s", exc)
-        return None, 0.0, (time.monotonic() - started) * 1000
 
-    backoffs = [4.0]
+    try:
+        client.max_retries = 0  # belt-and-suspenders; some clients already 0
+    except Exception:
+        pass
+
+    # S26-follow-up-L: SINGLE attempt per provider. The pre-L policy of
+    # "1 attempt + 4 s backoff + 1 attempt" was a hedge against Moonshot
+    # transient queue stalls — but the probe evidence shows the stalls
+    # are not transient (kimi reliably needs ~290 s on the verifier
+    # prompt class). Retrying on transient errors just doubles the
+    # primary's wall-clock before the fallback can fire. With a
+    # fallback provider available, the second attempt's value is
+    # captured by the fallback instead — better signal, different
+    # vendor, fresh latency profile.
     response = None
     last_exc: Exception | None = None
-    for attempt, backoff in enumerate(backoffs + [0.0]):
-        try:
-            response = client.chat.completions.create(
-                model=_VISION_MODEL,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime};base64,{b64_image}"},
-                        },
-                    ],
-                }],
-            )
-            break
-        except Exception as exc:
-            last_exc = exc
-            msg = str(exc).lower()
-            # Live evidence: openai SDK raises ``APITimeoutError`` with
-            # str() = "Request timed out." — note the absence of the
-            # word "timeout" with the literal substring. Add "timed out"
-            # to the transient list so kimi stalls retry once.
-            is_transient = (
-                "429" in msg or "overloaded" in msg or "rate" in msg
-                or "timeout" in msg or "timed out" in msg
-                or "temporarily" in msg
-            )
-            if not is_transient or attempt >= len(backoffs):
-                logger.warning(
-                    "vision_verifier: vision call failed (attempt %d, transient=%s): %s",
-                    attempt + 1, is_transient, exc,
-                )
-                return None, 0.0, (time.monotonic() - started) * 1000
-            logger.info(
-                "vision_verifier: transient error on attempt %d (%s) — retrying in %.1fs",
-                attempt + 1, exc.__class__.__name__, backoff,
-            )
-            await asyncio.sleep(backoff)
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64_image}"},
+                    },
+                ],
+            }],
+        )
+    except Exception as exc:
+        last_exc = exc
+        msg = str(exc).lower()
+        is_transient = (
+            "429" in msg or "overloaded" in msg or "rate" in msg
+            or "timeout" in msg or "timed out" in msg
+            or "temporarily" in msg
+        )
+        logger.warning(
+            "vision_verifier[%s]: call failed (transient=%s): %s",
+            provider_name, is_transient, exc,
+        )
+        return None, 0.0, (time.monotonic() - started) * 1000, exc
 
     if response is None:
-        logger.warning(
-            "vision_verifier: exhausted retries: %s", last_exc,
-        )
-        return None, 0.0, (time.monotonic() - started) * 1000
+        return None, 0.0, (time.monotonic() - started) * 1000, last_exc
 
     cost = 0.0
     try:
         from shared.cost_tracker import record_openai_usage
 
-        record_openai_usage(response, agent_name=_AGENT_NAME, model_hint=_VISION_MODEL)
+        record_openai_usage(response, agent_name=_AGENT_NAME, model_hint=model)
         usage = getattr(response, "usage", None)
         prompt_t = getattr(usage, "prompt_tokens", 0) or 0
         completion_t = getattr(usage, "completion_tokens", 0) or 0
-        # moonshot-v1-32k-vision-preview pricing from shared/model_costs/2026-04-22.json:
-        # $0.30 / M input tokens, $0.30 / M output tokens (approx for the 32k variant).
-        # Snapshot is the source of truth — this approximation is only for the
-        # return value so callers can budget; the canonical row sits in
-        # llm_usage via record_openai_usage above.
         cost = (prompt_t + completion_t) * 0.30 / 1_000_000
     except Exception:
         pass
 
     elapsed_ms = (time.monotonic() - started) * 1000
-    raw = (response.choices[0].message.content or "").strip()
-    return raw, cost, elapsed_ms
+    try:
+        raw = (response.choices[0].message.content or "").strip()
+    except Exception:
+        raw = ""
+    return raw, cost, elapsed_ms, None
+
+
+async def _call_vision(
+    screenshot_png: bytes, prompt: str
+) -> tuple[str | None, float, float]:
+    """Two-provider vision call: Moonshot (primary) → fallback on exhaustion.
+
+    Returns ``(raw_text, cost_usd, elapsed_ms)`` on success.
+    Returns ``(None, 0.0, elapsed)`` after primary + fallback both fail.
+
+    Primary: Moonshot via ``get_openai_client()`` (the production Kimi
+    endpoint). Per S26-follow-up-K, the primary path has retry
+    policy = 2 attempts × ``_VISION_CALL_TIMEOUT_S`` per attempt + 4 s
+    backoff, max_retries=0 on the SDK to prevent compound retries.
+
+    Fallback: triggered ONLY when the primary returns None (failed
+    after retries). Controlled by ``VISION_VERIFIER_FALLBACK_MODEL`` —
+    defaults to ``qwen3-vl:4b`` via local Ollama (free, no rate limits,
+    predictable latency vs Moonshot's queue jitter). Set to "none" to
+    disable fallback. Adapter-agnostic — never inspects platform.
+
+    OPRAL rule 5: a Moonshot stall is a recurring failure mode (S26-
+    follow-up-L probe evidence: 290 s on full-schema prompts, 124 s
+    timeouts on tiny-schema retries). The fallback satisfies "if it
+    can recur, the fix is incomplete" by providing a second-source of
+    truth without trading off the primary path.
+    """
+    started = time.monotonic()
+
+    try:
+        primary_client = get_openai_client(timeout=_VISION_CALL_TIMEOUT_S)
+    except Exception as exc:
+        logger.warning("vision_verifier: primary client init failed: %s", exc)
+        primary_client = None
+
+    if primary_client is not None:
+        raw, cost, ms, exc = await _call_provider(
+            primary_client, _VISION_MODEL, prompt, screenshot_png,
+            provider_name="primary", timeout=_VISION_CALL_TIMEOUT_S,
+        )
+        if raw is not None:
+            return raw, cost, ms
+
+    if not _fallback_enabled():
+        return None, 0.0, (time.monotonic() - started) * 1000
+
+    fb_client = _get_fallback_client(timeout=_FALLBACK_CALL_TIMEOUT_S)
+    if fb_client is None:
+        return None, 0.0, (time.monotonic() - started) * 1000
+
+    logger.info(
+        "vision_verifier: primary exhausted — trying fallback model=%s base_url=%s",
+        _FALLBACK_MODEL, _FALLBACK_BASE_URL,
+    )
+    fb_raw, fb_cost, fb_ms, fb_exc = await _call_provider(
+        fb_client, _FALLBACK_MODEL, prompt, screenshot_png,
+        provider_name="fallback", timeout=_FALLBACK_CALL_TIMEOUT_S,
+    )
+    total_ms = (time.monotonic() - started) * 1000
+    return fb_raw, fb_cost, total_ms
 
 
 def _record_verdict_row(
