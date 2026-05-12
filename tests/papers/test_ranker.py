@@ -204,8 +204,15 @@ class TestFastScoreV2:
         ("not json at all", []),
         # Empty string
         ("", []),
-        # JSON object (not array) → returns []
+        # JSON object whose only value is a string → still no array → []
         ('{"key": "value"}', []),
+        # response_format=json_object wrapping pattern: single-key dict
+        # whose value is the array we asked for → unwrap to the array
+        ('{"rankings": [{"a": 1}, {"b": 2}]}', [{"a": 1}, {"b": 2}]),
+        # Markdown-fenced wrapping
+        ('```json\n{"rankings": [{"x": 9}]}\n```', [{"x": 9}]),
+        # Multi-key dict containing a list isn't unwrapped (ambiguous → [])
+        ('{"meta": "x", "rankings": [{"a": 1}]}', []),
     ],
 )
 def test_extract_json_array_parametrized(raw: str, expected: list):

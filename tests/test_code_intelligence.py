@@ -564,19 +564,19 @@ class TestDiffImpact:
         assert result["total_impacted"] >= 1
 
 
-class TestVoyageSearchIntegration:
-    def test_query_embedding_fn_set_when_voyage_available(self, tmp_path, monkeypatch):
-        """CodeIntelligence sets _query_embedding_fn on HybridSearch when Voyage key exists."""
-        monkeypatch.setenv("VOYAGE_API_KEY", "test-key-fake")
+class TestEmbedSearchIntegration:
+    def test_query_embedding_fn_set_when_ollama_configured(self, tmp_path, monkeypatch):
+        """CodeIntelligence sets _query_embedding_fn on HybridSearch when OLLAMA_BASE_URL is set."""
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
         db_path = str(tmp_path / "ci_test.db")
         ci = CodeIntelligence(db_path)
-        # The fn should be set (even though it won't work with a fake key)
+        # The fn should be set (even though it won't work without a real Ollama)
         assert ci._search._query_embedding_fn is not None
         ci.close()
 
-    def test_query_embedding_fn_none_without_key(self, tmp_path, monkeypatch):
-        """Without VOYAGE_API_KEY, _query_embedding_fn stays None."""
-        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    def test_query_embedding_fn_none_without_ollama(self, tmp_path, monkeypatch):
+        """Without OLLAMA_BASE_URL, _query_embedding_fn stays None."""
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         db_path = str(tmp_path / "ci_test.db")
         ci = CodeIntelligence(db_path)
         assert ci._search._query_embedding_fn is None

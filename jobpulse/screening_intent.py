@@ -17,7 +17,6 @@ from enum import Enum
 from typing import Optional
 
 from shared.logging_config import get_logger
-from shared.memory_layer._embedder import MemoryEmbedder
 
 logger = get_logger(__name__)
 
@@ -62,6 +61,7 @@ class ScreeningIntent(str, Enum):
     BACKGROUND_CHECK = "background_check"
     DIVERSITY_MONITORING = "diversity_monitoring"
     CONSENT_DATA = "consent_data"
+    INTROSPECTION_CONFIRMATION = "introspection_confirmation"
     OPEN_ENDED = "open_ended"
     UNKNOWN = "unknown"
 
@@ -230,6 +230,18 @@ _SEED_PROTOTYPES: dict[ScreeningIntent, list[str]] = {
         "Consent to GDPR?",
         "Is this information accurate?",
     ],
+    ScreeningIntent.INTROSPECTION_CONFIRMATION: [
+        "Have you added your full legal name and surname?",
+        "Have you completed the previous step?",
+        "Did you upload your resume?",
+        "Have you reviewed the privacy policy?",
+        "Do you confirm the information above is accurate?",
+        "Can you confirm you have entered your name correctly?",
+        "Did you fill in your contact information?",
+        "Have you read the terms and conditions?",
+        "Please confirm you have provided all required information.",
+        "Are the details above correct?",
+    ],
     ScreeningIntent.OPEN_ENDED: [
         "Why do you want this role?",
         "Tell us about yourself",
@@ -239,22 +251,13 @@ _SEED_PROTOTYPES: dict[ScreeningIntent, list[str]] = {
 }
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
 class ScreeningIntentClassifier:
     """Embedding-based few-shot intent classifier for screening questions."""
 
     def __init__(
         self,
         db_path: str | None = None,
-        embedder: MemoryEmbedder | None = None,
+        embedder: object | None = None,
         confidence_threshold: float = 0.80,
     ) -> None:
         self._db_path = db_path or _default_db_path()
@@ -266,7 +269,8 @@ class ScreeningIntentClassifier:
         # Lazy-load embedder
         if self._embedder is None:
             try:
-                self._embedder = MemoryEmbedder()
+                from shared.semantic_utils import _get_embedder
+                self._embedder = _get_embedder()
             except Exception as exc:
                 logger.warning("IntentClassifier: Embedder unavailable (%s)", exc)
 
@@ -330,31 +334,60 @@ class ScreeningIntentClassifier:
 
     def classify(self, question: str) -> tuple[ScreeningIntent, float]:
         """Classify a question into an intent. Returns (intent, confidence)."""
+        import time as _time
+        from shared.semantic_decisions import record_decision
+
+        _t0 = _time.perf_counter()
+
+        def _log(intent: ScreeningIntent, score: float, tier: str) -> None:
+            record_decision(
+                agent_name="ScreeningIntentClassifier",
+                call_site="classify",
+                decision_type="intent_classify",
+                mechanism="embedding",
+                tier_reached=tier,
+                input_value=question,
+                output_value=intent.value if intent else "unknown",
+                confidence=float(score),
+                elapsed_ms=(_time.perf_counter() - _t0) * 1000.0,
+            )
+
         if not question or not question.strip():
+            _log(ScreeningIntent.UNKNOWN, 0.0, "empty_question")
             return ScreeningIntent.UNKNOWN, 0.0
 
         if self._embedder is None or not self._loaded:
+            _log(ScreeningIntent.UNKNOWN, 0.0, "embedder_unavailable")
             return ScreeningIntent.UNKNOWN, 0.0
 
         try:
             query_vec = self._embedder.embed(question.strip())
         except Exception as exc:
             logger.debug("Intent classification embed failed: %s", exc)
+            _log(ScreeningIntent.UNKNOWN, 0.0, "embed_failed")
             return ScreeningIntent.UNKNOWN, 0.0
 
         best_intent: ScreeningIntent = ScreeningIntent.UNKNOWN
         best_score = 0.0
 
         for intent, vectors in self._prototypes.items():
-            # Max similarity against any prototype for this intent
-            scores = [_cosine_similarity(query_vec, v) for v in vectors]
-            max_score = max(scores) if scores else 0.0
+            import numpy as np
+            if not vectors:
+                continue
+            proto_arr = np.array(vectors, dtype=np.float32)
+            query_arr = np.array(query_vec, dtype=np.float32)
+            norms = np.linalg.norm(proto_arr, axis=1) * np.linalg.norm(query_arr)
+            norms = np.where(norms == 0, 1, norms)
+            sims = np.dot(proto_arr, query_arr) / norms
+            max_score = float(np.max(sims))
             if max_score > best_score:
                 best_score = max_score
                 best_intent = intent
 
         if best_score >= self._threshold:
+            _log(best_intent, best_score, "above_threshold")
             return best_intent, best_score
+        _log(ScreeningIntent.UNKNOWN, best_score, "below_threshold")
         return ScreeningIntent.UNKNOWN, best_score
 
     def add_intent_example(self, intent: ScreeningIntent, question: str) -> None:
@@ -397,3 +430,14 @@ def get_intent_classifier() -> ScreeningIntentClassifier:
     if _classifier_instance is None:
         _classifier_instance = ScreeningIntentClassifier()
     return _classifier_instance
+
+
+def classify_intent(question: str) -> str:
+    """Module-level convenience wrapper used by screening_pipeline + tests.
+
+    Returns the intent as a string (the enum ``.value``) — most callers
+    care about the routing key, not the tuple/Enum shape. Confidence is
+    discarded; if you need it, call ``get_intent_classifier().classify``.
+    """
+    intent, _confidence = get_intent_classifier().classify(question)
+    return intent.value

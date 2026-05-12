@@ -437,14 +437,22 @@ def best_option_match(
     available_options: list[str],
     *,
     aliases: dict[str, tuple[str, ...]] | None = None,
+    prefer_substrings: tuple[str, ...] = (),
 ) -> str | None:
     """Find the best matching option for a desired value.
 
     Match priority:
     1. Exact match (case-insensitive)
     2. Alias match (e.g. "He/Him" → "Him/His/Himself")
-    3. Substring containment
+    3. Substring containment, preferring options that also contain any of
+       ``prefer_substrings`` (typically the user's country) when there are
+       multiple substring matches.
     4. None if no match
+
+    The ``prefer_substrings`` tiebreaker is what stops Greenhouse's location
+    autocomplete from picking "Dundee, Florida" when the user types "Dundee"
+    and lives in the UK. Without it, return order depends on dict insertion
+    (i.e., whatever Greenhouse rendered first), which is non-deterministic.
 
     Returns the exact option text to click.
     """
@@ -453,6 +461,7 @@ def best_option_match(
 
     desired_lower = desired_value.strip().lower()
     opts_lower = {o.strip().lower(): o for o in available_options}
+    prefer_lower = tuple(p.strip().lower() for p in prefer_substrings if p)
 
     if desired_lower in opts_lower:
         return opts_lower[desired_lower]
@@ -462,9 +471,17 @@ def best_option_match(
             if alias.lower() in opts_lower:
                 return opts_lower[alias.lower()]
 
-    for opt_lower, opt_original in opts_lower.items():
-        if desired_lower in opt_lower or opt_lower in desired_lower:
-            return opt_original
+    substring_matches = [
+        (opt_lower, opt_original)
+        for opt_lower, opt_original in opts_lower.items()
+        if desired_lower in opt_lower or opt_lower in desired_lower
+    ]
+    if substring_matches and prefer_lower:
+        for opt_lower, opt_original in substring_matches:
+            if any(p in opt_lower for p in prefer_lower):
+                return opt_original
+    if substring_matches:
+        return substring_matches[0][1]
 
     return None
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 
 from jobpulse.papers.models import FactCheckResult, Paper, RankedPaper
 from shared.logging_config import get_logger
@@ -33,6 +34,15 @@ _LENS_WEIGHTS: dict[str, dict[str, float]] = {
         "practical": 0.25,
         "breadth": 0.15,
     },
+}
+
+# Paper-type de-boost penalties
+_TYPE_DEBOOST: dict[str, float] = {
+    "research": 0.0,
+    "survey": -1.0,
+    "tutorial": -1.5,
+    "position": -2.0,
+    "workshop": -1.5,
 }
 
 
@@ -108,22 +118,103 @@ def fast_score(paper: Paper) -> float:
     # Recency bonus
     score += 0.5
 
+    # Lab track-record boost
+    score += _lab_boost(paper)
+
     return min(score, 10.0)
 
 
+_RECOGNIZED_LABS: set[str] = {
+    "Anthropic", "DeepMind", "Google Research", "Meta AI", "FAIR",
+    "Mistral", "Qwen", "Alibaba", "DeepSeek", "Allen Institute for AI", "AI2",
+    "HuggingFace", "Stanford", "Princeton", "MIT", "CMU", "Berkeley",
+    "OpenAI", "Microsoft Research", "NVIDIA Research",
+}
+
+
+def _levenshtein(a: str, b: str) -> int:
+    if len(a) < len(b):
+        return _levenshtein(b, a)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(curr[j] + 1, prev[j + 1] + 1, prev[j] + (ca != cb)))
+        prev = curr
+    return prev[-1]
+
+
+def _matches_recognized_lab(affiliation: str) -> bool:
+    a_lower = affiliation.lower()
+    for lab in _RECOGNIZED_LABS:
+        if lab.lower() in a_lower:
+            return True
+    # Levenshtein < 3 for short affiliations
+    if len(affiliation) <= 30:
+        for lab in _RECOGNIZED_LABS:
+            if _levenshtein(affiliation.lower(), lab.lower()) < 3:
+                return True
+    return False
+
+
+def _lab_boost(paper) -> float:  # type: ignore[no-untyped-def]
+    affs = getattr(paper, "affiliations", None) or []
+    if not affs:
+        return 0.0
+    matched_indices = [i for i, a in enumerate(affs) if _matches_recognized_lab(a)]
+    if not matched_indices:
+        return 0.0
+    if len(matched_indices) >= 2:
+        return 1.5
+    if 0 in matched_indices:
+        return 1.0
+    return 0.5
+
+
+def _repo_activity_boost(github_url: str, last_commit_iso: str) -> float:
+    """Return +1.0 if repo has a commit within the last 14 days, else 0.0."""
+    if not github_url or not last_commit_iso:
+        return 0.0
+    try:
+        last = datetime.fromisoformat(last_commit_iso.replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return 0.0
+    if datetime.now(timezone.utc) - last <= timedelta(days=14):
+        return 1.0
+    return 0.0
+
+
+def _paper_type_deboost(paper_type: str) -> float:
+    """Return de-boost penalty for paper type. Defaults to 0.0 for unknown types."""
+    return _TYPE_DEBOOST.get(paper_type, 0.0)
+
+
 def _extract_json_array(raw: str) -> list:
-    """Strip markdown fences and parse a JSON array.  Returns [] on any error."""
+    """Strip markdown fences and parse a JSON array. Returns [] on any error.
+
+    Also unwraps the response_format=json_object pattern: when the LLM is
+    constrained to a top-level object but the prompt asked for an array,
+    OpenAI wraps the array under a single key (e.g. ``{"rankings": [...]}``).
+    """
     if not raw:
         return []
     # Strip markdown code fences
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
     try:
         parsed = json.loads(cleaned)
-        if isinstance(parsed, list):
-            return parsed
-        return []
     except (json.JSONDecodeError, ValueError):
         return []
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict) and len(parsed) == 1:
+        only = next(iter(parsed.values()))
+        if isinstance(only, list):
+            return only
+    return []
 
 
 def llm_rank(
@@ -164,20 +255,22 @@ def llm_rank(
         f"You are an AI research curator ranking papers for a {lens} digest.\n"
         f"Scoring weights: {weight_desc}.\n\n"
         f"Papers:\n{paper_list}\n\n"
-        f"Return a JSON array of exactly {top_n} objects with this schema:\n"
-        '[\n  {\n    "arxiv_id": "...",\n    "impact_score": <float 0-10>,\n'
-        '    "impact_reason": "...",\n    "category_tag": "one of LLM|Agents|Vision|RL|Efficiency|Safety|Reasoning|Data",\n'
-        '    "key_technique": "...",\n    "practical_takeaway": "..."\n  }\n]\n'
-        "Return ONLY the JSON array, no other text."
+        f"Return ONLY valid JSON. Schema (top_n={top_n} objects in rankings):\n"
+        '{\n  "rankings": [\n    {\n      "arxiv_id": "...",\n      "impact_score": <float 0-10>,\n'
+        '      "impact_reason": "...",\n      "category_tag": "one of LLM|Agents|Vision|RL|Efficiency|Safety|Reasoning|Data",\n'
+        '      "key_technique": "...",\n      "practical_takeaway": "..."\n    }\n  ]\n}'
     )
 
     try:
-        # Route through CognitiveEngine (default-on) for multi-criteria ranking
+        # response_format forces a top-level JSON object; the prompt asks for
+        # the rankings array wrapped under "rankings" so _extract_json_array
+        # unwraps it.
         from shared.agents import cognitive_llm_call
         raw = cognitive_llm_call(
             task=prompt,
             domain="paper_ranking",
             stakes="medium",
+            response_format={"type": "json_object"},
         )
         if raw is None:
             return _fallback()
@@ -230,17 +323,18 @@ def extract_themes(papers: list[Paper]) -> list[str]:
     prompt = (
         "Given these AI research paper titles and categories, extract 3-5 overarching themes.\n"
         f"{titles_and_cats}\n\n"
-        'Return a JSON array of strings, e.g. ["Theme 1", "Theme 2"].\n'
-        "Return ONLY the JSON array."
+        'Return ONLY valid JSON: {"themes": ["Theme 1", "Theme 2", ...]}\n'
     )
 
     try:
-        # Route through CognitiveEngine (default-on) for theme extraction
+        # response_format wraps the array under "themes"; _extract_json_array
+        # unwraps single-key dict-with-list to the inner list.
         from shared.agents import cognitive_llm_call
         raw = cognitive_llm_call(
             task=prompt,
             domain="paper_themes",
             stakes="low",
+            response_format={"type": "json_object"},
         )
         if raw is None:
             return []
@@ -340,3 +434,60 @@ def summarize_and_verify(papers: list[Paper]) -> list[RankedPaper]:
         results.append(RankedPaper(**data))
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Rank-reason helpers
+# ---------------------------------------------------------------------------
+
+
+def attach_rank_reasons(papers: list, lens: str = "daily") -> list:
+    """Attach a 1-sentence LLM justification to each paper's rank_reason field."""
+    for p in papers:
+        p.rank_reason = _llm_rank_reason(p, lens)
+    return papers
+
+
+def _llm_rank_reason(paper, lens: str) -> str:  # type: ignore[no-untyped-def]
+    """Call LLM once to produce a 1-sentence reason for the top-N pick."""
+    from shared.agents import cognitive_llm_call
+    from shared.prompts import get_prompt
+    import json as _json
+
+    prompt = get_prompt("journal", "rank_reason")
+    call_params = prompt.render(
+        title=paper.title,
+        abstract=paper.abstract[:1500],
+        score=getattr(paper, "impact_score", 0.0),
+        lab_boost=_lab_boost(paper),
+        repo_boost=_repo_activity_boost(
+            getattr(paper, "github_url", ""),
+            getattr(paper, "_last_commit_iso", ""),
+        ),
+        lens=lens,
+    )
+    task = "\n".join(
+        f"{m['role'].upper()}: {m['content']}"
+        for m in call_params["messages"]
+    )
+    raw = cognitive_llm_call(
+        task=task,
+        domain="journal_rank_reason",
+        stakes="low",
+        fallback_messages=call_params["messages"],
+        response_format={"type": "json_object"},
+    ) or "{}"
+    try:
+        return _json.loads(_strip_codefence(raw)).get("reason", "")[:200]
+    except (ValueError, _json.JSONDecodeError, AttributeError, TypeError):
+        return ""
+
+
+def _strip_codefence(text: str) -> str:
+    """Strip markdown code fences from LLM output."""
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s
+        if s.endswith("```"):
+            s = s[: s.rfind("```")]
+    return s.strip()

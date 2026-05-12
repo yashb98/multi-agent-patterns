@@ -34,10 +34,18 @@ shared/
   memory_layer/          # MemoryManager facade → SQLite + Qdrant + Neo4j
   cognitive/             # CognitiveEngine.think(task, domain, stakes)
   optimization/          # OptimizationEngine — signal bus + learning
-  nlp_classifier.py      # 3-tier: regex → embeddings → LLM
+  code_intelligence/     # Unified code intelligence facade (MCP backend)
+  tools/                 # Tool implementations (web search, Gmail, Telegram, etc.)
+  evals/                 # Deterministic agent evaluation harness
+  adversarial/           # Adversarial evaluation framework
+  execution/             # Durable execution infrastructure
+  governance/            # Security and policy engine
 patterns/                # enhanced_swarm (prod), hierarchical, peer_debate, dynamic_swarm, plan_and_execute, map_reduce
+scripts/                 # Operational scripts, migrations, benchmarks
 tests/                   # Mirrors source tree. conftest.py sets JOBPULSE_TEST_MODE=1
 ```
+
+Note: `nlp_classifier.py` lives in `jobpulse/`, not `shared/`.
 
 ---
 
@@ -64,6 +72,18 @@ python shared/code_intel_cli.py module_summary <file>
 python shared/code_intel_cli.py semantic_search "<query>"
 python shared/code_intel_cli.py risk_report [top_n]
 python shared/code_intel_cli.py recent_changes [n]
+python shared/code_intel_cli.py diff_impact              # impact of current diff
+python shared/code_intel_cli.py grep_search "<pattern>"   # ripgrep + code graph enrichment
+python shared/code_intel_cli.py batch_find <name1,name2>  # find multiple symbols
+python shared/code_intel_cli.py call_path <from> <to>     # path between functions
+python shared/code_intel_cli.py test_coverage_map <file>  # which tests cover what
+python shared/code_intel_cli.py complexity_hotspots [n]   # cyclomatic complexity ranking
+python shared/code_intel_cli.py dead_code [top_n]         # unreachable functions
+python shared/code_intel_cli.py dependency_cycles         # circular import detection
+python shared/code_intel_cli.py similar_functions <name>  # find duplicate/similar code
+python shared/code_intel_cli.py boundary_check <file>     # module boundary violations
+python shared/code_intel_cli.py suggest_extract <file>    # suggest function extraction
+python shared/code_intel_cli.py rename_preview <old> <new> # preview rename impact
 ```
 
 - ALWAYS use this instead of Grep/Glob for Python code (~50ms vs 350-750ms, returns call graph + risk)
@@ -83,6 +103,7 @@ Full checklist: `.claude/rules/seven-principles.md`. Every change must satisfy:
 5. **Security** — No PII in source (`.claude/rules/pii-policy.md`), no JS string interpolation, SSRF protection, parameterized SQL
 6. **Observability** — Cost tracking on all LLM calls, decision logging, no silent failures
 7. **Product** — Dry-run-first, `confirm_application()`, user-actionable errors
+8. **Dynamic Over Hardcoded** — All pipeline values resolved at runtime, never hardcoded
 
 ### Style
 - Minimum code. Nothing speculative. Match existing style.
@@ -97,12 +118,13 @@ Full checklist: `.claude/rules/seven-principles.md`. Every change must satisfy:
 ALL personal data (name, email, address, screening answers, skills, links, DEI, salary, visa) retrieved from databases at runtime. Never hardcoded in Python, tests, or docs.
 
 ### Dual Dispatcher
-New intents MUST go in BOTH `dispatcher.py` AND `swarm_dispatcher.py`. `JOBPULSE_SWARM=true` (default) = Enhanced Swarm.
+New intents MUST go in `handler_registry.py` + `intent_registry.py` + `command_router.py` (both dispatchers consume via `get_handler_map()`). `JOBPULSE_SWARM=true` (default) = Enhanced Swarm.
 
-### Database Safety
+### Database Safety & Wiring
 - Production DBs: `data/*.db` — NEVER touch directly. WAL mode required.
 - Tests: ALWAYS `tmp_path` or monkeypatch. Never touch `data/*.db`.
 - Access: `MemoryManager` for memory, `OptimizationEngine` for learning — no direct DB queries.
+- **21 DBs are wired but empty** — when touching pipeline code, verify the relevant DB actually receives data after a run. Critical empties: `form_experience.db`, `optimization.db`, `applications.db`, `trajectory.db`, `user_profile.db`.
 
 ### Dynamic Over Hardcoded
 All pipeline values resolved at runtime from DOM/databases/LLM/config. Never hardcode field values, selectors, timing, screening answers, or platform behavior.
@@ -120,7 +142,8 @@ All applications run real, headed, live. No mocks, no headless.
 
 Steps: Pre-Screen → CV/CL → Form Fill → Dry Run (human review) → Submit (`confirm_application()`) → Learning
 
-On error: Trace via CLI (`find_symbol`/`callers_of`) → fix surgically → re-run → route to correct DB → emit `adaptation` signal → verify persisted.
+**On error — OPRAL (Observe → Plan → Reason → Act → Learn):**
+Observe the failure → trace root cause via CLI (`find_symbol`/`callers_of`) → reason about which learning system prevents recurrence → fix surgically + re-run with real data → route to correct DB + emit `adaptation` signal → verify the agent handles it autonomously next run. Every error must make the system smarter.
 
 Learning chain must fire: `post_apply_hook` → `CorrectionCapture` → `AgentRulesDB` → `strategy_reflector` → `OptimizationEngine` → `AgentPerformanceDB`
 
@@ -164,5 +187,15 @@ Critical: `OPENAI_API_KEY` | `TELEGRAM_BOT_TOKEN`/`CHAT_ID` | `NOTION_API_KEY` |
 | `shared/cognitive/` | `shared/cognitive/CLAUDE.md` |
 | `shared/memory_layer/` | `shared/memory_layer/CLAUDE.md` |
 | `shared/optimization/` | `shared/optimization/CLAUDE.md` |
+| `shared/adversarial/` | `shared/adversarial/CLAUDE.md` |
+| `shared/execution/` | `shared/execution/CLAUDE.md` |
+| `shared/governance/` | `shared/governance/CLAUDE.md` |
 
-Rules: `.claude/rules/` — `seven-principles.md`, `pii-policy.md`, `jobs.md`, `jobpulse.md`, `patterns.md`, `shared.md`, `testing.md`, `frontend.md`
+## Agent Definitions (`.claude/agents/`)
+- `code-reviewer.md` — Reviews agent code for patterns and correctness (sonnet)
+- `db-auditor.md` — Audits database schemas and wiring (read-only, haiku)
+- `memory-debugger.md` — Debugs 5-tier memory system and injection pipeline (sonnet)
+- `pattern-explorer.md` — Explores and compares orchestration patterns (sonnet)
+- `reviewer.md` — Reviews code changes against project rules (opus)
+
+Rules: `.claude/rules/` — `seven-principles.md`, `pii-policy.md`, `jobs.md`, `jobpulse.md`, `jobpulse-agents.md`, `orchestration-agents.md`, `patterns.md`, `shared.md`, `testing.md`, `error-handling.md`

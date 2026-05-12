@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS job_listings (
     description_raw TEXT,
     ats_platform TEXT,
     easy_apply BOOLEAN DEFAULT FALSE,
+    direct_url TEXT,
     found_at TEXT NOT NULL
 );
 
@@ -184,6 +185,9 @@ class JobDB:
             ]:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE ats_answer_cache ADD COLUMN {col} {typ}")
+            listing_cols = {r[1] for r in conn.execute("PRAGMA table_info(job_listings)").fetchall()}
+            if "direct_url" not in listing_cols:
+                conn.execute("ALTER TABLE job_listings ADD COLUMN direct_url TEXT")
 
     # ------------------------------------------------------------------
     # Listings
@@ -198,12 +202,12 @@ class JobDB:
                     job_id, title, company, platform, url,
                     salary_min, salary_max, location, remote, seniority,
                     required_skills, preferred_skills, description_raw,
-                    ats_platform, easy_apply, found_at
+                    ats_platform, easy_apply, direct_url, found_at
                 ) VALUES (
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?
+                    ?, ?, ?, ?
                 )
                 """,
                 (
@@ -222,6 +226,7 @@ class JobDB:
                     listing.description_raw,
                     listing.ats_platform,
                     listing.easy_apply,
+                    listing.direct_url,
                     listing.found_at.isoformat() if hasattr(listing.found_at, "isoformat") else str(listing.found_at),
                 ),
             )
@@ -316,6 +321,30 @@ class JobDB:
         if row is None:
             return None
         return dict(row)
+
+    def find_application_by_company_title(self, company: str, title: str) -> dict | None:
+        """Fuzzy match an application by company + title (case-insensitive)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT a.* FROM applications a
+                JOIN job_listings l ON a.job_id = l.job_id
+                WHERE LOWER(l.company) = LOWER(?) AND LOWER(l.title) = LOWER(?)
+                ORDER BY a.updated_at DESC LIMIT 1
+                """,
+                (company, title),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def link_notion_page(self, job_id: str, notion_page_id: str) -> None:
+        """Link an existing application record to a Notion page ID."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE applications SET notion_page_id = ?, updated_at = ? WHERE job_id = ?",
+                (notion_page_id, _now(), job_id),
+            )
 
     def get_listing_by_notion_page_id(self, notion_page_id: str) -> dict | None:
         """Look up a job listing by Notion page ID (via the applications table)."""

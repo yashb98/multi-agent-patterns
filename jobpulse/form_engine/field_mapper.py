@@ -3,12 +3,26 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from typing import Any, TYPE_CHECKING
 
 from shared.agents import get_openai_client, get_model_name
 from shared.logging_config import get_logger
 from shared.pii import assert_prompt_has_wrapped_pii
+
+# Audit S11 (redesign) / TP-21. Vision recovery uses a Moonshot
+# vision-capable chat-completion model so the Kimi mandate
+# (`shared/agents.py`:_use_kimi) extends to vision endpoints.
+# Slice S26 (2026-05-11): default upgraded from
+# `moonshot-v1-32k-vision-preview` → `kimi-k2.6` after observed
+# sustained 429s on the preview model line during S26 RUN 1–3
+# while the production `kimi-k2.6` engine responded normally.
+# Env override (`VISION_MODEL`) lets a future Kimi vision model
+# name supersede this one without code changes.
+_VISION_MODEL = os.environ.get(
+    "VISION_MODEL", "kimi-k2.6",
+)
 
 from jobpulse.form_engine.field_resolver import (
     _FIELD_LABEL_TO_PROFILE_KEY,
@@ -155,7 +169,22 @@ _DIVERSITY_KEYWORDS: dict[tuple[str, ...], str] = {
 
 
 def _fuzzy_custom_answer(label_lower: str, custom_answers: dict) -> str | None:
-    """Try to match a field label to a custom_answers key fuzzily."""
+    """Try to match a field label to a custom_answers key fuzzily.
+
+    Same correctness rule as `fuzzy_label_to_profile_key`: substring / keyword
+    matching does NOT fire on sentence-shaped questions. Without this, a
+    custom_answers entry like {"country": "United Kingdom"} would substring-
+    match into any long question containing the word "country" (e.g.
+    "Are you eligible to work in the country..." → returns "United Kingdom"
+    as the answer to a Yes/No).
+    """
+    from jobpulse.form_engine.field_resolver import _is_sentence_question
+    import re as _re
+
+    tokens_list = _re.sub(r"[^a-z0-9]+", " ", label_lower).split()
+    if _is_sentence_question(label_lower, tokens_list):
+        return None
+
     # Exact match already tried by caller — do substring / keyword matching here
     for key, value in custom_answers.items():
         if key.startswith("_"):
@@ -176,6 +205,26 @@ def _fuzzy_custom_answer(label_lower: str, custom_answers: dict) -> str | None:
                 val = custom_answers.get(alt)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
+
+    # Embedding similarity fallback.
+    # Skip for very short labels (< 5 chars): the embedding model can't
+    # reliably compare single short words and produces false positives like
+    # "stream" → "name" (score 0.83). The substring + diversity tiers above
+    # already cover the legitimate short-label cases.
+    if len(label_lower.strip()) < 5:
+        return None
+    try:
+        from shared.semantic_utils import best_semantic_match
+        candidate_keys = [k for k in custom_answers if not k.startswith("_") and isinstance(custom_answers[k], str) and custom_answers[k].strip()]
+        # Apply the same length floor to candidate keys.
+        candidate_keys = [k for k in candidate_keys if len(k.strip()) >= 5]
+        if candidate_keys:
+            match, score = best_semantic_match(label_lower, candidate_keys, min_score=0.70)
+            if match is not None:
+                return custom_answers[match].strip()
+    except Exception:
+        pass
+
     return None
 
 
@@ -192,10 +241,32 @@ def _resolve_with_options(value: str, field: dict) -> str:
     except (ValueError, AttributeError):
         numeric = None
 
+    # Country-suffix preference: option lists like Greenhouse's location
+    # autocomplete return ambiguous matches ("Dundee, Florida" vs
+    # "Dundee, Dundee City, United Kingdom"). When the user's country is
+    # known via ProfileStore, pass it as a tiebreaker so the option in the
+    # right country wins. Falls back gracefully if ProfileStore unavailable.
+    prefer: tuple[str, ...] = ()
+    try:
+        from shared.profile_store import get_profile_store
+        store = get_profile_store()
+        country = (store.sensitive("country") or "").strip()
+        if not country:
+            location = (store.identity().location or "").strip()
+            if "," in location:
+                country = location.rsplit(",", 1)[-1].strip()
+            elif location:
+                country = location
+        if country:
+            prefer = (country,)
+    except Exception:
+        prefer = ()
+
     matched = semantic_option_match(
         value, options,
         field_label=field.get("label", ""),
         numeric_value=numeric,
+        prefer_substrings=prefer,
     )
     return matched if matched is not None else value
 
@@ -213,8 +284,14 @@ def seed_mapping(
     mapping: dict[str, str] = {}
     unresolved: list[dict] = []
 
+    _placeholder_values = {
+        "select one", "select an option", "select", "-- select --",
+        "-none-", "loading", "choose", "please select",
+    }
     for field in fields:
-        if field["type"] == "file" or field.get("value"):
+        cur_val = field.get("value", "")
+        is_placeholder = isinstance(cur_val, str) and cur_val.strip().lower() in _placeholder_values
+        if field["type"] == "file" or (cur_val and not is_placeholder):
             continue
 
         label = field["label"]
@@ -336,6 +413,95 @@ async def map_fields(
     return mapping, llm_calls
 
 
+async def map_fields_with_confidence(
+    page_url: str, fields: list[dict], profile: dict,
+    custom_answers: dict, platform: str,
+    known_domain: bool, correction_warning: str,
+    domain_field_mappings: dict[str, str] | None = None,
+    cached_screening: dict[str, str] | None = None,
+) -> tuple[list, int]:
+    """Like map_fields() but returns confidence-scored FieldMappings.
+
+    Returns (list[FieldMapping], llm_calls).
+    Low-confidence fields are escalated via Best-of-N consensus (System 2).
+    """
+    from jobpulse.form_engine.confidence_scorer import ConfidenceScorer, FieldMapping
+
+    scorer = ConfidenceScorer()
+    llm_calls = 0
+
+    cached = try_cached_mapping(
+        page_url, fields, profile, custom_answers, known_domain,
+        domain_field_mappings=domain_field_mappings,
+    )
+    if cached is not None:
+        return scorer.score_mappings(cached, source="cached", fields=fields), 0
+
+    mapping, unresolved = seed_mapping(fields, profile, custom_answers)
+    scored = scorer.score_mappings(mapping, source="deterministic", fields=fields)
+
+    if not unresolved:
+        return scored, 0
+
+    llm_mapping, llm_call_count = await map_fields(
+        page_url, fields, profile, custom_answers, platform,
+        known_domain, correction_warning,
+        domain_field_mappings=domain_field_mappings,
+        cached_screening=cached_screening,
+    )
+    llm_calls += llm_call_count
+
+    llm_only = {k: v for k, v in llm_mapping.items() if k not in mapping}
+    llm_scored = scorer.score_mappings(llm_only, source="llm", fields=fields)
+    scored.extend(llm_scored)
+
+    low_conf = [fm for fm in scored if not fm.is_confident]
+    if low_conf:
+        logger.info(
+            "AUQ: %d/%d fields below confidence threshold, escalating to System 2",
+            len(low_conf), len(scored),
+        )
+        consensus = scorer.escalate_low_confidence(
+            low_confidence_mappings=low_conf,
+            fields=fields,
+            profile=profile,
+            custom_answers=custom_answers,
+            platform=platform,
+        )
+        llm_calls += 1
+        for fm in scored:
+            if fm.label in consensus:
+                fm.value = consensus[fm.label]
+                fm.confidence = 0.92
+                fm.source = "consensus"
+
+        _emit_escalation_signal(low_conf, platform, page_url)
+
+    return scored, llm_calls
+
+
+def _emit_escalation_signal(
+    low_conf_fields: list, platform: str, page_url: str,
+) -> None:
+    try:
+        from shared.optimization import get_optimization_engine
+        get_optimization_engine().emit(
+            signal_type="adaptation",
+            source_loop="auq_escalation",
+            domain=platform,
+            agent_name="field_mapper",
+            payload={
+                "param": "confidence_escalation",
+                "field_count": len(low_conf_fields),
+                "fields": [fm.label for fm in low_conf_fields],
+                "page_url": page_url,
+            },
+            session_id=f"auq_{platform}",
+        )
+    except Exception as exc:
+        logger.debug("AUQ escalation signal failed: %s", exc)
+
+
 async def screen_questions(
     unresolved_fields: list[dict], job_context: dict[str, Any] | None,
     profile_store: Any, correction_warning: str,
@@ -447,6 +613,42 @@ def _screen_questions_llm_batch(
         logger.error("LLM screening answer call failed: %s", e)
         return {}, 1
 
+    # Option-validate each answer against the originating field. Without this,
+    # the LLM has been observed to fill EEO compliance fields with profile
+    # values it sees in `applicant_bg` — e.g. Veteran Status / Disability
+    # Status answered with the user's visa_status text, sponsorship answered
+    # with a country name. Drop any answer that doesn't fit the field's
+    # known options so the form is left blank rather than wrong.
+    fields_by_label = {f["label"]: f for f in unresolved_fields}
+    if answers:
+        from jobpulse.screening_option_aligner import OptionAligner
+        aligner = OptionAligner()
+        validated: dict[str, str] = {}
+        for label, answer in answers.items():
+            field = fields_by_label.get(label)
+            if field is None:
+                validated[label] = answer
+                continue
+            opts = field.get("options") or []
+            ftype = (field.get("true_type") or field.get("type") or "").lower()
+            if not opts or ftype not in {
+                "select", "combobox", "radio", "checkbox", "custom_dropdown",
+                "multiselect",
+            }:
+                validated[label] = answer
+                continue
+            aligned = aligner.align_answer(str(answer), opts, ftype)
+            opts_lower = {(o or "").lower().strip() for o in opts}
+            if (aligned or "").lower().strip() in opts_lower:
+                validated[label] = aligned
+            else:
+                logger.warning(
+                    "_screen_questions_llm_batch: dropping %r=%r — does not fit "
+                    "options %s (likely profile-leak hallucination)",
+                    label[:60], str(answer)[:60], [o[:25] for o in opts[:5]],
+                )
+        answers = validated
+
     try:
         from jobpulse.job_db import JobDB
         db = JobDB()
@@ -553,6 +755,18 @@ async def recover_failed_fields_with_llm(
 
 
 
+async def _screenshot_form_area(page: "Page") -> bytes:
+    """Screenshot the form container if locatable, otherwise the viewport."""
+    for selector in ("form", "[role='form']", "#application", ".application-form"):
+        try:
+            loc = page.locator(selector).first
+            if await loc.count() and await loc.is_visible():
+                return await loc.screenshot(type="png")
+        except Exception:
+            continue
+    return await page.screenshot(type="png")
+
+
 async def recover_failed_fields_with_vision(
     page: "Page",
     failed_fields: list[dict[str, Any]],
@@ -565,7 +779,7 @@ async def recover_failed_fields_with_vision(
         return {}, 0
 
     try:
-        screenshot_png = await page.screenshot(type="png")
+        screenshot_png = await _screenshot_form_area(page)
     except Exception as exc:
         logger.warning("Vision recovery: could not capture screenshot: %s", exc)
         return {}, 0
@@ -602,22 +816,33 @@ async def recover_failed_fields_with_vision(
     )
     assert_prompt_has_wrapped_pii(prompt, profile_full, "applicant.profile")
 
+    # Audit 2026-05-10 / Slice S11 (redesign) / TP-21. Vision routes
+    # through the Kimi mandate: get_openai_client() already points at
+    # Moonshot's OpenAI-compatible endpoint. The original code called
+    # client.responses.create() (OpenAI Responses API), which Moonshot
+    # doesn't implement → 404. Switching to chat.completions.create()
+    # with multimodal image_url content works against both providers.
     client = get_openai_client()
     try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[{
+        response = client.chat.completions.create(
+            model=_VISION_MODEL,
+            messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": prompt},
+                    {"type": "text", "text": prompt},
                     {
-                        "type": "input_image",
-                        "image_url": f"data:image/png;base64,{b64_image}",
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64_image}"},
                     },
                 ],
             }],
         )
-        raw = response.output_text.strip()
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="vision_recovery", model_hint=_VISION_MODEL)
+        except Exception:
+            pass
+        raw = (response.choices[0].message.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         recovered = clean_mapping(json.loads(raw))
@@ -645,7 +870,7 @@ async def vision_map_unlabeled_fields(
         return {}, 0
 
     try:
-        screenshot_png = await page.screenshot(type="png")
+        screenshot_png = await _screenshot_form_area(page)
     except Exception as exc:
         logger.warning("Vision unlabeled scan: could not capture screenshot: %s", exc)
         return {}, 0
@@ -681,20 +906,25 @@ async def vision_map_unlabeled_fields(
 
     client = get_openai_client()
     try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=[{
+        response = client.chat.completions.create(
+            model=_VISION_MODEL,
+            messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": prompt},
+                    {"type": "text", "text": prompt},
                     {
-                        "type": "input_image",
-                        "image_url": f"data:image/png;base64,{b64_image}",
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64_image}"},
                     },
                 ],
             }],
         )
-        raw = response.output_text.strip()
+        try:
+            from shared.cost_tracker import record_openai_usage
+            record_openai_usage(response, agent_name="vision_unlabeled", model_hint=_VISION_MODEL)
+        except Exception:
+            pass
+        raw = (response.choices[0].message.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         vision_map = json.loads(raw)
@@ -732,30 +962,26 @@ async def review_form(page: "Page") -> tuple[dict, int]:
 
     client = get_openai_client()
     try:
-        from shared.agents import _token_limit_kwargs
-        _model = get_model_name()
         response = client.chat.completions.create(
-            model=_model,
-            temperature=0.0,
-            timeout=30,
-            **_token_limit_kwargs(_model, 1000),
+            model=_VISION_MODEL,
             messages=[{
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:image/png;base64,{b64}",
-                    }},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    },
                 ],
             }],
         )
         try:
             from shared.cost_tracker import record_openai_usage
-            record_openai_usage(response, agent_name="field_mapper", model_hint=get_model_name())
+            record_openai_usage(response, agent_name="field_mapper", model_hint=_VISION_MODEL)
         except Exception:
             pass
 
-        raw = response.choices[0].message.content.strip()
+        raw = (response.choices[0].message.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
         return json.loads(raw), 1

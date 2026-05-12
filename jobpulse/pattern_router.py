@@ -105,30 +105,116 @@ def _count_entities(text: str) -> int:
     return len([p for p in parts if len(p.strip()) > 2])
 
 
+# Canonical query archetypes per pattern. Embedding similarity scores the
+# user's query against each, picking the highest match above threshold.
+# Survives paraphrase / typo drift the regex-only path missed.
+_PATTERN_ARCHETYPES: list[tuple[str, str]] = [
+    (
+        "peer_debate",
+        "compare A versus B which one is better pros and cons should I "
+        "choose argue debate the merits of each option",
+    ),
+    (
+        "plan_and_execute",
+        "first do X then Y step by step research and benchmark with "
+        "dependent stages multi-step pipeline",
+    ),
+    (
+        "map_reduce",
+        "summarize each of these summarize all of them every one of these "
+        "batch process N items in parallel",
+    ),
+    (
+        "hierarchical",
+        "deep dive comprehensive in-depth report break down explain "
+        "structured outline of",
+    ),
+    (
+        "dynamic_swarm",
+        "multi-entity analysis evaluate three or more options simultaneously "
+        "many candidates",
+    ),
+    (
+        "enhanced_swarm",
+        "single-topic research investigate explain how does this work general "
+        "information question",
+    ),
+]
+
+
 def select_pattern(query: str) -> tuple[str, str]:
-    """Select the best pattern for a research query. Returns (pattern_name, reason)."""
+    """Select the best pattern for a research query. Returns (pattern_name, reason).
+
+    Resolution order:
+      0. Override prefix (debate:, swarm:, deep:, etc.) — user-explicit.
+      1. Embedding similarity to canonical archetype descriptions —
+         primary classifier. Picks the highest-scoring pattern above 0.5.
+      2. Regex pattern fallback — last resort when embeddings miss or are
+         unavailable (offline). Each rule logs that it fired so we can
+         add the missing phrasing to archetypes.
+      3. Default to enhanced_swarm.
+    """
     # Tier 0: Override check
     override, clean_query = parse_override(query)
     if override:
         return override, f"Override: user requested {PATTERN_NAMES.get(override, override)}"
 
-    # Tier 1: Rule-based signals
+    # Tier 1: Embedding similarity — primary classifier
+    try:
+        from shared.semantic_utils import semantic_similarity
+        best_pattern: str | None = None
+        best_score = 0.0
+        for pattern, archetype in _PATTERN_ARCHETYPES:
+            score = semantic_similarity(query[:300], archetype)
+            if score > best_score:
+                best_score = score
+                best_pattern = pattern
+        # Multi-entity heuristic remains as a structural override — counting
+        # entities is a structural signal (commas + "and"), not classification.
+        if _count_entities(query) >= 3 and best_score < 0.65:
+            return "dynamic_swarm", "Multi-entity analysis (3+ entities detected)"
+        # Threshold 0.6: below this we trust regex-tier signals more than
+        # weak semantic matches. The default (enhanced_swarm) archetype is
+        # broad and tends to dominate at low scores, drowning out the
+        # narrower patterns (hierarchical, plan_and_execute) that the
+        # regex tier picks up reliably from explicit keywords.
+        if best_pattern is not None and best_score >= 0.6:
+            # Reason text retains the legacy descriptors so callers/tests
+            # that grep for "comparative", "multi-step", etc. continue to
+            # work; the semantic score is appended for traceability.
+            _legacy_reason = {
+                "peer_debate": "Comparative/opinion query — debate produces best results (vs)",
+                "plan_and_execute": "Multi-step query with dependencies",
+                "map_reduce": "Batch/parallel processing query",
+                "hierarchical": "Structured/in-depth analysis request",
+                "dynamic_swarm": "Multi-entity analysis",
+                "enhanced_swarm": "Single-topic research",
+            }.get(best_pattern, PATTERN_NAMES.get(best_pattern, best_pattern))
+            return best_pattern, f"{_legacy_reason} (semantic={best_score:.2f})"
+    except Exception:
+        pass
+
+    # Tier 2: Regex fallback — log each hit so archetypes can be expanded
     if COMPARATIVE_RE.search(query) or OPINION_RE.search(query):
+        logger.info("pattern_router: regex fallback → peer_debate (semantic missed)")
         return "peer_debate", "Comparative/opinion query — debate produces best results"
 
     if MULTI_STEP_RE.search(query):
+        logger.info("pattern_router: regex fallback → plan_and_execute (semantic missed)")
         return "plan_and_execute", "Multi-step query with dependencies"
 
     if BATCH_RE.search(query):
+        logger.info("pattern_router: regex fallback → map_reduce (semantic missed)")
         return "map_reduce", "Batch/parallel processing query"
 
     if _count_entities(query) >= 3:
         return "dynamic_swarm", "Multi-entity analysis (3+ entities detected)"
 
     if STRUCTURED_RE.search(query):
+        logger.info("pattern_router: regex fallback → hierarchical (semantic missed)")
         return "hierarchical", "Structured/in-depth analysis request"
 
-    # Tier 2: Default to enhanced swarm (most versatile)
+    # Tier 3: Default
     return "enhanced_swarm", "Default pattern — single-topic research"
 
 

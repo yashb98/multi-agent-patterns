@@ -48,8 +48,10 @@ def test_base_strategy_defaults():
         assert s.next_page_selectors() == []
         assert s.apply_button_selectors() == []
         assert s.submit_selectors() == []
-        assert s.screening_defaults() == {}
         assert s.field_fill_overrides() == {}
+        # screening answers come from ScreeningPipeline at runtime — strategies
+        # MUST NOT define a hardcoded `screening_defaults` method (PII policy).
+        assert not hasattr(s, "screening_defaults")
     finally:
         _STRATEGY_REGISTRY.pop("_test_defaults", None)
 

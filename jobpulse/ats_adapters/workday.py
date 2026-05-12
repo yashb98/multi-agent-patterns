@@ -77,13 +77,6 @@ class WorkdayStrategy(BasePlatformStrategy):
             "website / portfolio": "website",
         }
 
-    def screening_defaults(self) -> dict[str, str]:
-        return {
-            "are you legally authorized to work": "yes",
-            "will you now or in the future require sponsorship": "no",
-            "have you previously worked for": "no",
-        }
-
     async def pre_fill(
         self,
         page: "Page",

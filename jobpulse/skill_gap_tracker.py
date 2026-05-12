@@ -25,42 +25,59 @@ logger = get_logger(__name__)
 
 _DB_PATH = DATA_DIR / "skill_gaps.db"
 
+# Tracks which DB paths have had their schema applied this process. Avoids
+# re-running CREATE TABLE on every connection without forcing schema init at
+# module-import time (Principle 1 — no import-time DB side effects).
+_SCHEMA_APPLIED: set[str] = set()
+
+
+_SCHEMA_DDL = """
+    CREATE TABLE IF NOT EXISTS skill_gaps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        skill TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        job_title TEXT NOT NULL,
+        company TEXT NOT NULL,
+        gate3_score REAL DEFAULT 0,
+        recorded_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS skill_matches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        skill TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_gap_skill ON skill_gaps(skill);
+    CREATE INDEX IF NOT EXISTS idx_match_skill ON skill_matches(skill);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gap_unique ON skill_gaps(skill, job_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_match_unique ON skill_matches(skill, job_id);
+"""
+
 
 def _get_conn() -> sqlite3.Connection:
-    return get_db_conn(_DB_PATH)
+    """Open a connection and ensure schema is applied for the current `_DB_PATH`.
+
+    Schema application is idempotent (`CREATE TABLE IF NOT EXISTS`) but only
+    runs once per path per process to avoid the ~1ms cost on every call.
+    `_DB_PATH` is read at call time so tests that monkeypatch it pick up the
+    new value.
+    """
+    conn = get_db_conn(_DB_PATH)
+    key = str(_DB_PATH)
+    if key not in _SCHEMA_APPLIED:
+        conn.executescript(_SCHEMA_DDL)
+        conn.commit()
+        _SCHEMA_APPLIED.add(key)
+    return conn
 
 
 def _init_db() -> None:
+    """Apply schema explicitly. Public for tests; production callers go via
+    `_get_conn` which inits lazily on first use."""
     conn = _get_conn()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS skill_gaps (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            skill TEXT NOT NULL,
-            job_id TEXT NOT NULL,
-            job_title TEXT NOT NULL,
-            company TEXT NOT NULL,
-            gate3_score REAL DEFAULT 0,
-            recorded_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS skill_matches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            skill TEXT NOT NULL,
-            job_id TEXT NOT NULL,
-            recorded_at TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_gap_skill ON skill_gaps(skill);
-        CREATE INDEX IF NOT EXISTS idx_match_skill ON skill_matches(skill);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_gap_unique ON skill_gaps(skill, job_id);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_match_unique ON skill_matches(skill, job_id);
-    """)
-    conn.commit()
     conn.close()
-
-
-# Initialize on import
-_init_db()
 
 
 def record_gap(

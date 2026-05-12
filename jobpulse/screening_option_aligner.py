@@ -65,6 +65,25 @@ class OptionAligner:
         Returns:
             The aligned option string, or the original answer if no match.
         """
+        import time as _time
+        from shared.semantic_decisions import record_decision
+
+        _t0 = _time.perf_counter()
+
+        def _log(tier: str, output: str | None, conf: float, mechanism: str = "semantic_matcher") -> None:
+            record_decision(
+                agent_name="OptionAligner",
+                call_site="align_answer",
+                decision_type="option_align",
+                mechanism=mechanism,
+                tier_reached=tier,
+                input_value=answer,
+                output_value=output,
+                confidence=conf,
+                field_label=field_type or None,
+                elapsed_ms=(_time.perf_counter() - _t0) * 1000.0,
+            )
+
         if not options:
             return answer.strip()
 
@@ -78,6 +97,7 @@ class OptionAligner:
             learned_norm = self._normalise(learned)
             for opt, opt_norm in [(opt, self._normalise(opt)) for opt in options]:
                 if opt_norm == learned_norm:
+                    _log("learned_mapping", opt, 0.95, mechanism="learned")
                     return opt
 
         answer_norm = self._normalise(answer)
@@ -86,12 +106,71 @@ class OptionAligner:
         # Exact match first
         for opt, opt_norm in options_norm:
             if opt_norm == answer_norm:
+                _log("exact_match", opt, 1.0)
                 return opt  # Return original casing
 
         # Normalised match
         for opt, opt_norm in options_norm:
             if opt_norm == answer_norm:
+                _log("normalised_match", opt, 1.0)
                 return opt
+
+        # Yes/No prefix tier — EEO-style options like
+        # "No, I do not have a disability..." or "I am not a protected
+        # veteran" are routinely paired with short "Yes"/"No" answers
+        # that the embedding tier (threshold 0.70) and fuzzy tier both
+        # score below the floor due to length disparity. Audit-slice S4
+        # (TP-7): observed live on Anthropic Greenhouse — first-pass
+        # drop on Veteran + Disability EEO fields, recovered only via
+        # ai_assist cache hits from prior corrections. Match on the
+        # first token of the option after stripping trailing punctuation;
+        # fall back to a NO/YES substring-count for options whose first
+        # token is "I" but the negation lives later in the sentence
+        # ("I am not a protected veteran"). Self-contained — does not
+        # delegate to BoolFieldHandler to avoid mutual-recursion risk.
+        if answer_norm in {"yes", "no"}:
+            import string as _string
+            for opt, opt_norm in options_norm:
+                tokens = opt_norm.split()
+                if not tokens:
+                    continue
+                first_token = tokens[0].rstrip(_string.punctuation)
+                if first_token == answer_norm:
+                    logger.debug(
+                        "Yes/No first-token aligned %r -> %r",
+                        answer, opt,
+                    )
+                    _log("yesno_first_token_match", opt, 0.95)
+                    return opt
+            target_patterns = (
+                BoolFieldHandler.YES_PATTERNS if answer_norm == "yes"
+                else BoolFieldHandler.NO_PATTERNS
+            )
+            best_opt = None
+            best_count = 0
+            for opt, opt_norm in options_norm:
+                count = sum(1 for p in target_patterns if p in opt_norm)
+                if count > best_count:
+                    best_count = count
+                    best_opt = opt
+            if best_opt is not None and best_count > 0:
+                logger.debug(
+                    "Yes/No substring-count aligned %r -> %r (count=%d)",
+                    answer, best_opt, best_count,
+                )
+                _log("yesno_substring_count", best_opt, float(best_count))
+                return best_opt
+
+        # Embedding similarity (primary semantic tier)
+        try:
+            from shared.semantic_utils import best_semantic_match
+            emb_match, emb_score = best_semantic_match(answer.strip(), options, min_score=0.70)
+            if emb_match is not None:
+                logger.debug("Embedding aligned '%s' -> '%s' (score=%.2f)", answer[:50], emb_match, emb_score)
+                _log("embedding_similarity", emb_match, emb_score, mechanism="embedding")
+                return emb_match
+        except Exception:
+            pass
 
         # Fuzzy prefix / contains match
         best_match: str | None = None
@@ -110,6 +189,7 @@ class OptionAligner:
                 best_match,
                 best_score,
             )
+            _log("fuzzy_score", best_match, float(best_score))
             return best_match
 
         # Default to original if no good match
@@ -118,6 +198,7 @@ class OptionAligner:
             answer[:50],
             [o[:30] for o in options],
         )
+        _log("no_alignment", answer.strip(), 0.0)
         return answer.strip()
 
     def is_option_field(self, field: dict[str, Any]) -> bool:
@@ -169,7 +250,7 @@ class OptionAligner:
         if a == b:
             return 1.0
         if a in b or b in a:
-            return max(len(a), len(b)) / max(len(a), len(b)) * 0.9
+            return min(len(a), len(b)) / max(len(a), len(b)) * 0.9
         # Word overlap
         words_a = set(a.split())
         words_b = set(b.split())
@@ -208,6 +289,23 @@ class BoolFieldHandler:
         options_norm = {opt: OptionAligner._normalise(opt) for opt in options}
 
         target = "yes" if is_yes else "no"
+
+        # Tier A: option whose FIRST normalised token equals the target
+        # ("yes"/"no") wins outright. Without this, EEO-style options like
+        # "No, I do not have a disability..." score the same as decoy
+        # options like "I do not want to answer" (both contain the substring
+        # "no") and the shorter-length tiebreaker picks the wrong one.
+        # Strip trailing punctuation from the first token because _normalise
+        # keeps commas (e.g. "no, i do not have..." → first token "no,").
+        import string as _string
+        for opt, opt_norm in options_norm.items():
+            tokens = opt_norm.split()
+            if not tokens:
+                continue
+            first_token = tokens[0].rstrip(_string.punctuation)
+            if first_token == target:
+                return opt
+
         best_match: str | None = None
         best_score = -1.0
 

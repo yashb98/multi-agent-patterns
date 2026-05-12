@@ -17,6 +17,11 @@ _RELATED_DOMAINS: dict[str, list[str]] = {
     "job_scanning": ["job_application"],
 }
 
+# Aspirational canonical payload-key set. Producers do NOT all respect this
+# contract today: `_engine.flush`, `_reflexion._store_success`, and
+# `_tot.explore` each emit slightly different `context` strings
+# (see `pipeline-bugs.md` S6 m-5). Treat this as the target shape; any
+# consumer reading templates must tolerate missing keys.
 STRATEGY_PAYLOAD_KEYS = {
     "agent_name", "trigger", "composable_fragments", "times_used",
     "times_succeeded", "success_rate", "avg_score", "avg_latency_ms",
@@ -160,11 +165,3 @@ class StrategyComposer:
             token_count=token_count,
             source_breakdown=source_breakdown,
         )
-
-    @staticmethod
-    def record_template_outcome(template: dict, success: bool, score: float):
-        template["times_used"] = template.get("times_used", 0) + 1
-        if success:
-            template["times_succeeded"] = template.get("times_succeeded", 0) + 1
-        template["success_rate"] = template.get("times_succeeded", 0) / \
-            max(template["times_used"], 1)

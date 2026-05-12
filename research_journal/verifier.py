@@ -1,0 +1,186 @@
+"""Verification engine — composite badge of 5 checks."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from pathlib import Path
+from typing import Optional
+
+from jobpulse.papers.models import Paper
+from research_journal.models import VerificationBadge
+
+from shared.external_verifiers import semantic_scholar_lookup, PEER_REVIEWED_VENUES
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
+def check_peer_reviewed(arxiv_id: str) -> tuple[Optional[bool], str]:
+    """Returns (True/False/None, reason). None = S2 unavailable."""
+    data = semantic_scholar_lookup(arxiv_id)
+    if data is None:
+        return None, "Semantic Scholar unavailable"
+    if data.get("is_peer_reviewed"):
+        return True, f"venue: {data.get('venue', 'unknown')}"
+    venue = (data.get("venue") or "").lower()
+    if any(v in venue for v in PEER_REVIEWED_VENUES):
+        return True, f"venue: {data.get('venue')}"
+    return False, f"venue '{data.get('venue', 'arXiv')}' not in PEER_REVIEWED_VENUES"
+
+
+_CACHE_TTL_SECONDS = 24 * 3600
+
+
+class _RepoCache:
+    """SQLite-backed 24h cache for GitHub repo metadata."""
+
+    def __init__(self, db_path: Path | None = None) -> None:
+        if db_path is None:
+            from jobpulse.config import DATA_DIR
+            db_path = DATA_DIR / "github_cache.db"
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS repo_health "
+                "(url TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at INTEGER NOT NULL)"
+            )
+
+    def get(self, url: str) -> dict | None:
+        with sqlite3.connect(str(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT payload, fetched_at FROM repo_health WHERE url = ?", (url,)
+            ).fetchone()
+        if row is None:
+            return None
+        payload, fetched_at = row
+        if time.time() - fetched_at > _CACHE_TTL_SECONDS:
+            return None
+        return json.loads(payload)
+
+    def set(self, url: str, data: dict) -> None:
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO repo_health (url, payload, fetched_at) VALUES (?, ?, ?)",
+                (url, json.dumps(data), int(time.time())),
+            )
+
+
+_DEFAULT_CACHE: _RepoCache | None = None
+
+
+def _get_default_cache() -> _RepoCache:
+    global _DEFAULT_CACHE
+    if _DEFAULT_CACHE is None:
+        _DEFAULT_CACHE = _RepoCache()
+    return _DEFAULT_CACHE
+
+
+def check_has_repo(
+    github_url: str, cache: _RepoCache | None = None
+) -> tuple[Optional[bool], str, str]:
+    """Returns (True/False/None, reason, last_commit_iso)."""
+    if not github_url:
+        return False, "no repo URL", ""
+    cache = cache or _get_default_cache()
+    cached = cache.get(github_url)
+    if cached is None:
+        try:
+            cached = _fetch_github_repo_meta(github_url)
+            cache.set(github_url, cached)
+        except Exception as exc:
+            logger.warning("GitHub API failed for %s: %s", github_url, exc)
+            return None, f"GitHub API error: {exc}", ""
+    stars = cached.get("stars", 0)
+    last_commit = cached.get("last_commit_iso", "")
+    if stars < 10:
+        return False, f"only {stars} stars", last_commit
+    return True, f"{stars} stars, last commit {last_commit[:10]}", last_commit
+
+
+def _fetch_github_repo_meta(github_url: str) -> dict:
+    """GET /repos/{owner}/{repo} via GitHub API (uses GITHUB_TOKEN if set)."""
+    import httpx
+    import os
+
+    parts = github_url.rstrip("/").split("/")
+    if "github.com" not in github_url or len(parts) < 5:
+        raise ValueError(f"not a GitHub URL: {github_url}")
+    owner, repo = parts[-2], parts[-1]
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    with httpx.Client(timeout=10.0) as client:
+        r = client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
+        r.raise_for_status()
+        meta = r.json()
+        return {
+            "stars": meta.get("stargazers_count", 0),
+            "last_commit_iso": meta.get("pushed_at", ""),
+        }
+
+
+def check_independent_citations(arxiv_id: str, author_labs: set[str]) -> tuple[Optional[bool], str]:
+    """Returns (True/False/None, reason). True = ≥3 distinct labs ≠ author labs."""
+    try:
+        citing_labs = _fetch_citing_paper_labs(arxiv_id, author_labs)
+    except Exception as exc:
+        return None, f"S2 citations API failed: {exc}"
+    distinct = set(citing_labs) - set(author_labs)
+    if len(distinct) >= 3:
+        return True, f"{len(distinct)} independent labs"
+    return False, f"only {len(distinct)} independent labs"
+
+
+def _fetch_citing_paper_labs(arxiv_id: str, author_labs: set[str]) -> list[str]:
+    """Fetch S2 citations and extract author affiliations."""
+    import httpx
+
+    url = f"https://api.semanticscholar.org/graph/v1/paper/arXiv:{arxiv_id}/citations"
+    params = {"fields": "authors.affiliations", "limit": 50}
+    with httpx.Client(timeout=15.0) as client:
+        r = client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+    labs: list[str] = []
+    for citing in data.get("data", []):
+        for author in citing.get("citingPaper", {}).get("authors", []):
+            for aff in author.get("affiliations", []) or []:
+                labs.append(aff)
+    return labs
+
+
+def verify_paper(paper: Paper, has_results: bool) -> VerificationBadge:
+    """Compose 4 of the 5 badge checks. claims_grounded is set later by the hallucination guard."""
+    pr_ok, pr_reason = check_peer_reviewed(paper.arxiv_id)
+    repo_ok, repo_reason, last_commit = check_has_repo(getattr(paper, "github_url", ""))
+    author_labs = set(getattr(paper, "affiliations", []) or [])
+    cit_ok, cit_reason = check_independent_citations(paper.arxiv_id, author_labs)
+
+    # Stash last_commit on the paper so the ranker's _repo_activity_boost can find it
+    paper._last_commit_iso = last_commit  # type: ignore[attr-defined]
+
+    return VerificationBadge(
+        has_results=has_results,
+        peer_reviewed=bool(pr_ok),
+        has_repo=bool(repo_ok),
+        independent_citations=bool(cit_ok),
+        claims_grounded=False,   # filled by hallucination guard later
+        reasons={
+            "has_results": "passed §5.3 filter" if has_results else "no empirical results",
+            "peer_reviewed": _tri_state_reason(pr_ok, pr_reason),
+            "has_repo": _tri_state_reason(repo_ok, repo_reason),
+            "independent_citations": _tri_state_reason(cit_ok, cit_reason),
+            "claims_grounded": "pending hallucination guard",
+        },
+    )
+
+
+def _tri_state_reason(ok: Optional[bool], reason: str) -> str:
+    if ok is None:
+        return f"unknown — {reason}"
+    return reason

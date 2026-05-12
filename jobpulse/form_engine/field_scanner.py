@@ -22,7 +22,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-STRATEGIES = ("a11y_tree", "dom_query", "playwright_locators")
+STRATEGIES = (
+    "learned_patterns", "a11y_tree", "dom_query",
+    "playwright_locators", "semantic",
+)
 
 _HYDRATION_RETRY_MS = 2000
 _MAX_HYDRATION_RETRIES = 2
@@ -70,10 +73,10 @@ async def resolve_form_container(
                 if await container.count():
                     logger.info("Container Tier 1 (learned): %s for %s", stored, domain)
                     return stored
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Container Tier 1 lookup errored on %s: %s", domain, exc)
             form_experience_db.delete_container(domain)
-            logger.info("Container Tier 1: stale selector '%s' deleted for %s", stored, domain)
+            logger.warning("Container Tier 1: stale selector %r deleted for %s", stored, domain)
 
     # Tier 2: Auto-detect via common ancestor of form elements
     detected = await _detect_form_container(page)
@@ -155,10 +158,251 @@ async def _detect_form_container(page: "Page") -> str | None:
             if (!hasSubmitButton(commonAncestor)) return null;
             return selectorFor(commonAncestor);
         }""")
+        if selector:
+            return selector
+
+        # Fallback: multi-form pages where common-ancestor walks up to <body>
+        # because the page has separate <form>s for page-header search,
+        # cookie consent, honeypot, AND the actual apply form. Common ancestor
+        # = <body>, function returns null. Confirmed live on pls-solicitors.
+        # Strategy: enumerate every <form> that has a submit-like button,
+        # pick the one with the most visible input/textarea fields. The apply
+        # form has 5+ text inputs vs header search (1) or cookie modal (mostly
+        # checkboxes). Fully dynamic — no hardcoded site selectors.
+        selector = await page.evaluate("""() => {
+            function selectorFor(el) {
+                if (el.id) return '#' + CSS.escape(el.id);
+                if (el === document.body) return 'body';
+                const tag = el.tagName.toLowerCase();
+                const parent = el.parentElement;
+                if (!parent) return tag;
+                const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+                if (siblings.length === 1) return selectorFor(parent) + ' > ' + tag;
+                const idx = siblings.indexOf(el) + 1;
+                return selectorFor(parent) + ' > ' + tag + ':nth-of-type(' + idx + ')';
+            }
+            function hasSubmitButton(el) {
+                const buttons = el.querySelectorAll('button, [role="button"], input[type="submit"]');
+                return Array.from(buttons).some(b => {
+                    const text = (b.textContent || b.value || b.getAttribute('aria-label') || '').toLowerCase();
+                    return ['submit', 'apply', 'next', 'continue', 'review', 'proceed', 'send'].some(s => text.includes(s));
+                });
+            }
+            function countMeaningfulInputs(el) {
+                // Text-style inputs are stronger apply-form signal than checkboxes
+                // (cookie modals are mostly checkboxes; apply forms are mostly text/email/tel).
+                const textInputs = el.querySelectorAll(
+                    'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], ' +
+                    'input[type="number"], input[type="search"]:not([role="search"]), textarea, ' +
+                    'input:not([type]), [role="textbox"], [role="combobox"]'
+                );
+                let count = 0;
+                for (const inp of textInputs) {
+                    if (inp.type === 'hidden') continue;
+                    if (inp.offsetParent === null) continue;
+                    if (inp.disabled || inp.readOnly) continue;
+                    // Skip honeypot pattern (name contains "honeypot" or "hp" suffix)
+                    const name = (inp.name || inp.id || '').toLowerCase();
+                    if (name.includes('honeypot') || name.endsWith('-hp') || name.endsWith('_hp')) continue;
+                    count += 1;
+                }
+                return count;
+            }
+
+            const allForms = [...document.querySelectorAll('form')]
+                .filter(f => f.offsetParent !== null && hasSubmitButton(f));
+            if (allForms.length === 0) return null;
+
+            // Score each form by meaningful input count, pick the top
+            let best = null;
+            let bestScore = 0;
+            for (const f of allForms) {
+                const score = countMeaningfulInputs(f);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = f;
+                }
+            }
+            // Require at least 2 meaningful inputs to qualify (otherwise it's
+            // probably a search bar or single-input newsletter signup, not an
+            // apply form).
+            if (!best || bestScore < 2) return null;
+            return selectorFor(best);
+        }""")
+        if selector:
+            logger.info("_detect_form_container: multi-form fallback picked %s", selector)
         return selector
     except Exception as exc:
         logger.debug("Auto-detect form container failed: %s", exc)
         return None
+
+
+# Plan F2: option cache for closed comboboxes. Keyed by (url, label).
+# In-memory only — application_orchestrator's process lifetime matches
+# a single application run; a fresh scan per run is the correct
+# invalidation policy when options can change between site versions.
+_COMBOBOX_OPTION_CACHE: dict[tuple[str, str], list[str]] = {}
+
+
+async def _scan_combobox_options(
+    page: "Page", selector: str, timeout_ms: int = 1500,
+) -> list[str]:
+    """Open a closed combobox by selector, scan its option list, close.
+
+    Live regression context: on Revolut welovealfa.com 2026-05-06, the
+    screening pipeline received field={'options': []} for visa /
+    notice / country comboboxes (the DOM scanner only reads options
+    for native <select>, not custom React widgets). The LLM then
+    generated answer='Yes' but real options were 'Yes - I require
+    sponsorship' / 'No - I do not require sponsorship' — token-overlap
+    match couldn't bridge the wrapping. Pre-fill option scanning closes
+    that gap.
+
+    Returns [] on failure so the caller can transparently fall through
+    to the existing flow (no options is the current state).
+    """
+    try:
+        loc = page.locator(selector).first
+        if not await loc.count():
+            return []
+        await loc.click(timeout=2500)
+    except Exception as exc:
+        logger.debug("scan_combobox_options: click %r failed: %s", selector[:80], exc)
+        return []
+
+    try:
+        options = await page.evaluate(
+            """() => {
+                const sel = '[role="option"], [role="radio"], '
+                          + '[role="menuitemcheckbox"], li[role="option"]';
+                return Array.from(document.querySelectorAll(sel))
+                    .filter(o => o.offsetParent !== null)
+                    .map(o => (o.textContent || '').trim())
+                    .filter(t => t && !/^select\\s*(one|an?\\s*option)?$/i.test(t)
+                                   && !/^loading/i.test(t));
+            }"""
+        )
+    except Exception as exc:
+        logger.debug("scan_combobox_options: option read failed: %s", exc)
+        options = []
+
+    # Live regression on Revolut welovealfa.com 2026-05-06: pressing
+    # Escape returned immediately, but the next combobox.click() ran
+    # while the previous list was still rendering. Result: visa
+    # combobox returned 109 options (the country list bleeding through).
+    # Wait for [role=option] count to drop to 0 before returning.
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_function(
+            """() => document.querySelectorAll(
+                '[role="option"], [role="radio"], '
+                + '[role="menuitemcheckbox"], li[role="option"]'
+            ).length === 0""",
+            timeout=1000,
+        )
+    except Exception:
+        # Fallback: brief sleep if wait_for_function timed out
+        try:
+            import asyncio
+            await asyncio.sleep(0.3)
+        except Exception:
+            pass
+
+    return options or []
+
+
+async def _populate_combobox_options(
+    page: "Page", fields: list[dict],
+) -> None:
+    """For every combobox-class field with empty options, try to open it
+    and capture the option list. Mutates the field dicts in place.
+
+    Cached per (url, label). Failures are silent — the caller's existing
+    pipeline tolerates fields with empty options.
+    """
+    try:
+        url = (page.url or "").split("#")[0]
+    except Exception:
+        url = ""
+
+    eligible_types = {
+        "combobox", "custom_select", "multiselect", "select",
+    }
+
+    for f in fields:
+        ft = (f.get("type") or "").lower()
+        if ft not in eligible_types:
+            continue
+        if f.get("options"):
+            continue
+        label = (f.get("label") or "").strip()
+        selector = (f.get("selector") or "").strip()
+        if not label and not selector:
+            continue
+
+        cache_key = (url, label or selector)
+        if cache_key in _COMBOBOX_OPTION_CACHE:
+            f["options"] = list(_COMBOBOX_OPTION_CACHE[cache_key])
+            continue
+
+        if not selector:
+            # Nothing to click — skip
+            continue
+
+        opts = await _scan_combobox_options(page, selector)
+        if opts:
+            _COMBOBOX_OPTION_CACHE[cache_key] = list(opts)
+            f["options"] = opts
+            logger.info(
+                "scan_combobox_options: %r → %d options on %s",
+                label[:60], len(opts), url[:60],
+            )
+
+
+def _filter_noise_fields(fields: list[dict]) -> list[dict]:
+    """Drop scanner-output entries that aren't real fillable form fields.
+
+    Plan F4: live regression on Revolut welovealfa.com 2026-05-06 leaked
+    button text ("Back", "Apply now"), synthetic labels ("_unlabeled_0"),
+    placeholder fallbacks ("Type your answer here"), and browser-extension
+    UI ("Open Grammarly.") into _fill_by_label, triggering expensive
+    cognitive-engine escalation calls on non-fields.
+
+    Three noise classes:
+      1. tag is button/a — belongs in the buttons array, not fields
+      2. synthetic placeholder labels (_unlabeled_*) — labelFor() walker
+         gave up; nothing for the LLM to reason about
+      3. label equals the input's placeholder text — labelFor() fell back
+         to placeholder; a real <label>/heading would have been picked up
+         first
+      4. is_extension_injected=True — scanner flagged the field's
+         ancestor as detectably injected by a browser extension
+    """
+    out: list[dict] = []
+    for f in fields:
+        label = (f.get("label") or "").strip()
+        tag = (f.get("tag") or "").lower()
+        role = (f.get("role") or "").lower()
+
+        if tag in ("button", "a"):
+            continue
+        # Live regression on Revolut welovealfa.com 2026-05-06: a
+        # <div role="button"> for "Apply now" / "Open Grammarly." was
+        # not caught by tag-only check. role check covers
+        # extension-injected and SPA-pattern buttons regardless of tag.
+        if role in ("button", "menuitem", "tab", "link"):
+            continue
+        if not label:
+            continue
+        if label.startswith("_unlabeled_"):
+            continue
+        placeholder = (f.get("placeholder") or "").strip()
+        if placeholder and label == placeholder:
+            continue
+        if f.get("is_extension_injected"):
+            continue
+        out.append(f)
+    return out
 
 
 def validate_field_scan(
@@ -223,7 +467,23 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 }
                 const parent = el.closest('label');
                 if (parent) return parent.textContent.trim();
-                return el.getAttribute('aria-label') || el.placeholder || el.name || '';
+                const ariaOrPh = el.getAttribute('aria-label') || el.placeholder || '';
+                if (ariaOrPh) return ariaOrPh;
+                // Walk up DOM to find the nearest question/label text
+                let node = el;
+                for (let depth = 0; node && depth < 6; depth++) {
+                    node = node.parentElement;
+                    if (!node) break;
+                    for (const sel of [':scope > label', ':scope > legend', ':scope > h3', ':scope > h4',
+                                       ':scope > p', ':scope > span', ':scope > div > label']) {
+                        for (const c of node.querySelectorAll(sel)) {
+                            if (c.contains(el)) continue;
+                            const t = c.textContent.trim();
+                            if (t.length > 3 && t.length < 200) return t;
+                        }
+                    }
+                }
+                return el.name || '';
             }
 
             function fieldType(el) {
@@ -234,8 +494,28 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 if (type === 'file') return 'file';
                 if (type === 'checkbox') return 'checkbox';
                 if (type === 'radio') return 'radio';
+                // Combobox detection — covers four widely-used patterns:
+                //   1. Native role="combobox" (correct ARIA)
+                //   2. Greenhouse / many React-Select wrappers — input nested
+                //      inside .select__control, css-*-control, or similar.
+                //      The role attribute is set asynchronously; if the scan
+                //      races React's render the role check fails. The wrapper
+                //      class is set during render so it's a more stable signal.
+                //   3. aria-haspopup="listbox" or "true" — declared by widgets
+                //      that pop up a list of options.
+                //   4. aria-autocomplete="list" or "both" — explicitly tells
+                //      assistive tech this input filters a list of options.
                 const role = el.getAttribute('role');
                 if (role === 'combobox') return 'combobox';
+                const haspopup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+                if (haspopup === 'listbox' || haspopup === 'true') return 'combobox';
+                const autocomplete = (el.getAttribute('aria-autocomplete') || '').toLowerCase();
+                if (autocomplete === 'list' || autocomplete === 'both') return 'combobox';
+                if (el.closest && el.closest(
+                    '.select__control, [class*="select__control"], '
+                    + '[class*="-control"][class*="select"], '
+                    + '.combobox, [class*="combobox"]'
+                )) return 'combobox';
                 return 'text';
             }
 
@@ -255,6 +535,49 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 const label = labelFor(el);
                 const ft = fieldType(el);
                 const entry = {label: label, type: ft, value: el.value || ''};
+
+                // Plan F4: surface metadata so the noise filter can drop
+                // garbage labels before they reach _fill_by_label.
+                entry.tag = el.tagName.toLowerCase();
+                entry.role = el.getAttribute('role') || '';
+                entry.placeholder = el.getAttribute('placeholder') || '';
+                // Behavioral feature detection of extension injection —
+                // no hardcoded namespace list. Three signals:
+                //   (a) nearest positioned ancestor uses position:fixed
+                //       AND z-index >= 2147483647 (extensions use max
+                //       int32 to overlay everything else)
+                //   (b) the field's owning element tag has a hyphen
+                //       (custom element) AND isn't registered via
+                //       customElements.get()
+                //   (c) the field is inside a Shadow DOM whose host's
+                //       bounding box doesn't intersect the viewport's
+                //       form flow (extension-injected hosts often live
+                //       at body root with no normal layout flow)
+                let injected = false;
+                try {
+                    let pos = el;
+                    for (let i = 0; pos && i < 6; i++, pos = pos.parentElement) {
+                        const cs = window.getComputedStyle(pos);
+                        if (cs.position === 'fixed') {
+                            const z = parseInt(cs.zIndex, 10);
+                            if (z >= 2147483647) { injected = true; break; }
+                        }
+                    }
+                    if (!injected) {
+                        const ownerTag = (el.tagName || '').toLowerCase();
+                        if (ownerTag.includes('-') && !customElements.get(ownerTag)) {
+                            injected = true;
+                        }
+                    }
+                    if (!injected) {
+                        const root = el.getRootNode();
+                        if (root && root.host) {
+                            const r = root.host.getBoundingClientRect();
+                            if (r.width === 0 && r.height === 0) injected = true;
+                        }
+                    }
+                } catch (e) { /* fail open: if we can't determine, keep the field */ }
+                if (injected) entry.is_extension_injected = true;
 
                 if (el.hasAttribute('required') || el.getAttribute('aria-required') === 'true') {
                     entry.required = true;
@@ -330,6 +653,209 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
                 seen.add(ddKey);
                 fields.push({label, type: 'custom_dropdown', value: currentValue, testId, ddIndex: di});
             }
+            // Button-based custom dropdowns (Workday questionnaire pattern)
+            const btnDDs = document.querySelectorAll('button');
+            for (const btn of btnDDs) {
+                const btnText = btn.textContent.trim();
+                if (!btnText || !/^select\\s*(one|an?\\s*option)?$/i.test(btnText)) continue;
+                if (btn.offsetParent === null) continue;
+                const btnId = btn.id || '';
+                const btnKey = 'btn_dd:' + (btnId || btnText + btn.getBoundingClientRect().y);
+                if (seen.has(btnKey)) continue;
+                seen.add(btnKey);
+                let label = '';
+                let node = btn;
+                for (let depth = 0; node && depth < 6; depth++) {
+                    node = node.parentElement;
+                    if (!node) break;
+                    for (const sel of [':scope > legend', ':scope > label', ':scope > h3',
+                                       ':scope > h4', ':scope > p', ':scope > span', ':scope > div > label']) {
+                        for (const c of node.querySelectorAll(sel)) {
+                            if (c.contains(btn)) continue;
+                            const t = c.textContent.trim().replace(/[*]$/, '').trim();
+                            if (t.length > 5 && t.length < 300 && !/^select/i.test(t)) { label = t; break; }
+                        }
+                        if (label) break;
+                    }
+                    if (label) break;
+                }
+                if (!label) label = 'Dropdown ' + fields.length;
+                fields.push({label, type: 'custom_dropdown', value: btnText, buttonId: btnId, required: true});
+            }
+            // Oracle HCM Yes/No widgets — <ul role="list"> + <li role="listitem"> + <button>.
+            // The question label sits on the <ul> as aria-label (or aria-labelledby).
+            // Selected state is NOT exposed via aria-checked/role=radio — detect via
+            // CSS class (selected/active/is-selected/chosen) or fallback to non-
+            // transparent computed background-color.
+            // Live regression on JPMC 2026-05-05: agent missed all 4 Yes/No questions
+            // on the 'Job Application Questions' page because no scan strategy queried
+            // this widget pattern.
+            const ulLists = document.querySelectorAll('ul[role="list"]');
+            for (const ul of ulLists) {
+                if (ul.offsetParent === null) continue;
+                const ulLabel =
+                    ul.getAttribute('aria-label') ||
+                    document.getElementById(ul.getAttribute('aria-labelledby') || '')?.innerText || '';
+                if (!ulLabel) continue;
+                const lis = [...ul.querySelectorAll('li[role="listitem"]')];
+                if (lis.length === 0 || lis.length > 8) continue;
+                const buttons = lis.map(li => li.querySelector('button')).filter(Boolean);
+                if (buttons.length !== lis.length) continue;
+                const optionTexts = buttons.map(b => (b.innerText || '').trim()).filter(Boolean);
+                if (optionTexts.length === 0) continue;
+                const ulKey = 'oracle_listbtn:' + ulLabel.slice(0, 60);
+                if (seen.has(ulKey)) continue;
+                seen.add(ulKey);
+                // Detect selected button
+                let selected = '';
+                for (const btn of buttons) {
+                    const cls = (btn.className || '').toLowerCase();
+                    const liCls = (btn.parentElement?.className || '').toLowerCase();
+                    const ariaPressed = btn.getAttribute('aria-pressed');
+                    const ariaCurrent = btn.getAttribute('aria-current');
+                    const dataSel = btn.getAttribute('data-selected') ||
+                                    btn.parentElement?.getAttribute('data-selected') || '';
+                    if (ariaPressed === 'true' || ariaCurrent === 'true' ||
+                        ariaCurrent === 'page' || dataSel === 'true' ||
+                        /selected|active|is-selected|chosen|current/.test(cls + ' ' + liCls)) {
+                        selected = (btn.innerText || '').trim();
+                        break;
+                    }
+                }
+                if (!selected) {
+                    for (const btn of buttons) {
+                        const bg = window.getComputedStyle(btn).backgroundColor || '';
+                        if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+                            selected = (btn.innerText || '').trim();
+                            break;
+                        }
+                    }
+                }
+                fields.push({
+                    label: ulLabel.trim().slice(0, 200),
+                    type: 'list_button_radio',
+                    options: optionTexts,
+                    value: selected,
+                    required: true,
+                });
+            }
+            // ARIA toggle switches — <button role="switch" aria-checked="…">.
+            // Revolut welovealfa.com 2026-05-05: 5 screening Qs each render
+            // as a single switch (no Yes/No pair). The Q label is in a
+            // *sibling* heading or paragraph (not aria-label / aria-labelledby
+            // / wrapper label, which are all empty on this widget). We walk
+            // the previous siblings + ancestors looking for question-shaped
+            // text (ends with '?', under 300 chars, not "Yes"/"No"/"On"/"Off").
+            const switches = document.querySelectorAll('button[role="switch"], [role="switch"]');
+            for (const sw of switches) {
+                if (sw.offsetParent === null) continue;
+                const swKey = 'switch:' + (sw.id || sw.getBoundingClientRect().y);
+                if (seen.has(swKey)) continue;
+                seen.add(swKey);
+
+                let qLabel = sw.getAttribute('aria-label') || '';
+                if (!qLabel && sw.getAttribute('aria-labelledby')) {
+                    const ids = sw.getAttribute('aria-labelledby').split(/\s+/);
+                    qLabel = ids.map(id => document.getElementById(id)?.innerText || '').join(' ').trim();
+                }
+                // Walk up to 4 ancestors looking for a question-shaped sibling
+                if (!qLabel) {
+                    let node = sw;
+                    for (let depth = 0; node && depth < 4 && !qLabel; depth++) {
+                        for (let prev = node.previousElementSibling; prev; prev = prev.previousElementSibling) {
+                            const t = (prev.innerText || prev.textContent || '').trim();
+                            if (t.length > 5 && t.length < 300 && !/^(yes|no|on|off|true|false)$/i.test(t)) {
+                                qLabel = t;
+                                break;
+                            }
+                        }
+                        if (!qLabel) {
+                            // Try first significant text in the parent BEFORE the switch
+                            const parent = node.parentElement;
+                            if (parent) {
+                                for (const child of parent.childNodes) {
+                                    if (child === node) break;
+                                    const t = ((child.innerText || child.textContent) || '').trim();
+                                    if (t.length > 5 && t.length < 300 && !/^(yes|no|on|off|true|false)$/i.test(t)) {
+                                        qLabel = t;
+                                        // Don't break — later siblings may have the actual question
+                                    }
+                                }
+                            }
+                        }
+                        node = node.parentElement;
+                    }
+                }
+                if (!qLabel) qLabel = 'Toggle ' + fields.length;
+                const checked = sw.getAttribute('aria-checked') === 'true' ||
+                                sw.getAttribute('aria-pressed') === 'true';
+                fields.push({
+                    label: qLabel.slice(0, 250),
+                    type: 'switch',
+                    value: checked ? 'true' : 'false',
+                    checked,
+                    required: true,
+                });
+            }
+            // Salary-context number inputs — number inputs without a label
+            // whose surrounding text mentions salary/compensation/GBP/USD.
+            // Revolut welovealfa.com regression: the agent filled both Min
+            // and Max GBP fields with the JD's listed range £85,500-£118,000
+            // because there was no label and the LLM saw only those numbers
+            // on the page. Tag these explicitly so the filler routes them
+            // through role_salary DB instead of LLM-from-JD-prose.
+            const salaryRx = /salary|compensation|gbp|usd|gross|annual|per year|per annum/i;
+            const numInputs = document.querySelectorAll('input[type="number"]');
+            for (const inp of numInputs) {
+                if (inp.offsetParent === null) continue;
+                if (inp.disabled || inp.readOnly) continue;
+                // Already covered by another scan?
+                const inpKey = 'num:' + (inp.id || inp.name || inp.getBoundingClientRect().y);
+                if (seen.has(inpKey)) continue;
+                // Look up to 4 ancestors for "salary" context
+                let salaryCtx = '';
+                let node = inp.parentElement;
+                for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+                    const t = (node.innerText || '').trim();
+                    if (salaryRx.test(t)) {
+                        salaryCtx = t.slice(0, 300);
+                        break;
+                    }
+                }
+                if (!salaryCtx) continue;
+                // Existing label?
+                let label = '';
+                if (inp.id) {
+                    label = document.querySelector(`label[for="${inp.id}"]`)?.innerText?.trim() || '';
+                }
+                if (!label) label = inp.getAttribute('aria-label') || inp.placeholder || '';
+                // Determine min/max/single from context tokens above the input
+                let role = 'salary';
+                const ctxLow = salaryCtx.toLowerCase();
+                // Inspect the input's preceding text within the parent
+                const parent = inp.parentElement;
+                let preceding = '';
+                if (parent) {
+                    for (const child of parent.childNodes) {
+                        if (child === inp) break;
+                        preceding += ((child.innerText || child.textContent) || '') + ' ';
+                    }
+                }
+                preceding = (label + ' ' + preceding).toLowerCase();
+                if (/\bmin/.test(preceding) || /minimum/.test(preceding)) role = 'min_salary';
+                else if (/\bmax/.test(preceding) || /maximum/.test(preceding)) role = 'max_salary';
+                seen.add(inpKey);
+                if (!label) label = role === 'min_salary' ? 'Min salary' : role === 'max_salary' ? 'Max salary' : 'Salary expectation';
+                fields.push({
+                    label: label.slice(0, 200),
+                    type: 'salary_number',
+                    value: inp.value || '',
+                    salary_role: role,
+                    id: inp.id || '',
+                    name: inp.name || '',
+                    required: inp.required || false,
+                });
+            }
             return fields;
         }""")
     except Exception as exc:
@@ -340,7 +866,10 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
     for item in (raw or []):
         label = item.get("label", "")
         ftype = item.get("type", "text")
-        if label:
+        button_id = item.get("buttonId", "")
+        if button_id:
+            locator = page.locator(f"#{button_id}")
+        elif label:
             locator = page.get_by_label(label, exact=False).first
         else:
             locator = None
@@ -357,6 +886,8 @@ async def _scan_dom_query(page: "Page") -> list[dict]:
             entry["testId"] = item["testId"]
         if "ddIndex" in item:
             entry["ddIndex"] = item["ddIndex"]
+        if button_id:
+            entry["buttonId"] = button_id
         if item.get("question"):
             entry["label"] = item["question"]
             entry["name"] = item.get("name", "")
@@ -427,19 +958,36 @@ async def scan_fields_locator_fallback(page: "Page") -> list[dict]:
 
 
 def _merge_fields(primary: list[dict], secondary: list[dict]) -> list[dict]:
-    """Merge secondary fields into primary, adding fields not already present."""
-    seen = set()
+    """Merge secondary fields into primary, adding fields not already present.
+
+    Dedup key is (label, type). Same label + different type stays as two
+    entries (e.g., a Resume text input + Resume file input are distinct).
+
+    Learned-pattern fields (learned_pattern=True) take precedence on
+    (label, type) match — if a generic strategy also discovered the same
+    field, the learned version replaces it because its locator was
+    captured from prior corrections.
+    """
+    seen = {}  # (label, type) -> index in merged
+    merged: list[dict] = []
     for f in primary:
         key = (f.get("label", "").lower().strip(), f.get("type", ""))
         if key[0]:
-            seen.add(key)
+            seen[key] = len(merged)
+        merged.append(f)
 
-    merged = list(primary)
     for f in secondary:
         key = (f.get("label", "").lower().strip(), f.get("type", ""))
-        if key[0] and key not in seen:
-            seen.add(key)
-            merged.append(f)
+        if not key[0]:
+            continue
+        if key in seen:
+            existing_idx = seen[key]
+            existing = merged[existing_idx]
+            if f.get("learned_pattern") and not existing.get("learned_pattern"):
+                merged[existing_idx] = f
+            continue
+        seen[key] = len(merged)
+        merged.append(f)
     return merged
 
 
@@ -583,6 +1131,29 @@ async def scan_fields(
         if strat != winner:
             best_fields = _merge_fields(best_fields, fields)
 
+    # Plan F2: pre-fill option scanning. Open every closed combobox
+    # briefly, capture its option list, attach to the field dict so
+    # the screening pipeline's LLM sees the actual offered set when
+    # generating the answer. Avoids the "agent says 'Yes', real
+    # option is 'Yes - I require sponsorship'" mismatch.
+    try:
+        await _populate_combobox_options(page, best_fields)
+    except Exception as exc:
+        logger.debug("populate_combobox_options skipped: %s", exc)
+
+    # Plan F4: drop scanner noise (button/a tags, synthetic labels,
+    # placeholder-as-label, extension-injected) before downstream
+    # consumers see them. Without this filter, _fill_by_label gets
+    # called with garbage labels and triggers expensive escalation
+    # paths on non-fields.
+    pre_filter = len(best_fields)
+    best_fields = _filter_noise_fields(best_fields)
+    if len(best_fields) < pre_filter:
+        logger.info(
+            "scan_fields: noise filter dropped %d/%d entries",
+            pre_filter - len(best_fields), pre_filter,
+        )
+
     final_count = _fillable_count(best_fields)
     logger.info(
         "Scan winner: %s with %d fields (%d after merge) for %s",
@@ -596,8 +1167,49 @@ async def scan_fields(
         except Exception as exc:
             logger.debug("Failed to store scan strategy: %s", exc)
 
+    # Vision-augment when the scan looks sparse on a confident form.
+    # Reasoner state is read from orchestrator-provided hints stamped on
+    # the page object in _phase_act; defaults to assuming
+    # application_form @ 0.9 (matches what _phase_act passes).
+    page_type_hint = getattr(page, "_jp_page_type_hint", None)
+    confidence_hint = getattr(page, "_jp_reasoner_confidence", None)
+    extras = await _maybe_augment_with_vision(
+        page, best_fields, page_type_hint, confidence_hint,
+    )
+    if extras:
+        best_fields = list(best_fields) + extras
+        final_count = _fillable_count(best_fields)
+        logger.info(
+            "scan_fields: vision augment added %d fields → %d total",
+            len(extras), final_count,
+        )
+
     _emit_scan_signal(domain, "success", winner=winner, field_count=final_count)
     return best_fields
+
+
+async def _maybe_augment_with_vision(
+    page: "Page",
+    existing_fields: list[dict],
+    page_type_hint: str | None,
+    confidence_hint: float | None,
+) -> list[dict]:
+    """Returns vision-augmented field list (or [] if not triggered).
+
+    Caller is responsible for merging into the primary scan result.
+    """
+    from jobpulse.form_engine.vision_gate import (
+        should_force_vision, vision_augment_scan,
+    )
+    page_type = page_type_hint or "application_form"
+    confidence = confidence_hint if confidence_hint is not None else 0.9
+    if not should_force_vision(
+        scanner_field_count=len(existing_fields),
+        page_type=page_type,
+        reasoner_confidence=confidence,
+    ):
+        return []
+    return await vision_augment_scan(page, existing_fields)
 
 
 async def _run_strategy(
@@ -605,15 +1217,73 @@ async def _run_strategy(
 ) -> list[dict]:
     """Run a single scan strategy, returning [] on failure."""
     try:
-        if strategy_name == "a11y_tree":
+        if strategy_name == "learned_patterns":
+            return await _scan_learned_patterns(page)
+        elif strategy_name == "a11y_tree":
             return await _scan_a11y_tree(page, container_node_id)
         elif strategy_name == "dom_query":
             return await _scan_dom_query(page)
         elif strategy_name == "playwright_locators":
             return await scan_fields_locator_fallback(page)
+        elif strategy_name == "semantic":
+            from jobpulse.form_engine.semantic_scanner import scan_semantic
+            return await scan_semantic(page)
     except Exception as exc:
-        logger.debug("Scan strategy %s failed: %s", strategy_name, exc)
+        logger.warning("Scan strategy %s failed: %s", strategy_name, exc)
     return []
+
+
+async def _scan_learned_patterns(page: "Page") -> list[dict]:
+    """Strategy 0: per-domain widgets learned from prior corrections.
+
+    Queries GotchasDB.widget_patterns for the current domain, walks each
+    stored selector, returns matching elements as field dicts with the
+    locator pre-attached so the dispatcher uses it directly (no
+    label-string re-resolution).
+    """
+    from urllib.parse import urlparse
+    from jobpulse.form_engine.gotchas import GotchasDB
+
+    try:
+        domain = urlparse(page.url or "").netloc.lower().removeprefix("www.")
+    except Exception:
+        return []
+    if not domain:
+        return []
+
+    try:
+        patterns = GotchasDB().get_widget_patterns(domain)
+    except Exception as exc:
+        logger.debug("learned_patterns: GotchasDB read failed: %s", exc)
+        return []
+
+    if not patterns:
+        return []
+
+    out: list[dict] = []
+    for p in patterns:
+        selector = p["selector"]
+        try:
+            loc = page.locator(selector).first
+            if not await loc.count():
+                continue
+        except Exception:
+            continue
+        out.append({
+            "label": p["label"],
+            "type": p["widget_type"],
+            "value": "",
+            "locator": loc,
+            "selector": selector,
+            "learned_pattern": True,
+            "fix_count": p["fix_count"],
+        })
+    if out:
+        logger.info(
+            "learned_patterns: %d/%d known widgets matched on %s",
+            len(out), len(patterns), domain,
+        )
+    return out
 
 
 def _emit_scan_signal(
@@ -629,8 +1299,8 @@ def _emit_scan_signal(
             payload={"action": "multi_strategy_scan", "winner": winner, "field_count": field_count},
             session_id=f"scan_{domain}",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("scan signal emit failed for %s: %s", domain, exc)
 
 
 # ---------------------------------------------------------------------------

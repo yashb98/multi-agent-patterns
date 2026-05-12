@@ -1,0 +1,47 @@
+[shared.cost_tracker] Loaded 21 model prices from snapshot | {"snapshot_path": "/Users/yashbishnoi/projects/multi_agent_patterns/shared/model_costs/2026-04-22.json"}
+========================================================================
+O-live: apply_job direct invocation (Graphcore grad ML)
+========================================================================
+  URL: https://job-boards.greenhouse.io/graphcore/jobs/8234675002
+  CV : data/applications/Graphcore/Yash_Bishnoi_Graphcore.pdf
+  CL : data/applications/Graphcore/Cover_Letter_Graphcore.pdf
+  dry_run=True
+
+[jobpulse.form_prefetch] form_prefetch: https://job-boards.greenhouse.io/graphcore/jobs/8234675002 — 1 pages, 42 field types, 0 screening Qs, nav=no, applied 7x
+[jobpulse.applicator] Applying via playwright adapter to https://job-boards.greenhouse.io/graphcore/jobs/8234675002
+[jobpulse.playwright_adapter] PlaywrightAdapter: applying to https://job-boards.greenhouse.io/graphcore/jobs/8234675002 via greenhouse
+(node:27092) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[jobpulse.playwright_driver] PlaywrightDriver connected to Chrome at http://localhost:9222 (tab: https://job-boards.greenhouse.io/graphcore/jobs/8234675002)
+[jobpulse.browser_intelligence] BrowserIntelligence attached — console + network + mutation + CDP log
+[shared.memory_layer._manager] Memory SQLite store initialised at /Users/yashbishnoi/projects/multi_agent_patterns/data/agent_memory/memories.db
+[httpx] HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+/opt/homebrew/anaconda3/lib/python3.12/site-packages/qdrant_client/qdrant_remote.py:280: UserWarning: Qdrant client version 1.17.1 is incompatible with server version 1.14.0. Major versions should match and minor version difference must not exceed 1. Set check_compatibility=False to skip version check.
+  show_warning(
+[httpx] HTTP Request: GET http://localhost:6333/collections "HTTP/1.1 200 OK"
+[shared.memory_layer._manager] Qdrant connected at http://localhost:6333 (dims=1024)
+[neo4j.notifications] Received notification from DBMS server: <GqlStatusObject gql_status='00NA0', status_description="note: successful completion - index or constraint already exists. The command 'CREATE CONSTRAINT IF NOT EXISTS FOR (e:Memory) REQUIRE (e.memory_id) IS UNIQUE' has no effect. The index or constraint specified by 'CONSTRAINT constraint_637b34ed FOR (e:Memory) REQUIRE (e.memory_id) IS UNIQUE' already exists.", position=None, raw_classification='SCHEMA', classification=<NotificationClassification.SCHEMA: 'SCHEMA'>, raw_severity='INFORMATION', severity=<NotificationSeverity.INFORMATION: 'INFORMATION'>, diagnostic_record={'_classification': 'SCHEMA', '_severity': 'INFORMATION', 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: 'CREATE CONSTRAINT IF NOT EXISTS FOR (m:Memory) REQUIRE m.memory_id IS UNIQUE'
+[shared.memory_layer._neo4j_store] Neo4j connected and constraint verified at bolt://localhost:7687
+[shared.memory_layer._manager] Shared MemoryManager initialised at /Users/yashbishnoi/projects/multi_agent_patterns/data/agent_memory (3-engine: sqlite_store, qdrant, neo4j)
+[jobpulse.application_orchestrator_pkg._navigator] navigate_to_form: skipping initial navigate — already on https://job-boards.greenhouse.io/graphcore/jobs/8234675002
+[jobpulse.form_scanner] FormScanner: 53 fields, 12 required-empty, 0 invalid
+[jobpulse.form_scanner] FormScanner: 53 fields, 12 required-empty, 0 invalid
+[jobpulse.form_scanner] FormScanner: 53 fields, 12 required-empty, 0 invalid
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[shared.agents] LLM provider moonshot-v1-auto failed (Could not parse response content as the length limit was reached - CompletionUsa). Falling back to claude-3-5-haiku-20241022... | {"error_type": "LengthFinishReasonError", "failed_provider": "moonshot-v1-auto", "fallback_provider": "claude-3-5-haiku-20241022"}
+[httpx] HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 401 Unauthorized"
+[jobpulse.page_analysis.page_reasoner] PageReasoner LLM call failed: All LLM providers failed: moonshot-v1-auto: Could not parse response content as the length limit was reached - CompletionUsage(completion_tokens=500, prompt_tokens=; claude-3-5-haiku-20241022: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_
+[jobpulse.page_analysis.page_reasoner] PageReasoner: https://job-boards.greenhouse.io/graphcore/jobs/8234675002 → action=abort, type=unknown, confidence=0.00 — LLM reasoning failed
+[jobpulse.application_orchestrator_pkg._navigator] PLAN: reasoner → abort (type=unknown, conf=0.00)
+[jobpulse.applicator] Application failed via playwright: Unknown page — could not reach application form (quota already consumed)
+
+apply_job result:
+{
+  "success": false,
+  "error": "Unknown page \u2014 could not reach application form",
+  "expired": false,
+  "screenshot": null,
+  "rate_limited": false
+}
+
+apply_job failed: Unknown page — could not reach application form

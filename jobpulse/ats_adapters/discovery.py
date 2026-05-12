@@ -23,13 +23,65 @@ _URL_PATTERNS: dict[str, list[str]] = {
     "ashby": ["ashbyhq.com"],
     "icims": ["icims.com"],
     "linkedin": ["linkedin.com/jobs"],
+    # `_DOM_PATTERNS["reed"]` was registered without a URL counterpart, so
+    # reed.co.uk URLs misclassified as "generic" via the URL-only path used by
+    # `applicator._infer_platform_from_url`. `jd_analyzer.detect_ats_platform`
+    # already returned "reed" for the same input — that disagreement broke
+    # platform-tagged telemetry. (S12 audit M-A, 2026-05-08.)
+    "reed": ["reed.co.uk"],
 }
 
-# DOM-based patterns (slower, used when URL is ambiguous)
+# DOM-based patterns (slower, used when URL is ambiguous).
+# Catches white-label / clone instances hosted at customer domains.
 _DOM_PATTERNS: dict[str, list[str]] = {
-    "greenhouse": ["data-mosaic-component-name", "greenhouse"],
-    "workday": ["data-automation-id", "workday"],
-    "smartrecruiters": ["spl-", "smartrecruiters"],
+    "greenhouse": [
+        "data-mosaic-component-name",
+        "greenhouse",
+        "boards-greenhouse",
+        "powered by greenhouse",
+        "greenhouse-app",
+    ],
+    "workday": [
+        "data-automation-id",
+        "workday",
+        "myworkdayjobs",
+        "wd-popup",
+    ],
+    "smartrecruiters": [
+        "spl-",
+        "smartrecruiters",
+        "spl-application",
+        "spl-form",
+    ],
+    "lever": [
+        "lever.co",
+        "jobs.lever",
+        "powered by lever",
+    ],
+    "ashby": [
+        "ashbyhq",
+        "ashby-application",
+        "ashby-jobs",
+    ],
+    "icims": [
+        "icims_content",
+        "icims-jobs",
+        "icims",
+    ],
+    "linkedin": [
+        "jobs-easy-apply",
+        "easy-apply-button",
+        "linkedin.com/jobs",
+    ],
+    "indeed": [
+        "indeed-apply",
+        "icl-AppliedFilter",
+        "indeed.com",
+    ],
+    "reed": [
+        "reed-apply",
+        "reed.co.uk",
+    ],
 }
 
 

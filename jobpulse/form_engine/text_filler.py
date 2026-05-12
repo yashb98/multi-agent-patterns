@@ -46,7 +46,19 @@ async def fill_text(
             except ValueError:
                 pass
 
-        await el.scroll_into_view_if_needed()
+        # Pass the function's timeout — without this Playwright defaults to
+        # 30s, which blocks the entire fill chain when ONE field can't be
+        # scrolled to (sticky header overlay, dismissed modal, off-viewport
+        # honeypot, etc.). Live regression on pls-solicitors.co.uk where
+        # the page-header Search bar tripped this — 30s lost per bad field.
+        try:
+            await el.scroll_into_view_if_needed(timeout=timeout)
+        except Exception as scroll_exc:
+            logger.warning("text_filler: scroll-into-view failed for %s: %s — skipping", selector, scroll_exc)
+            return FillResult(
+                success=False, selector=selector,
+                value_attempted=value, error=f"scroll_timeout: {scroll_exc}",
+            )
         await el.fill(fill_value)
 
         actual = await el.evaluate("el => el.value || ''")
@@ -106,7 +118,14 @@ async def fill_autocomplete(
                 value_attempted=value, error=f"Element {selector} not found",
             )
 
-        await el.scroll_into_view_if_needed()
+        try:
+            await el.scroll_into_view_if_needed(timeout=timeout)
+        except Exception as scroll_exc:
+            logger.warning("autocomplete: scroll-into-view failed for %s: %s — skipping", selector, scroll_exc)
+            return FillResult(
+                success=False, selector=selector,
+                value_attempted=value, error=f"scroll_timeout: {scroll_exc}",
+            )
 
         # Type at least 3 chars to trigger autocomplete
         type_text = value[:3] if len(value) >= 3 else value

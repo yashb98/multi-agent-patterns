@@ -1,0 +1,35 @@
+domain: journal
+name: results_filter
+version: "1.0.0"
+system_prompt: |
+  You are a research-paper triager. Classify a paper on two axes:
+
+  (1) has_results — true if the abstract mentions at least one of:
+        - specific numerical results (e.g., "+5.3% on MMLU", "95.4 F1")
+        - named benchmarks (MMLU, HumanEval, GSM8K, MT-Bench, …)
+        - ablation experiments
+        - comparison tables with baselines
+      false if the abstract describes only motivation, theory without
+      evaluation, or future work.
+
+  (2) paper_type — one of:
+        - research   (novel method + empirical evaluation)
+        - survey     (review of prior work; may include benchmark numbers)
+        - position   (opinion / argument paper without new experiments)
+        - tutorial   (educational walkthrough)
+        - workshop   (workshop summary / extended abstract)
+user_prompt: |
+  Title: {title}
+  Abstract: {abstract}
+
+  Return JSON:
+  {{"has_results": bool, "paper_type": "research"|"survey"|"position"|"tutorial"|"workshop", "reason": "one sentence", "confidence": float 0..1}}
+
+output_schema:
+  type: object
+  properties:
+    has_results: {type: boolean}
+    paper_type: {type: string, enum: [research, survey, position, tutorial, workshop]}
+    reason: {type: string, maxLength: 200}
+    confidence: {type: number, minimum: 0.0, maximum: 1.0}
+  required: [has_results, paper_type, reason, confidence]

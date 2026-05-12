@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from shared.agents import get_openai_client, get_model_name, is_local_llm
+from shared.db_observability import observe_lookup
 from shared.pii import assert_prompt_has_wrapped_pii, wrap_pii_value
 
 from jobpulse.applicator import PROFILE, WORK_AUTH
@@ -130,7 +131,11 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # SALARY & COMPENSATION (3 patterns) — current before expected
     # ===================================================================
-    r"current.*salary|salary.*current|present.*salary|current.*compensation|current.*base": "CURRENT_SALARY",
+    # `current.*base` must be salary-anchored — bare `base` collides with
+    # location queries like "Are you currently based in the UK?". Audit S4
+    # B-1: live repro returned the user's salary value (PII leak) for that
+    # question because of unbounded `.*` between "current" and "base".
+    r"current.*salary|salary.*current|present.*salary|current.*compensation|current.*base\s*(?:pay|salary|compensation|comp|rate|wage)": "CURRENT_SALARY",
     r"salary.*expect|expected.*salary|desired.*compensation|pay.*expect|minimum.*salary|salary.*range|target.*salary|compensation.*require|salary.*requirement": "ROLE_SALARY",
     r"daily.*rate|hourly.*rate|day.*rate": "150",
 
@@ -147,7 +152,10 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # LOCATION & COMMUTE (3 patterns)
     # ===================================================================
     r"current.*location|where.*located|your.*location|what.*city.*live|which.*city|where.*you.*based|based.*in(?!.*uk)|residing|country.*resid": "JOB_LOCATION",
-    r"willing.*relocate|open.*relocation|relocate.*within|relocate.*to": "Yes, within the UK",
+    # Item 5 (2026-05-10): canonical answer is bare "Yes" so closed-set
+    # Yes/No combobox fields don't get the wrong-shape qualifier and
+    # silently fall back to a country autocomplete (see audits/2026-05-09).
+    r"willing.*relocate|open.*relocation|relocate.*within|relocate.*to": "Yes",
     r"commut.*to|commuting.*distance|travel.*to.*office": "Yes",
 
     # ===================================================================
@@ -168,17 +176,17 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # EDUCATION (4 patterns) — specific before general
     # ===================================================================
-    r"highest.*education|level.*education|highest.*qualification|completed.*education|highest.*degree": "Master's Degree",
-    r"degree.*subject|field.*study|what.*degree|degree.*type|what.*major|degree.*classification": "MSc Computer Science",
+    r"highest.*education|level.*education|highest.*qualification|completed.*education|highest.*degree": "SENSITIVE:highest_qualification",
+    r"degree.*subject|field.*study|what.*degree|degree.*type|what.*major|degree.*classification": "SENSITIVE:degree_subject",
     r"currently.*study|currently.*enrolled|enrolled.*education": "No",
     r"stem.*degree|computer.*science.*degree|related.*field|relevant.*degree": "Yes",
 
     # ===================================================================
     # LANGUAGES (3 patterns) — specific before general
     # ===================================================================
-    r"proficiency.*english|fluent.*english|english.*proficiency|level.*english": "Native or bilingual",
-    r"proficiency.*hindi|fluent.*hindi|hindi.*proficiency": "Native or bilingual",
-    r"languages.*speak|what.*languages|language.*skills|other.*language|do.*you.*speak": "English (Native), Hindi (Native)",
+    r"proficiency.*english|fluent.*english|english.*proficiency|level.*english": "SENSITIVE:second_language_proficiency",
+    r"proficiency.*hindi|fluent.*hindi|hindi.*proficiency": "SENSITIVE:second_language_proficiency",
+    r"languages.*speak|what.*languages|language.*skills|other.*language|do.*you.*speak": "SENSITIVE:languages_summary",
 
     # ===================================================================
     # DRIVING, TRAVEL & AVAILABILITY (4 patterns)
@@ -196,7 +204,12 @@ COMMON_ANSWERS: dict[str, str | None] = {
     r"background.*check|dbs.*check|criminal.*record|willing.*undergo|pre.?employment.*screen": "Yes",
     r"security.*clearance|hold.*clearance|sc.*clearance|dv.*clearance|bpss|level.*clearance": "None",
     r"non.?compete|restrictive.*covenant|conflict.*interest|gardening.*leave": "No",
-    r"based.*in.*uk|resident.*uk|uk.*resid|live.*in.*uk|reside.*in.*united.*kingdom": "No",
+    # Removed: `based.*in.*uk|resident.*uk|...` — audit S4 B-1. The pattern
+    # over-matched and answered "No" to plain location/residency questions
+    # ("Are you a UK resident?", "Do you live in the UK?") even though the
+    # user IS based in the UK. The legitimate "permanent resident / settled
+    # status" cases are already covered by L127 (british.*citizen|...|
+    # settled.*status). Plain location → V2 intent classifier handles it.
 
     # ===================================================================
     # COMPANY & APPLICATION HISTORY (3 patterns)
@@ -238,13 +251,13 @@ COMMON_ANSWERS: dict[str, str | None] = {
     # ===================================================================
     # NATIONALITY & IDENTITY (2 patterns)
     # ===================================================================
-    r"what.*nationality|country.*citizen|country.*birth": "Indian",
-    r"\btitle\b.*mr|salutation|honorific": "Mr",
+    r"what.*nationality|country.*citizen|country.*birth": "SENSITIVE:nationality",
+    r"\btitle\b.*mr|salutation|honorific": "SENSITIVE:title",
 
     # ===================================================================
     # TEAM & MANAGEMENT (2 patterns) — specific before general
     # ===================================================================
-    r"direct.*report|how.*many.*managed|people.*managed|team.*size|largest.*team": "8",
+    r"direct.*report|how.*many.*managed|people.*managed|team.*size|largest.*team": "SENSITIVE:largest_team_managed",
     r"managing.*team|line.*management|managed.*people|leadership.*experience|management.*experience": "Yes",
 
     # ===================================================================
@@ -322,18 +335,68 @@ def _resolve_skill_experience(skill: str | None, *, input_type: str | None) -> s
     return str(int(years))
 
 
+def lookup_user_salary(job_title: str) -> int:
+    """Look up the user's salary expectation for a job title.
+
+    Two-pass match against the role_salary DB:
+      1. Substring match — pick the longest role key contained in the title.
+      2. Token-overlap fallback — when no substring match (e.g. title
+         "Data Analytics" doesn't substring-match the role key "data
+         analyst" because analytics≠analyst), use shared-token Jaccard
+         similarity ≥0.5 to find the closest role.
+
+    Live regression on Revolut welovealfa.com 2026-05-05: the title
+    "Software Engineer (Data)" had no exact substring match and the
+    agent fell back to LLM, which then read the JD's listed range
+    £85,500-£118,000 from the page and used those as the user's salary
+    expectation. The token fallback now matches on "software engineer"
+    or "engineer" → £35-38k from role_salary.
+    """
+    title = (job_title or "").lower()
+    role_salaries = _ensure_role_salary()
+    default_salary = role_salaries.get("default", 30000)
+    if not title:
+        return default_salary
+    salary = default_salary
+    best_len = 0
+    for role_key, role_salary in role_salaries.items():
+        if role_key == "default":
+            continue
+        if role_key in title and len(role_key) > best_len:
+            salary = role_salary
+            best_len = len(role_key)
+    if best_len > 0:
+        return salary
+    # Token fallback
+    import re as _re
+    title_tokens = {t for t in _re.findall(r"[a-z]{3,}", title)}
+    if not title_tokens:
+        return default_salary
+    best_score = 0.0
+    for role_key, role_salary in role_salaries.items():
+        if role_key == "default":
+            continue
+        role_tokens = {t for t in _re.findall(r"[a-z]{3,}", role_key)}
+        if not role_tokens:
+            continue
+        overlap = len(title_tokens & role_tokens)
+        union = len(title_tokens | role_tokens)
+        score = overlap / union if union else 0.0
+        # Boost for distinctive role tokens (analyst/scientist/engineer)
+        if overlap and role_tokens & {"analyst", "scientist", "engineer", "developer", "designer"}:
+            score += 0.1
+        if score > best_score and score >= 0.25:
+            best_score = score
+            salary = role_salary
+    return salary
+
+
 def _resolve_role_salary(
     job_context: dict | None, *, input_type: str | None
 ) -> str:
     """Return salary expectation based on job title and input type."""
-    title = ((job_context or {}).get("job_title") or "").lower()
-    role_salaries = _ensure_role_salary()
-    salary = role_salaries.get("default", 30000)
-    best_len = 0
-    for role_key, role_salary in role_salaries.items():
-        if role_key != "default" and role_key in title and len(role_key) > best_len:
-            salary = role_salary
-            best_len = len(role_key)
+    title = ((job_context or {}).get("job_title") or "")
+    salary = lookup_user_salary(title)
 
     if input_type == "number":
         return str(salary)
@@ -359,23 +422,179 @@ def _check_previously_applied(
     return "Yes" if count > 0 else "No"
 
 
+_HIRING_MESSAGE_CACHE_TTL_DAYS = 30
+_HIRING_MESSAGE_CACHE_LOCK = threading.Lock()
+
+
+def _hiring_message_cache_init(db: JobDB) -> None:
+    """Lazily create the hiring-message cache table inside applications.db.
+
+    Keyed by ``(company_lower, role_archetype_lower)``; rows older than
+    ``_HIRING_MESSAGE_CACHE_TTL_DAYS`` are treated as misses on lookup.
+    """
+    conn = db._connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS hiring_message_cache ("
+        "company TEXT NOT NULL, role_archetype TEXT NOT NULL, "
+        "message TEXT NOT NULL, generated_at TEXT NOT NULL, "
+        "hit_count INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (company, role_archetype))"
+    )
+    conn.commit()
+
+
+@observe_lookup("applications", "hiring_message_cache", key_arg=0)
+def _hiring_message_cache_lookup(
+    company: str, role_archetype: str, *, db: JobDB | None = None,
+) -> str | None:
+    """Return cached message or None on miss / TTL expiry.
+
+    Under ``JOBPULSE_TEST_MODE=1`` (set by ``tests/conftest.py``), a default
+    ``db=None`` short-circuits to None so unrelated tests don't pick up
+    cache entries from prior runs of the same suite. Tests that exercise
+    cache behaviour pass an explicit ``db=`` kwarg from their tmp_path.
+    Mirrors the same guard in ``cv_tailor._tailored_cv_cache_lookup``.
+    """
+    if not company or not role_archetype:
+        return None
+    import os as _os
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return None
+    key = (company.lower().strip(), role_archetype.lower().strip())
+    db = db or JobDB()
+    with _HIRING_MESSAGE_CACHE_LOCK:
+        _hiring_message_cache_init(db)
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT message, generated_at FROM hiring_message_cache "
+            "WHERE company = ? AND role_archetype = ?", key,
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            generated = datetime.fromisoformat(row["generated_at"])
+            age = datetime.now() - generated
+            if age.days > _HIRING_MESSAGE_CACHE_TTL_DAYS:
+                return None
+        except (ValueError, TypeError):
+            return None
+        conn.execute(
+            "UPDATE hiring_message_cache SET hit_count = hit_count + 1 "
+            "WHERE company = ? AND role_archetype = ?", key,
+        )
+        conn.commit()
+        return row["message"]
+
+
+def _hiring_message_cache_store(
+    company: str, role_archetype: str, message: str, *, db: JobDB | None = None,
+) -> None:
+    """Persist a freshly-generated hiring message.
+
+    Under ``JOBPULSE_TEST_MODE=1`` with default ``db=None``, the store is
+    a no-op — same rationale as the lookup guard above.
+    """
+    if not company or not role_archetype or not message:
+        return
+    import os as _os
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return
+    key = (company.lower().strip(), role_archetype.lower().strip())
+    db = db or JobDB()
+    with _HIRING_MESSAGE_CACHE_LOCK:
+        _hiring_message_cache_init(db)
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO hiring_message_cache "
+            "(company, role_archetype, message, generated_at, hit_count) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (*key, message, datetime.now().isoformat()),
+        )
+        conn.commit()
+
+
+def _classify_role_archetype(role_title: str) -> str:
+    """Coarse role archetype for cache keying — keeps the (company, role)
+    cache from being polluted by trivial title variations like
+    'Senior X' vs 'X' vs 'X II'. Falls back to lowercased role title.
+    """
+    if not role_title:
+        return "generic"
+    t = role_title.lower().strip()
+    if "data analyst" in t or "analytics" in t and "engineer" not in t:
+        return "data_analyst"
+    if "data engineer" in t:
+        return "data_engineer"
+    if "data scientist" in t:
+        return "data_scientist"
+    if "machine learning" in t or "ml engineer" in t or "ai engineer" in t:
+        return "ml_engineer"
+    if "research engineer" in t or "research scientist" in t:
+        return "research_engineer"
+    if "backend" in t or "back-end" in t:
+        return "backend_engineer"
+    if "frontend" in t or "front-end" in t:
+        return "frontend_engineer"
+    if "full stack" in t or "fullstack" in t or "full-stack" in t:
+        return "fullstack_engineer"
+    if "software engineer" in t or "developer" in t:
+        return "software_engineer"
+    return t.split()[0] if t else "generic"
+
+
 def _generate_hiring_message(job_context: dict | None) -> str:
     """Generate a tailored hiring message using LLM with the user's core projects."""
     ctx = job_context or {}
     company = ctx.get("company", "the company")
     role = ctx.get("title", "this role")
 
-    _CORE_PROJECTS = (
-        "- Built a production multi-agent AI system (github.com/yashb98/multi-agent-patterns) "
-        "with 10+ autonomous agents using LangGraph, 4 orchestration topologies, and a "
-        "3-engine memory layer (SQLite + Qdrant + Neo4j) with self-improving reinforcement learning.\n"
-        "- Evaluates GenAI vs simpler approaches: rule-based filters first (zero cost), "
-        "semantic embeddings second, LLM fallback only when needed — saving 70-85% of API costs.\n"
-        "- Designs experiments with measurable outcomes: A/B-tested thresholds, conversion "
-        "funnels, statistical correlation engines with clear success metrics.\n"
-        "- Builds responsibly: structured error handling, cost tracking on every LLM call, "
-        "prompt injection defence, dry-run-first safety workflows."
-    )
+    # Cache lookup: per-(company, role_archetype). Same company + role
+    # returns the cached message without firing an LLM call. TTL keeps
+    # messages from going stale across job-description rewrites.
+    role_archetype = ctx.get("archetype") or _classify_role_archetype(role)
+    cached = _hiring_message_cache_lookup(company, role_archetype)
+    if cached:
+        logger.info(
+            "hiring_message_cache: hit on (%s, %s) — skipping LLM",
+            company[:40], role_archetype[:30],
+        )
+        return cached
+
+    # Build the project highlights from cv_projects in user_profile.db so the
+    # narrative reflects the user's actual portfolio rather than a hardcoded
+    # snapshot for one specific applicant. Falls back to a generic skill-shape
+    # narrative when the DB is empty (e.g. fresh install).
+    _CORE_PROJECTS = ""
+    try:
+        from shared.profile_store import get_profile_store
+        store = get_profile_store()
+        bullets: list[str] = []
+        for proj in (store.cv_projects() or [])[:4]:
+            title = (proj.get("title") or "").strip()
+            url = (proj.get("url") or "").strip()
+            proj_bullets = proj.get("bullets") or []
+            first_bullet = (proj_bullets[0] if proj_bullets else "").strip()
+            if title and first_bullet:
+                # Strip HTML tags from bullet for plaintext narrative
+                import re as _re
+                clean = _re.sub(r"<[^>]+>", "", first_bullet)
+                url_part = f" ({url})" if url else ""
+                bullets.append(f"- {title}{url_part}: {clean}")
+        _CORE_PROJECTS = "\n".join(bullets)
+    except Exception:
+        pass
+
+    if not _CORE_PROJECTS:
+        # Generic skill-shape fallback (no PII) — still useful for prompt
+        # context when the project DB hasn't been populated.
+        _CORE_PROJECTS = (
+            "- Production engineering with measurable outcomes (A/B tests, "
+            "conversion funnels, error handling, cost tracking).\n"
+            "- Pragmatic GenAI: rule-based first, embeddings second, LLM only "
+            "when needed — saves 70-85% of API costs vs. LLM-first designs.\n"
+            "- Builds safely: structured error handling, prompt-injection "
+            "defence, dry-run-first workflows."
+        )
 
     prompt = (
         f"Write a short message (150-200 words, plain text, NO greeting/sign-off/subject) "
@@ -398,7 +617,9 @@ def _generate_hiring_message(job_context: dict | None) -> str:
         result = smart_llm_call(llm, [HumanMessage(content=prompt)])
         text = result.content if hasattr(result, "content") else str(result)
         if text and len(text.strip()) > 50:
-            return text.strip()
+            cleaned = text.strip()
+            _hiring_message_cache_store(company, role_archetype, cleaned)
+            return cleaned
     except Exception as exc:
         logger.debug("Hiring message LLM generation failed: %s", exc)
 
@@ -466,14 +687,32 @@ def _resolve_placeholder(
 
     if answer.startswith("SCREENING:"):
         key = answer[len("SCREENING:"):]
+        resolved = ""
         try:
             from shared.profile_store import get_profile_store
             val = get_profile_store().screening_default(key)
             if val:
-                return val
+                resolved = val
         except Exception:
             pass
-        return ""
+        # Date adaptation: notice_period returns strings like "Immediately"
+        # or "1 month" — convert to YYYY-MM-DD when the form wants a date.
+        if input_type == "date" and resolved:
+            today = datetime.now()
+            lower = resolved.strip().lower()
+            if lower in ("immediately", "asap", "now"):
+                target = today + timedelta(days=14)
+            elif "week" in lower:
+                # "2 weeks" / "1 week"
+                weeks = next((int(s) for s in lower.split() if s.isdigit()), 2)
+                target = today + timedelta(weeks=weeks)
+            elif "month" in lower:
+                months = next((int(s) for s in lower.split() if s.isdigit()), 1)
+                target = today + timedelta(days=months * 30)
+            else:
+                target = today + timedelta(days=14)
+            return target.strftime("%Y-%m-%d")
+        return resolved
 
     if answer == "HIRING_MESSAGE":
         return _generate_hiring_message(job_context)
@@ -486,7 +725,15 @@ def _resolve_placeholder(
                 return f"{int(val):,}" if input_type == "text" else val
         except Exception:
             pass
-        return "22000"
+        # No hardcoded fallback — current_salary is PII and must be set in DB.
+        # Return empty so the caller treats this as a screening miss and either
+        # skips the field, prompts the user, or escalates to LLM with options.
+        logger.warning(
+            "screening_answers: CURRENT_SALARY placeholder requested but "
+            "sensitive_fields.current_salary is empty — set it via "
+            "ProfileStore.set_sensitive('current_salary', ...) or skip the field"
+        )
+        return ""
 
     # Input-type adaptations for non-placeholder answers
     if answer == "Immediately" and input_type == "date":
@@ -533,25 +780,19 @@ def get_answer(
 
     normalised = question.strip()
 
-    # --- Tier 1: pattern match -------------------------------------------
-    for pattern, answer in COMMON_ANSWERS.items():
-        if re.search(pattern, normalised, re.IGNORECASE):
-            if answer is not None:
-                resolved = _resolve_placeholder(
-                    answer, normalised, job_context,
-                    input_type=input_type, platform=platform, db=db,
-                )
-                logger.debug("Pattern match for '%s' -> '%s'", normalised[:60], resolved[:80])
-                _strategy_local.last = AnswerResult(resolved, "pattern_match", 0.95)
-                return with_tone_filter(resolved, normalised, None)
-            # Matched but needs LLM (answer is None) — cache result for reuse
-            logger.debug("Pattern match (LLM-required) for '%s'", normalised[:60])
-            llm_answer = _generate_answer(normalised, job_context)
-            logger.info("Generated Tier 1 LLM answer for '%s'", normalised[:60])
-            _strategy_local.last = AnswerResult(llm_answer, "llm_tier3", 0.6)
-            return with_tone_filter(llm_answer, normalised, None)
+    # --- Tier 1: V2 pipeline (semantic cache + intent classifier + LLM) ---
+    # Primary path. Embedding similarity over 175 prototype questions across
+    # 31 intents survives paraphrase/typo/multilingual drift. Regex tiers
+    # below remain as safety nets for cases the embeddings haven't learned.
+    v2_answer = try_screening_v2(normalised, job_context)
+    if v2_answer:
+        logger.debug("Screening V2 answer for '%s' -> '%s'", normalised[:60], v2_answer[:80])
+        _strategy_local.last = AnswerResult(v2_answer, "screening_v2", 0.75)
+        return with_tone_filter(v2_answer, normalised, None)
 
-    # --- Tier 1.5: agent rules (learned from corrections) -----------------
+    # --- Tier 2: agent rules (learned from user corrections) -------------
+    # User-stored regex patterns (not hardcoded) — these are learned signals,
+    # genuinely dynamic, retained as-is.
     try:
         from jobpulse.agent_rules import AgentRulesDB
         import re as _re
@@ -567,12 +808,34 @@ def get_answer(
     except Exception:
         pass
 
-    # --- Tier 1.6: V2 pipeline (semantic cache → intent → regex → rules → LLM)
-    v2_answer = try_screening_v2(normalised, job_context)
-    if v2_answer:
-        logger.debug("Screening V2 answer for '%s' -> '%s'", normalised[:60], v2_answer[:80])
-        _strategy_local.last = AnswerResult(v2_answer, "screening_v2", 0.75)
-        return with_tone_filter(v2_answer, normalised, None)
+    # --- Tier 3: COMMON_ANSWERS regex fallback (legacy heuristic) --------
+    # Only fires when the V2 embedding pipeline has nothing useful. Regex
+    # patterns are brittle on paraphrase but provide a cheap last-resort
+    # for known-shape questions (yes/no, work auth, salary). Each match
+    # logs that the dynamic path missed — those should be added as
+    # prototype questions in screening_intent.py to retire the regex
+    # over time.
+    for pattern, answer in COMMON_ANSWERS.items():
+        if re.search(pattern, normalised, re.IGNORECASE):
+            if answer is not None:
+                resolved = _resolve_placeholder(
+                    answer, normalised, job_context,
+                    input_type=input_type, platform=platform, db=db,
+                )
+                logger.info(
+                    "screening_answers: regex fallback hit for '%s' (V2 missed) "
+                    "— consider adding to screening_intent prototypes",
+                    normalised[:60],
+                )
+                _strategy_local.last = AnswerResult(resolved, "regex_fallback", 0.7)
+                return with_tone_filter(resolved, normalised, None)
+            llm_answer = _generate_answer(normalised, job_context)
+            logger.info(
+                "screening_answers: regex-triggered LLM fallback for '%s'",
+                normalised[:60],
+            )
+            _strategy_local.last = AnswerResult(llm_answer, "llm_tier3", 0.6)
+            return with_tone_filter(llm_answer, normalised, None)
 
     # --- Tier 4: LLM generation → cache in V2 ----------------------------
     answer = _generate_answer(normalised, job_context)
@@ -613,6 +876,7 @@ def cache_answer(question: str, answer: str, *, db: JobDB | None = None) -> None
     logger.debug("Cached answer for '%s'", question.strip()[:60])
 
 
+@observe_lookup("applications", "ats_answer_cache", key_arg=0)
 def get_cached_answer(question: str, *, db: JobDB | None = None) -> str | None:
     """Look up a cached answer by question hash. Returns ``None`` on miss."""
     _db = db or JobDB()
@@ -627,11 +891,40 @@ def try_instant_answer(
     input_type: str | None = None,
     platform: str | None = None,
 ) -> str | None:
-    """Pattern match + cache lookup only (no LLM). Returns ``None`` on miss."""
+    """Pattern match + cache lookup only (no LLM). Returns ``None`` on miss.
+
+    Resolution order (Item 4 migration in progress, 2026-05-10):
+
+    1. **Embedding intent classifier** (``ScreeningIntentClassifier``) +
+       ``_INTENT_CANONICAL_ANSWER`` map. ~30 intents covered; cosine
+       threshold 0.78. Wins on paraphrase-robustness ("What's your
+       desired pay?" → ``SALARY_EXPECTED``) where the regex map missed.
+    2. **Legacy ``COMMON_ANSWERS`` regex map** — fallback while the
+       prototype set is grown to full coverage. New intents (DEI, EEO,
+       background-check) are still here; do not add new regex patterns,
+       extend ``_INTENT_CANONICAL_ANSWER`` + ``_SEED_PROTOTYPES``
+       instead.
+    3. **Cached answers** in ``ats_answer_cache`` (per-question
+       persistence from prior fills).
+
+    The regex tier MUST go away once every entry in
+    ``_INTENT_CANONICAL_ANSWER`` has parity coverage in
+    ``_SEED_PROTOTYPES`` (see ``tests/lint/test_no_regex_classification.py``).
+    """
+
     if not question or not question.strip():
         return None
     normalised = question.strip()
 
+    # Tier 1 — embedding intent classifier
+    intent_answer = _try_intent_classifier(
+        normalised, job_context, db=db,
+        input_type=input_type, platform=platform,
+    )
+    if intent_answer is not None:
+        return intent_answer
+
+    # Tier 2 — legacy regex map (kept during migration)
     for pattern, answer in COMMON_ANSWERS.items():
         if re.search(pattern, normalised, re.IGNORECASE):
             if answer is not None:
@@ -641,12 +934,116 @@ def try_instant_answer(
                 )
             return None
 
+    # Tier 3 — per-question cache
     _db = db or JobDB()
     cached = _db.get_cached_answer(normalised)
     if cached is not None:
         return cached
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Intent classifier → canonical answer mapping (Item 4 migration target)
+# ---------------------------------------------------------------------------
+#
+# Each ScreeningIntent maps to either:
+# - a literal answer ("Yes", "No", "Full-time"),
+# - a SCREENING:<key> placeholder resolved against profile_store,
+# - a SENSITIVE:<key> placeholder resolved against the sensitive store,
+# - a dynamic placeholder like CURRENT_SALARY / JOB_LOCATION /
+#   SKILL_EXPERIENCE that ``_resolve_placeholder`` already understands.
+#
+# Adding a new intent: add an enum value in ``screening_intent.py``,
+# seed prototypes in ``_SEED_PROTOTYPES``, and add a row here. **No new
+# regex patterns** — the COMMON_ANSWERS tier is being deleted as soon
+# as the prototype coverage hits parity.
+
+# Lazy import — avoid circular import at module load.
+_INTENT_CANONICAL_ANSWER: dict[str, str] | None = None
+
+
+def _build_intent_answer_map() -> dict[str, str]:
+    from jobpulse.screening_intent import ScreeningIntent
+    return {
+        ScreeningIntent.WORK_AUTH_YES_NO.value: "Yes",
+        ScreeningIntent.SPONSORSHIP.value: "No",
+        ScreeningIntent.VISA_STATUS.value: "SENSITIVE:visa_status",
+        ScreeningIntent.WORK_AUTH_TYPE.value: "SENSITIVE:visa_status",
+        ScreeningIntent.SALARY_CURRENT.value: "CURRENT_SALARY",
+        ScreeningIntent.SALARY_EXPECTED.value: "ROLE_SALARY",
+        ScreeningIntent.NOTICE_PERIOD.value: "SCREENING:notice_period",
+        ScreeningIntent.START_DATE.value: "SCREENING:notice_period",
+        ScreeningIntent.CURRENTLY_EMPLOYED.value: "Yes",
+        ScreeningIntent.CURRENT_JOB_TITLE.value: "SCREENING:current_job_title",
+        ScreeningIntent.CURRENT_EMPLOYER.value: "SCREENING:current_employer",
+        ScreeningIntent.LOCATION_CURRENT.value: "JOB_LOCATION",
+        ScreeningIntent.WILLING_RELOCATE.value: "Yes",
+        ScreeningIntent.COMMUTE.value: "Yes",
+        ScreeningIntent.REMOTE.value: "Yes",
+        ScreeningIntent.OFFICE.value: "Yes",
+        ScreeningIntent.HYBRID.value: "Yes",
+        ScreeningIntent.EXPERIENCE_YEARS.value: "SKILL_EXPERIENCE",
+        ScreeningIntent.EXPERIENCE_SKILL.value: "SKILL_EXPERIENCE",
+        ScreeningIntent.EDUCATION_LEVEL.value: "SENSITIVE:highest_qualification",
+        ScreeningIntent.DEGREE_SUBJECT.value: "SENSITIVE:degree_subject",
+        ScreeningIntent.LANGUAGE_ENGLISH.value: "SENSITIVE:second_language_proficiency",
+        ScreeningIntent.LANGUAGES.value: "SENSITIVE:languages_summary",
+        ScreeningIntent.DRIVING_LICENSE.value: "Yes",
+        ScreeningIntent.WILLING_TRAVEL.value: "Yes",
+        ScreeningIntent.SECURITY_CLEARANCE.value: "None",
+        ScreeningIntent.BACKGROUND_CHECK.value: "Yes",
+    }
+
+
+def _try_intent_classifier(
+    question: str,
+    job_context: dict | None,
+    *,
+    db: JobDB | None,
+    input_type: str | None,
+    platform: str | None,
+) -> str | None:
+    """Embedding-first tier. Returns ``None`` on miss so the caller
+    falls through to the regex tier or cache."""
+
+    global _INTENT_CANONICAL_ANSWER
+    if _INTENT_CANONICAL_ANSWER is None:
+        try:
+            _INTENT_CANONICAL_ANSWER = _build_intent_answer_map()
+        except Exception as exc:  # pragma: no cover
+            logger.debug("intent answer map unavailable: %s", exc)
+            return None
+
+    try:
+        from jobpulse.screening_intent import get_intent_classifier
+        classifier = get_intent_classifier()
+        intent, confidence = classifier.classify(question)
+    except Exception as exc:
+        logger.debug("intent classifier unavailable for '%s...': %s",
+                     question[:60], exc)
+        return None
+
+    if intent.value not in _INTENT_CANONICAL_ANSWER:
+        return None
+    if confidence < 0.78:
+        return None
+
+    answer = _INTENT_CANONICAL_ANSWER[intent.value]
+    if answer is None:
+        return None
+
+    resolved = _resolve_placeholder(
+        answer, question, job_context,
+        input_type=input_type, platform=platform, db=db,
+    )
+    if resolved:
+        logger.debug(
+            "try_instant_answer: intent=%s confidence=%.2f → %r",
+            intent.value, confidence,
+            (resolved[:60] if isinstance(resolved, str) else resolved),
+        )
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -666,7 +1063,15 @@ def _get_v2_pipeline():
         from jobpulse.screening_pipeline import ScreeningPipeline
         merged = dict(PROFILE)
         merged["visa_status"] = str(WORK_AUTH.get("visa_status", ""))
-        merged["visa_sponsorship_required"] = "No" if not WORK_AUTH.get("requires_sponsorship") else "Yes"
+        # S26-follow-up-F (2026-05-11): visa_sponsorship_required was previously
+        # hardcoded from WORK_AUTH.requires_sponsorship — a UK-only flag — which
+        # then dominated the LLM tier's reasoning on non-UK JDs (the LLM trusted
+        # the static "No" even when JD country was US, EU, etc.). Diagnostic in
+        # commit e5e7177 proved this was the firing root cause of the Anthropic
+        # Greenhouse visa-No mismatch surfaced by S26 RUN 4/5. Removed so the
+        # LLM tier reasons from visa_status + job_context.country instead;
+        # answer is now f(profile, JD), not a profile constant. See audit doc
+        # section "S26-follow-up-F" for the live-evidence trail.
         merged["right_to_work"] = "Yes" if WORK_AUTH.get("right_to_work_uk") else "No"
         merged["notice_period"] = str(WORK_AUTH.get("notice_period", ""))
         merged["salary_expectation"] = str(WORK_AUTH.get("salary_expectation", ""))
@@ -787,10 +1192,19 @@ def _generate_answer(question: str, job_context: dict | None = None) -> str:
     except Exception:
         pass
 
+    # Audit S21 / TP-30: prompt the LLM AS the candidate in first person.
+    # Pre-S21 'Applicant background:' framed the LLM as a third party
+    # answering ABOUT the candidate; live evidence on Anthropic Greenhouse
+    # showed answers like 'As Yash Bishnoi, I have a strong preference...'
+    # — third-person self-reference that recruiters instantly clock as
+    # AI-generated.
     task = (
-        "Answer this job application screening question concisely (1-3 sentences). "
-        f"Be professional and positive. Question: {question}.{context_line} "
-        f"Applicant background: {profile_summary}"
+        "You ARE the job applicant filling out a screening question on a "
+        "job application form. Answer in FIRST PERSON as yourself "
+        "('I am', 'I have', 'My...'). Never refer to yourself by name in "
+        "third person (no 'As [name], I...'). Be professional and "
+        f"positive. Answer in 1-3 sentences. Question: {question}.{context_line} "
+        f"Your profile: {profile_summary}"
         f"{correction_context}"
     )
     assert_prompt_has_wrapped_pii(task, prompt_profile, "screening")

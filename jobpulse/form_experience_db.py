@@ -11,6 +11,7 @@ import sqlite3
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
@@ -94,6 +95,43 @@ class FormExperienceDB:
                 sample_count INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS field_confidence_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                field_label TEXT NOT NULL,
+                predicted_confidence REAL NOT NULL,
+                actual_correct INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_confidence_domain
+            ON field_confidence_log (domain);
+            CREATE TABLE IF NOT EXISTS negative_exemplars (
+                domain TEXT NOT NULL,
+                field_label TEXT NOT NULL,
+                value_tried TEXT NOT NULL,
+                failure_reason TEXT NOT NULL,
+                platform TEXT NOT NULL DEFAULT '',
+                content_hash TEXT NOT NULL DEFAULT '',
+                attempt_count INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (domain, field_label, value_tried)
+            );
+            CREATE INDEX IF NOT EXISTS idx_neg_content_hash
+            ON negative_exemplars (content_hash);
+            CREATE TABLE IF NOT EXISTS signal_corrections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                field_label TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                original_value TEXT NOT NULL,
+                corrected_value TEXT NOT NULL,
+                transform TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_sc_domain_field
+            ON signal_corrections (domain, field_label);
         """
 
     def _init_db_heal(self):
@@ -199,6 +237,66 @@ class FormExperienceDB:
                     updated_at TEXT NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS field_confidence_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    field_label TEXT NOT NULL,
+                    predicted_confidence REAL NOT NULL,
+                    actual_correct INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_confidence_domain
+                ON field_confidence_log (domain)
+            """)
+            # Migration: add content_hash column if missing
+            try:
+                conn.execute("SELECT content_hash FROM form_experience LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "ALTER TABLE form_experience ADD COLUMN content_hash TEXT DEFAULT ''"
+                )
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_form_experience_content_hash
+                ON form_experience (content_hash)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS negative_exemplars (
+                    domain TEXT NOT NULL,
+                    field_label TEXT NOT NULL,
+                    value_tried TEXT NOT NULL,
+                    failure_reason TEXT NOT NULL,
+                    platform TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    attempt_count INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (domain, field_label, value_tried)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_neg_content_hash
+                ON negative_exemplars (content_hash)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS signal_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    field_label TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    original_value TEXT NOT NULL,
+                    corrected_value TEXT NOT NULL,
+                    transform TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sc_domain_field
+                ON signal_corrections (domain, field_label)
+            """)
 
     @property
     def _transfer_engine(self):
@@ -277,6 +375,65 @@ class FormExperienceDB:
         except Exception as e:
             logger.debug("Optimization signal failed: %s", e)
 
+    def store(
+        self,
+        domain: str,
+        platform: str,
+        adapter: str,
+        pages_filled: int,
+        field_types: dict | list,
+        screening_questions: list[str],
+        time_seconds: float,
+        success: bool,
+        content_hash: str = "",
+    ) -> None:
+        """Store form experience with optional content_hash for cross-domain matching.
+
+        This is the PRAXIS-aware variant of record(). Accepts field_types as either
+        a list (legacy) or dict (field_type -> count) and stores content_hash for
+        structural page fingerprinting.
+        """
+        domain = self.normalize_domain(domain)
+        now = datetime.now(UTC).isoformat()
+        if isinstance(field_types, dict):
+            ft_json = json.dumps(field_types)
+        else:
+            ft_json = json.dumps(field_types)
+        sq_json = json.dumps(screening_questions)
+
+        with sqlite3.connect(self._db_path) as conn:
+            existing = conn.execute(
+                "SELECT success FROM form_experience WHERE domain = ?", (domain,)
+            ).fetchone()
+
+            if existing and existing[0] == 1 and not success:
+                conn.execute(
+                    "UPDATE form_experience SET apply_count = apply_count + 1, updated_at = ? WHERE domain = ?",
+                    (now, domain),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO form_experience
+                       (domain, platform, adapter, pages_filled, field_types,
+                        screening_questions, time_seconds, success, apply_count,
+                        content_hash, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                       ON CONFLICT(domain) DO UPDATE SET
+                           platform = excluded.platform,
+                           adapter = excluded.adapter,
+                           pages_filled = excluded.pages_filled,
+                           field_types = excluded.field_types,
+                           screening_questions = excluded.screening_questions,
+                           time_seconds = excluded.time_seconds,
+                           success = excluded.success,
+                           content_hash = excluded.content_hash,
+                           apply_count = apply_count + 1,
+                           updated_at = excluded.updated_at""",
+                    (domain, platform, adapter, pages_filled, ft_json, sq_json,
+                     time_seconds, int(success), content_hash, now, now),
+                )
+
+    @observe_lookup("form_experience", "form_experience", key_arg=1)
     def lookup(self, domain_or_url: str) -> dict | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -285,6 +442,28 @@ class FormExperienceDB:
                 "SELECT * FROM form_experience WHERE domain = ?", (domain,)
             ).fetchone()
         return dict(row) if row else None
+
+    @observe_lookup("form_experience", "form_experience.content_hash", key_arg=1)
+    def lookup_by_content_hash(
+        self, content_hash: str, exclude_domain: str = "",
+    ) -> dict | None:
+        """Find the most recent successful experience with this structural fingerprint.
+
+        Excludes the given domain so callers get cross-domain matches only.
+        """
+        if not content_hash:
+            return None
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """SELECT * FROM form_experience
+                   WHERE content_hash = ? AND domain != ? AND success = 1
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (content_hash, exclude_domain),
+            ).fetchone()
+        if row:
+            return dict(row)
+        return None
 
     def validate_against_live(
         self,
@@ -347,6 +526,7 @@ class FormExperienceDB:
         return {"trusted": trusted, "match_ratio": match_ratio,
                 "stored": stored, "diverged_fields": diverged}
 
+    @observe_lookup("form_experience", "form_experience.platform_aggregate", key_arg=1)
     def get_platform_aggregate(self, platform: str) -> dict | None:
         """Aggregate form experience across ALL domains for a platform.
 
@@ -407,6 +587,7 @@ class FormExperienceDB:
             "common_screening_questions": sq_counter.most_common(),
         }
 
+    @observe_lookup("form_experience", "form_experience.stats", key_arg=None)
     def get_stats(self) -> dict:
         with sqlite3.connect(self._db_path) as conn:
             total = conn.execute("SELECT COUNT(*) FROM form_experience").fetchone()[0]
@@ -439,6 +620,7 @@ class FormExperienceDB:
                 (self.normalize_domain(domain), platform, failure_type, field_label, selector, details, now),
             )
 
+    @observe_lookup("form_experience", "form_failure_reasons", key_arg=1)
     def get_failure_reasons(self, domain_or_url: str, limit: int = 10) -> list[dict]:
         """Return recent failure reasons for a domain."""
         domain = self.normalize_domain(domain_or_url)
@@ -472,6 +654,7 @@ class FormExperienceDB:
                 return [dict(r) for r in donor_rows]
         return []
 
+    @observe_lookup("form_experience", "form_failure_reasons.platform_stats", key_arg=1)
     def get_platform_failure_stats(self, platform: str) -> dict:
         """Return aggregated failure statistics for a platform."""
         with sqlite3.connect(self._db_path) as conn:
@@ -488,6 +671,7 @@ class FormExperienceDB:
             ).fetchall()
         return {r["failure_type"]: r["cnt"] for r in rows}
 
+    @observe_lookup("form_experience", "field_label_mappings", key_arg=1)
     def get_field_mappings(self, domain_or_url: str) -> dict[str, str]:
         """Return {field_label: profile_key} for a domain."""
         domain = self.normalize_domain(domain_or_url)
@@ -536,6 +720,7 @@ class FormExperienceDB:
                 (domain, field_label, field_type, technique, value_used, int(success), now),
             )
 
+    @observe_lookup("form_experience", "fill_techniques", key_arg=1)
     def get_fill_techniques(self, domain_or_url: str) -> dict[str, dict]:
         """Return {field_label: {technique, value_used, field_type}} for a domain."""
         domain = self.normalize_domain(domain_or_url)
@@ -547,6 +732,7 @@ class FormExperienceDB:
             ).fetchall()
         return {r["field_label"]: dict(r) for r in rows}
 
+    @observe_lookup("form_experience", "fill_techniques.platform", key_arg=1)
     def get_platform_fill_techniques(self, platform: str) -> list[dict]:
         """Return all successful fill techniques for a platform (cross-domain learning)."""
         with sqlite3.connect(self._db_path) as conn:
@@ -587,6 +773,7 @@ class FormExperienceDB:
                 (domain, selector, now),
             )
 
+    @observe_lookup("form_experience", "container_selectors", key_arg=1)
     def get_container(self, domain_or_url: str) -> str | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -643,6 +830,7 @@ class FormExperienceDB:
                     (domain, hydration_ms, fill_ms, transition_ms, now),
                 )
 
+    @observe_lookup("form_experience", "page_timings", key_arg=1)
     def get_timing(self, domain_or_url: str) -> dict | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -685,6 +873,7 @@ class FormExperienceDB:
             )
         logger.debug("Stored scan strategy %s for %s (%d fields)", strategy, domain, field_count)
 
+    @observe_lookup("form_experience", "scan_strategy_preferences", key_arg=1)
     def get_scan_strategy(self, domain_or_url: str) -> dict | None:
         domain = self.normalize_domain(domain_or_url)
         with sqlite3.connect(self._db_path) as conn:
@@ -709,3 +898,126 @@ class FormExperienceDB:
                 result["_donor"] = transfer["donor_domain"]
                 return result
         return None
+
+    def log_field_confidence(
+        self, domain: str, field_label: str,
+        predicted_confidence: float, actual_correct: bool,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO field_confidence_log
+                   (domain, field_label, predicted_confidence, actual_correct, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (domain, field_label, predicted_confidence, int(actual_correct), now),
+            )
+
+    @observe_lookup("form_experience", "field_confidence_log", key_arg=1)
+    def get_confidence_calibration(self, domain: str) -> dict:
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                """SELECT COUNT(*), SUM(actual_correct)
+                   FROM field_confidence_log WHERE domain = ?""",
+                (domain,),
+            ).fetchone()
+        total = row[0] if row else 0
+        correct = row[1] or 0
+        return {"total": total, "correct": correct}
+
+    def store_negative_exemplar(
+        self,
+        domain: str,
+        field_label: str,
+        value_tried: str,
+        failure_reason: str,
+        platform: str = "",
+        content_hash: str = "",
+    ) -> None:
+        """Record a value that failed for a field — used by PRAXIS to avoid repeating mistakes."""
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO negative_exemplars
+                   (domain, field_label, value_tried, failure_reason, platform,
+                    content_hash, attempt_count, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                   ON CONFLICT(domain, field_label, value_tried) DO UPDATE SET
+                       attempt_count = attempt_count + 1,
+                       failure_reason = excluded.failure_reason,
+                       updated_at = excluded.updated_at""",
+                (domain, field_label, value_tried, failure_reason, platform,
+                 content_hash, now, now),
+            )
+
+    @observe_lookup("form_experience", "negative_exemplars", key_arg=1)
+    def get_negative_exemplars(self, domain: str) -> list[dict]:
+        """Return all failed field values for a domain, newest first."""
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM negative_exemplars WHERE domain = ? ORDER BY updated_at DESC",
+                (domain,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    @observe_lookup("form_experience", "negative_exemplars.content_hash", key_arg=1)
+    def get_negative_exemplars_by_hash(self, content_hash: str) -> list[dict]:
+        """Return all failed field values matching this structural fingerprint (cross-domain)."""
+        if not content_hash:
+            return []
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM negative_exemplars WHERE content_hash = ? ORDER BY updated_at DESC",
+                (content_hash,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def store_signal_correction(
+        self,
+        domain: str,
+        field_label: str,
+        signal_type: str,
+        error_message: str,
+        original_value: str,
+        corrected_value: str,
+        transform: str,
+    ) -> None:
+        domain = self.normalize_domain(domain)
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO signal_corrections
+                   (domain, field_label, signal_type, error_message,
+                    original_value, corrected_value, transform, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (domain, field_label, signal_type, error_message,
+                 original_value, corrected_value, transform, now),
+            )
+        logger.info(
+            "signal_correction: stored %s/%s type=%s transform=%s",
+            domain, field_label, signal_type, transform,
+        )
+
+    @observe_lookup("form_experience", "signal_corrections", key_arg=1)
+    def get_signal_corrections(
+        self, domain: str, field_label: str | None = None,
+    ) -> list[dict]:
+        domain = self.normalize_domain(domain)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if field_label:
+                rows = conn.execute(
+                    """SELECT * FROM signal_corrections
+                       WHERE domain = ? AND field_label = ?
+                       ORDER BY created_at DESC LIMIT 5""",
+                    (domain, field_label),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM signal_corrections
+                       WHERE domain = ?
+                       ORDER BY created_at DESC LIMIT 20""",
+                    (domain,),
+                ).fetchall()
+        return [dict(r) for r in rows]

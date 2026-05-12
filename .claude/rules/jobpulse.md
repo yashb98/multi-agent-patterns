@@ -3,13 +3,17 @@
 ## Claude = Orchestrator, Not Doer (MANDATORY)
 When running the pipeline, invoke the actual AI agents — don't bypass them with ad-hoc scripts. Agents only learn from runs they performed. Observe, diagnose, direct. Manual scripts only as fallback for issues agents can't handle yet — then feed corrections into agent DBs so it's autonomous next time.
 
+## OPRAL Error Loop (MANDATORY)
+On every error/issue: **Observe** (capture error + context) → **Plan** (trace root cause via MCP) → **Reason** (why did this fail? which learning system prevents recurrence?) → **Act** (fix surgically, re-run with real data, route to correct DB) → **Learn** (emit signal, verify DB persisted, confirm agent handles it autonomously next run). Every error must make the system smarter — if it can recur, the fix is incomplete.
+
 ## Dual Dispatcher Invariant
 When adding a new intent or agent:
-1. Add handler to jobpulse/dispatcher.py AGENT_MAP
-2. Add SAME handler to jobpulse/swarm_dispatcher.py AGENT_MAP
-3. Add intent string to the correct *_INTENTS set in both files
-4. Add NLP examples to shared/nlp_classifier.py
-5. Add tests for the new intent in both dispatch paths
+1. Add handler to jobpulse/handler_registry.py handler map
+2. Add intent to jobpulse/intent_registry.py in the correct intent group
+3. Add routing in jobpulse/command_router.py (Intent enum + classification)
+4. Verify both jobpulse/dispatcher.py AND jobpulse/swarm_dispatcher.py pick it up via get_handler_map()
+5. Add NLP examples to jobpulse/nlp_classifier.py (embedding examples, NOT regex)
+6. Add tests for the new intent in both dispatch paths
 NEVER update only one dispatcher. This has caused production bugs (see mistakes.md 2026-03-30).
 
 ## Telegram Message Handling
@@ -66,6 +70,11 @@ Regex MUST NOT be used for semantic work: intent routing, question categorizatio
 
 ## Real Data + Wiring Verification (MANDATORY)
 Every new agent/feature: test with real URLs, real APIs, real DB queries (never mocks or stale fixtures). Then verify end-to-end that all downstream systems fire — hooks, signals, DB writes, learning chains, Notion syncs, Telegram notifications. Not wired = not done.
+
+## API Pitfalls (from incidents)
+- GitHub: use Commits API per-repo, never Events API (Events API misses commits and has aggressive rate limits)
+- GitHub: `pushed_at` timestamp filtering uses `>=` or `<`, never `==` (timestamps have sub-second precision)
+- ATS numeric fields: plain integers only — no currency symbols, commas, ranges, or units
 
 ## Database Safety
 - Production DBs live in data/*.db — tests MUST NEVER touch these

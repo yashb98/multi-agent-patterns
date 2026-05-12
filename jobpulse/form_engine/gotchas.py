@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
@@ -79,6 +80,27 @@ class GotchasDB:
                        FROM gotchas_old"""
                 )
                 conn.execute("DROP TABLE gotchas_old")
+
+            # Per-domain learned widget patterns — captured from corrections,
+            # consulted by the field scanner as Strategy 0 on subsequent
+            # visits. fix_count increments on duplicate (domain,label,selector).
+            conn.executescript(
+                """CREATE TABLE IF NOT EXISTS widget_patterns (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain          TEXT NOT NULL,
+                    label           TEXT NOT NULL,
+                    selector        TEXT NOT NULL,
+                    widget_type     TEXT NOT NULL,
+                    ancestor_classes TEXT NOT NULL DEFAULT '',
+                    aria_label      TEXT NOT NULL DEFAULT '',
+                    captured_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                    fix_count       INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(domain, label, selector)
+                );
+                CREATE INDEX IF NOT EXISTS idx_widget_patterns_domain
+                    ON widget_patterns(domain);
+                """
+            )
             conn.commit()
 
     @property
@@ -106,6 +128,7 @@ class GotchasDB:
             conn.commit()
         logger.info("gotchas: stored %s/%s [%s] -> %s", domain, selector_pattern, engine, solution)
 
+    @observe_lookup("form_gotchas", "gotchas", key_arg=1)
     def lookup(self, domain: str, selector_pattern: str, engine: str = "extension") -> dict | None:
         """Look up a gotcha by exact domain + selector + engine. Returns dict or None."""
         with sqlite3.connect(self.db_path) as conn:
@@ -116,6 +139,7 @@ class GotchasDB:
             ).fetchone()
             return dict(row) if row else None
 
+    @observe_lookup("form_gotchas", "gotchas.by_domain", key_arg=1)
     def lookup_domain(self, domain: str, engine: str = "extension") -> list[dict]:
         """Get all gotchas for a domain filtered by engine."""
         with sqlite3.connect(self.db_path) as conn:
@@ -149,6 +173,7 @@ class GotchasDB:
             )
             conn.commit()
 
+    @observe_lookup("form_gotchas", "gotchas.skip_domains", key_arg=None)
     def get_skip_domains(self) -> list[str]:
         """Get domains that should always route to manual review."""
         with sqlite3.connect(self.db_path) as conn:
@@ -156,3 +181,49 @@ class GotchasDB:
                 "SELECT domain FROM gotchas WHERE selector_pattern = '*' AND solution = 'skip_manual_review'"
             ).fetchall()
             return [r[0] for r in rows]
+
+    def record_widget_pattern(
+        self,
+        *,
+        domain: str,
+        label: str,
+        selector: str,
+        widget_type: str,
+        ancestor_classes: str = "",
+        aria_label: str = "",
+    ) -> None:
+        """Insert or increment a widget pattern.
+
+        The (domain, label, selector) triple is unique — repeat calls bump
+        fix_count instead of duplicating rows. Higher fix_count = more
+        confident pattern.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """INSERT INTO widget_patterns
+                     (domain, label, selector, widget_type, ancestor_classes, aria_label)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(domain, label, selector) DO UPDATE SET
+                     fix_count = fix_count + 1,
+                     captured_at = datetime('now')""",
+                (domain, label, selector, widget_type, ancestor_classes, aria_label),
+            )
+            conn.commit()
+
+    @observe_lookup("form_gotchas", "widget_patterns", key_arg=1)
+    def get_widget_patterns(self, domain: str) -> list[dict]:
+        """Return all stored patterns for a domain, ordered by fix_count desc."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                """SELECT label, selector, widget_type, ancestor_classes,
+                          aria_label, fix_count
+                   FROM widget_patterns
+                   WHERE domain = ?
+                   ORDER BY fix_count DESC, captured_at DESC""",
+                (domain,),
+            ).fetchall()
+        return [
+            {"label": r[0], "selector": r[1], "widget_type": r[2],
+             "ancestor_classes": r[3], "aria_label": r[4], "fix_count": r[5]}
+            for r in rows
+        ]

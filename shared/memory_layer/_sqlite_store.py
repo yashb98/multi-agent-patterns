@@ -259,42 +259,6 @@ class SQLiteStore:
         self._record_read([r["memory_id"] for r in rows], "get_by_ids")
         return [self._row_to_entry(r) for r in rows]
 
-    def query_by_tier(self, tier: MemoryTier, limit: int = 100) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE tier = ? AND is_tombstoned = 0 LIMIT ?",
-            (tier.value, limit),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_by_tier")
-        return [self._row_to_entry(r) for r in rows]
-
-    def query_by_domain(self, domain: str, limit: int = 100) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE domain = ? AND is_tombstoned = 0 LIMIT ?",
-            (domain, limit),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_by_domain")
-        return [self._row_to_entry(r) for r in rows]
-
-    def query_by_lifecycle(self, lifecycle: Lifecycle, limit: int = 100) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE lifecycle = ? AND is_tombstoned = 0 LIMIT ?",
-            (lifecycle.value, limit),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_by_lifecycle")
-        return [self._row_to_entry(r) for r in rows]
-
-    def query_by_decay_desc(self, limit: int = 50) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM memories WHERE is_tombstoned = 0 ORDER BY decay_score DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_by_decay_desc")
-        return [self._row_to_entry(r) for r in rows]
-
     def query_active(self, min_decay: float = 0.0) -> list[MemoryEntry]:
         conn = self._get_conn()
         rows = conn.execute(
@@ -302,20 +266,6 @@ class SQLiteStore:
             (min_decay,),
         ).fetchall()
         self._record_read([r["memory_id"] for r in rows], "query_active")
-        return [self._row_to_entry(r) for r in rows]
-
-    def query_tombstoned_recent(self, domain: str, days: int = 30) -> list[MemoryEntry]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            """
-            SELECT * FROM memories
-            WHERE domain = ? AND is_tombstoned = 1
-              AND julianday('now') - julianday(last_accessed) <= ?
-            ORDER BY last_accessed DESC
-            """,
-            (domain, days),
-        ).fetchall()
-        self._record_read([r["memory_id"] for r in rows], "query_tombstoned_recent")
         return [self._row_to_entry(r) for r in rows]
 
     def count(self, include_tombstoned: bool = False) -> int:
@@ -332,3 +282,79 @@ class SQLiteStore:
             "SELECT memory_id FROM memories WHERE is_tombstoned = 0"
         ).fetchall()
         return [r[0] for r in rows]
+
+    def query_by_tier_and_domain(
+        self,
+        tier: MemoryTier,
+        domain: str,
+        limit: int = 100,
+    ) -> list[MemoryEntry]:
+        """Active entries for a tier+domain, ordered by score then recency.
+
+        Used by ``MemoryManager.get_episodic_entries`` /
+        ``get_semantic_entries`` to read SQLite as the source of truth instead
+        of the legacy JSON-capped stores (pipeline-bugs M-11.C).
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM memories
+            WHERE tier = ? AND domain = ? AND is_tombstoned = 0
+            ORDER BY score DESC, last_accessed DESC
+            LIMIT ?
+            """,
+            (tier.value, domain, limit),
+        ).fetchall()
+        self._record_read([r["memory_id"] for r in rows], "query_by_tier_and_domain")
+        return [self._row_to_entry(r) for r in rows]
+
+    def aggregate_procedural_by_strategy(
+        self,
+        domain: str,
+        limit: int = 100,
+        prefix_len: int = 50,
+    ) -> list[dict]:
+        """Group procedural rows by ``content[:prefix_len]`` (mirrors the
+        50-char dedup that ``ProceduralMemory.store`` uses) and return one
+        representative row per group plus aggregated stats.
+
+        Production has 19 789 procedural rows (99.97 % from the
+        ``optimization_success_streak`` write-amplified producer); the
+        write path doesn't dedup so cognitive's read-side has to. A single
+        windowed query returns the highest-scoring representative row of
+        each group together with ``times_used`` (count), ``avg_score``,
+        ``avg_success_rate``, eliminating the need for an N+1 lookup.
+
+        Each result dict has keys: ``memory_id, content, payload (str),
+        score, created_at, times_used, avg_score, avg_success_rate``.
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            f"""
+            WITH ranked AS (
+                SELECT
+                    memory_id, content, payload, score, domain,
+                    created_at, last_accessed,
+                    SUBSTR(content, 1, {prefix_len}) AS strat_prefix,
+                    COUNT(*) OVER (PARTITION BY SUBSTR(content, 1, {prefix_len})) AS times_used,
+                    AVG(score) OVER (PARTITION BY SUBSTR(content, 1, {prefix_len})) AS avg_score,
+                    AVG(CAST(json_extract(payload, '$.success_rate') AS REAL))
+                        OVER (PARTITION BY SUBSTR(content, 1, {prefix_len})) AS avg_success_rate,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY SUBSTR(content, 1, {prefix_len})
+                        ORDER BY score DESC, created_at DESC
+                    ) AS rn
+                FROM memories
+                WHERE tier = 'procedural' AND is_tombstoned = 0 AND domain = ?
+            )
+            SELECT memory_id, content, payload, score, domain,
+                   created_at, last_accessed,
+                   times_used, avg_score, avg_success_rate
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY avg_score DESC, times_used DESC
+            LIMIT ?
+            """,
+            (domain, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]

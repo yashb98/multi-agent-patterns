@@ -14,17 +14,212 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+class FileUploadError(Exception):
+    """Upload finished without the file actually attaching to the input.
+
+    Raised when the readback (``input.files.length``) is 0 or unreadable
+    after a retry. Callers must decide whether to surface this to the
+    human (Telegram alert + skip) or fail the application — the previous
+    behavior of logging a warning and continuing silently caused jobs to
+    submit without a CV attached.
+    """
+
+    def __init__(self, file_path: str, files_length: int, *,
+                 retry_attempted: bool = False) -> None:
+        self.file_path = file_path
+        self.files_length = files_length
+        self.retry_attempted = retry_attempted
+        super().__init__(
+            f"upload verification failed for {file_path} "
+            f"(files.length={files_length}, retried={retry_attempted})"
+        )
+
+
+async def _readback_files_length(locator: Any) -> int:
+    """Re-fire input/change events on the input + dropzone ancestors and
+    return ``el.files.length`` so callers can verify the page actually
+    accepted the file.
+    """
+
+    try:
+        return await locator.evaluate(
+            r"""el => {
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                let node = el.parentElement;
+                for (let i = 0; node && i < 6; i++, node = node.parentElement) {
+                    const cls = (node.className || '') + '';
+                    if (/drop|upload|cv|resume|file/i.test(cls)) {
+                        node.dispatchEvent(new Event('change', {bubbles: true}));
+                        node.dispatchEvent(new Event('input', {bubbles: true}));
+                    }
+                }
+                return el.files ? el.files.length : 0;
+            }"""
+        )
+    except Exception as exc:
+        logger.debug("upload_pdf: files-length readback failed: %s", exc)
+        return -1
+
+
+async def _retry_via_attach_button(
+    locator: Any, file_path: Any, p: Any,
+) -> int:
+    """When the first set_input_files lands an empty input (React widget
+    rejected/swapped the underlying input), look for a visible 'Attach'
+    trigger near the input, click it to surface the freshly-rendered
+    input, and retry ``set_input_files`` on it.
+
+    Returns the post-retry ``files.length`` so the caller can decide
+    whether to raise ``FileUploadError``.
+    """
+
+    try:
+        page = locator.page
+    except Exception:  # pragma: no cover
+        return -1
+
+    try:
+        # Walk up from the input to find a sibling/ancestor button whose
+        # accessible text contains attach/upload/browse. Prefer visible
+        # buttons over hidden ones — the input may be hidden behind a
+        # styled button.
+        clicked = await locator.evaluate(
+            r"""el => {
+                const labels = ['attach', 'upload', 'browse',
+                                 'choose file', 'select file'];
+                let node = el.parentElement;
+                for (let i = 0; node && i < 8; i++, node = node.parentElement) {
+                    const buttons = node.querySelectorAll(
+                        'button, [role="button"], label, a'
+                    );
+                    for (const b of buttons) {
+                        const text = (b.textContent || '').trim().toLowerCase();
+                        if (labels.some(l => text.includes(l))) {
+                            const r = b.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0) {
+                                b.click();
+                                return text.slice(0, 60);
+                            }
+                        }
+                    }
+                }
+                return '';
+            }"""
+        )
+        if clicked:
+            logger.info(
+                "upload_pdf: triggered attach button %r — retrying set_input_files",
+                clicked,
+            )
+            await asyncio.sleep(0.4)
+    except Exception as exc:
+        logger.debug("upload_pdf: attach-button trigger failed: %s", exc)
+
+    # Re-resolve the input — the click above may have re-rendered it.
+    try:
+        await locator.set_input_files({
+            "name": p.name,
+            "mimeType": "application/pdf",
+            "buffer": p.read_bytes(),
+        })
+    except Exception as exc:
+        logger.warning("upload_pdf: retry set_input_files failed: %s", exc)
+        return -1
+    return await _readback_files_length(locator)
+
+
 async def upload_pdf(locator: Any, file_path: str) -> None:
+    """Upload a PDF to a file input. Raises ``FileUploadError`` if the
+    file fails to attach after one retry.
+
+    Robust against React drop-zone widgets (react-dropzone, custom
+    dropzones) where set_input_files attaches the file but the page's
+    component doesn't notice because it listens for `drop` on the zone
+    wrapper rather than `change` on the input. We do four things, in
+    order:
+
+      1. set_input_files (Playwright dispatches input + change on the
+         input automatically — sufficient for plain HTML forms).
+      2. After the set, also fire `input` + `change` events bubbling up
+         from the input. React-dropzones with onInputChange handlers
+         pick this up.
+      3. Re-fire `change` on each ancestor with a class matching
+         drop|upload (the dropzone wrapper). Some widgets bind their
+         listener there, not on the input.
+      4. Verify via ``el.files.length``. On zero/failure, click the
+         visible Attach button near the input to refresh the input and
+         retry once. If still failing, raise ``FileUploadError`` so the
+         caller can route to human review or fail the application
+         instead of submitting without a CV attached.
+    """
     from pathlib import Path
     p = Path(file_path)
     if not p.is_file():
-        logger.error("PDF upload failed — file not found: %s", file_path)
+        logger.error("upload_pdf: file not found: %s", file_path)
+        raise FileNotFoundError(file_path)
+    try:
+        await locator.set_input_files({
+            "name": p.name,
+            "mimeType": "application/pdf",
+            "buffer": p.read_bytes(),
+        })
+    except Exception as exc:
+        logger.error("upload_pdf: set_input_files failed for %s: %s", p.name, exc)
+        raise
+
+    files_attached = await _readback_files_length(locator)
+
+    if files_attached and files_attached > 0:
+        logger.info(
+            "upload_pdf: ✓ uploaded %s (%d bytes, files.length=%d)",
+            p.name, p.stat().st_size, files_attached,
+        )
         return
-    await locator.set_input_files({
-        "name": p.name,
-        "mimeType": "application/pdf",
-        "buffer": p.read_bytes(),
-    })
+
+    # Readback returned -1 / 0. -1 typically means the locator is no longer
+    # resolvable — Greenhouse's React file widget swaps the <input> for an
+    # "uploaded" state element after set_input_files succeeds. Check the
+    # page DOM directly for the filename before declaring failure.
+    if files_attached == -1:
+        try:
+            page = locator.page
+            filename_visible = await page.evaluate(
+                "name => document.body.innerText.includes(name)", p.name,
+            )
+        except Exception:  # pragma: no cover
+            filename_visible = False
+        if filename_visible:
+            logger.info(
+                "upload_pdf: ✓ uploaded %s — input was re-rendered post-upload, "
+                "filename visible in page DOM",
+                p.name,
+            )
+            return
+
+    # Not attached on first pass. Try the Attach-button retry once.
+    logger.warning(
+        "upload_pdf: first pass did not attach %s (files.length=%s) — "
+        "retrying via Attach trigger",
+        p.name, files_attached,
+    )
+    files_attached = await _retry_via_attach_button(locator, file_path, p)
+    if files_attached and files_attached > 0:
+        logger.info(
+            "upload_pdf: ✓ retry succeeded for %s (files.length=%d)",
+            p.name, files_attached,
+        )
+        return
+
+    # Both attempts failed — raise so the caller can route to human review.
+    logger.error(
+        "upload_pdf: ✗ %s did not attach after retry (files.length=%s)",
+        p.name, files_attached,
+    )
+    raise FileUploadError(
+        str(p), files_length=files_attached if files_attached is not None else -1,
+        retry_attempted=True,
+    )
 
 
 async def page_has_cover_letter_file_input(page: "Page") -> bool:
@@ -107,16 +302,36 @@ async def upload_files(
     custom_answers: dict | None,
     get_accessible_name: Any,
 ) -> None:
+    logger.info(
+        "upload_files: entry — cv=%s cl=%s",
+        (cv_path or "(none)")[-80:], (cl_path or "(none)")[-80:],
+    )
     await enable_optional_cover_letter_checkbox(page, get_accessible_name)
     cl_path = await resolve_lazy_cover_letter_path(page, cl_path, custom_answers)
 
+    # Scan all file inputs with their accessible label, ID/name, the
+    # nearest section heading (h2/h3/h4/legend), and surrounding text.
+    # Greenhouse renders two file inputs both labelled "Attach" — they
+    # are disambiguated only by the closest <h3>Resume/CV</h3> /
+    # <h3>Cover Letter</h3> heading, so we read it explicitly here.
     file_meta = await page.evaluate("""() => {
         return Array.from(document.querySelectorAll("input[type='file']")).map((el, idx) => {
             let ctx = '';
+            let heading = '';
             let node = el.parentElement;
-            for (let i = 0; node && i < 5; i++, node = node.parentElement) {
-                ctx = (node.textContent || '').trim().slice(0, 500);
-                if (ctx.length > 20) break;
+            for (let i = 0; node && i < 8; i++, node = node.parentElement) {
+                if (!ctx) {
+                    const t = (node.textContent || '').trim().slice(0, 500);
+                    if (t.length > 20) ctx = t;
+                }
+                if (!heading) {
+                    const h = node.querySelector('h2, h3, h4, h5, legend, [role="heading"]');
+                    if (h) {
+                        const ht = (h.textContent || '').trim();
+                        if (ht && ht.length < 120) heading = ht;
+                    }
+                }
+                if (ctx && heading) break;
             }
             return {
                 idx,
@@ -124,18 +339,75 @@ async def upload_files(
                 name: el.name || '',
                 label: (el.labels?.[0]?.textContent?.trim() || el.getAttribute('aria-label') || ''),
                 surrounding_text: ctx,
+                heading: heading,
             };
         });
     }""")
+    logger.info("upload_files: scanned %d file input(s) on page", len(file_meta))
+
+    # First pass: classify each input as cv | cl | unknown using
+    # identifiers, heading, and surrounding text.
+    classified: list[tuple[dict, str]] = []
+    for meta in file_meta:
+        identifiers = f"{meta['label']} {meta['id']} {meta['name']}".lower()
+        if "autofill" in identifiers:
+            continue
+        heading = (meta.get("heading") or "").lower()
+        surrounding = meta.get("surrounding_text", "").lower()
+
+        is_cl = (
+            any(kw in identifiers for kw in ("cover", "cl", "letter"))
+            or ("other" in identifiers and "attach" in identifiers)
+            or ("cover letter" in heading)
+            or ("cover letter" in surrounding)
+            or (
+                "additional" in surrounding
+                and ("attachment" in surrounding or "document" in surrounding)
+                and ("cover" in surrounding or "letter" in surrounding or "portfolio" in surrounding)
+            )
+        )
+        is_cv = (
+            any(kw in identifiers for kw in ("resume", "cv"))
+            or any(kw in heading for kw in ("resume", "cv"))
+        )
+        if is_cl:
+            kind = "cl"
+        elif is_cv:
+            kind = "cv"
+        else:
+            kind = "unknown"
+        classified.append((meta, kind))
+
+    # Greenhouse-style "two Attach" disambiguation: when we have exactly
+    # two unknown-kind inputs (both labelled Attach) and no other
+    # cv/cl signal, the first IS the CV and the second IS the CL by the
+    # convention Greenhouse renders. Per the plan's Item 3b, this
+    # ordering is consistent across Greenhouse application forms.
+    unknown_metas = [m for m, k in classified if k == "unknown"]
+    if (
+        cl_path
+        and len(unknown_metas) == 2
+        and not any(k == "cl" for _, k in classified)
+        and not any(k == "cv" for _, k in classified)
+    ):
+        new_classified: list[tuple[dict, str]] = []
+        first_unknown = True
+        for m, k in classified:
+            if k == "unknown":
+                new_classified.append((m, "cv" if first_unknown else "cl"))
+                first_unknown = False
+            else:
+                new_classified.append((m, k))
+        classified = new_classified
+        logger.info(
+            "upload_files: 2-Attach Greenhouse disambiguation — "
+            "first input → CV, second → CL",
+        )
+
     cv_uploaded = False
     cl_uploaded = False
 
-    for meta in file_meta:
-        identifiers = f"{meta['label']} {meta['id']} {meta['name']}".lower()
-
-        if "autofill" in identifiers or "drag and drop" in identifiers:
-            continue
-
+    for meta, kind in classified:
         if meta["id"]:
             fi = page.locator(f'input[type="file"][id="{meta["id"]}"]').first
         elif meta["name"]:
@@ -143,20 +415,25 @@ async def upload_files(
         else:
             fi = page.locator("input[type='file']").nth(meta["idx"])
 
-        surrounding = meta.get("surrounding_text", "").lower()
-        is_cl_field = any(kw in identifiers for kw in ("cover", "cl", "letter")) or (
-            "other" in identifiers and "attach" in identifiers
-        ) or (
-            "cover letter" in surrounding
-            or ("additional" in surrounding and ("attachment" in surrounding or "document" in surrounding)
-                and ("cover" in surrounding or "letter" in surrounding or "portfolio" in surrounding))
-        )
-        if is_cl_field and cl_path and not cl_uploaded:
-            await upload_pdf(fi, str(cl_path))
-            cl_uploaded = True
-        elif cv_path and not cv_uploaded:
-            await upload_pdf(fi, str(cv_path))
-            cv_uploaded = True
+        if kind == "cl" and cl_path and not cl_uploaded:
+            try:
+                await upload_pdf(fi, str(cl_path))
+                cl_uploaded = True
+            except FileUploadError as exc:
+                logger.warning(
+                    "upload_files: cover-letter upload failed (%s) — "
+                    "continuing without CL",
+                    exc,
+                )
+        elif kind in ("cv", "unknown") and cv_path and not cv_uploaded:
+            try:
+                await upload_pdf(fi, str(cv_path))
+                cv_uploaded = True
+            except FileUploadError:
+                # CV is mandatory — re-raise so the caller can route to
+                # human review or fail the application instead of
+                # silently submitting without it.
+                raise
 
 
 async def check_consent(page: "Page", get_accessible_name: Any) -> None:

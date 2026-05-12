@@ -54,6 +54,16 @@ class AgentPerformanceDB:
     def _ensure_table(self) -> None:
         with self._get_conn() as conn:
             conn.executescript(_CREATE_SQL)
+            existing = {r[1] for r in conn.execute("PRAGMA table_info(fill_sessions)").fetchall()}
+            for col, col_def in [
+                ("ai_agent_name", "TEXT"),
+                ("ai_fixes_count", "INTEGER DEFAULT 0"),
+                ("ai_strategies_count", "INTEGER DEFAULT 0"),
+                ("ai_reasoning_summary", "TEXT"),
+            ]:
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE fill_sessions ADD COLUMN {col} {col_def}")
+                    logger.info("agent_performance: migrated column %s", col)
 
     def record_session(
         self,

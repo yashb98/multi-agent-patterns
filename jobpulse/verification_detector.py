@@ -1,12 +1,24 @@
 """Verification wall detection for job platform scrapers.
 
 Detects Cloudflare Turnstile, reCAPTCHA, hCaptcha, text challenges, and HTTP blocks.
+
+Wiring note (S3 audit, 2026-05-07):
+This module is NOT used by the apply pipeline — `playwright_driver.get_snapshot`
+runs the equivalent detection inline in JS (see `_navigator.py` consumers
+of `snapshot["verification_wall"]`). The Python detectors below are
+consumed only by `tests/jobpulse/test_verification_detector.py` and the
+`scripts/run_verification_logging.py` standalone CLI. Keep here for the
+scraper-side use case; do not import in the form-fill path.
+
+The regex tier in this module (`_TEXT_PATTERNS`) is structural — it
+classifies HTTP/CSS-level wall types, not workflow intent. The migration
+plan at `docs/superpowers/plans/2026-05-04-regex-to-dynamic-migration.md`
+covers it for completeness; no functional change required.
 """
 
 from __future__ import annotations
 
 import random
-import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -129,10 +141,13 @@ def detect_verification_wall(
         except Exception as e:
             logger.debug("Body text extraction failed: %s", e)
 
-    # 4. Check text patterns (case-insensitive)
+    # 4. Check text patterns (case-insensitive). Patterns in `_TEXT_PATTERNS`
+    # are literal substrings — `pattern in body_lower` is equivalent to
+    # `re.search(re.escape(pattern), body_lower)` and avoids the regex
+    # compile cost on the hot path.
     body_lower = body_text.lower()
     for pattern, wall_type, confidence in _TEXT_PATTERNS:
-        if re.search(re.escape(pattern), body_lower):
+        if pattern in body_lower:
             return _result(wall_type, confidence)
 
     # 5. Empty anomaly check

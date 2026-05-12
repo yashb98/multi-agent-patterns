@@ -75,7 +75,7 @@ _DEFAULT_DB_PATH = str(DATA_DIR / "ai_assist_sessions.db")
 # Data models
 # ---------------------------------------------------------------------------
 
-VALID_AGENTS = frozenset({"kimi", "claude", "codex", "openai", "custom"})
+VALID_AGENTS = frozenset({"kimi", "claude", "codex", "openai", "custom", "vision_verifier"})
 VALID_FIX_CATEGORIES = frozenset({
     "value_correction",
     "strategy",
@@ -326,6 +326,7 @@ class AIAssistLogger:
         reasoning: str = "",
         fix_category: str = "value_correction",
         confidence: float = 1.0,
+        dom_signature: dict | None = None,
     ) -> AIAssistFix:
         """Record a single field fix made by the AI assistant.
 
@@ -337,6 +338,10 @@ class AIAssistLogger:
             reasoning: Explanation of why this fix was needed.
             fix_category: Category of fix (see VALID_FIX_CATEGORIES).
             confidence: 0.0-1.0 confidence in the fix.
+            dom_signature: Optional {selector, widget_type, ancestor_classes,
+                aria_label} captured from the live page. When provided, the
+                signature is stored in GotchasDB.widget_patterns keyed by
+                domain so future visits learn from this fix.
 
         Returns:
             The created AIAssistFix record.
@@ -373,6 +378,28 @@ class AIAssistLogger:
             fix_category,
             session_id,
         )
+
+        if dom_signature:
+            try:
+                from jobpulse.form_engine.gotchas import GotchasDB
+                with self._connect() as conn:
+                    row = conn.execute(
+                        "SELECT domain FROM ai_sessions WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone()
+                domain = row[0] if row else ""
+                if domain:
+                    GotchasDB().record_widget_pattern(
+                        domain=domain,
+                        label=field_label,
+                        selector=dom_signature.get("selector", ""),
+                        widget_type=dom_signature.get("widget_type", "unknown"),
+                        ancestor_classes=dom_signature.get("ancestor_classes", ""),
+                        aria_label=dom_signature.get("aria_label", ""),
+                    )
+            except Exception as exc:
+                logger.debug("ai_assist: widget pattern capture failed: %s", exc)
+
         return fix
 
     def record_strategy(
@@ -674,10 +701,18 @@ class AIAssistLogger:
             agent_mapping = json.loads(session.get("original_mapping") or "{}")
             final_mapping = json.loads(session.get("final_mapping") or "{}")
         except json.JSONDecodeError:
-            # Fallback: reconstruct from individual fixes
+            agent_mapping = {}
+            final_mapping = {}
+
+        # Emergency Claude/Kimi assists rarely pass original_mapping at start
+        # nor final_mapping at finalize, so the session-level mappings stay "{}"
+        # and parse fine to empty dicts. Reconstruct from the individual fixes
+        # whenever EITHER mapping is empty — record_corrections({}, {}) writes
+        # zero rows but the bridge would still report success, masking the bug.
+        if not agent_mapping or not final_mapping:
             for f in fixes:
-                agent_mapping[f["field_label"]] = f["old_value"]
-                final_mapping[f["field_label"]] = f["new_value"]
+                agent_mapping.setdefault(f["field_label"], f.get("old_value", ""))
+                final_mapping[f["field_label"]] = f.get("new_value", "")
 
         try:
             from jobpulse.correction_capture import CorrectionCapture
@@ -695,6 +730,59 @@ class AIAssistLogger:
         except Exception as exc:
             logger.warning("ai_assist_logger: correction push failed: %s", exc)
             return 0
+
+        # Auto-generate AgentRulesDB rules from each fix. Without this, only
+        # confirm_application's rules generation runs — meaning emergency AI
+        # assists never produce queryable agent rules and the same field
+        # failures recur on the next form. Mirrors applicator.confirm_application
+        # lines 545-557 so the two correction paths produce identical rules.
+        try:
+            from jobpulse.agent_rules import AgentRulesDB
+
+            ar = AgentRulesDB()
+            for fix in value_fixes:
+                try:
+                    ar.auto_generate_from_correction(
+                        field_label=fix["field_label"],
+                        agent_value=fix.get("old_value", ""),
+                        user_value=fix.get("new_value", ""),
+                        domain=session["domain"],
+                        platform=session["platform"],
+                    )
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.warning("ai_assist_logger: agent rules push failed: %s", exc)
+
+        # ALSO push each fix into the screening_semantic_cache (Qdrant) so the
+        # V2 pipeline retrieves these answers on future questions. Without this
+        # step, the agent's V2 cache misses on questions Claude has already
+        # answered manually — every form is a partial cold-start. CorrectionCapture
+        # records the diff for AgentRulesDB, but it doesn't populate the
+        # semantic cache that try_screening_v2 reads. This bridge closes the
+        # loop end-to-end.
+        try:
+            from jobpulse.screening_semantic_cache import get_screening_semantic_cache
+            cache = get_screening_semantic_cache()
+            for f in value_fixes:
+                question = (f.get("field_label") or "").strip()
+                answer = (f.get("new_value") or "").strip()
+                if not question or not answer:
+                    continue
+                try:
+                    cache.cache(
+                        question=question,
+                        intent="ai_assist",
+                        answer=answer,
+                        confidence=float(f.get("confidence") or 0.85),
+                        selected_option=answer,
+                        field_type="",  # unknown at this point — agent will re-read
+                        field_options=None,
+                    )
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.debug("ai_assist_logger: semantic cache bridge skipped: %s", exc)
 
         # Mark as applied
         with self._connect() as conn:

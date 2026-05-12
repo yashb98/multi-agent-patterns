@@ -3,7 +3,7 @@
 import json
 import base64
 from datetime import datetime
-from shared.agents import get_llm, smart_llm_call, get_model_name, is_local_llm
+from shared.agents import is_local_llm
 from langchain_core.messages import HumanMessage
 from jobpulse.config import GOOGLE_TOKEN_PATH, GOOGLE_SCOPES
 from jobpulse import db
@@ -100,9 +100,27 @@ def _score_classification(answer: str) -> float:
 
 
 def _classify_email(subject: str, body_snippet: str) -> str:
-    """Use CognitiveEngine (if available) or direct LLM to classify email."""
+    """Classify an email through ``cognitive_llm_call`` so L0 Memory Recall
+    can return a templated category for repeat senders without firing the
+    LLM. ``cognitive_llm_call`` internally tries CognitiveEngine first
+    and falls back to a direct LLM call on engine failure — same try/
+    fallback shape this function used to implement manually, now in a
+    single line so the L0/L1/L2/L3 escalation, cost tracking, and scorer
+    plumbing all live in one place (cache-llm-S7-EXT, mirrors the S7
+    strategy_reflector migration).
+    """
     snippet = body_snippet[:2000] if is_local_llm() else body_snippet[:500]
+    extra_context = ""
+    try:
+        from jobpulse.persona_evolution import get_evolved_prompt
+        evolved = get_evolved_prompt("gmail_agent")
+        if evolved:
+            extra_context = f"Learned patterns:\n{evolved}\n\n"
+    except Exception:
+        pass
+
     task = (
+        f"{extra_context}"
         f"Classify this email into EXACTLY ONE category:\n\n"
         f"SELECTED_NEXT_ROUND — congratulations, selected, moving forward, pleased to inform\n"
         f"INTERVIEW_SCHEDULING — availability, schedule an interview, book a slot\n"
@@ -113,32 +131,17 @@ def _classify_email(subject: str, body_snippet: str) -> str:
         f"Respond with ONLY the category name. Nothing else."
     )
 
-    engine = _get_cognitive_engine()
-    if engine:
-        try:
-            result = engine.think_sync(
-                task=task, domain="email_classification",
-                stakes="medium", scorer=_score_classification,
-            )
-            logger.debug("Cognitive L%d classified email (score=%.1f, cost=$%.4f)",
-                         result.level.value, result.score, result.cost)
-            return _normalize_category(result.answer)
-        except Exception as e:
-            logger.warning("Cognitive engine failed, falling back to direct LLM: %s", e)
-
     try:
-        extra_context = ""
-        try:
-            from jobpulse.persona_evolution import get_evolved_prompt
-            evolved = get_evolved_prompt("gmail_agent")
-            if evolved:
-                extra_context = f"\n\nLearned patterns:\n{evolved}\n"
-        except Exception:
-            pass
-        prompt = f"{extra_context}{task}" if extra_context else task
-        llm = get_llm(temperature=0, max_tokens=80 if is_local_llm() else 20, agent_name="email_classifier")
-        response = smart_llm_call(llm, [HumanMessage(content=prompt)])
-        return _normalize_category(response.content)
+        from shared.agents import cognitive_llm_call
+        raw = cognitive_llm_call(
+            task=task,
+            domain="email_classification",
+            stakes="medium",
+            scorer=_score_classification,
+        )
+        if raw is None:
+            return OTHER
+        return _normalize_category(raw)
     except Exception as e:
         logger.error("LLM classification error: %s", e)
         return OTHER

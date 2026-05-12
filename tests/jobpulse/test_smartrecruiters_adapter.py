@@ -25,13 +25,11 @@ class TestSmartRecruitersStrategy:
 
 
 class TestAdapterRegistry:
-    def test_all_platforms_return_playwright_adapter(self):
+    def test_get_adapter_returns_playwright(self):
         from jobpulse.ats_adapters import get_adapter
         from jobpulse.playwright_adapter import PlaywrightAdapter
 
-        assert isinstance(get_adapter("smartrecruiters"), PlaywrightAdapter)
-        assert isinstance(get_adapter("greenhouse"), PlaywrightAdapter)
-        assert isinstance(get_adapter(None), PlaywrightAdapter)
+        assert isinstance(get_adapter(), PlaywrightAdapter)
 
     def test_strategy_registry_has_smartrecruiters(self):
         from jobpulse.ats_adapters.strategy import get_strategy

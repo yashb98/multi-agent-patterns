@@ -286,6 +286,7 @@ class TestFetchAll:
              patch.object(fetcher, "_fetch_hackernews", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_reddit", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_openreview", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_arxiv_rss", new_callable=AsyncMock, return_value=[]):
             papers = await fetcher.fetch_all()
         assert len(papers) == 2
@@ -311,8 +312,9 @@ class TestFetchAllTiered:
              patch.object(fetcher, "_fetch_s2_trending", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_hackernews", new_callable=AsyncMock, return_value=[hn_paper]), \
              patch.object(fetcher, "_fetch_reddit", new_callable=AsyncMock, return_value=[]), \
-             patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]):
-            papers = await fetcher.fetch_all()
+             patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_openreview", new_callable=AsyncMock, return_value=[]):
+            papers = await fetcher.fetch_all(include_community=True)
         assert len(papers) >= 2  # at least 2 unique papers (may trigger RSS fallback too)
 
     @pytest.mark.asyncio
@@ -335,8 +337,9 @@ class TestFetchAllTiered:
              patch.object(fetcher, "_fetch_hackernews", new_callable=AsyncMock, return_value=[hn_paper]), \
              patch.object(fetcher, "_fetch_reddit", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_openreview", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_arxiv_rss", new_callable=AsyncMock, return_value=[]):
-            papers = await fetcher.fetch_all()
+            papers = await fetcher.fetch_all(include_community=True)
         assert len(papers) == 1
         assert papers[0].community_buzz == 80  # aggregated
         assert set(papers[0].sources) == {"huggingface", "hackernews"}
@@ -355,6 +358,7 @@ class TestFetchAllTiered:
              patch.object(fetcher, "_fetch_hackernews", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_reddit", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_bluesky", new_callable=AsyncMock, return_value=[]), \
+             patch.object(fetcher, "_fetch_openreview", new_callable=AsyncMock, return_value=[]), \
              patch.object(fetcher, "_fetch_arxiv_rss", new_callable=AsyncMock, return_value=[rss_paper]):
             papers = await fetcher.fetch_all()
         assert len(papers) == 1

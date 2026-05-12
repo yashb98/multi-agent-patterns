@@ -16,6 +16,9 @@ Source Code → AST Parser → SQLite Graph (nodes + edges)
 | CodeGraph | `shared/code_graph.py` | AST indexing, call graph, risk scoring |
 | Graph Visualizer | `shared/graph_visualizer.py` | Mermaid/DOT export, pattern topology diagrams |
 | Risk-Aware Reviewer | `shared/agents.py:risk_aware_reviewer_node` | Injects risk context into LLM code review |
+| Retrieval Metrics | `mindgraph_app/retrieval_metrics.py` | RetrievalMetrics dataclass, record_metrics(), get_metrics_summary(), RetrievalTimer. Tracks retrieval performance in SQLite |
+| CodeGraph API | `mindgraph_app/codegraph_api.py` | FastAPI endpoints for CodeGraph (graph, stats, risk, impact, reindex, mermaid/dot export) |
+| App Entry Point | `mindgraph_app/main.py` | FastAPI app, mounts both legacy MindGraph and CodeGraph APIs |
 
 ## CodeGraph Schema (SQLite)
 
@@ -40,7 +43,7 @@ Source Code → AST Parser → SQLite Graph (nodes + edges)
 
 ## Visualization Export
 
-- `export_pattern_mermaid(name)` — 4 LangGraph pattern topologies (hierarchical, peer_debate, dynamic_swarm, enhanced_swarm)
+- `export_pattern_mermaid(name)` — 6 LangGraph pattern topologies (hierarchical, peer_debate, dynamic_swarm, enhanced_swarm, plan_and_execute, map_reduce)
 - `export_code_graph_mermaid(graph, focus_file, max_nodes, show_risk)` — Dependency graph with risk heatmap
 - `export_code_graph_dot(graph)` — Graphviz DOT format
 

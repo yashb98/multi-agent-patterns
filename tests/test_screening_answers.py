@@ -274,7 +274,19 @@ def test_referral_no():
 
 
 def test_uk_resident():
-    assert get_answer("Are you based in the UK?") == "No"
+    # Audit S4 B-1: this question is a plain location query, not a
+    # permanent-residency / citizenship one. The user IS based in the
+    # UK (Dundee profile), so the legacy "No" answer was wrong and the
+    # `based.*in.*uk|...` regex was deleted. The legitimate
+    # "British citizen / settled status" cases are still covered by the
+    # `british.*citizen|...|settled.*status` pattern.
+    answer = get_answer("Are you based in the UK?")
+    # Either the V2 pipeline answers correctly, or the LLM tier
+    # generates an answer — but it must NOT be the auto-"No" anymore.
+    assert answer != "No", (
+        "Plain UK-residency questions should not auto-answer 'No' "
+        "via legacy regex"
+    )
 
 
 def test_platform_source_linkedin():

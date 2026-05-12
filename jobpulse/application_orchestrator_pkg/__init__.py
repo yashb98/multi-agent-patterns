@@ -100,6 +100,7 @@ class ApplicationOrchestrator:
         jd_keywords: list[str] | None = None,
         company_research: "CompanyResearch | None" = None,
         pre_navigated_snapshot: dict | None = None,
+        job: dict | None = None,
     ) -> dict:
         """Full application flow: navigate → account → verify → fill → submit.
 
@@ -134,11 +135,44 @@ class ApplicationOrchestrator:
             if hasattr(self.driver, '_snapshot'):
                 self.driver._snapshot = self._to_page_snapshot(pre_navigated_snapshot)
         _nav_t0 = _time.monotonic()
+        _job_for_bypass = job
+        if not _job_for_bypass and company_research:
+            _job_for_bypass = {"company": company_research.company, "title": "", "url": url, "platform": platform}
+        if _job_for_bypass and _job_for_bypass.get("direct_url"):
+            try:
+                from jobpulse.platform_bypass import get_platform_bypass
+                pb = get_platform_bypass()
+                pb._store_cached(
+                    _job_for_bypass["company"],
+                    _job_for_bypass["direct_url"],
+                    ats_platform="", strategy="scan_time",
+                )
+                logger.info("Pre-seeded bypass cache: %s → %s",
+                            _job_for_bypass["company"], _job_for_bypass["direct_url"][:60])
+            except Exception as exc:
+                logger.debug("Could not pre-seed bypass cache: %s", exc)
         nav_result = await self._navigator.navigate_to_form(
             url, platform, navigation_steps,
             skip_initial_navigate=pre_navigated_snapshot is not None,
+            job=_job_for_bypass,
         )
         page_type = nav_result["page_type"]
+
+        # DOM-pattern platform discovery — catches white-label clones at unknown
+        # URLs (e.g. Greenhouse hosted at careers.acme.com). Augments the URL-only
+        # path that ran in prepare_application_inputs.
+        if platform in (None, "", "generic"):
+            try:
+                from jobpulse.ats_adapters.discovery import detect_platform
+                detected = detect_platform(url, snapshot=nav_result.get("snapshot"))
+                if detected and detected != "generic":
+                    logger.info(
+                        "DOM platform discovery: %s detected on %s",
+                        detected, url[:60],
+                    )
+                    platform = detected
+            except Exception as exc:
+                logger.debug("DOM platform discovery failed: %s", exc)
 
         try:
             if _tid and _opt_engine:
@@ -158,8 +192,15 @@ class ApplicationOrchestrator:
             return {"success": False, "error": "CAPTCHA wall", "screenshot": nav_result.get("screenshot")}
 
         if page_type == PageType.UNKNOWN:
-            self._complete_trajectory(_tid, _opt_engine, "failure_unknown_page", 0.0, _t0)
-            return {"success": False, "error": "Unknown page — could not reach application form", "screenshot": nav_result.get("screenshot")}
+            outcome = "failure_expired" if nav_result.get("expired") else "failure_unknown_page"
+            self._complete_trajectory(_tid, _opt_engine, outcome, 0.0, _t0)
+            error_msg = nav_result.get("error", "Unknown page — could not reach application form")
+            return {
+                "success": False,
+                "error": error_msg,
+                "expired": nav_result.get("expired", False),
+                "screenshot": nav_result.get("screenshot"),
+            }
 
         if page_type != PageType.APPLICATION_FORM:
             self._complete_trajectory(_tid, _opt_engine, f"failure_stuck_{page_type}", 0.0, _t0)
@@ -177,12 +218,13 @@ class ApplicationOrchestrator:
             overrides=overrides,
             dry_run=dry_run,
             form_intelligence=form_intelligence,
+            planned_action=nav_result.get("planned_action"),
         )
 
         # Re-auth retry on session expiry during form fill
         if result.get("error") == "session_expired" and not result.get("_reauth_attempted"):
             logger.info("Session expired during form fill — re-authenticating")
-            reauth = await self._navigator.navigate_to_form(url, platform, navigation_steps)
+            reauth = await self._navigator.navigate_to_form(url, platform, navigation_steps, job=_job_for_bypass)
             if reauth["page_type"] == PageType.APPLICATION_FORM:
                 result = await self._filler.fill_application(
                     platform=platform, snapshot=reauth["snapshot"],
@@ -190,6 +232,7 @@ class ApplicationOrchestrator:
                     profile=profile, custom_answers=custom_answers,
                     overrides=overrides, dry_run=dry_run,
                     form_intelligence=form_intelligence,
+                    planned_action=reauth.get("planned_action"),
                 )
                 result["_reauth_attempted"] = True
 
@@ -207,44 +250,84 @@ class ApplicationOrchestrator:
             pass
 
         # Phase 3: Pre-submit quality gate — review filled answers before submitting
-        if result.get("success") and not dry_run and company_research is not None:
+        # Run on every successful non-dry-run application. If company_research is missing,
+        # synthesize a minimal stub so the gate still evaluates JD keyword coverage and
+        # answer quality (the company-context check just degrades gracefully).
+        if result.get("success") and not dry_run:
             _gate_t0 = _time.monotonic()
+            _company_research = company_research
+            if _company_research is None:
+                from jobpulse.perplexity import CompanyResearch as _CR
+                _company_name = (job or {}).get("company", "") if job else ""
+                _company_research = _CR(
+                    company=_company_name,
+                    description="",
+                    tech_stack=[],
+                    size="unknown",
+                    industry="unknown",
+                )
             gate_result = self._run_pre_submit_gate(
                 custom_answers=custom_answers,
                 jd_keywords=jd_keywords or [],
-                company_research=company_research,
+                company_research=_company_research,
+            )
+
+            # Semantic-correctness check (LLM-as-judge + deterministic checks).
+            # Different from gate_result above which is the recruiter-quality
+            # score. This catches values that passed read-back but are
+            # semantically wrong (e.g. visa/sponsor contradiction, name/email
+            # mismatching the actual profile, placeholder values).
+            sem_result = self._run_semantic_correctness_check(
+                custom_answers=custom_answers,
+                jd_keywords=jd_keywords or [],
+                profile=profile,
             )
 
             try:
                 if _tid and _opt_engine:
                     _opt_engine.log_step(_tid, TrajectoryStep(
                         step_index=_step_idx, action="pre_submit_gate",
-                        target=url, input_value=f"score={gate_result.score:.1f}",
-                        output_value="passed" if gate_result.passed else "blocked",
-                        outcome="success" if gate_result.passed else "failure",
+                        target=url,
+                        input_value=f"recruiter={gate_result.score:.1f} semantic={sem_result.score:.1f}",
+                        output_value=(
+                            "passed" if gate_result.passed and sem_result.passed
+                            else "blocked"
+                        ),
+                        outcome=(
+                            "success" if gate_result.passed and sem_result.passed
+                            else "failure"
+                        ),
                         duration_ms=(_time.monotonic() - _gate_t0) * 1000, metadata={},
                     ))
                     _step_idx += 1
             except Exception:
                 pass
 
-            if not gate_result.passed:
+            # Block if EITHER gate fails — both must pass to submit
+            if not gate_result.passed or not sem_result.passed:
+                combined_weaknesses = list(gate_result.weaknesses) + list(sem_result.weaknesses)
+                combined_suggestions = list(gate_result.suggestions)
                 logger.warning(
-                    "PreSubmitGate blocked submission (score=%.1f): %s",
-                    gate_result.score,
-                    gate_result.weaknesses,
+                    "PreSubmitGate blocked submission "
+                    "(recruiter=%.1f, semantic=%.1f): %s",
+                    gate_result.score, sem_result.score, combined_weaknesses,
                 )
-                self._complete_trajectory(_tid, _opt_engine, "failure_gate_blocked", gate_result.score, _t0)
+                self._complete_trajectory(
+                    _tid, _opt_engine, "failure_gate_blocked",
+                    min(gate_result.score, sem_result.score), _t0,
+                )
                 return {
                     "success": False,
                     "needs_human_review": True,
                     "gate_score": gate_result.score,
-                    "gate_weaknesses": gate_result.weaknesses,
-                    "gate_suggestions": gate_result.suggestions,
+                    "semantic_score": sem_result.score,
+                    "gate_weaknesses": combined_weaknesses,
+                    "gate_suggestions": combined_suggestions,
                     "screenshot": result.get("screenshot"),
                     "pages_filled": result.get("pages_filled"),
                 }
             result["gate_score"] = gate_result.score
+            result["semantic_score"] = sem_result.score
 
         # Save successful navigation for future replay
         if result.get("success"):
@@ -279,8 +362,10 @@ class ApplicationOrchestrator:
     ):
         """Run PreSubmitGate on the filled answers.
 
-        Fail-closed on import/setup errors (blocks submission).
-        Pass-open only on transient runtime errors during review (with score=0).
+        Fail-closed on every error path: import failures, constructor errors,
+        filled-dict comprehension errors, and any exception escaping
+        gate.review() all return passed=False so the application is held for
+        human review rather than silently submitted with no quality check.
         """
         try:
             from jobpulse.pre_submit_gate import PreSubmitGate, GateResult
@@ -306,8 +391,52 @@ class ApplicationOrchestrator:
                 company_research=company_research,
             )
         except Exception as exc:
-            logger.warning("PreSubmitGate runtime error — passing with score=0: %s", exc)
-            return GateResult(passed=True, score=0.0, weaknesses=[f"Gate error: {exc}"])
+            logger.warning("PreSubmitGate setup error — blocking for human review: %s", exc)
+            return GateResult(passed=False, score=0.0, weaknesses=[f"Gate setup error: {exc}"])
+
+    @staticmethod
+    def _run_semantic_correctness_check(
+        custom_answers: dict,
+        jd_keywords: list[str],
+        profile: dict | None,
+    ):
+        """Run PreSubmitGate.check_semantic_correctness.
+
+        Verifies values that PASSED read-back are also semantically correct:
+        cross-field consistency (visa/sponsor), profile alignment (name/email),
+        placeholder detection, plus optional LLM-as-judge for JD relevance.
+
+        Fail-open on import/runtime errors (passing-with-warning) — semantic
+        check is additive to the existing recruiter gate; blocking on its
+        own failures would be too aggressive while it's unproven in production.
+        """
+        try:
+            from jobpulse.pre_submit_gate import PreSubmitGate, GateResult
+        except ImportError as exc:
+            logger.warning("Semantic correctness check unavailable: %s", exc)
+            class _PassResult:
+                passed = True
+                score = 10.0
+                weaknesses: list[str] = []
+                suggestions: list[str] = []
+            return _PassResult()
+
+        try:
+            filled = {
+                k: str(v)
+                for k, v in custom_answers.items()
+                if not k.startswith("_") and isinstance(v, (str, int, float, bool))
+            }
+            gate = PreSubmitGate()
+            return gate.check_semantic_correctness(
+                filled_answers=filled,
+                jd_keywords=jd_keywords,
+                profile=profile or {},
+                run_llm_judge=True,
+            )
+        except Exception as exc:
+            logger.warning("Semantic correctness check error — passing with score=10: %s", exc)
+            return GateResult(passed=True, score=10.0, weaknesses=[f"Semantic check error: {exc}"])
 
     @staticmethod
     def _to_page_snapshot(snapshot: dict) -> PageSnapshot:

@@ -72,39 +72,34 @@ class ActionExecutor:
                 logger.debug("stream_field failed: %s", _se)
 
     async def _dispatch(self, atype: str, selector: str, value: str, file_path: str | None):
-        """Dispatch action to driver."""
-        if atype == "fill":
-            await self.driver.fill(selector, value)
-        elif atype == "upload":
-            await self.driver.upload(selector, Path(file_path) if file_path else file_path)
-        elif atype == "click":
-            await self.driver.click(selector)
-        elif atype == "select":
-            await self.driver.select_option(selector, value)
-        elif atype == "check":
-            await self.driver.check(selector, value.lower() in ("true", "yes", "1", "checked") if value else True)
-        # v2 action types
-        elif atype == "fill_radio_group":
-            await self.driver.fill_radio_group(selector, value)
-        elif atype == "fill_custom_select":
-            await self.driver.fill_custom_select(selector, value)
-        elif atype == "fill_autocomplete":
-            await self.driver.fill_autocomplete(selector, value)
-        elif atype == "fill_tag_input":
-            values = [v.strip() for v in value.split(",") if v.strip()] if value else []
-            await self.driver.fill_tag_input(selector, values)
-        elif atype == "fill_date":
-            await self.driver.fill_date(selector, value)
-        elif atype == "fill_combobox":
-            await self.driver.fill_combobox(selector, value)
-        elif atype == "fill_contenteditable":
-            await self.driver.fill_contenteditable(selector, value)
-        elif atype == "scroll_to":
-            await self.driver.scroll_to(selector)
-        elif atype == "force_click":
-            await self.driver.force_click(selector)
-        elif atype == "check_consent_boxes":
-            await self.driver.check_consent_boxes(selector or None)
+        """Dispatch action to driver. Each entry maps an action type to a
+        callable that resolves the driver coroutine — keeps the action
+        catalog readable instead of as a 30-line if/elif ladder."""
+        check_truthy = value.lower() in ("true", "yes", "1", "checked") if value else True
+        tag_values = [v.strip() for v in value.split(",") if v.strip()] if value else []
+
+        dispatch = {
+            "fill": lambda: self.driver.fill(selector, value),
+            "upload": lambda: self.driver.upload(selector, Path(file_path) if file_path else file_path),
+            "click": lambda: self.driver.click(selector),
+            "select": lambda: self.driver.select_option(selector, value),
+            "check": lambda: self.driver.check(selector, check_truthy),
+            # v2 action types
+            "fill_radio_group": lambda: self.driver.fill_radio_group(selector, value),
+            "fill_custom_select": lambda: self.driver.fill_custom_select(selector, value),
+            "fill_autocomplete": lambda: self.driver.fill_autocomplete(selector, value),
+            "fill_tag_input": lambda: self.driver.fill_tag_input(selector, tag_values),
+            "fill_date": lambda: self.driver.fill_date(selector, value),
+            "fill_combobox": lambda: self.driver.fill_combobox(selector, value),
+            "fill_contenteditable": lambda: self.driver.fill_contenteditable(selector, value),
+            "scroll_to": lambda: self.driver.scroll_to(selector),
+            "force_click": lambda: self.driver.force_click(selector),
+            "check_consent_boxes": lambda: self.driver.check_consent_boxes(selector or None),
+        }
+        handler = dispatch.get(atype)
+        if handler is None:
+            return
+        await handler()
 
     async def execute_action_with_retry(
         self, action: Any, tg_stream: Any = None, max_retries: int = 2

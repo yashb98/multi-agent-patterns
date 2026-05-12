@@ -73,7 +73,7 @@ def poll_and_process():
         from_id = str(msg.get("from", {}).get("id", ""))
         text = msg.get("text", "").strip()
 
-        # Only process messages from Yash
+        # Only process messages from the configured TELEGRAM_CHAT_ID owner
         if from_id != TELEGRAM_CHAT_ID or not text:
             continue
 
@@ -152,7 +152,7 @@ def poll_continuous():
                 from_id = str(msg.get("from", {}).get("id", ""))
                 text = msg.get("text", "").strip()
 
-                # Only process messages from Yash
+                # Only process messages from the configured TELEGRAM_CHAT_ID owner
                 if from_id != TELEGRAM_CHAT_ID:
                     continue
 

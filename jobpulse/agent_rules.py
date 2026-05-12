@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 from jobpulse.config import DATA_DIR
@@ -18,6 +19,27 @@ logger = get_logger(__name__)
 _DEFAULT_DB = str(DATA_DIR / "agent_rules.db")
 
 _RULE_TTL_DAYS = 30
+
+
+def _normalize_domain(value: str | None) -> str:
+    """Canonicalize a domain string for AgentRulesDB pattern matching.
+
+    Accepts: bare host, host+path, full URL, with or without scheme,
+    with or without `www.`, mixed case. Returns lowercase host without
+    leading `www.`. Empty input returns empty string.
+    """
+    if not value:
+        return ""
+    from urllib.parse import urlparse
+    s = value.strip().lower()
+    if "://" in s:
+        s = urlparse(s).netloc
+    else:
+        # Drop any path portion for bare host[+path] inputs
+        s = s.split("/", 1)[0]
+    if s.startswith("www."):
+        s = s[4:]
+    return s
 
 
 class AgentRulesDB:
@@ -104,6 +126,33 @@ class AgentRulesDB:
                 )
             except sqlite3.OperationalError:
                 pass  # Column already exists
+            # 2026-05 migration — normalize correction-style patterns to lowercase host without www/scheme/path
+            try:
+                rows = conn.execute(
+                    "SELECT rule_id, pattern FROM agent_rules "
+                    "WHERE rule_type='correction_override' OR source LIKE 'correction%' "
+                    "   OR source IN ('user_correction', 'user_feedback', 'correction_capture')"
+                ).fetchall()
+                normalized_count = 0
+                for row in rows:
+                    rule_id, raw = row[0], row[1]
+                    if not raw:
+                        continue
+                    normalized = _normalize_domain(raw)
+                    if normalized and normalized != raw:
+                        conn.execute(
+                            "UPDATE agent_rules SET pattern = ? WHERE rule_id = ?",
+                            (normalized, rule_id),
+                        )
+                        normalized_count += 1
+                        logger.info(
+                            "agent_rules: normalized pattern rule_id=%d %r → %r",
+                            rule_id, raw, normalized,
+                        )
+                if normalized_count > 0:
+                    logger.info("agent_rules: migration normalized %d patterns", normalized_count)
+            except Exception as exc:
+                logger.warning("agent_rules: pattern normalization migration failed: %s", exc)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -205,6 +254,7 @@ class AgentRulesDB:
         Returns:
             Dict with rule_id, field_label, action.
         """
+        domain = _normalize_domain(domain)
         now = datetime.now(UTC).isoformat()
         expires = (datetime.now(UTC) + timedelta(days=_RULE_TTL_DAYS)).isoformat()
 
@@ -262,13 +312,29 @@ class AgentRulesDB:
                 source_loop="agent_rules",
                 domain=field_label,
                 agent_name="agent_rules",
-                payload={"field": field_label, "old_value": agent_value, "new_value": user_value, "platform": platform},
+                # Audit S5 B-3: the aggregator's adaptation_worked
+                # detector reads `payload["param"]` (see
+                # `_aggregator._detect_adaptation_effectiveness` L341).
+                # The previous payload only carried `field`, so every
+                # correction-driven adaptation insight reported
+                # "Adaptation 'unknown' on …" and lost the field-label
+                # provenance. Match the schema used by
+                # `auto_generate_from_blocker` (L231) and
+                # `auto_rule_generator.deploy_rule` (L411).
+                payload={
+                    "param": "correction_override",
+                    "field": field_label,
+                    "old_value": agent_value,
+                    "new_value": user_value,
+                    "platform": platform,
+                },
                 session_id=f"ar_corr_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
             )
         except Exception as e:
             logger.debug("Optimization signal failed: %s", e)
         return {"rule_id": rule_id, "field_label": field_label, "action": action}
 
+    @observe_lookup("agent_rules", "agent_rules", key_arg=1)
     def get_active_rules(self, rule_type: str | None = None) -> list[dict]:
         """Return active, non-expired rules, optionally filtered by type."""
         now = datetime.now(UTC).isoformat()
@@ -289,22 +355,20 @@ class AgentRulesDB:
                 ).fetchall()
         return [dict(r) for r in rows]
 
+    @observe_lookup("agent_rules", "agent_rules.exclude_keywords", key_arg=None)
     def get_exclude_keywords(self) -> list[str]:
         """Return keyword values from active blocker_avoidance rules for Gate 0."""
         rules = self.get_active_rules("blocker_avoidance")
         return [r["value"] for r in rules if r["action"] == "exclude_keyword"]
 
-    def get_escalation_fields(self) -> list[str]:
-        """Return field labels that should skip auto-fill due to repeated corrections."""
-        rules = self.get_active_rules("correction_override")
-        return [r["category"] for r in rules if r["action"] == "escalate"]
-
+    @observe_lookup("agent_rules", "agent_rules.field_overrides", key_arg=1)
     def get_field_overrides(self, domain: str = "", platform: str = "") -> dict[str, dict]:
         """Return {field_label: {value, action, confidence, rule_id}} for form-fill consumption.
 
         Queries correction_override rules matching domain or platform.
         Increments times_applied for each returned rule.
         """
+        domain = _normalize_domain(domain)
         rules = self.get_active_rules("correction_override")
         overrides: dict[str, dict] = {}
         rule_ids_used: list[int] = []

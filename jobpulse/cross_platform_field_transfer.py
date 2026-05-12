@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from shared.logging_config import get_logger
 from jobpulse.config import DATA_DIR
@@ -105,10 +105,17 @@ class CrossPlatformFieldTransfer:
             """)
 
     def _init_vector_stores(self) -> None:
-        """Lazy-init embedding model and Qdrant client."""
+        """Lazy-init embedding model and Qdrant client.
+
+        Audit S4 B-3: previously imported a non-existent `shared.embeddings`
+        module (silent ImportError → embedder=None) and a non-existent
+        `_get_qdrant_client` from screening_semantic_cache (silent
+        ImportError → qdrant=None). Both paths now use the canonical
+        accessors so the vector path actually wires when configured.
+        """
         try:
-            from shared.embeddings import get_embedder
-            self._embedder = get_embedder()
+            from shared.semantic_utils import _get_embedder
+            self._embedder = _get_embedder()
         except Exception as exc:
             logger.debug("Embedder unavailable for cross-platform transfer: %s", exc)
         try:
@@ -254,16 +261,22 @@ class CrossPlatformFieldTransfer:
 
         vector = np.frombuffer(query_embedding_bytes, dtype=np.float32).tolist()
 
-        search_filter = None
-        if exclude_same_platform:
-            search_filter = Filter(
-                must=[FieldCondition(
-                    key="platform",
-                    match=MatchExcept(except_=[to_platform]),
-                )]
-            )
-
         try:
+            search_filter = None
+            if exclude_same_platform:
+                # qdrant_client's MatchExcept uses "except" as the JSON field
+                # (Python keyword conflict — must pass via dict kwargs). The
+                # `except_=...` form crashes pydantic v2 strict validation.
+                # Audit S4 B-3 follow-up: building the filter inside the
+                # try/except too so any qdrant_client API drift degrades
+                # gracefully to an empty-vector path rather than crashing.
+                search_filter = Filter(
+                    must=[FieldCondition(
+                        key="platform",
+                        match=MatchExcept(**{"except": [to_platform]}),
+                    )]
+                )
+
             results = self._qdrant.search(
                 collection_name="field_mappings",
                 query_vector=vector,

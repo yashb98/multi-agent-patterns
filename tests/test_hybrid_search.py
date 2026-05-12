@@ -365,13 +365,13 @@ class TestExternalConnection:
         assert (tmp_path / "test.db").exists()
 
 
-# ─── VOYAGE VECTOR SEARCH ─────────────────────────────────────────
+# ─── DENSE VECTOR SEARCH ──────────────────────────────────────────
 
 
-class TestVoyageVectorSearch:
-    """Tests for Voyage Code 3 vector search integration."""
+class TestDenseVectorSearch:
+    """Tests for dense (BGE-M3) vector search integration."""
 
-    def test_voyage_vector_search_uses_embeddings_table(self):
+    def test_dense_vector_search_uses_embeddings_table(self):
         """When embeddings table has vectors, _vector_search uses them."""
         import struct
         import sqlite3
@@ -384,7 +384,7 @@ class TestVoyageVectorSearch:
         search.add("doc_auth", "JWT authentication token verification")
         search.add("doc_api", "REST API endpoint design patterns")
 
-        # Manually insert Voyage-style packed embeddings into embeddings table
+        # Manually insert packed embeddings into embeddings table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS embeddings (
                 doc_id TEXT PRIMARY KEY,
@@ -400,7 +400,7 @@ class TestVoyageVectorSearch:
 
         # Query with a vector similar to auth
         query_vec = [0.8, 0.2, 0.0, 0.0]
-        results = search._voyage_vector_search(query_vec, limit=5)
+        results = search._dense_vector_search(query_vec, limit=5)
 
         assert len(results) >= 1
         # doc_auth should rank higher (more similar to query)
@@ -408,7 +408,7 @@ class TestVoyageVectorSearch:
         assert ids[0] == "doc_auth"
         search.close()
 
-    def test_voyage_vector_search_falls_back_to_bow(self):
+    def test_dense_vector_search_falls_back_to_bow(self):
         """When no embeddings table, falls back to bag-of-words."""
         search = HybridSearch(":memory:")
         search.add("doc1", "test document about authentication")
@@ -423,7 +423,7 @@ class TestVoyageVectorSearch:
         assert search._query_embedding_fn is None
         search.close()
 
-    def test_voyage_vector_search_empty_embeddings_table(self):
+    def test_dense_vector_search_empty_embeddings_table(self):
         """When embeddings table exists but is empty, returns empty list."""
         import sqlite3
 
@@ -439,12 +439,12 @@ class TestVoyageVectorSearch:
         """)
         conn.commit()
 
-        results = search._voyage_vector_search([0.5, 0.5], limit=5)
+        results = search._dense_vector_search([0.5, 0.5], limit=5)
         assert results == []
         search.close()
 
-    def test_vector_search_uses_voyage_when_fn_set_and_embeddings_present(self):
-        """When _query_embedding_fn is set and embeddings table is populated, uses Voyage path."""
+    def test_vector_search_uses_dense_when_fn_set_and_embeddings_present(self):
+        """When _query_embedding_fn is set and embeddings table is populated, uses dense path."""
         import struct
         import sqlite3
 

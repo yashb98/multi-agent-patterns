@@ -4,6 +4,15 @@ Stores one account per domain. Uses a single password from ATS_ACCOUNT_PASSWORD
 env var and the user's profile email. Credentials stored in SQLite.
 Passwords are encrypted at rest using Fernet symmetric encryption.
 ATS_ENCRYPTION_KEY env var is required for all credential operations.
+
+Wiring note (S3 audit, 2026-05-07):
+The runtime apply path (`AuthHandler.handle_login` / `handle_signup`)
+delegates to `PageReasoner` + `NavigationActionExecutor` since the
+2026-05-04 rewrite. Of the public API below, only `mark_verified` is
+called from `_auth.handle_email_verification`. `create_account`,
+`get_credentials`, `get_account_info`, `mark_login_success`,
+`has_account` are wired but unreachable from the current apply flow —
+they remain available for tests and future re-integration.
 """
 from __future__ import annotations
 

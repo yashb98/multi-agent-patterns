@@ -254,6 +254,44 @@ class TestThompsonSampling:
         assert len(emitted) == 1
         assert emitted[0]["signal_type"] == "transfer"
 
+    def test_record_outcome_signal_actually_persists(self, tmp_path, monkeypatch):
+        """Audit S5 B-1 reproducer.
+
+        The previous test used a FakeEngine that bypassed
+        ``LearningSignal.__post_init__`` validation, so it passed even
+        though production raised ``ValueError("Invalid signal_type
+        'transfer'")`` and silently dropped the signal at debug level.
+        This test routes through the real ``OptimizationEngine`` against
+        a tmp-path optimization.db and asserts the signal survives the
+        bus round-trip.
+        """
+        from shared.optimization._engine import OptimizationEngine
+
+        opt_db = str(tmp_path / "optimization.db")
+        real_engine = OptimizationEngine(db_path=opt_db)
+        monkeypatch.setattr(
+            "shared.optimization.get_optimization_engine",
+            lambda: real_engine,
+        )
+
+        db = str(tmp_path / "form_experience.db")
+        transfer_engine = PlatformTransferEngine(db_path=db)
+        transfer_engine.record_outcome(
+            "t.io", "d.io", "timing_profile", success=True,
+        )
+
+        signals = real_engine._bus.query(signal_type="transfer")
+        assert len(signals) == 1, (
+            "transfer signal must reach the bus — pre-fix this was 0 "
+            "because VALID_SIGNAL_TYPES rejected 'transfer' and the "
+            "producer's try/except swallowed the ValueError"
+        )
+        sig = signals[0]
+        assert sig.signal_type == "transfer"
+        assert sig.payload.get("donor_domain") == "d.io"
+        assert sig.payload.get("signal") == "timing_profile"
+        assert sig.payload.get("success") is True
+
 
 class TestFormExperienceDBFallback:
     def test_get_timing_falls_back_to_transfer(self, tmp_path):

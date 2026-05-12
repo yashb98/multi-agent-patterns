@@ -30,7 +30,7 @@ NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "")
 
 # GitHub
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-GITHUB_USERNAME = os.getenv("GITHUB_USERNAME", "yashb98")
+GITHUB_USERNAME = os.getenv("GITHUB_USERNAME", "")
 
 # Telegram — multi-bot setup
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")          # Main bot (all commands)
@@ -52,6 +52,9 @@ DISCORD_USER_ID = os.getenv("DISCORD_USER_ID", "")
 
 # LLM
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
+TOGETHER_MODEL = os.getenv("TOGETHER_MODEL", "Qwen/Qwen3-30B-A3B-Instruct")
+TOGETHER_CODER_MODEL = os.getenv("TOGETHER_CODER_MODEL", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
 CONVERSATION_MODEL = os.getenv("CONVERSATION_MODEL", "gpt-5-mini")
 
 # Multi-provider fallback
@@ -117,12 +120,18 @@ APPLICANT_POSTCODE = os.getenv("APPLICANT_POSTCODE", "")
 APPLICANT_COUNTRY = os.getenv("APPLICANT_COUNTRY", "")
 APPLICANT_TITLE = os.getenv("APPLICANT_TITLE", "Mr")
 
+APPLICANT_PHONE_CODE = os.getenv("APPLICANT_PHONE_CODE", "+44")
+APPLICANT_PHONE_DEVICE = os.getenv("APPLICANT_PHONE_DEVICE", "Mobile")
+
 APPLICANT_PROFILE: dict[str, str] = {
     "first_name": APPLICANT_FIRST_NAME,
     "last_name": APPLICANT_LAST_NAME,
     "title": APPLICANT_TITLE,
     "email": APPLICANT_EMAIL,
     "phone": APPLICANT_PHONE,
+    "phone_code": APPLICANT_PHONE_CODE,
+    "phone_extension": "",
+    "phone_device_type": APPLICANT_PHONE_DEVICE,
     "linkedin": APPLICANT_LINKEDIN,
     "github": APPLICANT_GITHUB,
     "portfolio": APPLICANT_PORTFOLIO,

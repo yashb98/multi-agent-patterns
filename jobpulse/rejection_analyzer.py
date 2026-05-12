@@ -44,13 +44,65 @@ _BLOCKER_PATTERNS: list[tuple[str, str]] = [
     ("stack-mismatch", r"java\b|c\+\+|ruby|swift|kotlin|react.native|flutter|\.net|php\b|rust\b"),
 ]
 
+# Canonical natural-language descriptions per blocker category. The semantic
+# tier scores the reason text against these via embedding similarity, which
+# survives paraphrasing the regex misses (e.g. "must be authorised to work in
+# the UK", "open to candidates with 10+ years", "100% on-premises in Zurich").
+_BLOCKER_ARCHETYPES: list[tuple[str, str]] = [
+    (
+        "geo-restriction",
+        "candidate must have visa work authorization residency right to work "
+        "or be a US citizen UK national EU resident",
+    ),
+    (
+        "seniority-mismatch",
+        "role requires principal staff director VP head of senior leadership "
+        "with 10+ years management experience",
+    ),
+    (
+        "onsite-requirement",
+        "position is fully on-site hybrid relocation required no remote in "
+        "office attendance mandatory",
+    ),
+    (
+        "stack-mismatch",
+        "stack uses Java C++ Ruby Swift Kotlin React Native Flutter .NET PHP "
+        "Rust mobile native instead of Python data science",
+    ),
+]
+
 
 def classify_blocker(reason: str) -> str:
     """Classify a rejection/block reason into a category.
 
+    Resolution order:
+      1. Embedding similarity to canonical archetype descriptions — primary
+         classifier, survives paraphrase / multilingual / typo drift.
+      2. Regex pattern fallback — last-resort heuristic when embeddings
+         score below threshold or are unavailable.
+
     Returns one of: "geo-restriction", "seniority-mismatch",
     "onsite-requirement", "stack-mismatch", "other".
     """
+    if not reason or not reason.strip():
+        return "other"
+
+    # Tier 1: semantic similarity
+    try:
+        from shared.semantic_utils import semantic_similarity
+        best_cat: str | None = None
+        best_score = 0.0
+        for category, archetype in _BLOCKER_ARCHETYPES:
+            score = semantic_similarity(reason[:500], archetype)
+            if score > best_score:
+                best_score = score
+                best_cat = category
+        if best_cat is not None and best_score >= 0.55:
+            return best_cat
+    except Exception:
+        pass
+
+    # Tier 2: regex fallback
     r = reason.lower()
     for category, pattern in _BLOCKER_PATTERNS:
         if re.search(pattern, r):

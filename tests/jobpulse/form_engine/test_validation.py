@@ -163,6 +163,7 @@ async def test_scan_deduplication():
     # Strategy 2 (role=alert) and Strategy 3 (CSS class) both report the same message
     alert_el = MagicMock()
     alert_el.text_content = AsyncMock(return_value="Email is required")
+    alert_el.get_attribute = AsyncMock(return_value="")  # no id
 
     css_el = MagicMock()
     css_el.text_content = AsyncMock(return_value="Email is required")
@@ -185,8 +186,10 @@ async def test_scan_deduplication():
 
 
 @pytest.mark.asyncio
-async def test_scan_ignores_long_text():
-    """Strategy 3 should ignore elements whose text is 200+ characters."""
+async def test_scan_truncates_long_text_instead_of_dropping():
+    """Strategy 3 elements with text >= 200 chars are truncated with an
+    ellipsis (preserves the signal) rather than silently dropped.
+    Pre-S2-audit: the long message vanished entirely."""
     from jobpulse.form_engine.validation import scan_for_errors
 
     long_text = "x" * 250
@@ -197,7 +200,7 @@ async def test_scan_ignores_long_text():
     page.query_selector_all = AsyncMock(side_effect=[
         [],          # Strategy 1: aria-invalid
         [],          # Strategy 2: role=alert
-        [long_el],   # Strategy 3: error CSS classes — long text, should be ignored
+        [long_el],   # Strategy 3: error CSS classes — long text, truncated
         [],          # Strategy 4: aria-errormessage
         [],          # Strategy 5: ATS — selector 1
         [],          # Strategy 5: ATS — selector 2
@@ -206,4 +209,6 @@ async def test_scan_ignores_long_text():
     ])
 
     errors = await scan_for_errors(page)
-    assert errors == []
+    assert len(errors) == 1
+    assert errors[0].error_message.endswith("…")
+    assert len(errors[0].error_message) <= 200

@@ -200,13 +200,13 @@ class HybridSearch:
             count = 0
 
         if count > 0 and self._query_embedding_fn is not None:
-            # Use Voyage embeddings
+            # Use dense (BGE-M3) embeddings
             try:
                 query_vec = self._query_embedding_fn(query)
             except Exception:
                 query_vec = None
             if query_vec:
-                return self._voyage_vector_search(query_vec, limit)
+                return self._dense_vector_search(query_vec, limit)
 
         # Fallback: bag-of-words
         query_emb = self._compute_embedding(query)
@@ -261,8 +261,8 @@ class HybridSearch:
         logger.info("Loaded %d embeddings into memory (%s)",
                      len(ids), "numpy" if _HAS_NUMPY else "list")
 
-    def _voyage_vector_search(self, query_vector: list[float], limit: int = 30) -> list[tuple]:
-        """Cosine similarity against pre-computed Voyage embeddings.
+    def _dense_vector_search(self, query_vector: list[float], limit: int = 30) -> list[tuple]:
+        """Cosine similarity against pre-computed dense (BGE-M3) embeddings.
 
         Uses in-memory numpy matrix if available (0.1ms), falls back to
         SQLite BLOB reads (~460ms).

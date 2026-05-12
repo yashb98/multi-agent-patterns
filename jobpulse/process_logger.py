@@ -67,9 +67,9 @@ class ProcessTrail:
         self.start_time = time.time()
 
     def log_step(self, step_type: str, step_name: str,
-                 step_input: str = None, step_output: str = None,
-                 step_decision: str = None, metadata: dict = None,
-                 status: str = "success", duration_ms: int = None):
+                 step_input: str | None = None, step_output: str | None = None,
+                 step_decision: str | None = None, metadata: dict | None = None,
+                 status: str = "success", duration_ms: int | None = None):
         """Log a single step in the process trail."""
         self.step_counter += 1
         try:
@@ -95,7 +95,7 @@ class ProcessTrail:
             logger.error("Error logging step: %s", e)
 
     @contextmanager
-    def step(self, step_type: str, step_name: str, step_input: str = None):
+    def step(self, step_type: str, step_name: str, step_input: str | None = None):
         """Context manager that auto-captures duration and errors.
 
         Usage:

@@ -96,13 +96,6 @@ _SALARY_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Single salary: £50,000 or 50K
-_SINGLE_SALARY_RE = re.compile(
-    r"(?:£|\$|USD|GBP)\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*[kK]?",
-    re.IGNORECASE,
-)
-
-
 def _parse_amount(raw: str, suffix_char: str) -> float:
     """Convert a raw numeric string (possibly with commas) + K suffix to float."""
     cleaned = raw.replace(",", "")
@@ -112,12 +105,66 @@ def _parse_amount(raw: str, suffix_char: str) -> float:
     return value
 
 
-def generate_job_id(url: str) -> str:
-    """Return a 64-char SHA-256 hex digest of the URL.
+def _canonicalize_url(url: str) -> str:
+    """Normalize a URL so trivially-different forms produce the same canonical key.
 
-    Identical URLs always produce the same ID; different URLs produce different IDs.
+    Handles the duplicate-job problem where the same posting was scraped with:
+      - host variants (uk.linkedin.com vs www.linkedin.com vs linkedin.com)
+      - tracking query params (?position=, ?utm_*=, ?refId=, ?trackingId=)
+      - trailing slashes / fragments
+      - case differences in path
+
+    For LinkedIn specifically, extracts the canonical numeric job ID from
+    `/jobs/view/{slug}-{id}` and returns `linkedin.com:job:{id}` — guarantees
+    the same job under any URL variant maps to the same canonical key.
+
+    For Indeed, extracts the `jk` (job key) parameter — also stable across
+    URL variants (rc/clk vs viewjob, with or without tracking suffixes).
     """
-    return hashlib.sha256(url.encode()).hexdigest()
+    if not url:
+        return ""
+    from urllib.parse import urlparse, parse_qs
+    try:
+        p = urlparse(url.strip())
+    except Exception:
+        return url.strip().lower()
+    host = (p.netloc or "").lower().removeprefix("www.")
+
+    # LinkedIn: extract the trailing numeric job ID from /jobs/view/...
+    if "linkedin.com" in host:
+        # Path looks like /jobs/view/title-slug-with-id-4405548272
+        # The trailing run of digits IS the LinkedIn job ID. Use that.
+        path = p.path or ""
+        import re
+        m = re.search(r"(\d{8,})/?$", path)
+        if m:
+            return f"linkedin.com:job:{m.group(1)}"
+
+    # Indeed: extract the jk= (job key) query parameter
+    if "indeed.com" in host:
+        q = parse_qs(p.query or "")
+        jk = (q.get("jk") or [None])[0]
+        if jk:
+            return f"indeed.com:job:{jk.lower()}"
+
+    # Generic fallback: scheme + host + path (no query, no fragment)
+    # — strips tracking params + fragments while keeping the path identifier.
+    canonical_host = host  # already lowercased + stripped of www.
+    canonical_path = (p.path or "/").rstrip("/").lower()
+    return f"{canonical_host}{canonical_path}"
+
+
+def generate_job_id(url: str) -> str:
+    """Return a 64-char SHA-256 hex digest of the canonicalized URL.
+
+    URL canonicalization (see _canonicalize_url) ensures that:
+      - uk.linkedin.com/.../JOB_ID and www.linkedin.com/.../JOB_ID
+      - indeed.com rc/clk?jk=X and viewjob?jk=X (with or without tracking suffixes)
+    map to the same job_id. Identical *jobs* now always produce the same ID,
+    even if the *URLs* differ in tracking params or host casing.
+    """
+    canonical = _canonicalize_url(url) or url
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def extract_salary(text: str) -> tuple[float | None, float | None]:
@@ -170,9 +217,17 @@ def extract_location(text: str) -> str:
 
     Strategy:
       1. Look for "Location: <value>" label.
-      2. Look for "Remote, <country>" pattern.
-      3. Scan for known UK city names.
+      2. Scan for known UK city names — a concrete city beats a generic
+         "Remote" mention because remoteness is captured separately by
+         `detect_remote()` (it sets `JobListing.remote = True`).
+      3. Look for "Remote, <country>" pattern (only when no city is found).
       4. Default to "United Kingdom".
+
+    Order rationale (S7 audit M-B): JDs that say "London office, supports
+    remote-friendly culture" should resolve to "London", not "remote".
+    The bare-`Remote` regex matches inside compound words like
+    "remote-first" / "remote-friendly", so it can't run before the city
+    scan without producing wrong locations.
     """
     # 1. Explicit "Location:" prefix
     m = _LOCATION_PREFIX_RE.search(text)
@@ -189,16 +244,16 @@ def extract_location(text: str) -> str:
             loc = loc[:50].rsplit(",", 1)[0].strip()
         return loc
 
-    # 2. "Remote, UK" or similar at start of text / as a standalone phrase
+    # 2. Known UK cities — concrete city wins over generic Remote mention
+    for city in _UK_CITIES:
+        if re.search(rf"\b{city}\b", text, re.IGNORECASE):
+            return city
+
+    # 3. "Remote, UK" or similar — only when no UK city is mentioned
     m = _REMOTE_LOCATION_RE.search(text)
     if m:
         # Return the matched remote phrase as-is (e.g. "Remote, UK")
         return m.group(0)
-
-    # 3. Known UK cities
-    for city in _UK_CITIES:
-        if re.search(rf"\b{city}\b", text, re.IGNORECASE):
-            return city
 
     return "United Kingdom"
 
@@ -340,6 +395,7 @@ def analyze_jd(
     platform: str,
     jd_text: str,
     apply_url: str = "",
+    direct_url: str = "",
 ) -> JobListing:
     """Combine rule-based and LLM extraction into a JobListing model.
 
@@ -399,5 +455,6 @@ def analyze_jd(
         ats_platform=ats_platform,
         found_at=datetime.now(UTC),
         easy_apply=easy_apply,
+        direct_url=direct_url or None,
         recruiter_email=recruiter_email,
     )

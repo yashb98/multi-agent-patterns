@@ -1,9 +1,9 @@
 ---
 paths: ["**/*.py"]
-description: "MANDATORY 7-principle engineering checklist for ALL code changes"
+description: "MANDATORY 8-principle engineering checklist for ALL code changes"
 ---
 
-# Seven Engineering Principles (MANDATORY)
+# Eight Engineering Principles (MANDATORY)
 
 Every new feature, function, file, or code change MUST satisfy these 8 principles.
 This is not aspirational — it is a hard gate. Violations found in audit 2026-04-20.
@@ -137,11 +137,13 @@ Checkpoints:
 - [ ] Verification/validation results logged with before/after values
 - [ ] Memory and learning recorded for ALL score ranges, not just high scores
 - [ ] Learning actions tracked via OptimizationEngine.before_learning_action() / after_learning_action()
+- [ ] **OPRAL on errors** — every error follows Observe → Plan → Reason → Act → Learn. Fix routes to correct DB, signal emitted, agent handles it autonomously next run. If error can recur, fix is incomplete.
+- [ ] **DB wiring verified** — relevant DBs have rows after a run (19 DBs are wired but empty — verify yours isn't one of them)
 
 Known violations (FIXED 2026-04-20 unless noted):
 - ~~`shared/agents.py:254`~~ — `_StreamResponse` now estimates token usage from content length ✅
 - ~~`shared/cost_tracker.py:17-25`~~ — added Anthropic, Voyage, Ollama pricing ✅
-- `patterns/peer_debate.py`, `map_reduce.py`, `plan_and_execute.py`, `dynamic_swarm.py` — no `compute_cost_summary()` (REMAINING — dynamic_swarm already has it)
+- `patterns/peer_debate.py` — no `compute_cost_summary()` (REMAINING — dynamic_swarm, map_reduce, plan_and_execute now have it [RESOLVED])
 - ~~`peer_debate.py:288-316`~~ — now records experience for ALL score ranges ✅
 - `weekly_report.py`, `morning_briefing.py` — silent "Data unavailable" degradation (REMAINING)
 - `form_engine/page_filler.py` — no logging at routing decisions (REMAINING)

@@ -95,3 +95,73 @@ class TestBlocklistCache:
     def test_is_known_false_for_unknown(self):
         cache = self._make_cache({})
         assert cache.is_known("NeverSeen") is False
+
+
+# ---------------------------------------------------------------------------
+# fetch_blocklist_from_notion — pagination loop bounds (S7 audit B-3)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchBlocklistFromNotion:
+    """Pagination must terminate even if Notion misbehaves."""
+
+    def test_aborts_on_repeated_cursor(self, monkeypatch):
+        """A server returning the same next_cursor must not loop forever."""
+        from jobpulse import company_blocklist as mod
+
+        call_count = {"n": 0}
+
+        def fake_api(method, endpoint, payload):
+            call_count["n"] += 1
+            return {
+                "results": [{
+                    "properties": {
+                        "Company": {"title": [{"plain_text": f"Co{call_count['n']}"}]},
+                        "Status": {"select": {"name": "Pending"}},
+                    },
+                }],
+                "has_more": True,
+                "next_cursor": "stuck",
+            }
+
+        monkeypatch.setattr(mod, "_get_blocklist_db_id", lambda: "fake_db_id")
+        monkeypatch.setattr(mod, "_notion_api", fake_api)
+
+        result = mod.fetch_blocklist_from_notion()
+
+        # First call returns cursor=None vs response=stuck (different) → continue.
+        # Second call: stored cursor="stuck", response next_cursor="stuck" → break.
+        # So we expect exactly 2 _notion_api calls.
+        assert call_count["n"] == 2, (
+            f"Expected loop to abort on repeated cursor after 2 calls, got {call_count['n']}"
+        )
+        assert "co1" in result and "co2" in result
+
+    def test_respects_max_pages_cap(self, monkeypatch):
+        """Even with valid distinct cursors, must not exceed _BLOCKLIST_FETCH_MAX_PAGES."""
+        from jobpulse import company_blocklist as mod
+
+        call_count = {"n": 0}
+
+        def fake_api(method, endpoint, payload):
+            call_count["n"] += 1
+            return {
+                "results": [{
+                    "properties": {
+                        "Company": {"title": [{"plain_text": f"Co{call_count['n']}"}]},
+                        "Status": {"select": {"name": "Pending"}},
+                    },
+                }],
+                "has_more": True,  # Always claim more pages
+                "next_cursor": f"cursor-{call_count['n']}",
+            }
+
+        monkeypatch.setattr(mod, "_get_blocklist_db_id", lambda: "fake_db_id")
+        monkeypatch.setattr(mod, "_notion_api", fake_api)
+        monkeypatch.setattr(mod, "_BLOCKLIST_FETCH_MAX_PAGES", 3)
+
+        mod.fetch_blocklist_from_notion()
+
+        assert call_count["n"] == 3, (
+            f"Pagination must stop at the page cap; got {call_count['n']} calls"
+        )

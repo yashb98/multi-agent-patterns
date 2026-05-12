@@ -34,7 +34,9 @@ _DEFAULT_DB_PATH = None  # set lazily to avoid import-time DATA_DIR side effects
 
 def _default_db_path() -> str:
     from shared.paths import DATA_DIR
-    return str(DATA_DIR / "optimization.db")
+    # Honour `OPTIMIZATION_DB` so tests can redirect writes to tmp_path
+    # (parallels `LLM_USAGE_DB` and `COGNITIVE_BUDGET_DB`).
+    return os.getenv("OPTIMIZATION_DB", str(DATA_DIR / "optimization.db"))
 
 
 class OptimizationEngine:
@@ -119,6 +121,11 @@ class OptimizationEngine:
         if not self._enabled:
             return {}
         return self._tracker.after_learning_action(action_id, metrics)
+
+    def snapshot(self, loop_name: str, domain: str, metrics: dict):
+        if not self._enabled:
+            return None
+        return self._tracker.snapshot(loop_name, domain, metrics)
 
     # ------------------------------------------------------------------
     # Trajectory logging
@@ -223,6 +230,22 @@ class OptimizationEngine:
 
         executed = self._execute_actions(all_actions)
 
+        # Snapshot cycle metrics for performance_snapshots table
+        try:
+            cycle_metrics = {
+                "insights_found": len(insights),
+                "actions_executed": len(executed),
+                "total_actions": len(all_actions),
+            }
+            self._tracker.snapshot("optimization_cycle", "global", cycle_metrics)
+        except Exception as exc:
+            # OPRAL: missed cycle snapshot = lost regression-detection data
+            # for this cron tick. (S10 audit M-C.)
+            logger.warning(
+                "optimize: snapshot failed: %s", exc,
+                extra={"error_type": type(exc).__name__},
+            )
+
         self.flush_sync()
 
         return {
@@ -258,7 +281,13 @@ class OptimizationEngine:
                     evidence=rule.evidence,
                 ))
         except Exception as exc:
-            logger.debug("Trajectory mining failed: %s", exc)
+            # OPRAL: trajectory mining is a primary auto-rule producer; a
+            # silent failure here drops every rule the cycle would have
+            # generated. (S10 audit M-C.)
+            logger.warning(
+                "Trajectory mining failed: %s", exc,
+                extra={"error_type": type(exc).__name__},
+            )
         return insights
 
     def _execute_actions(self, actions: list[PolicyAction]) -> set[str]:
@@ -289,7 +318,13 @@ class OptimizationEngine:
                 try:
                     self._alert_fn(msg)
                 except Exception as e:
-                    logger.debug("Alert callback failed: %s", e)
+                    # Alert delivery is the primary user-visible signal for
+                    # the optimization cycle; debug-level here means a
+                    # silently-dropped Telegram alert. (S10 audit M-C.)
+                    logger.warning(
+                        "Alert callback failed: %s", e,
+                        extra={"error_type": type(e).__name__},
+                    )
         elif t == "pause_loop" and self._aggregator:
             self._aggregator.pause_loop(action.target)
         elif t == "escalate_cognitive":
@@ -441,7 +476,8 @@ class OptimizationEngine:
             return {"type": "daily", "enabled": False}
         total = self._bus.count()
         by_type = {"all": total}
-        for st in ("correction", "failure", "success", "adaptation", "score_change", "rollback"):
+        for st in ("correction", "failure", "success", "adaptation",
+                   "score_change", "rollback", "transfer"):
             try:
                 sigs = self._bus.query(signal_type=st, limit=10000)
                 by_type[st] = len(sigs)
@@ -546,6 +582,19 @@ class _NoOpTracker:
 
 
 _shared_engine: Optional[OptimizationEngine] = None
+
+
+def reset_optimization_engine() -> None:
+    """Drop the cached singleton so the next `get_optimization_engine()` call
+    rebuilds with the current environment.
+
+    Used by `tests/conftest.py` to make sure each test sees a fresh engine
+    pointed at the tmp `OPTIMIZATION_DB` path. Without this, the first test
+    that touches the engine caches a production-path instance and every
+    subsequent test inherits it.
+    """
+    global _shared_engine
+    _shared_engine = None
 
 
 def get_optimization_engine() -> OptimizationEngine:

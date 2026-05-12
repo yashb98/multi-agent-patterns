@@ -45,9 +45,17 @@ policy decides actions → tracker measures impact → trajectories log everythi
 | `_policy.py` | OptimizationPolicy, OptimizationBudget, 14 action types |
 | `_trajectory.py` | TrajectoryStore, Trajectory, TrajectoryStep, JSONL/CSV export |
 | `_engine.py` | OptimizationEngine facade + get_optimization_engine() factory |
+| `_replay.py` | Trajectory replay harness for deterministic fixture testing |
 
 ## Signal Types
-correction | failure | success | adaptation | score_change | rollback
+correction | failure | success | adaptation | score_change | rollback | transfer
+
+(`transfer` was added 2026-05-07 alongside the audit-S5 B-1 fix —
+producer in `jobpulse.platform_transfer.record_outcome` had been
+silently dropping signals because `LearningSignal.__post_init__`
+rejected the type. **No aggregator detector consumes `transfer` signals
+yet** — producer fires to `signal_bus` rows but no pattern-detection
+rule reads them. Tracked in `pipeline-bugs.md` S10 W-10.1.)
 
 ## Rules
 - ALL learning loops MUST emit signals at key decision points

@@ -5,12 +5,9 @@ Ties together all screening subsystems:
   2. Semantic Cache (Qdrant)
   3. Intent Classification
   4. Intent Resolution (profile-driven)
-  5. Regex Fallback
-  6. Agent Rules
-  7. Exact Cache Fallback
-  8. LLM Fallback
-  9. Option Alignment
-  10. Validation
+  5. LLM Fallback
+  6. Option Alignment
+  7. Validation
 
 Usage:
     pipeline = ScreeningPipeline(profile=my_profile)
@@ -19,9 +16,26 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from shared.logging_config import get_logger
+
+
+# Free-text LLM-fallback answers must be at least this cosine-similar to
+# their question to be accepted. Threshold derived from BGE-M3 measurements
+# on real (Q, correct-answer) pairs vs (Q, observed-leak) pairs (S13):
+#
+#   on-topic prose answers      → 0.55–0.81  (mean ≈ 0.66)
+#   off-topic orchestration     → 0.27–0.50  (mean ≈ 0.35)
+#
+# 0.40 cleanly separates the two distributions while keeping the lowest
+# legitimate prose answer (machine-learning experience, sim 0.55) well
+# above the floor. Short option-like answers (e.g. "Man" sim 0.43, "5 -
+# Expert" sim 0.40) are NOT subject to this guard — they go through the
+# option-aligned branch with ``OptionAligner``.
+_LLM_ANSWER_RELEVANCE_THRESHOLD = 0.40
 
 
 from jobpulse.screening_semantic_cache import ScreeningSemanticCache
@@ -29,10 +43,50 @@ from jobpulse.screening_intent import ScreeningIntentClassifier, ScreeningIntent
 from jobpulse.screening_detector import ScreeningDetector
 from jobpulse.screening_decomposer import QuestionDecomposer, AnswerRecombiner
 from jobpulse.screening_option_aligner import OptionAligner, BoolFieldHandler, SalaryFieldHandler
+from jobpulse.screening_session_state import SessionFillState
 from jobpulse.screening_validator import ScreeningValidator
 from jobpulse.screening_pattern_extractor import PatternExtractor
 
 logger = get_logger(__name__)
+
+
+# S26-follow-up-O-1: extract field references from an introspection
+# question. The handler needs to know WHICH session-filled fields the
+# question is asking about ("legal name" → First Name + Last Name).
+# Embedding similarity catches paraphrases at the consumer level; the
+# session_state.references_present() check is the final authority, so
+# false-positive references (synonym matched but field not in session)
+# collapse to "No" via the unfilled branch — the correct conservative
+# answer.
+_INTROSPECTION_REFERENCE_SYNONYMS: dict[str, list[str]] = {
+    "legal name": ["First Name", "Last Name"],
+    "full name": ["First Name", "Last Name"],
+    "first name and last name": ["First Name", "Last Name"],
+    "first and last name": ["First Name", "Last Name"],
+    "surname": ["Last Name"],
+    "given name": ["First Name"],
+    "name and surname": ["First Name", "Last Name"],
+    "contact information": ["Email", "Phone"],
+    "contact details": ["Email", "Phone"],
+    "email address": ["Email"],
+    "phone number": ["Phone"],
+    "resume": ["Resume"],
+    "cv": ["Resume"],
+    "cover letter": ["Cover Letter"],
+}
+
+
+def _extract_referenced_fields(question: str) -> list[str]:
+    """Return canonical label tokens referenced by an introspection question."""
+    if not question:
+        return []
+    q = question.lower()
+    out: list[str] = []
+    for synonym, labels in _INTROSPECTION_REFERENCE_SYNONYMS.items():
+        if synonym in q:
+            out.extend(labels)
+    seen: set[str] = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
 
 
 class ScreeningPipeline:
@@ -57,12 +111,81 @@ class ScreeningPipeline:
         self._option_aligner = option_aligner or OptionAligner()
         self._validator = validator or ScreeningValidator()
         self._pattern_extractor = pattern_extractor or PatternExtractor()
+        # Audit S1 / TP-1: scope the screening cache to (profile, JD) context.
+        # profile_state_hash is stable for the lifetime of this pipeline
+        # instance — profile mutations between sessions yield a new hash
+        # (and therefore a new cache row) on the next ScreeningPipeline.
+        self._profile_state_hash = self._compute_profile_state_hash(profile)
+
+    # Audit S1 / TP-1 helpers --------------------------------------------
+
+    # Profile fields that genuinely determine the right screening answer.
+    # Per dimensions.md → D9 decision-context table: visa, salary, notice,
+    # relocation, languages. Excludes identity/links because their value
+    # doesn't change visa/salary/notice/relocation answers.
+    _PROFILE_HASH_FIELDS: tuple[str, ...] = (
+        "visa_status",
+        "visa_expiry",
+        "visa_type",
+        "right_to_work",
+        "work_auth_type",
+        "current_salary",
+        "expected_salary",
+        "salary_expectation",
+        "notice_period",
+        "location",
+        "current_city",
+        "willing_to_relocate",
+        "languages",
+        "english_proficiency",
+    )
+
+    @classmethod
+    def _compute_profile_state_hash(cls, profile: dict[str, Any]) -> str:
+        """Hash the screening-determining subset of the profile.
+
+        Keeping the input set narrow protects cache hit-rate: irrelevant
+        profile changes (LinkedIn URL, name) don't invalidate visa/salary
+        decisions, while screening-relevant changes (visa renewed,
+        notice period revised) correctly produce a new hash so the prior
+        decision is regenerated on the next live run.
+        """
+        if not profile:
+            return ""
+        subset = {k: profile.get(k) for k in cls._PROFILE_HASH_FIELDS if profile.get(k) not in (None, "")}
+        if not subset:
+            return ""
+        canonical = json.dumps(subset, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+    @classmethod
+    def _jd_context_hash(cls, job_context: dict[str, Any] | None) -> str:
+        """Hash the JD-axes that determine screening answers per D9.
+
+        Country drives visa/work-auth, currency drives salary expectation,
+        role_level drives experience/seniority answers. Skills and
+        required_languages don't determine these answers (the JD's
+        country does, not its skill list), so they're excluded to keep
+        the hash narrow.
+        """
+        if not job_context:
+            return "empty"
+        subset = {
+            "country": (job_context.get("country") or job_context.get("location") or "").lower().strip(),
+            "currency": (job_context.get("currency") or "").upper().strip(),
+            "role_level": (job_context.get("role_level") or job_context.get("seniority") or "").lower().strip(),
+        }
+        if not any(subset.values()):
+            return "empty"
+        canonical = json.dumps(subset, sort_keys=True)
+        return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
     def answer(
         self,
         question: str,
         field: dict[str, Any] | None = None,
         job_context: dict[str, Any] | None = None,
+        session_state: "SessionFillState | None" = None,
     ) -> dict[str, Any]:
         """Answer a screening question through the full v2 pipeline.
 
@@ -89,6 +212,16 @@ class ScreeningPipeline:
             result["source"] = "empty_question"
             return result
 
+        # ── S26-follow-up-O-1: introspection_confirmation short-circuit ───
+        # "Have you added your full legal name?" et al. — answer depends
+        # on what the current session has already filled, not on the
+        # profile / JD / LLM. Must run BEFORE the semantic cache because
+        # caching session-derived answers across runs would be wrong.
+        if session_state is not None:
+            intro = self._try_introspection_answer(question, field, session_state)
+            if intro is not None:
+                return self._finalise(intro, question, field)
+
         # ── Step 1: Compound Decomposition ──────────────────────────────────
         sub_questions = self._decomposer.decompose(question)
         if sub_questions:
@@ -110,6 +243,69 @@ class ScreeningPipeline:
         result.update(single)
         return self._finalise(result, question, field)
 
+    def _try_introspection_answer(
+        self,
+        question: str,
+        field: dict[str, Any] | None,
+        session_state: SessionFillState,
+    ) -> dict[str, Any] | None:
+        """If the question is an introspection_confirmation (e.g. "Have
+        you added your legal name?"), answer Yes/No based on whether the
+        referenced fields are present in this session. Returns None when
+        the intent doesn't match (caller falls through to normal flow).
+        """
+        try:
+            intent, intent_confidence = self._intent_classifier.classify(question)
+        except Exception as exc:
+            logger.debug("introspection intent classify failed: %s", exc)
+            return None
+        if intent != ScreeningIntent.INTROSPECTION_CONFIRMATION:
+            return None
+
+        refs = _extract_referenced_fields(question)
+        options = (field or {}).get("options") or []
+        # Resolve Yes/No against the field's options (semantic match) so
+        # downstream form filling gets the exact string the dropdown
+        # expects ("Yes", "Confirmed", "I agree", etc.).
+        try:
+            from jobpulse.form_engine.semantic_matcher import semantic_option_match
+        except Exception:
+            semantic_option_match = None  # type: ignore[assignment]
+
+        if refs and session_state.references_present(refs):
+            verdict = "yes"
+            confidence = 0.95
+        else:
+            verdict = "no"
+            confidence = 0.85
+
+        answer_str: str
+        if options and semantic_option_match is not None:
+            matched = semantic_option_match(verdict, options)
+            answer_str = matched or ("Yes" if verdict == "yes" else "No")
+        else:
+            answer_str = "Yes" if verdict == "yes" else "No"
+
+        logger.info(
+            "screening: introspection_confirmation %r → %s (refs=%s, session_present=%s)",
+            question[:60], answer_str, refs, bool(
+                refs and session_state.references_present(refs),
+            ),
+        )
+        return {
+            "answer": answer_str,
+            "confidence": confidence,
+            "source": "introspection_session_state",
+            "intent": ScreeningIntent.INTROSPECTION_CONFIRMATION.value,
+            "metadata": {
+                "references": refs,
+                "references_present": bool(
+                    refs and session_state.references_present(refs),
+                ),
+                "intent_confidence": float(intent_confidence),
+            },
+        }
+
     def _answer_single(
         self,
         question: str,
@@ -121,14 +317,23 @@ class ScreeningPipeline:
         # Step 2: Semantic Cache (option-aware — passes field options for alignment)
         field_options = field.get("options") if field else None
         field_type = field.get("type", "") if field else ""
+        jd_context_hash = self._jd_context_hash(job_context)
         cache_hit = self._semantic_cache.lookup(
             question,
             field_options=field_options,
             field_type=field_type,
+            profile_state_hash=self._profile_state_hash,
+            jd_context_hash=jd_context_hash,
         )
         if cache_hit:
             # Boost confidence for well-used cache entries
             times_bonus = min(cache_hit.times_used / 10.0, 0.15) if cache_hit.times_used else 0.0
+            logger.info(
+                "screening_cache: hit on %r (score=%.2f, intent=%s, option_aligned=%s) "
+                "— skipping LLM alignment",
+                question[:80], cache_hit.score, cache_hit.intent,
+                bool(cache_hit.selected_option),
+            )
             return {
                 "answer": cache_hit.answer,
                 "confidence": min(cache_hit.score + times_bonus, 1.0),
@@ -156,25 +361,14 @@ class ScreeningPipeline:
             resolved = self._resolve_intent_from_profile(intent, job_context)
             if resolved:
                 result["answer"] = resolved
-                result["confidence"] = max(intent_confidence, 0.75)
+                # Clamp to 1.0 — intent classifier cosine similarity in
+                # float32 occasionally exceeds 1.0 by ~1e-7. The cache-hit
+                # path already clamps via min(); the resolver path needs
+                # the same protection so callers see a valid probability.
+                # (Surfaced when slice S1 routed more callers here.)
+                result["confidence"] = min(max(intent_confidence, 0.75), 1.0)
                 result["source"] = "intent_resolver"
                 return result
-
-        # Step 5: Regex Fallback
-        regex_answer = self._regex_fallback(question)
-        if regex_answer:
-            result["answer"] = regex_answer
-            result["confidence"] = 0.65
-            result["source"] = "regex_fallback"
-            return result
-
-        # Step 6: Agent Rules (heuristic mappings from profile)
-        rules_answer = self._agent_rules(question, job_context)
-        if rules_answer:
-            result["answer"] = rules_answer
-            result["confidence"] = 0.60
-            result["source"] = "agent_rules"
-            return result
 
         # Step 7: Exact Cache Fallback (legacy)
         # This would check the old SQLite ats_answer_cache
@@ -225,7 +419,7 @@ class ScreeningPipeline:
                     result["metadata"]["original_answer"] = answer
 
             # Salary range fields
-            if any(kw in question.lower() for kw in ("salary", "compensation", "pay")):
+            if result.get("intent") in ("salary_current", "salary_expected"):
                 if options and SalaryFieldHandler.extract_numeric(answer):
                     salary_answer = SalaryFieldHandler.format_for_range(answer, options)
                     if salary_answer != answer:
@@ -331,7 +525,11 @@ class ScreeningPipeline:
         if intent == ScreeningIntent.WILLING_RELOCATE and job_context:
             job_loc = job_context.get("location", "").lower()
             my_loc = self._profile.get("location", "").lower()
-            if job_loc and my_loc and job_loc in my_loc or my_loc in job_loc:
+            # Parentheses required: `and` binds tighter than `or`, so
+            # without them the empty-`my_loc` case short-circuits via
+            # `"" in job_loc == True` and we wrongly claim "same area"
+            # for users with no profile location set. Audit S4 B-2.
+            if job_loc and my_loc and (job_loc in my_loc or my_loc in job_loc):
                 return "No"  # Already in the same area
 
         fields = mapping.get(intent, [])
@@ -345,116 +543,278 @@ class ScreeningPipeline:
 
     # ── Fallback Generators ─────────────────────────────────────────────────
 
-    def _regex_fallback(self, question: str) -> str | None:
-        """Fast regex-based answer extraction."""
-        q_lower = question.lower()
-
-        # Yes/No questions about work auth
-        if any(kw in q_lower for kw in ("right to work", "work auth", "eligible to work")):
-            if self._profile.get("right_to_work") is not None:
-                return "Yes" if self._profile["right_to_work"] else "No"
-
-        # Visa sponsorship
-        if "sponsor" in q_lower:
-            if self._profile.get("visa_sponsorship_required") is not None:
-                return "Yes" if self._profile["visa_sponsorship_required"] else "No"
-
-        # Notice period
-        if "notice" in q_lower:
-            notice = self._profile.get("notice_period")
-            if notice:
-                return str(notice)
-
-        # Years of experience (simple numeric extraction)
-        m = __import__("re").search(
-            r"(\d+)\+?\s*years?.*experience",
-            q_lower,
-        )
-        if m:
-            years = m.group(1)
-            # Check if profile has matching skill experience
-            return None  # Too risky to guess without skill mapping
-
-        return None
-
-    def _agent_rules(
-        self, question: str, job_context: dict[str, Any] | None = None,
-    ) -> str | None:
-        """Heuristic rules based on profile fields, contextualized by job_context."""
-        q_lower = question.lower()
-
-        # Availability / start date
-        if any(kw in q_lower for kw in ("start", "available", "when can you", "notice")):
-            notice = self._profile.get("notice_period")
-            if notice:
-                return f"I can start after my {notice} notice period."
-            earliest = self._profile.get("earliest_start_date")
-            if earliest:
-                return f"I am available to start from {earliest}."
-
-        # Remote work — contextualized by JD work mode
-        if any(kw in q_lower for kw in ("remote", "work from home", "wfh")):
-            if job_context and job_context.get("work_mode") == "remote":
-                return "Yes, I am fully comfortable working remotely."
-            pref = self._profile.get("remote_preference")
-            if pref:
-                return str(pref)
-
-        # Relocation
-        if "relocat" in q_lower:
-            willing = self._profile.get("willing_to_relocate")
-            if willing is not None:
-                return "Yes" if willing else "No"
-
-        # Education
-        if any(kw in q_lower for kw in ("degree", "education", "university", "qualification")):
-            degree = self._profile.get("highest_degree")
-            if degree:
-                return str(degree)
-
-        return None
-
     def _llm_answer(
         self,
         question: str,
         field: dict[str, Any] | None,
         job_context: dict[str, Any] | None,
     ) -> str | None:
-        """LLM fallback for unrecognised questions."""
-        system_prompt = (
-            "You are answering a job application screening question. "
-            "Answer concisely and honestly based on the candidate profile provided. "
-            "Never mention that you are an AI. Give a direct, personal-sounding answer."
-        )
+        """LLM fallback for unrecognised questions.
 
+        When the field carries options (select, radio, multiselect, combobox),
+        the prompt is constrained to those options so the LLM picks one
+        instead of producing free text. Without this, asking "identify your
+        race" against a 5-option dropdown returns a paragraph that the
+        downstream option-aligner has to fuzzy-match — which sometimes lands
+        on something reasonable and sometimes on nothing.
+        """
         profile_summary = self._profile_summary()
         context = ""
         if job_context:
             context = f"\nJob context: {job_context}\n"
 
-        user_prompt = (
-            f"Candidate profile:\n{profile_summary}\n"
-            f"{context}"
-            f"Screening question: {question}\n\n"
-            "Provide a concise answer (1-3 sentences max)."
+        # Option-bearing fields → constrain the LLM to pick one option.
+        # This is the primary correctness path for selects/radios/multiselects.
+        # The downstream OptionAligner remains as a safety net for near-misses.
+        options = field.get("options") if field else None
+        field_type = (field.get("type") or "").lower() if field else ""
+
+        # Live evidence 2026-05-12 (Graphcore School*): when a combobox
+        # surfaces a TRUNCATED alphabetical list (Greenhouse's School
+        # combo returns the first 100 options; Country returns 244 etc.),
+        # the right answer ("University of Dundee") sits far below the
+        # visible head. Forcing the LLM to pick from those visible options
+        # makes it choose the closest-looking match ("Abertay University"
+        # — same city, different uni). Solution: for combobox / custom_
+        # dropdown with a long option list, switch off option-constraint
+        # and let the LLM emit the canonical profile value (free text).
+        # The filler's ``combobox_type_to_search`` technique then types
+        # that value into the input, the widget filters server-side, and
+        # the correct option surfaces for selection. Threshold 50 keeps
+        # short closed-set comboboxes (Yes/No, 5-option gender pickers)
+        # on the option-constrained path.
+        _COMBOBOX_TRUNCATED_THRESHOLD = 50
+        is_combobox_long_list = (
+            bool(options)
+            and field_type in {"combobox", "custom_dropdown"}
+            and len(options) > _COMBOBOX_TRUNCATED_THRESHOLD
+        )
+        is_option_field = (
+            bool(options)
+            and field_type in {
+                "select", "radio", "checkbox", "combobox", "custom_dropdown",
+                "multiselect",
+            }
+            and not is_combobox_long_list
+        )
+        logger.info(
+            "DIAG _llm_answer: question=%r field_type=%r has_options=%s n_options=%d "
+            "is_option_field=%s long_list=%s",
+            (question or "")[:80],
+            field_type,
+            bool(options),
+            len(options) if options else 0,
+            is_option_field,
+            is_combobox_long_list,
         )
 
+        if is_option_field:
+            options_block = "\n".join(f"- {opt}" for opt in options)
+            multi = field_type == "multiselect"
+            instruction = (
+                "Return ONE or MORE options as a comma-separated list, "
+                "using the EXACT option text from the list above."
+                if multi
+                else "Return EXACTLY ONE option, using the EXACT option text "
+                     "from the list above. No commentary, no explanation."
+            )
+            # Audit S21 / TP-30: prompt the LLM AS the candidate, in first
+            # person — not ABOUT the candidate. Pre-S21 the system prompt
+            # said "answering on behalf of the candidate", which made the
+            # LLM produce "As Yash Bishnoi, I have a strong preference..."
+            # — third-person self-reference that recruiters instantly clock
+            # as AI-generated.
+            system_prompt = (
+                "You ARE the job applicant. You are filling in a screening "
+                "question on a job application form yourself. Answer in "
+                "FIRST PERSON as yourself ('I am', 'I have', 'My...'). "
+                "Never refer to yourself by name in third person (no "
+                "'As [name], I...'). Never mention that you are an AI. "
+                "The form field is a closed-set picker — pick the option "
+                "that's true for you, based on your profile."
+            )
+            user_prompt = (
+                f"Your profile:\n{profile_summary}\n"
+                f"{context}"
+                f"Screening question on the form: {question}\n\n"
+                f"Available options:\n{options_block}\n\n"
+                f"{instruction}"
+            )
+        else:
+            # Audit S21 / TP-30: same first-person reframe as the option
+            # branch. Free-text answers were the worst offenders for the
+            # 'As Yash Bishnoi, I...' pattern because they're unconstrained.
+            system_prompt = (
+                "You ARE the job applicant. You are filling in a screening "
+                "question on a job application form yourself. Answer in "
+                "FIRST PERSON as yourself ('I am', 'I have', 'My...'). "
+                "Never refer to yourself by name in third person (no "
+                "'As [name], I...' or 'As an applicant'). Never mention "
+                "that you are an AI. Be honest, based on your profile."
+            )
+            user_prompt = (
+                f"Your profile:\n{profile_summary}\n"
+                f"{context}"
+                f"Screening question on the form: {question}\n\n"
+                "Write your answer in 1-3 sentences. Start with 'I' or "
+                "'My' — never with 'As [name]' or 'The applicant'."
+            )
+
+        import time as _time
+        _t0 = _time.perf_counter()
         try:
-            # Route through CognitiveEngine (default-on) for structured screening answers
             from shared.agents import cognitive_llm_call
+            from shared.semantic_decisions import record_decision
             answer = cognitive_llm_call(
                 task=f"SYSTEM: {system_prompt}\nUSER: {user_prompt}",
                 domain="screening_answers",
                 stakes="high",
             )
+            _elapsed_ms = (_time.perf_counter() - _t0) * 1000.0
             if answer is None:
+                record_decision(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:" + ("option" if is_option_field else "free_text"),
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="llm_returned_none",
+                    input_value=question,
+                    output_value=None,
+                    confidence=0.0,
+                    field_label=question[:120],
+                    elapsed_ms=_elapsed_ms,
+                )
                 return None
-            # Strip any AI disclaimers
             if any(phrase in answer.lower() for phrase in ("as an ai", "i don't have", "i cannot")):
+                record_decision(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:" + ("option" if is_option_field else "free_text"),
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="rejected_ai_leak",
+                    input_value=question,
+                    output_value=answer,
+                    confidence=0.0,
+                    field_label=question[:120],
+                    elapsed_ms=_elapsed_ms,
+                )
                 return None
+            # When the field carries options, validate that the LLM picked one
+            # of them. Cognitive routing has been seen to leak unrelated text
+            # ("Enhanced swarm convergence: GRPO group sampling...") into the
+            # answer slot — that text would silently be filed as the user's
+            # screening answer otherwise. Align via the same OptionAligner the
+            # cache lookup uses; if the answer doesn't fit any option, treat
+            # the call as a miss and let the caller fall through.
+            if is_option_field:
+                from jobpulse.screening_option_aligner import OptionAligner
+                aligner = OptionAligner()
+                aligned = aligner.align_answer(answer, options, field_type)
+                opts_lower = {(o or "").lower().strip() for o in options}
+                if (aligned or "").lower().strip() not in opts_lower:
+                    logger.warning(
+                        "LLM fallback returned %r which does not align to any "
+                        "option in %s — treating as miss",
+                        (answer or "")[:60], [o[:25] for o in options[:5]],
+                    )
+                    record_decision(
+                        agent_name="screening_pipeline",
+                        call_site="_llm_answer:option",
+                        decision_type="llm_call",
+                        mechanism="llm",
+                        tier_reached="rejected_option_mismatch",
+                        input_value=question,
+                        output_value=answer,
+                        confidence=0.0,
+                        field_label=question[:120],
+                        elapsed_ms=_elapsed_ms,
+                    )
+                    return None
+                record_decision(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:option",
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="ok_option_aligned",
+                    input_value=question,
+                    output_value=aligned,
+                    confidence=0.85,
+                    field_label=question[:120],
+                    elapsed_ms=_elapsed_ms,
+                )
+                return aligned
+            # Free-text branch: option alignment doesn't apply, but the
+            # cognitive-routing leak ("Enhanced swarm convergence: GRPO
+            # group sampling...") is just as poisonous here — without a
+            # guard it would land in the screening_semantic_cache and
+            # serve at score=1.00 on every subsequent matching apply.
+            # The S13 root cause (cross-domain procedural-recall bleed)
+            # is fixed in shared/memory_layer/_stores.py; this is the
+            # defense-in-depth backstop for any LLM hallucination /
+            # future cross-domain bug shape.
+            from shared.semantic_utils import semantic_similarity
+            try:
+                relevance = semantic_similarity(question, answer)
+            except Exception as exc:
+                logger.debug(
+                    "JD-relevance check failed (%s) — accepting answer "
+                    "without similarity floor",
+                    exc,
+                )
+                return answer
+            if relevance < _LLM_ANSWER_RELEVANCE_THRESHOLD:
+                logger.warning(
+                    "LLM fallback returned %r which has cosine similarity "
+                    "%.3f < %.2f to question %r — treating as miss "
+                    "(S13 leak guard)",
+                    (answer or "")[:80], relevance,
+                    _LLM_ANSWER_RELEVANCE_THRESHOLD,
+                    (question or "")[:60],
+                )
+                record_decision(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:free_text",
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="rejected_jd_relevance_low",
+                    input_value=question,
+                    output_value=answer,
+                    confidence=float(relevance),
+                    field_label=question[:120],
+                    elapsed_ms=_elapsed_ms,
+                )
+                return None
+            record_decision(
+                agent_name="screening_pipeline",
+                call_site="_llm_answer:free_text",
+                decision_type="llm_call",
+                mechanism="llm",
+                tier_reached="ok_free_text",
+                input_value=question,
+                output_value=answer,
+                confidence=0.85,
+                field_label=question[:120],
+                elapsed_ms=_elapsed_ms,
+            )
             return answer
         except Exception as exc:
             logger.debug("LLM fallback failed: %s", exc)
+            try:
+                from shared.semantic_decisions import record_decision as _rd
+                _rd(
+                    agent_name="screening_pipeline",
+                    call_site="_llm_answer:" + ("option" if is_option_field else "free_text"),
+                    decision_type="llm_call",
+                    mechanism="llm",
+                    tier_reached="exception",
+                    input_value=question,
+                    output_value=repr(exc)[:200],
+                    confidence=0.0,
+                    field_label=question[:120],
+                    elapsed_ms=(_time.perf_counter() - _t0) * 1000.0,
+                )
+            except Exception:
+                pass
             return None
 
     def _profile_summary(self) -> str:
@@ -474,9 +834,22 @@ class ScreeningPipeline:
         field_options: list[str] | None = None,
         field_type: str = "",
         selected_option: str = "",
+        job_context: dict[str, Any] | None = None,
     ) -> None:
-        """Record the outcome of an answered question for learning."""
-        self._semantic_cache.record_outcome(question, success)
+        """Record the outcome of an answered question for learning.
+
+        ``job_context`` is required so the recorded outcome and any
+        cached answer are scoped to the same (profile, JD) context the
+        decision used at lookup time. Callers that don't pass it record
+        against the empty-context bucket (legacy behaviour).
+        """
+        jd_context_hash = self._jd_context_hash(job_context)
+        self._semantic_cache.record_outcome(
+            question,
+            success,
+            profile_state_hash=self._profile_state_hash,
+            jd_context_hash=jd_context_hash,
+        )
         intent, _ = self._intent_classifier.classify(question)
         if success:
             if intent and intent != ScreeningIntent.UNKNOWN:
@@ -491,4 +864,8 @@ class ScreeningPipeline:
                     selected_option=selected_option or answer if field_options else "",
                     field_type=field_type,
                     field_options=field_options,
+                    profile_state_hash=self._profile_state_hash,
+                    jd_context_hash=jd_context_hash,
                 )
+
+

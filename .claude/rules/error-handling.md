@@ -1,5 +1,5 @@
 ---
-paths: ["jobpulse/**/*.py", "shared/**/*.py"]
+paths: ["jobpulse/**/*.py", "shared/**/*.py", "patterns/**/*.py", "mindgraph_app/**/*.py"]
 description: "Structured error handling for all agent code"
 ---
 
@@ -30,3 +30,6 @@ All errors in agent code MUST return structured error context, not generic strin
 - Distinguish access failures (needing retry) from valid empty results (successful query, no matches)
 - Only validate at system boundaries (user input, external APIs) — don't add error handling for impossible internal scenarios
 - Trust internal code and framework guarantees — no defensive coding against things that can't happen
+
+## OPRAL Error Loop
+On every error: follow the OPRAL loop (Observe → Plan → Reason → Act → Learn). See CLAUDE.md.

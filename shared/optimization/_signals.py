@@ -14,6 +14,12 @@ logger = get_logger(__name__)
 VALID_SIGNAL_TYPES = frozenset({
     "correction", "failure", "success",
     "adaptation", "score_change", "rollback",
+    # Cross-domain transfer outcomes — emitted by
+    # `jobpulse.platform_transfer.record_outcome`. Without this entry
+    # `LearningSignal.__post_init__` raised `ValueError`, which the
+    # producer's `try/except` swallowed at debug level so the signal
+    # never reached the bus.
+    "transfer",
 })
 
 VALID_SEVERITIES = frozenset({"info", "warning", "critical"})

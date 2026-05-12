@@ -28,6 +28,7 @@ class Paper(BaseModel):
     s2_influential_citations: int = 0
     community_buzz: int = 0
     sources: list[str] = Field(default_factory=list)
+    affiliations: list[str] = Field(default_factory=list)
 
 
 class FactCheckResult(BaseModel):
@@ -52,6 +53,7 @@ class RankedPaper(Paper):
     practical_takeaway: str = ""
     summary: str = ""
     fact_check: FactCheckResult | None = None
+    rank_reason: str = ""
 
 
 class Chart(BaseModel):

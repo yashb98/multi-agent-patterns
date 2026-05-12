@@ -299,6 +299,7 @@ def analyze_and_deduplicate(
                 platform=raw.get("platform", "reed"),
                 jd_text=raw.get("description", ""),
                 apply_url=raw.get("apply_url", raw.get("url", "")),
+                direct_url=raw.get("direct_url", ""),
             )
             listings.append(listing)
         except Exception as exc:
@@ -484,7 +485,12 @@ def prescreen_listings(
         # A3: Company background (soft flags)
         try:
             past_apps = db.get_applications_by_company(listing.company)
-        except (AttributeError, Exception):
+        except Exception as exc:
+            logger.warning(
+                "scan_pipeline: get_applications_by_company failed for %r — Gate 4 cannot detect duplicate applications: %s",
+                listing.company,
+                exc,
+            )
             past_apps = []
         bg = check_company_background(listing.company, past_apps)
         if bg.previously_applied:
@@ -566,20 +572,31 @@ def generate_materials(
         matched_project_names = [r.get("name", "") for r in matched_repos]
     bundle.matched_project_names = matched_project_names
 
-    # Synthetic CV text for ATS + Gate 4B (no PDF until apply time)
+    # Synthetic CV text for ATS + Gate 4B, then generate PDF
     cv_path = None
     cv_text = ""
     ats_score = 0.0
     matched_projects: list[dict] = []
+    tagline: str | None = None
+    summary: str | None = None
+    extra_skills: dict[str, str] = {}
     try:
         extra_skills = build_extra_skills(listing.required_skills, listing.preferred_skills)
 
-        # Pre-generation: sync Notion Skill Tracker
+        # Pre-generation: sync Notion Skill Tracker (MANDATORY step 1 per
+        # `.claude/rules/jobs.md`). Non-blocking but the failure MUST be
+        # visible — silent swallow lets stale verified-skill data ship into
+        # every CV with zero observability. Same shape as S7 M-A (db
+        # access exception swallowed silently).
         try:
             from jobpulse.skill_tracker_notion import sync_verified_to_profile
             sync_verified_to_profile()
-        except Exception:
-            pass  # Non-blocking
+        except Exception as exc:
+            logger.warning(
+                "scan_pipeline: sync_verified_to_profile failed before CV generation "
+                "for %s — CV may use stale verified skills: %s",
+                listing.job_id[:8], exc, exc_info=True,
+            )
 
         # Dynamic project selection from MindGraph (archetype-aware)
         archetype = getattr(listing, "archetype", None)
@@ -617,7 +634,15 @@ def generate_materials(
             if tailored.projects:
                 matched_projects = tailored.projects
         except Exception as exc:
-            logger.debug("scan_pipeline: CV tailoring failed, using templates: %s", exc)
+            # Tailoring is the value-add — silent debug-only on failure means
+            # generic template CVs ship without any operator signal. Promote
+            # to warning so failures (LLM quota, key, model name change) are
+            # visible. CV still falls back to templates so apply path keeps
+            # running.
+            logger.warning(
+                "scan_pipeline: CV tailoring failed, using templates: %s",
+                exc, exc_info=True,
+            )
 
         # ATS scoring — include all CV sections so soft skills in
         # Experience/Community are counted toward keyword matches
@@ -648,6 +673,24 @@ def generate_materials(
         ats_score = ats_score_obj.total
     except Exception as exc:
         logger.warning("scan_pipeline: synthetic CV / ATS failed for %s: %s", listing.job_id[:8], exc)
+
+    # Generate CV PDF only for jobs that will proceed to review or auto-apply
+    # (ats_score >= 85). Jobs below threshold are skipped by route_and_apply, so
+    # generating a PDF for them wastes ~100ms + disk without ever being used.
+    if cv_text and not cv_path and ats_score >= 85:
+        try:
+            from jobpulse.cv_templates.generate_cv import generate_cv_pdf
+            cv_path = generate_cv_pdf(
+                company=listing.company,
+                location=listing.location or "London, UK",
+                tagline=tagline,
+                summary=summary,
+                projects=matched_projects or None,
+                extra_skills=extra_skills or None,
+            )
+            logger.info("scan_pipeline: generated CV at %s", cv_path)
+        except Exception as exc:
+            logger.warning("scan_pipeline: CV PDF generation failed: %s", exc)
 
     bundle.cv_path = cv_path
     bundle.cv_text = cv_text
@@ -689,7 +732,13 @@ def generate_materials(
                         job_id=listing.job_id,
                     )
                 except Exception as exc:
-                    logger.debug("scan_pipeline: scrutiny calibration record failed: %s", exc)
+                    # Calibration is a learning system — silent debug means
+                    # the calibrator never learns if a schema migration breaks
+                    # writes. Warning surfaces the regression. Non-blocking.
+                    logger.warning(
+                        "scan_pipeline: scrutiny calibration record failed: %s",
+                        exc, exc_info=True,
+                    )
             except Exception as exc:
                 logger.warning("scan_pipeline: Gate 4B LLM failed: %s", exc)
 
@@ -722,7 +771,7 @@ def generate_materials(
                 match_tier=tier,
                 matched_projects=matched_project_names,
                 cv_drive_link=cv_drive_link,
-                cl_drive_link=cl_drive_link_val,
+                cl_drive_link=None,
                 notes=gate4b_notes if gate4b_notes else None,
                 company=listing.company,
             )
@@ -732,7 +781,7 @@ def generate_materials(
                 match_tier=tier,
                 matched_projects=matched_project_names,
                 cv_drive_link=cv_drive_link,
-                cl_drive_link=cl_drive_link_val,
+                cl_drive_link=None,
                 cv_path=str(cv_path) if cv_path else None,
                 cover_letter_path=bundle.cover_letter_path,
                 gate4_notes=gate4b_notes,
@@ -760,6 +809,8 @@ def route_and_apply(
     review_batch: list[dict],
     remaining_cap: int,
     auto_applied: int,
+    *,
+    dry_run: bool = True,
 ) -> RouteResult:
     """Route one job to auto-apply, review queue, or skip based on ATS score.
 
@@ -770,6 +821,7 @@ def route_and_apply(
         review_batch: Mutable list — review jobs appended here.
         remaining_cap: How many more auto-applications are allowed today.
         auto_applied: How many have already been auto-applied this run.
+        dry_run: If True, stops before submission. Defaults to True (safer-by-default).
 
     Returns:
         RouteResult indicating what action was taken.
@@ -791,13 +843,42 @@ def route_and_apply(
             _queue_for_review(listing, ats_score, review_batch)
             return RouteResult("queued_for_review", listing.job_id, listing.title, listing.company)
 
+        # Lazy CL generator — only invoked if the form actually has a cover-letter
+        # file input. Greenhouse / Lever / Ashby commonly do (Octus had
+        # `<input type="file" id="cover_letter">` with the literal label "Attach"),
+        # but the auto-apply path was passing cl_generator=None so the lazy hook
+        # never fired. Mirror the live-review and webhook paths that already wire
+        # a generator (live_review_applicator.py / job_api.py).
+        cl_generator = None
+        if bundle.cover_letter_path is None and listing.company and listing.title:
+            def cl_generator():
+                try:
+                    from jobpulse.cv_templates.generate_cover_letter import generate_cover_letter_pdf
+                    from jobpulse.project_portfolio import get_best_projects_for_jd
+                    project_dicts = get_best_projects_for_jd(
+                        list(listing.required_skills or []),
+                        list(listing.preferred_skills or []),
+                    )
+                    return generate_cover_letter_pdf(
+                        company=listing.company,
+                        role=listing.title,
+                        matched_projects=project_dicts,
+                        required_skills=list(listing.required_skills or []),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "scan_pipeline: lazy CL generation failed for %s: %s",
+                        listing.company, exc,
+                    )
+                    return None
+
         try:
             result = apply_job(
                 url=listing.url,
                 ats_platform=listing.ats_platform,
                 cv_path=bundle.cv_path,
                 cover_letter_path=bundle.cover_letter_path,
-                cl_generator=None,
+                cl_generator=cl_generator,
                 custom_answers={
                     "_job_context": _build_screening_context(listing),
                 },
@@ -812,28 +893,64 @@ def route_and_apply(
                     "ats_score": ats_score,
                     "matched_projects": bundle.matched_project_names,
                 },
+                dry_run=dry_run,
             )
             if result.get("success"):
+                # CRITICAL: distinguish actual submission vs dry-run-stop.
+                # apply_job(dry_run=True) returns success=True, dry_run=True
+                # when the form fills cleanly and reaches the Submit button —
+                # but Submit is NEVER clicked under dry_run. Marking these as
+                # status='Applied' falsely records jobs as submitted that the
+                # user hasn't approved yet, hides them from the review queue,
+                # and corrupts the daily quota. They must be queued for
+                # human review and only flip to 'Applied' after
+                # confirm_application() fires (post-approval).
                 applied_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
                 follow_up = (date.today() + timedelta(days=7)).isoformat()
-                db.save_application(
-                    job_id=listing.job_id,
-                    status="Applied",
-                    ats_score=ats_score,
-                    match_tier=tier,
-                    matched_projects=bundle.matched_project_names,
-                    cv_path=str(bundle.cv_path),
-                    cover_letter_path=str(bundle.cover_letter_path) if bundle.cover_letter_path else None,
-                    applied_at=applied_at,
-                    notion_page_id=notion_page_id,
-                    follow_up_date=follow_up,
-                )
-                # Notion update now handled by post_apply_hook inside apply_job
-                logger.info(
-                    "scan_pipeline: AUTO-APPLIED %s @ %s (ATS %.1f%%)",
-                    listing.title, listing.company, ats_score,
-                )
-                return RouteResult("auto_applied", listing.job_id, listing.title, listing.company)
+                actually_submitted = not result.get("dry_run", False)
+                if actually_submitted:
+                    db.save_application(
+                        job_id=listing.job_id,
+                        status="Applied",
+                        ats_score=ats_score,
+                        match_tier=tier,
+                        matched_projects=bundle.matched_project_names,
+                        cv_path=str(bundle.cv_path),
+                        cover_letter_path=str(bundle.cover_letter_path) if bundle.cover_letter_path else None,
+                        applied_at=applied_at,
+                        notion_page_id=notion_page_id,
+                        follow_up_date=follow_up,
+                    )
+                    logger.info(
+                        "scan_pipeline: AUTO-APPLIED %s @ %s (ATS %.1f%%)",
+                        listing.title, listing.company, ats_score,
+                    )
+                    return RouteResult("auto_applied", listing.job_id, listing.title, listing.company)
+                else:
+                    # Dry-run-stop on a successful fill — form is ready, waiting
+                    # for human approval via Telegram review. Record state so the
+                    # review handler can resume from this point.
+                    db.save_application(
+                        job_id=listing.job_id,
+                        status="Pending Approval",
+                        ats_score=ats_score,
+                        match_tier=tier,
+                        matched_projects=bundle.matched_project_names,
+                        cv_path=str(bundle.cv_path),
+                        cover_letter_path=str(bundle.cover_letter_path) if bundle.cover_letter_path else None,
+                        applied_at=None,
+                        notion_page_id=notion_page_id,
+                        follow_up_date=None,
+                    )
+                    logger.info(
+                        "scan_pipeline: DRY-RUN STOP (form ready for review) %s @ %s (ATS %.1f%%)",
+                        listing.title, listing.company, ats_score,
+                    )
+                    _queue_for_review(listing, ats_score, review_batch)
+                    return RouteResult(
+                        "queued_for_review",
+                        listing.job_id, listing.title, listing.company,
+                    )
             else:
                 logger.warning(
                     "scan_pipeline: auto-apply failed for %s: %s",
@@ -889,16 +1006,21 @@ def process_single_url(
         Dict with pipeline results (listing, pre-screen, ats_score, action).
     """
     from jobpulse.job_db import JobDB
-    from jobpulse.liveness_checker import check_liveness
-
     db = JobDB()
 
     logger.info("process_single_url: starting pipeline for %s", url)
 
-    # 1. Check liveness
+    # 1. Check liveness via HTTP fetch
     try:
-        liveness = check_liveness(url)
-        if liveness and liveness.get("expired"):
+        import httpx
+        from jobpulse.liveness_checker import classify_liveness
+        resp = httpx.get(url, follow_redirects=True, timeout=15)
+        liveness = classify_liveness(
+            status_code=resp.status_code,
+            url=str(resp.url),
+            body=resp.text[:5000],
+        )
+        if liveness.status == "expired":
             logger.warning("process_single_url: listing appears expired — continuing anyway")
     except Exception as exc:
         logger.warning("process_single_url: liveness check failed: %s", exc)
@@ -934,23 +1056,27 @@ def process_single_url(
 
                 if not jd_text:
                     jd_text = soup.get_text(separator="\n", strip=True)[:5000]
-
-                title_el = soup.select_one("h1, .job-title, .topcard__title")
-                if title_el:
-                    title = title_el.get_text(strip=True)
-
-                company_el = soup.select_one(
-                    ".topcard__org-name-link, .company-name, "
-                    '[data-testid="inlineHeader-companyName"]'
-                )
-                if company_el:
-                    company = company_el.get_text(strip=True)
     except Exception as exc:
         logger.error("process_single_url: failed to fetch JD: %s", exc)
         return {"status": "error", "message": f"Failed to fetch JD: {exc}"}
 
     if not jd_text:
         logger.warning("process_single_url: no JD text extracted — pipeline may underperform")
+
+    # Audit 2026-05-10 / Slice S6 / TP-11 — adapter-agnostic title + company
+    # extraction via LLM over jd_text. Replaces the previous hardcoded
+    # LinkedIn/Indeed CSS selectors (`.topcard__title`, `.topcard__org-name-link`,
+    # etc.) which produced `Unknown Role @ Unknown Company` for every
+    # non-LinkedIn ATS (Lever, Ashby, Greenhouse company-name miss, etc.).
+    # Cached per jd_hash, so each unique JD costs at most one LLM call.
+    if jd_text:
+        try:
+            from jobpulse.jd_metadata_extractor import extract_title_company
+            metadata = extract_title_company(jd_text)
+            title = metadata.get("title", "") or title
+            company = metadata.get("company", "") or company
+        except Exception as exc:  # noqa: BLE001 — graceful fallback to "Unknown"
+            logger.warning("process_single_url: title/company extraction failed: %s", exc)
 
     # 3. Analyze JD
     try:
@@ -966,7 +1092,7 @@ def process_single_url(
         return {"status": "error", "message": f"JD analysis failed: {exc}"}
 
     # Check if already processed
-    existing = db.get_by_job_id(listing.job_id)
+    existing = db.get_listing(listing.job_id)
     if existing and existing.get("status") in ("Applied", "Submitted"):
         return {
             "status": "already_applied",
@@ -974,7 +1100,7 @@ def process_single_url(
             "message": f"Already applied to {listing.title} @ {listing.company}",
         }
 
-    db.upsert(listing)
+    db.save_listing(listing)
     logger.info(
         "process_single_url: analyzed — %s @ %s (%s)",
         listing.title, listing.company, listing.platform,
@@ -994,19 +1120,24 @@ def process_single_url(
         pre_screen.gate3_score,
     )
 
-    if pre_screen.tier == "rejected":
+    if pre_screen.tier == "reject":
         db.update_status(listing.job_id, "Rejected")
         return {
             "status": "rejected",
             "listing": listing,
             "pre_screen": pre_screen,
-            "message": f"Pre-screen rejected: {pre_screen.tier}",
+            "message": (
+                f"Pre-screen rejected: {pre_screen.gate1_kill_reason or pre_screen.tier}"
+            ),
         }
 
     # 5. Generate materials
-    trail = ProcessTrail()
+    from jobpulse.process_logger import ProcessTrail
+    trail = ProcessTrail(agent_name="process_single_url", task_trigger=url[:80])
+    repos: list[dict] = []
+    notion_failures: list[str] = []
     try:
-        bundle = generate_materials(listing, db, trail)
+        bundle = generate_materials(listing, pre_screen, db, repos, notion_failures)
     except Exception as exc:
         logger.error("process_single_url: material generation failed: %s", exc)
         return {
@@ -1025,6 +1156,7 @@ def process_single_url(
         review_batch=review_batch,
         remaining_cap=10,
         auto_applied=0,
+        dry_run=dry_run,
     )
 
     return {

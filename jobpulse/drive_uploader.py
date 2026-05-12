@@ -25,14 +25,25 @@ logger = get_logger(__name__)
 
 
 def _file_name_prefix() -> str:
+    """ProfileStore.identity().file_name_prefix → config env → fallback empty.
+    Never hardcodes a real name in source per pii-policy.md.
+    """
     try:
         from shared.profile_store import get_profile_store
-        prefix = get_profile_store().identity().file_name_prefix
+        prefix = (get_profile_store().identity().file_name_prefix or "").strip()
         if prefix:
             return prefix
     except Exception:
         pass
-    return "Yash_Bishnoi"
+    try:
+        from jobpulse.config import APPLICANT_FIRST_NAME, APPLICANT_LAST_NAME
+        prefix = f"{APPLICANT_FIRST_NAME}_{APPLICANT_LAST_NAME}".strip("_")
+        if prefix:
+            return prefix
+    except Exception:
+        pass
+    logger.warning("drive_uploader._file_name_prefix: no name in ProfileStore/config — using 'Resume'")
+    return "Resume"  # generic, non-PII fallback so file uploads still work
 
 
 def _get_drive_service() -> Any | None:
@@ -196,10 +207,16 @@ def upload_cv(cv_path: Path, company: str) -> str | None:
         logger.warning("drive_uploader: GOOGLE_DRIVE_RESUMES_FOLDER_ID not set — skipping CV upload")
         return None
 
+    # Embed the company name in the filename so the Drive listing is
+    # browsable by company. Strips trailing TLD-like suffixes per the
+    # project's "CV filename without domain suffix" convention.
+    safe_company = company.split(".")[0].strip().replace(" ", "_") or "Application"
+    # Filename prefix from ProfileStore identity, never hardcoded.
+    prefix = _file_name_prefix() or "Resume"
     return upload_to_drive(
         cv_path,
         folder_id=GOOGLE_DRIVE_RESUMES_FOLDER_ID,
-        filename=cv_path.name,
+        filename=f"{prefix}_{safe_company}.pdf",
     )
 
 
@@ -219,8 +236,9 @@ def upload_cover_letter(cl_path: Path, company: str) -> str | None:
         )
         return None
 
+    safe_company = company.split(".")[0].strip().replace(" ", "_") or "Application"
     return upload_to_drive(
         cl_path,
         folder_id=GOOGLE_DRIVE_COVERLETTERS_FOLDER_ID,
-        filename=cl_path.name,
+        filename=f"Cover_Letter_{safe_company}.pdf",
     )

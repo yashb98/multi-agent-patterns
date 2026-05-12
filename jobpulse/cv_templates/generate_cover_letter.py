@@ -15,9 +15,12 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
@@ -30,9 +33,158 @@ from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 from jobpulse.config import DATA_DIR
 from jobpulse.cv_templates import build_applicant_identity, get_project_stats, sanitize_pdf as _sanitize_pdf
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cover-letter polish cache (cache-llm-S5)
+# ---------------------------------------------------------------------------
+
+_COVER_LETTER_CACHE_TTL_DAYS = 30
+_COVER_LETTER_CACHE_LOCK = threading.Lock()
+
+
+def _cover_letter_inputs_hash(
+    role: str, company: str, required_skills: list[str],
+    points: list[tuple[str, str]],
+) -> str:
+    """16-char hash of every input that affects polish_points_llm output.
+
+    Includes the deterministic input points (built from the profile +
+    matched_projects upstream) so a profile/project change invalidates
+    the cache automatically. Skill list is sorted for order-independence.
+    """
+    payload = {
+        "role": (role or "").strip().lower(),
+        "company": (company or "").strip().lower(),
+        "required": sorted([s for s in (required_skills or [])][:8]),
+        "points": [[h or "", d or ""] for h, d in (points or [])],
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _cover_letter_role_archetype(role: str) -> str:
+    """Mirrors `screening_answers._classify_role_archetype` /
+    `cv_tailor._classify_role_archetype` for cross-cluster consistency."""
+    if not role:
+        return "generic"
+    t = role.lower().strip()
+    if "data analyst" in t or ("analytics" in t and "engineer" not in t):
+        return "data_analyst"
+    if "data engineer" in t:
+        return "data_engineer"
+    if "data scientist" in t:
+        return "data_scientist"
+    if "machine learning" in t or "ml engineer" in t or "ai engineer" in t:
+        return "ml_engineer"
+    if "research engineer" in t or "research scientist" in t:
+        return "research_engineer"
+    if "backend" in t or "back-end" in t:
+        return "backend_engineer"
+    if "frontend" in t or "front-end" in t:
+        return "frontend_engineer"
+    if "full stack" in t or "fullstack" in t or "full-stack" in t:
+        return "fullstack_engineer"
+    if "software engineer" in t or "developer" in t:
+        return "software_engineer"
+    return t.split()[0] if t else "generic"
+
+
+def _cover_letter_cache_init(db) -> None:
+    """Lazily create cover_letter_cache table inside applications.db.
+
+    Schema mirrors hiring_message_cache (S3) and tailored_cv_cache (S4):
+    primary key is the (company, role_archetype, inputs_hash) tuple,
+    payload is the JSON-encoded list[(header, detail)] tuples.
+    """
+    conn = db._connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cover_letter_cache ("
+        "company TEXT NOT NULL, role_archetype TEXT NOT NULL, "
+        "inputs_hash TEXT NOT NULL, payload TEXT NOT NULL, "
+        "generated_at TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (company, role_archetype, inputs_hash))"
+    )
+    conn.commit()
+
+
+@observe_lookup("applications", "cover_letter_cache", key_arg=0)
+def _cover_letter_cache_lookup(
+    company: str, role_archetype: str, inputs_hash: str, *, db=None,
+) -> "list[tuple[str, str]] | None":
+    """Return cached polished points or None on miss / TTL expiry.
+
+    Under ``JOBPULSE_TEST_MODE=1`` (set by ``tests/conftest.py``) with
+    default ``db=None``, short-circuits to None — same guard as
+    `cv_tailor._tailored_cv_cache_lookup`.
+    """
+    if not (company and role_archetype and inputs_hash):
+        return None
+    if db is None and os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return None
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    key = (company.lower().strip(), role_archetype.lower().strip(), inputs_hash)
+    with _COVER_LETTER_CACHE_LOCK:
+        _cover_letter_cache_init(db)
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT payload, generated_at FROM cover_letter_cache "
+            "WHERE company = ? AND role_archetype = ? AND inputs_hash = ?",
+            key,
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            generated = datetime.fromisoformat(row["generated_at"])
+            if (datetime.now() - generated).days > _COVER_LETTER_CACHE_TTL_DAYS:
+                return None
+        except (ValueError, TypeError):
+            return None
+        try:
+            payload = json.loads(row["payload"])
+            points = [tuple(p) for p in payload]
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.debug("cover_letter_cache: payload parse failed: %s", exc)
+            return None
+        conn.execute(
+            "UPDATE cover_letter_cache SET hit_count = hit_count + 1 "
+            "WHERE company = ? AND role_archetype = ? AND inputs_hash = ?",
+            key,
+        )
+        conn.commit()
+        return points
+
+
+def _cover_letter_cache_store(
+    company: str, role_archetype: str, inputs_hash: str,
+    points: list[tuple[str, str]], *, db=None,
+) -> None:
+    """Persist freshly-polished points.
+
+    Under ``JOBPULSE_TEST_MODE=1`` with default ``db=None``, no-op."""
+    if not (company and role_archetype and inputs_hash) or not points:
+        return
+    if db is None and os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    payload = json.dumps([[h, d] for h, d in points], ensure_ascii=False)
+    key = (company.lower().strip(), role_archetype.lower().strip(), inputs_hash)
+    with _COVER_LETTER_CACHE_LOCK:
+        _cover_letter_cache_init(db)
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO cover_letter_cache "
+            "(company, role_archetype, inputs_hash, payload, generated_at, hit_count) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (*key, payload, datetime.now().isoformat()),
+        )
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +240,13 @@ def build_dynamic_points(
 
 
 def _default_pad_points(points: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """Pad *points* to exactly 4 with generic education/certification entries."""
+    """Pad *points* to exactly 4 with generic technical entries.
+
+    Headers intentionally avoid the soft-skill words that `cv_tailor`'s
+    validator forbids (collaboration, communication, problem solving,
+    adaptability) so the cover-letter padding doesn't ship language the CV
+    pipeline is rejecting.
+    """
     pad = [
         (
             "Education & Continuous Learning:",
@@ -99,12 +257,12 @@ def _default_pad_points(points: list[tuple[str, str]]) -> list[tuple[str, str]]:
             "Completed advanced courses in cloud architecture, DevOps, and distributed systems.",
         ),
         (
-            "Collaboration & Communication:",
-            "Experienced working in cross-functional teams with agile delivery practices.",
+            "Production Engineering:",
+            "Shipped systems with CI/CD, monitoring, and rate-limited automation in real deployments.",
         ),
         (
-            "Problem Solving & Adaptability:",
-            "Track record of rapidly learning new frameworks and delivering under tight deadlines.",
+            "Rapid Delivery:",
+            "Track record of shipping new frameworks end-to-end under tight deadlines.",
         ),
     ]
     idx = 0
@@ -122,9 +280,23 @@ def polish_points_llm(
 ) -> list[tuple[str, str]]:
     """Optionally refine deterministic points with GPT-5o-mini.
 
-    On any failure (network, bad JSON, missing key) the original *points*
-    are returned unchanged — the PDF will still be generated.
+    Wraps the LLM call in a `(company, role_archetype, inputs_hash)` cache
+    so a re-application to the same JD with the same input points skips
+    the LLM entirely. Cache miss runs the LLM and stores the polished
+    output on success; LLM failures (None / malformed / <4 items) return
+    the unpolished points and do NOT poison the cache.
     """
+    # Cache lookup: same role/company/skills/points → cached refinement.
+    role_archetype = _cover_letter_role_archetype(role)
+    inputs_hash = _cover_letter_inputs_hash(role, company, required_skills, points)
+    cached = _cover_letter_cache_lookup(company, role_archetype, inputs_hash)
+    if cached is not None:
+        logger.info(
+            "cover_letter_cache: hit on (%s, %s, %s) — skipping LLM polish",
+            (company or "")[:40], role_archetype[:30], inputs_hash[:8],
+        )
+        return cached
+
     # Route through CognitiveEngine (default-on) for creative refinement
     from shared.agents import cognitive_llm_call
 
@@ -151,20 +323,28 @@ def polish_points_llm(
     if raw is None:
         return points
 
-    try:
-        # Strip markdown fences if present
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
-            cleaned = re.sub(r"\n?```$", "", cleaned)
+    # Reuse the shared LLM-JSON helper so we get the same robustness
+    # (markdown fences, prose prefixes, single-key-dict unwrapping) as
+    # cv_tailor without re-implementing it here.
+    from jobpulse.cv_tailor import _parse_llm_json
 
-        parsed = json.loads(cleaned)
+    try:
+        parsed = _parse_llm_json(raw)
         if not isinstance(parsed, list) or len(parsed) < 4:
             return points
         result = [(item["header"], item["detail"]) for item in parsed[:4]]
-        return result
     except (json.JSONDecodeError, KeyError, TypeError):
         return points
+
+    # Cache only when the LLM returned 4 well-formed points. Malformed
+    # output already short-circuited above; no risk of caching a bad
+    # refinement.
+    try:
+        _cover_letter_cache_store(company, role_archetype, inputs_hash, result)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("cover_letter_cache: store failed (continuing): %s", exc)
+
+    return result
 
 # Template colors
 ORANGE_RED = '#f2511b'
@@ -226,8 +406,16 @@ def generate_cover_letter_pdf(
         points = build_dynamic_points(matched_projects, required_skills)
         try:
             points = polish_points_llm(points, role, company, required_skills)
-        except Exception:
-            pass  # Use unpolished points on LLM failure
+        except Exception as exc:
+            # Don't swallow silently — polish failure means the generic
+            # deterministic points ship instead of LLM-refined ones, which is
+            # an operator-visible quality drop. Same shape as scan_pipeline
+            # CV tailoring (S8 audit M-B). Non-blocking.
+            logger.warning(
+                "generate_cover_letter: polish_points_llm failed for %s — "
+                "using unpolished deterministic points: %s",
+                company, exc, exc_info=True,
+            )
 
     # Build dynamic intro from matched projects
     if intro is None and matched_projects:

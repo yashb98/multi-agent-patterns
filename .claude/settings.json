@@ -1,4 +1,5 @@
 {
+  "model": "claude-opus-4-7",
   "enabledPlugins": {
     "postman@claude-plugins-official": false,
     "huggingface-skills@claude-plugins-official": false,

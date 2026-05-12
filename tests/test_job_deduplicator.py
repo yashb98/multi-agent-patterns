@@ -68,23 +68,27 @@ def test_dedup_exact_url(db, make_listing):
 
 
 def test_dedup_fuzzy_company_title(db, make_listing):
-    """Same company + exact title is filtered; low word-overlap title is not filtered."""
+    """Same company + exact title is filtered; low word-overlap title is not filtered.
+
+    Production uses *containment* (intersection / query_words) with threshold
+    0.6, NOT Jaccard 0.8. To stay below the gate the incoming title must
+    share less than 60% of its words with the existing title.
+    """
     existing = make_listing(job_id="abc", title="Data Scientist", company="Barclays")
     db.save_listing(existing)
     db.save_application(job_id="abc", status="Applied", ats_score=90)
 
     from jobpulse.job_deduplicator import deduplicate
 
-    # "Junior Data Scientist" vs "Data Scientist"
-    # Words in incoming: {"junior", "data", "scientist"}  (3 words)
-    # Words in existing: {"data", "scientist"}            (2 words)
-    # Intersection: {"data", "scientist"} = 2
-    # Union: {"junior", "data", "scientist"} = 3
-    # Overlap = 2/3 ≈ 0.67 < 0.8 → NOT filtered
+    # "Senior Frontend Engineer Lead" vs "Data Scientist"
+    # Incoming words: {"senior", "frontend", "engineer", "lead"} (4)
+    # Existing words: {"data", "scientist"} (2)
+    # Intersection: {} = 0
+    # Containment = 0/4 = 0 < 0.6 → NOT filtered
     incoming = [
         make_listing(
             job_id="def",
-            title="Junior Data Scientist",
+            title="Senior Frontend Engineer Lead",
             company="Barclays",
             url="https://example.com/2",
         )

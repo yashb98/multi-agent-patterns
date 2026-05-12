@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,15 +65,51 @@ def _clear_active_review_file() -> None:
         logger.debug("live_review_applicator: failed clearing active review file: %s", exc)
 
 
+def _is_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+_STALE_MAX_AGE_SECONDS = 7200  # 2 hours
+
+
 def _load_persisted_review() -> dict[str, Any] | None:
     if not _ACTIVE_REVIEW_FILE.exists():
         return None
     try:
-        return json.loads(_ACTIVE_REVIEW_FILE.read_text(encoding="utf-8"))
+        data = json.loads(_ACTIVE_REVIEW_FILE.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.warning("live_review_applicator: failed loading active review file: %s", exc)
         _clear_active_review_file()
         return None
+
+    owner_pid = data.get("pid")
+    started_at = data.get("started_at")
+
+    if not owner_pid and not started_at:
+        logger.warning("live_review_applicator: clearing legacy session (no pid/timestamp)")
+        _clear_active_review_file()
+        return None
+
+    if started_at and (time.time() - started_at) > _STALE_MAX_AGE_SECONDS:
+        logger.warning(
+            "live_review_applicator: clearing stale session (age=%.0fs, max=%ds)",
+            time.time() - started_at, _STALE_MAX_AGE_SECONDS,
+        )
+        _clear_active_review_file()
+        return None
+
+    if owner_pid and not _is_pid_alive(owner_pid):
+        logger.warning(
+            "live_review_applicator: clearing orphaned session (pid=%d is dead)", owner_pid,
+        )
+        _clear_active_review_file()
+        return None
+
+    return data
 
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
@@ -161,6 +200,20 @@ class LiveReviewSession:
         self.session_id = session_id or str(uuid.uuid4())[:8]
         self.url: str = job["url"]
 
+        # Reuse an in-progress ATS apply tab if Chrome already has one for
+        # this company. Without this, every invocation re-runs the listing
+        # → "Apply on company site" → new-tab chain, stacking duplicate ATS
+        # tabs (3-4 deep on JPMC was confirmed 2026-05-04). Critically: if
+        # the user has manually logged into a prior tab, attaching there
+        # avoids losing that auth on the listing-driven re-navigation.
+        existing_tab_url = self._find_in_progress_apply_tab()
+        if existing_tab_url:
+            logger.info(
+                "live_review_applicator: reusing in-progress tab %s "
+                "(was %s)", existing_tab_url[:100], self.url[:80],
+            )
+            self.url = existing_tab_url
+
         jid = str(job.get("job_id") or "")
         cv_candidate: Path | None = (
             Path(job["cv_path"]) if job.get("cv_path") else None
@@ -210,6 +263,108 @@ class LiveReviewSession:
         self._action: str | None = None
         self._action_event = threading.Event()
 
+    def _find_in_progress_apply_tab(self) -> str | None:
+        """Look for an existing Chrome tab on an in-progress ATS apply page
+        for this job's company.
+
+        Returns the tab URL to attach to, or None to fall through to the
+        normal listing-URL navigation.
+
+        Why: each ``job-apply-next`` invocation is a fresh process. With no
+        cross-invocation tab tracking, the agent re-runs the listing →
+        "Apply on company site" → new-tab chain every time, stacking
+        duplicate ATS tabs. Worse, when JPMC's Oracle Cloud (or any
+        re-auth-required ATS) opens a fresh tab it loses the user's
+        manual login from a prior tab.
+
+        Heuristic: scan Chrome tabs (CDP `/json`), filter to NOT the
+        listing host, require a path matching the in-progress apply
+        patterns, require the company name in the host or page title,
+        and return the most-progressed (deepest path) candidate.
+        """
+        import json
+        import urllib.request
+        from urllib.parse import urlparse
+
+        listing_host = ""
+        try:
+            listing_host = urlparse(self.url).netloc.lower().removeprefix("www.")
+        except Exception:
+            listing_host = ""
+        company_raw = (self.job.get("company") or "").lower()
+        title_raw = (self.job.get("title") or "").lower()
+        if not listing_host or (not company_raw and not title_raw):
+            return None
+        # Strip non-alphanumerics so we can match against host/title text
+        # that may use different casings or remove spaces.
+        company_norm = "".join(c for c in company_raw if c.isalnum())
+        # Distinctive job-title tokens (≥4 chars, no stopwords). Used as a
+        # secondary matcher because company abbreviations may not match
+        # cleanly: e.g. "JPMorganChase" vs host "jpmc.fa.oraclecloud.com" —
+        # but the page title carries the role name "Applied AIML
+        # Associate- Python & Data Science Engineering", which makes for
+        # strong title-vs-title overlap.
+        _stop = {"the", "and", "for", "with", "from", "into", "junior",
+                 "senior", "graduate", "associate", "analyst", "engineer",
+                 "developer", "manager"}
+        title_tokens = {
+            t for t in re.findall(r"[a-z0-9]+", title_raw)
+            if len(t) >= 4 and t not in _stop
+        }
+
+        try:
+            with urllib.request.urlopen("http://localhost:9222/json", timeout=3) as r:
+                tabs = json.load(r)
+        except Exception as exc:
+            logger.debug("live_review: in-progress tab scan failed: %s", exc)
+            return None
+
+        # Path-pattern indicating in-progress application. Structural URL
+        # validation is permitted (per .claude/rules/jobpulse.md / shared.md
+        # — regex OK for URL structure, not for classification).
+        apply_path_rx = re.compile(
+            r"/apply(/|$|\?)|/section/|/application(/|$|\?)|/candidate/|"
+            r"/jobs/[^/]+/apply|/job/[^/]+/apply",
+            re.IGNORECASE,
+        )
+
+        candidates: list[str] = []
+        for t in tabs:
+            if t.get("type") != "page":
+                continue
+            url = (t.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                host = urlparse(url).netloc.lower().removeprefix("www.")
+            except Exception:
+                continue
+            # Skip the listing source — we want the ATS, not Indeed/LinkedIn/etc.
+            if host == listing_host:
+                continue
+            if not apply_path_rx.search(url):
+                continue
+            host_clean = "".join(c for c in host if c.isalnum())
+            tab_title = (t.get("title") or "").lower()
+            title_clean = "".join(c for c in tab_title if c.isalnum())
+            # Match by company name (strict) OR ≥2 title tokens in page title
+            # (loose). 2 is enough to be confident — random tabs won't share
+            # 2 distinctive technical tokens with a specific job title.
+            company_match = (
+                len(company_norm) >= 3
+                and (company_norm in host_clean or company_norm in title_clean)
+            )
+            tab_title_tokens = set(re.findall(r"[a-z0-9]+", tab_title))
+            title_match = len(title_tokens & tab_title_tokens) >= 2
+            if company_match or title_match:
+                candidates.append(url)
+
+        if not candidates:
+            return None
+        # Prefer the deepest path (most progressed: e.g. /apply/section/3 over /apply)
+        candidates.sort(key=lambda u: u.count("/"), reverse=True)
+        return candidates[0]
+
     def _persist_state(self, status: str, **extra: Any) -> None:
         """Persist the current review state so approval can survive restarts."""
         page_url = self.url
@@ -222,6 +377,8 @@ class LiveReviewSession:
         payload = {
             "status": status,
             "session_id": self.session_id,
+            "pid": os.getpid(),
+            "started_at": time.time(),
             "job": self.job,
             "url": self.url,
             "approval_page_url": page_url,
@@ -346,7 +503,21 @@ class LiveReviewSession:
             raise FileNotFoundError(f"CV not found: {self.cv_path}")
 
         driver = PlaywrightDriver()
-        await driver.connect()
+        # Pass self.url so the driver attaches to the user's in-progress
+        # tab (set by _find_in_progress_apply_tab) instead of pages[-1].
+        # Without this, the driver picks whatever Chrome opened last and
+        # then navigates it to about:blank below — wiping the user's
+        # manually-logged-in session. Confirmed live on JPMC 2026-05-04.
+        await driver.connect(prefer_url=self.url)
+        # Skip the stale-state reset if we attached to the right tab —
+        # about:blank would destroy the in-progress page state we just
+        # found. Only reset when we picked a fallback (pages[-1]) tab
+        # whose state is unrelated to this job.
+        if not getattr(driver, "_attached_existing_url", False):
+            try:
+                await driver.page.goto("about:blank", wait_until="load", timeout=5000)
+            except Exception:
+                pass
         self._driver = driver
         self._page = driver.page
 
@@ -360,6 +531,7 @@ class LiveReviewSession:
             custom_answers=self.merged_answers,
             overrides=None,
             dry_run=True,
+            job=self.job,
         )
 
     def fill_and_request_approval(self) -> None:
@@ -374,6 +546,7 @@ class LiveReviewSession:
         except Exception as exc:
             logger.error("live_review_applicator: fill failed: %s", exc)
             self._restore_pending_status()
+            self._record_failure_learning(str(exc))
             _clear_active_review_file()
             send_telegram(
                 f"❌ Failed to fill {self.job.get('title')} @ {self.job.get('company')}:\n{exc}",
@@ -387,11 +560,21 @@ class LiveReviewSession:
 
         if not self._fill_result.get("success"):
             err = self._fill_result.get("error", "fill returned success=False")
+            is_expired = self._fill_result.get("expired", False)
             logger.warning("live_review_applicator: fill did not reach submit page: %s", err)
-            self._restore_pending_status()
+
+            if is_expired:
+                self._mark_expired()
+            else:
+                self._restore_pending_status()
+
+            self._record_failure_learning(err, expired=is_expired)
             _clear_active_review_file()
+
+            status_emoji = "💀" if is_expired else "❌"
+            status_label = "Job expired" if is_expired else "Could not reach the submit page for"
             send_telegram(
-                f"❌ Could not reach the submit page for "
+                f"{status_emoji} {status_label} "
                 f"{self.job.get('title')} @ {self.job.get('company')}:\n{err}",
                 chat_id=TELEGRAM_CHAT_ID,
             )
@@ -550,7 +733,15 @@ class LiveReviewSession:
         )
 
     async def _capture_final_mapping_async(self, filler: Any) -> dict[str, str]:
-        """Read live page values right before click-submit."""
+        """Read live page values right before click-submit.
+
+        Layers, oldest first (later writes win):
+          1. Per-page snapshots from NativeFormFiller (captured right before
+             each Next/Continue click — preserves user mid-flow edits on
+             screening pages whose inputs are gone by review time).
+          2. Pulled AI-assist fixes (`ai_assist_logger`).
+          3. Live read of the current (review) page.
+        """
         page = self._page
         if page is None:
             return dict(self._agent_mapping)
@@ -559,6 +750,19 @@ class LiveReviewSession:
         self.pull_ai_assist_data()
 
         final: dict[str, str] = {}
+
+        # Layer 1: per-page snapshots taken right before each Next/Continue
+        per_page = list(getattr(filler, "_per_page_live_snapshots", []) or [])
+        for snap in per_page:
+            for label, value in (snap or {}).items():
+                if label and value:
+                    final[label] = value
+        if per_page:
+            logger.info(
+                "_capture_final_mapping_async: merged %d per-page snapshots "
+                "(%d fields) before review-page read",
+                len(per_page), len(final),
+            )
 
         async def _read(loc: Any, label: str, kind: str) -> None:
             if not label:
@@ -889,6 +1093,101 @@ class LiveReviewSession:
             JobDB().update_status(job_id, "Pending Approval")
         except Exception as exc:
             logger.warning("live_review_applicator: failed to restore Pending Approval: %s", exc)
+
+    def _mark_expired(self) -> None:
+        """Mark job as Expired in both SQLite and Notion so it never re-enters the queue."""
+        from jobpulse.job_db import JobDB
+
+        job_id = self.job.get("job_id")
+        if job_id:
+            try:
+                JobDB().update_status(job_id, "Expired")
+            except Exception as exc:
+                logger.warning("_mark_expired: SQLite update failed: %s", exc)
+
+        notion_page_id = self.job.get("notion_page_id") or self.job.get("_notion_page_id")
+        if notion_page_id:
+            try:
+                from jobpulse.job_notion_sync import update_application_page
+                # Notion's Status property only accepts the canonical lifecycle
+                # values (Found / Analyzing / Ready / Pending Approval / Applied
+                # / Interview / Offer / Rejected / Withdrawn). "Expired" is NOT
+                # in the schema — sending it triggers a 400 that the retry loop
+                # strips, leaving the job at Status=Found and re-pulled forever.
+                # Map to "Withdrawn" (closest semantic — we're withdrawing the
+                # job from the queue, not the recruiter rejecting us). The note
+                # preserves the actual reason.
+                update_application_page(
+                    notion_page_id,
+                    status="Withdrawn",
+                    notes="Job expired / no longer available (auto-withdrawn)",
+                )
+            except Exception as exc:
+                logger.warning("_mark_expired: Notion update failed: %s", exc)
+
+    def _record_failure_learning(self, error: str, *, expired: bool = False) -> None:
+        """OPRAL Learn phase — emit failure signals to learning systems."""
+        from urllib.parse import urlparse
+        domain = urlparse(self.url).netloc.lower().removeprefix("www.") if self.url else ""
+        company = self.job.get("company", "")
+        title = self.job.get("title", "")
+        platform = self.job.get("platform", "")
+
+        # 1. GotchasDB — record domain-specific failure
+        try:
+            from jobpulse.form_engine.gotchas import GotchasDB
+            gotchas = GotchasDB()
+            problem = "expired_job" if expired else "navigation_failure"
+            gotchas.store(
+                domain=domain,
+                selector_pattern=f"_failure:{problem}",
+                problem=f"{error} | {title} @ {company}",
+                solution="Mark as expired" if expired else "Investigate page structure",
+            )
+        except Exception as exc:
+            logger.debug("_record_failure_learning: GotchasDB failed: %s", exc)
+
+        # 2. OptimizationEngine — emit failure signal
+        try:
+            from shared.optimization import get_optimization_engine
+            engine = get_optimization_engine()
+            signal_type = "failure"
+            engine.emit(
+                signal_type=signal_type,
+                source_loop="live_review_applicator",
+                domain=domain,
+                agent_name="application_orchestrator",
+                payload={
+                    "category": "expired_job" if expired else "navigation_failure",
+                    "company": company,
+                    "title": title,
+                    "platform": platform,
+                    "error": error,
+                    "url": self.url,
+                },
+            )
+        except Exception as exc:
+            logger.debug("_record_failure_learning: OptimizationEngine failed: %s", exc)
+
+        # 3. AgentPerformanceDB — record failed attempt
+        try:
+            from jobpulse.agent_performance import AgentPerformanceDB
+            perf = AgentPerformanceDB()
+            perf.record_session(
+                company=company,
+                role=title,
+                platform=platform,
+                url=self.url,
+                success=False,
+                notes=f"{'expired' if expired else 'failure'}: {error}",
+            )
+        except Exception as exc:
+            logger.debug("_record_failure_learning: AgentPerformanceDB failed: %s", exc)
+
+        logger.info(
+            "OPRAL Learn: recorded failure for %s @ %s (expired=%s, domain=%s)",
+            title, company, expired, domain,
+        )
 
     def release(self) -> None:
         """Detach from Playwright while leaving the Chrome tab open."""

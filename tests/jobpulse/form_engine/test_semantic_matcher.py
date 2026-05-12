@@ -84,7 +84,7 @@ class TestTokenOverlap:
 class TestNoMatch:
     def test_returns_none_when_no_match(self):
         from jobpulse.form_engine.semantic_matcher import semantic_option_match
-        options = ["Red", "Blue", "Green"]
+        options = ["Quarterly revenue report", "Tax filing deadline", "Board meeting agenda"]
         assert semantic_option_match("purple", options) is None
 
     def test_returns_none_for_empty_options(self):

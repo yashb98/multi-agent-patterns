@@ -249,7 +249,13 @@ def scan_linkedin(config: SearchConfig) -> list[dict[str, Any]]:
                     start += 25
                     time.sleep(random.uniform(2.0, 5.0))
 
-            record_success(engine, "linkedin", signals)
+            if results:
+                record_success(engine, "linkedin", signals)
+            else:
+                logger.warning(
+                    "scan_linkedin: returned 0 results — skipping record_success "
+                    "to avoid resetting cooldown on a likely-blocked session"
+                )
 
     except Exception as exc:
         logger.error("scan_linkedin: guest API error: %s", exc)

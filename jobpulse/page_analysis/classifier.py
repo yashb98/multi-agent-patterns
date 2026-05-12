@@ -20,8 +20,38 @@ from jobpulse.form_models import PageSnapshot, PageType
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Compiled regexes (derived from page_analyzer.py heuristic rules)
+# Embedding anchors — short descriptions per page type for semantic matching
 # ---------------------------------------------------------------------------
+
+_PAGE_TYPE_ANCHORS: dict[str, str] = {
+    "verification_wall": "security challenge captcha or verification blocking page access",
+    "confirmation": "application submitted successfully thank you for applying",
+    "email_verification": "check your email to verify your account click the link",
+    "session_expired": "session timed out expired please sign in log in again",
+    "consent_gate": "agree to terms conditions privacy policy consent data processing",
+    "signup_form": "create new account sign up register with email and password",
+    "login_form": "sign in log in to your account with email and password",
+    "job_description": "job listing role description requirements responsibilities apply button",
+    "application_form": "job application form personal details resume upload work experience",
+    "unknown": "unrecognized page content",
+}
+
+# ---------------------------------------------------------------------------
+# Compiled regexes — STRUCTURAL FEATURE EXTRACTION, not classification
+# ---------------------------------------------------------------------------
+#
+# Note on the no-regex-for-classification rule: the patterns below extract
+# binary features (has_apply_button, has_login_button, has_confirmation_text,
+# etc.) that feed into a weighted softmax classifier whose weights also
+# include embedding similarity scores (`_compute_embedding_scores`). The
+# regex DOESN'T determine the page type by itself — it contributes one
+# feature among ~20. Final classification is the weighted ensemble.
+#
+# Where the regex is fragile (button text in a non-English locale, or
+# unusual phrasings like "I'm Interested" instead of "Apply"), the
+# embedding similarity to `_PAGE_TYPE_ANCHORS` carries the classifier
+# through. Button-intent matching also has an embedding fallback in
+# `_button_matches_intent()` below for the same reason.
 
 _APPLY_BUTTONS = re.compile(
     r"^(easy\s*apply|apply\s*(now|for\s*this)?|submit\s*application|start\s*application"
@@ -87,30 +117,36 @@ DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     "verification_wall": {
         "bias": 0.0,
         "verification_wall_present": 6.0,
+        "embedding_similarity": 1.5,
     },
     "confirmation": {
         "bias": 0.0,
         "confirmation_signal_count": 5.0,
+        "embedding_similarity": 2.0,
     },
     "email_verification": {
         "bias": 0.0,
         "email_verify_signal_count": 5.0,
+        "embedding_similarity": 2.0,
     },
     "session_expired": {
         "bias": 0.0,
         "session_expired_signal_count": 5.0,
+        "embedding_similarity": 1.5,
     },
     "consent_gate": {
         "bias": -1.0,
         "consent_signal_count": 3.0,
         "consent_and_accept": 2.0,
         "no_application_fields": 0.5,
+        "embedding_similarity": 2.0,
     },
     "signup_form": {
         "bias": 0.0,
         "password_count_ge_2": 4.0,
         "has_signup_button": 1.5,
         "password_count": 0.5,
+        "embedding_similarity": 2.0,
     },
     "login_form": {
         "bias": -1.0,
@@ -119,6 +155,7 @@ DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
         "has_password": 0.5,
         "has_email_field": 0.5,
         "no_application_fields": 0.5,
+        "embedding_similarity": 2.0,
     },
     "job_description": {
         "bias": -0.5,
@@ -127,6 +164,8 @@ DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
         "no_file_inputs": 0.3,
         "url_job_view_pattern": 2.5,
         "few_fields": 0.3,
+        "dialog_is_site_prompt": 2.0,
+        "embedding_similarity": 2.0,
     },
     "application_form": {
         "bias": -0.5,
@@ -134,7 +173,9 @@ DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
         "has_file_inputs": 2.5,
         "dialog_present": 2.5,
         "dialog_with_form_content": 3.0,
+        "dialog_is_site_prompt": -5.0,
         "field_count_ge_3": 2.0,
+        "embedding_similarity": 2.0,
     },
     "unknown": {
         "bias": 1.0,
@@ -145,6 +186,49 @@ DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
+_SITE_PROMPT_PATTERNS = re.compile(
+    r"(are you interested|save.{0,10}application|not interested|maybe later"
+    r"|how did you hear|rate.{0,10}experience|take.{0,10}survey"
+    r"|subscribe|newsletter|cookie|privacy.{0,5}settings"
+    r"|sign up for alerts|job alert|similar jobs|recommended)",
+    re.IGNORECASE,
+)
+
+
+# Canonical button-intent anchors for embedding fallback. When the regex
+# misses (localized text, unusual phrasings like "I'm Interested"), we
+# compare the button text against these anchors via embedding similarity.
+_BUTTON_INTENT_ANCHORS: dict[str, str] = {
+    "apply": "apply for this job submit application now start application",
+    "login": "sign in or log in to your existing account",
+    "signup": "create a new account or register or join now",
+}
+
+
+def _button_matches_intent(
+    button_text: str, regex_pattern: re.Pattern[str], intent: str,
+) -> bool:
+    """Return True if button text matches the given intent.
+
+    Tier 1: regex exact-shape match (cheap, deterministic).
+    Tier 2: embedding similarity to canonical anchor (catches localized
+    or unusual phrasings the regex misses, e.g. "I'm Interested" for
+    apply, "Mein Konto erstellen" for signup).
+    """
+    if not button_text:
+        return False
+    if regex_pattern.search(button_text):
+        return True
+    anchor = _BUTTON_INTENT_ANCHORS.get(intent, "")
+    if not anchor:
+        return False
+    try:
+        from shared.semantic_utils import semantic_similarity
+        return semantic_similarity(button_text[:80], anchor) >= 0.72
+    except Exception:
+        return False
+
 
 @dataclass
 class PageFeatures:
@@ -160,6 +244,7 @@ class PageFeatures:
     session_expired_signals: list[str]
     consent_signals: list[str]
     dialog_present: bool
+    dialog_is_site_prompt: bool
     field_count: int
     button_count: int
     url_path: str
@@ -167,6 +252,7 @@ class PageFeatures:
     has_apply_button: bool
     has_email_field: bool
     has_accept_button: bool
+    _page_text_preview: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -223,14 +309,22 @@ class PageTypeClassifier:
                 "dialog" in f.get("selector", "").lower() for f in fields
             )
 
+        dialog_text = snapshot_dict.get("dialog_text", "")
+        dialog_is_site_prompt = bool(
+            dialog_present
+            and dialog_text
+            and _SITE_PROMPT_PATTERNS.search(dialog_text)
+            and not has_application_labels
+        )
+
         return PageFeatures(
             has_application_labels=has_application_labels,
             has_file_inputs=snapshot_dict.get("has_file_inputs", False),
             has_login_button=any(
-                _LOGIN_BUTTONS.search(t) for t in button_texts if t
+                _button_matches_intent(t, _LOGIN_BUTTONS, "login") for t in button_texts if t
             ),
             has_signup_button=any(
-                _SIGNUP_BUTTONS.search(t) for t in button_texts if t
+                _button_matches_intent(t, _SIGNUP_BUTTONS, "signup") for t in button_texts if t
             ),
             password_count=password_count,
             confirmation_signals=_find_matches(_CONFIRMATION_PATTERNS, page_text),
@@ -240,23 +334,48 @@ class PageTypeClassifier:
             ),
             consent_signals=_find_matches(_CONSENT_GATE_PATTERNS, page_text),
             dialog_present=dialog_present,
+            dialog_is_site_prompt=dialog_is_site_prompt,
             field_count=len(fields),
             button_count=len(buttons),
             url_path=url,
             verification_wall_present=verification_wall is not None,
             has_apply_button=any(
-                _APPLY_BUTTONS.search(t) for t in button_texts if t
+                _button_matches_intent(t, _APPLY_BUTTONS, "apply") for t in button_texts if t
             ),
             has_email_field=has_email_field,
             has_accept_button=any(
                 _ACCEPT_BUTTONS.search(t) for t in button_texts if t
             ),
+            _page_text_preview=page_text[:200] if page_text else "",
         )
 
+    def _compute_embedding_scores(self, features: PageFeatures) -> dict[str, float]:
+        """Compute embedding similarity between page text and each page type anchor."""
+        try:
+            from shared.semantic_utils import semantic_similarity
+
+            page_text = features._page_text_preview
+            if not page_text or len(page_text.strip()) < 30:
+                return {}
+            scores: dict[str, float] = {}
+            for page_type, anchor in _PAGE_TYPE_ANCHORS.items():
+                scores[page_type] = semantic_similarity(page_text[:200], anchor)
+            return scores
+        except Exception:
+            return {}
+
     def _score_all_types(self, features: PageFeatures) -> dict[PageType, float]:
+        has_login_or_signup = (
+            features.has_login_button
+            or features.has_signup_button
+            or features.has_email_field
+            or features.password_count >= 1
+        )
+        wall_is_embedded = features.verification_wall_present and has_login_or_signup
+
         derived: dict[str, float] = {
             "bias": 1.0,
-            "verification_wall_present": 1.0 if features.verification_wall_present else 0.0,
+            "verification_wall_present": 0.0 if wall_is_embedded else (1.0 if features.verification_wall_present else 0.0),
             "confirmation_signal_count": float(len(features.confirmation_signals)),
             "email_verify_signal_count": float(len(features.email_verify_signals)),
             "session_expired_signal_count": float(len(features.session_expired_signals)),
@@ -297,17 +416,21 @@ class PageTypeClassifier:
             "few_fields": 1.0 if features.field_count <= 5 else 0.0,
             "has_application_fields": 1.0 if features.has_application_labels else 0.0,
             "has_file_inputs": 1.0 if features.has_file_inputs else 0.0,
-            "dialog_present": 1.0 if features.dialog_present else 0.0,
+            "dialog_present": 1.0 if features.dialog_present and not features.dialog_is_site_prompt else 0.0,
+            "dialog_is_site_prompt": 1.0 if features.dialog_is_site_prompt else 0.0,
             "dialog_with_form_content": (
                 1.0
                 if (
                     features.dialog_present
-                    and (features.has_application_labels or features.field_count >= 2)
+                    and not features.dialog_is_site_prompt
+                    and (features.has_application_labels or features.field_count >= 3)
                 )
                 else 0.0
             ),
             "field_count_ge_3": 1.0 if features.field_count >= 3 else 0.0,
         }
+
+        embedding_scores = self._compute_embedding_scores(features)
 
         scores: dict[PageType, float] = {}
         for page_type in PageType:
@@ -316,7 +439,10 @@ class PageTypeClassifier:
             for feature_name, weight in type_weights.items():
                 if feature_name == "bias":
                     continue
-                value = derived.get(feature_name, 0.0)
+                if feature_name == "embedding_similarity":
+                    value = embedding_scores.get(page_type.value, 0.0)
+                else:
+                    value = derived.get(feature_name, 0.0)
                 score += value * weight
             scores[page_type] = score
 

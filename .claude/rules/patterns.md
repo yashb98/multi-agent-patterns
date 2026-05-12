@@ -5,6 +5,8 @@
 - Max 3 iterations for hierarchical/dynamic_swarm.
 - Peer debate uses patience counter (score improvement < threshold).
 - Enhanced swarm uses experience-aware adaptive threshold.
+- Map-reduce uses parallel execution with reduce synthesis.
+- Plan-and-execute decomposes into steps, executes sequentially.
 
 ## Agent Design
 - Agents are stateless functions. No instance variables. No side effects.
@@ -19,17 +21,17 @@
 - Use smart_llm_call() for new LLM calls (auto-streams when STREAM_LLM_OUTPUT=1).
 
 ## Code Review (CodeGraph)
-- All 4 patterns use risk_aware_reviewer_node (shared/agents.py).
+- The original 4 patterns (hierarchical, peer_debate, dynamic_swarm, enhanced_swarm) use risk_aware_reviewer_node. map_reduce and plan_and_execute use the basic reviewer_node.
 - CodeGraph indexes draft code via AST, scores risk 0-1, injects top-risk functions into review prompt.
 - Visualization: export_pattern_mermaid() for pattern topology, export_code_graph_mermaid() for dependency graphs.
 
 ## Experiential Learning
-- All 4 patterns share ExperienceMemory (SQLite: data/experience_memory.db).
+- All 6 patterns share ExperienceMemory (SQLite: data/experience_memory.db).
 - High-scoring runs (>= 7.0) extract learnings at convergence/finish nodes.
 - Learned patterns injected into agent prompts for future runs.
 
 ## State Pruning
-- prune_state() called at convergence/routing points in all patterns.
+- prune_state() available in shared/state.py for state pruning (not currently active in any pattern).
 - Limits: research_notes=3, agent_history=20, token_usage=30.
 
 ## Fact Checking
@@ -37,6 +39,8 @@
 - Claim types: benchmark, date, attribution, comparison, technical.
 - Scoring: VERIFIED +1.0, INACCURATE -2.0, EXAGGERATED -1.0, UNVERIFIED -0.5/-1.5.
 - SQLite cache at data/verified_facts.db for instant reuse.
+- Note: dynamic_swarm does NOT use fact_check_node (all other 5 patterns do).
 
-## Real Data + Wiring Verification (MANDATORY)
+## Real Data + Wiring + OPRAL (MANDATORY)
 New pattern features: test with real topics/data (never stale fixtures). Verify the full chain fires — ExperienceMemory records the run, CodeGraph indexes the output, cost tracking logs the spend, fact checker caches results. Not wired = not done.
+On error: **Observe → Plan → Reason → Act → Learn**. Every pattern error must improve the system — route fixes to ExperienceMemory, fact checker cache, or CognitiveEngine so the pattern handles it autonomously next run.

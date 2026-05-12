@@ -1,31 +1,22 @@
-"""Comprehensive tests for ApplicationOrchestrator — navigation, form filling, edge cases.
+"""Tests for ApplicationOrchestrator static helpers.
 
-Covers:
-- Full navigation flow: JD → Apply click → form detection
-- Verification wall abort at navigation and form phases
-- Login/SSO/signup/email verification flows
-- Multi-page form filling with state machine
-- Stuck detection and page exhaustion
-- Dry-run mode
-- Domain extraction edge cases
-- Apply button regex matching
-- Signup link detection
-- Cookie dismiss integration
-- Learned sequence save on success
+Per project policy: no mocks. End-to-end navigation/login/fill behavior is
+covered by real Playwright runs in `tests/jobpulse/integration/test_pipeline_live.py`
+and the `*_real.py` test suites. The mock-driven tests that previously lived
+here exercised AsyncMock(bridge) — they no longer match the 5-phase navigation
+pipeline (2026-04 rewrite) and were producing false-positives. Removed
+2026-05-03 in favor of real-Playwright integration coverage.
+
+Static helpers (`_extract_domain`, `_find_apply_button`, `_find_signup_link`,
+`_as_dict`, `_to_page_snapshot`) are pure functions over dicts/Pydantic models
+and are testable directly with real data structures.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
-from jobpulse.application_orchestrator import (
-    MAX_FORM_PAGES,
-    MAX_NAVIGATION_STEPS,
-    ApplicationOrchestrator,
-)
+from jobpulse.application_orchestrator import ApplicationOrchestrator
 from jobpulse.form_models import (
     ButtonInfo,
     FieldInfo,
@@ -36,11 +27,11 @@ from jobpulse.form_models import (
 
 
 # =========================================================================
-# Fixtures
+# Real PageSnapshot construction (no mocks — actual Pydantic model)
 # =========================================================================
 
 
-def _snap(
+def _real_snapshot(
     url="https://boards.greenhouse.io/acme/jobs/4567890",
     title="Test",
     fields=None,
@@ -62,325 +53,6 @@ def _snap(
     )
 
 
-def _snap_dict(**kwargs):
-    return _snap(**kwargs).model_dump()
-
-
-@pytest.fixture
-def bridge():
-    b = AsyncMock()
-    b.navigate = AsyncMock()
-    b.fill = AsyncMock()
-    b.click = AsyncMock()
-    b.upload = AsyncMock()
-    b.get_snapshot = AsyncMock()
-    b.screenshot = AsyncMock(return_value=b"screenshot")
-    b.select_option = AsyncMock()
-    b.check = AsyncMock()
-    # v2 form engine methods
-    b.fill_radio_group = AsyncMock()
-    b.fill_custom_select = AsyncMock()
-    b.fill_autocomplete = AsyncMock()
-    b.fill_tag_input = AsyncMock()
-    b.fill_date = AsyncMock()
-    b.scroll_to = AsyncMock()
-    b.force_click = AsyncMock()
-    b.check_consent_boxes = AsyncMock()
-    b.rescan_after_fill = AsyncMock(return_value={"validation_errors": []})
-    b.wait_for_apply = AsyncMock(return_value={"waited_ms": 0, "apply_diagnostics": []})
-    # MV3 state persistence — return None by default (no saved progress)
-    b.get_form_progress = AsyncMock(return_value=None)
-    b.save_form_progress = AsyncMock(return_value=True)
-    b.clear_form_progress = AsyncMock(return_value=True)
-    return b
-
-
-@pytest.fixture
-def orchestrator(bridge, tmp_path, monkeypatch):
-    monkeypatch.setenv("ATS_ENCRYPTION_KEY", "test-key-for-encryption-32bytes!")
-    from jobpulse.account_manager import AccountManager
-    from jobpulse.navigation_learner import NavigationLearner
-
-    orch = ApplicationOrchestrator(
-        driver=bridge,
-        engine="playwright",
-        account_manager=AccountManager(db_path=str(tmp_path / "acc.db")),
-        gmail_verifier=MagicMock(),
-        navigation_learner=NavigationLearner(db_path=str(tmp_path / "nav.db")),
-    )
-    # Mock the page analyzer to avoid real OpenAI API calls.
-    orch.analyzer = MagicMock()
-    orch.analyzer.detect = AsyncMock()
-    # Also mock cookie dismisser to avoid bridge calls
-    orch.cookie_dismisser = MagicMock()
-    orch.cookie_dismisser.dismiss = AsyncMock()
-    # Mock SSO handler
-    orch.sso = MagicMock()
-    orch.sso.detect_sso = MagicMock(return_value=None)
-    # Use temp GotchasDB to avoid touching production data
-    from jobpulse.form_engine.gotchas import GotchasDB
-    orch.gotchas = GotchasDB(db_path=str(tmp_path / "gotchas.db"))
-    # Mock form filling — orchestrator tests verify navigation/auth, not NativeFormFiller
-    orch._filler.fill_application = AsyncMock(
-        return_value={"success": True, "pages_filled": 1}
-    )
-    return orch
-
-
-@pytest.fixture
-def cv_path(tmp_path):
-    cv = tmp_path / "cv.pdf"
-    cv.write_bytes(b"%PDF-1.4 test cv")
-    return cv
-
-
-# =========================================================================
-# Navigation: happy paths
-# =========================================================================
-
-
-class TestNavigationHappyPaths:
-    @pytest.mark.asyncio
-    async def test_jd_page_to_form_via_apply_click(self, orchestrator, bridge, cv_path):
-        """JD page → clicks Apply → reaches APPLICATION_FORM → fills → confirms."""
-        jd_snap = _snap_dict(
-            url="https://boards.greenhouse.io/stripe/jobs/6142978003",
-            text="Software Engineer at Stripe. We are looking for...",
-            buttons=[
-                {"selector": "#apply", "text": "Apply Now", "enabled": True, "type": "button"},
-            ],
-        )
-        form_snap = _snap_dict(
-            url="https://boards.greenhouse.io/stripe/jobs/6142978003/apply",
-            fields=[
-                {"selector": "#first_name", "input_type": "text", "label": "First Name"},
-                {"selector": "#email", "input_type": "email", "label": "Email"},
-            ],
-            has_files=True,
-        )
-        confirm_snap = _snap_dict(
-            url="https://boards.greenhouse.io/stripe/jobs/6142978003/thanks",
-            text="Thank you for applying! Your application has been received.",
-        )
-
-        bridge.get_snapshot.side_effect = [
-            jd_snap, jd_snap,        # after navigate + after cookie dismiss
-            form_snap, form_snap,     # after apply click + after cookie dismiss
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.side_effect = [
-            PageType.JOB_DESCRIPTION,
-            PageType.APPLICATION_FORM,
-        ]
-        bridge.fill.return_value = MagicMock(success=True)
-
-        result = await orchestrator.apply(
-            url="https://boards.greenhouse.io/stripe/jobs/6142978003",
-            platform="greenhouse",
-            cv_path=cv_path,
-            profile={"first_name": "Yash", "email": "y@test.com"},
-            custom_answers={},
-        )
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_direct_application_form(self, orchestrator, bridge, cv_path):
-        """Direct link to application form (skips JD page)."""
-        form_snap = _snap_dict(
-            url="https://jobs.lever.co/figma/5118a0b8-4a29-4029-8e49-17dbfc3694b0/apply",
-            fields=[
-                {"selector": "#name", "input_type": "text", "label": "Full Name"},
-            ],
-        )
-        confirm_snap = _snap_dict(
-            text="Application submitted successfully!",
-        )
-        bridge.get_snapshot.side_effect = [
-            form_snap, form_snap,     # navigate + cookie dismiss
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        result = await orchestrator.apply(
-            url="https://jobs.lever.co/figma/5118a0b8-4a29-4029-8e49-17dbfc3694b0/apply",
-            platform="lever",
-            cv_path=cv_path,
-            profile={"first_name": "Yash"},
-        )
-        assert result["success"] is True
-
-
-# =========================================================================
-# Navigation: verification wall
-# =========================================================================
-
-
-class TestVerificationWall:
-    @pytest.mark.asyncio
-    async def test_captcha_during_navigation(self, orchestrator, bridge, cv_path):
-        wall_snap = _snap_dict(
-            wall={
-                "wall_type": "cloudflare",
-                "confidence": 0.95,
-                "details": "Turnstile challenge",
-            },
-        )
-        bridge.get_snapshot.return_value = wall_snap
-        orchestrator.analyzer.detect.return_value = PageType.VERIFICATION_WALL
-
-        result = await orchestrator.apply(
-            url="https://www.reed.co.uk/jobs/data-analyst-dundee/52489123",
-            platform="reed",
-            cv_path=cv_path,
-        )
-        assert result["success"] is False
-        assert "CAPTCHA" in result["error"]
-
-
-
-# =========================================================================
-# Navigation: unknown page
-# =========================================================================
-
-
-class TestUnknownPage:
-    @pytest.mark.asyncio
-    async def test_unknown_page_with_no_apply_button(self, orchestrator, bridge, cv_path):
-        """UNKNOWN page with no identifiable apply button → abort."""
-        unknown_snap = _snap_dict(
-            text="Welcome to our company",
-            buttons=[{"selector": "#about", "text": "About Us", "enabled": True, "type": "button"}],
-        )
-        bridge.get_snapshot.return_value = unknown_snap
-        orchestrator.analyzer.detect.return_value = PageType.UNKNOWN
-
-        result = await orchestrator.apply(
-            url="https://careers.revolut.com/jobs/data-engineer-london",
-            platform="generic",
-            cv_path=cv_path,
-        )
-        assert result["success"] is False
-        assert "Unknown" in result["error"] or "could not reach" in result["error"]
-
-    @pytest.mark.asyncio
-    async def test_unknown_page_with_apply_guess(self, orchestrator, bridge, cv_path):
-        """UNKNOWN page with a guessable 'Apply' button → clicks it."""
-        unknown_snap = _snap_dict(
-            text="Job details here",
-            buttons=[
-                {"selector": "#apply", "text": "Apply for this job", "enabled": True, "type": "button"},
-            ],
-        )
-        form_snap = _snap_dict(
-            fields=[{"selector": "#name", "input_type": "text", "label": "Name"}],
-        )
-        confirm_snap = _snap_dict(text="Thank you for applying")
-
-        bridge.get_snapshot.side_effect = [
-            unknown_snap, unknown_snap,   # navigate + cookie
-            form_snap, form_snap,         # after guess click + cookie
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.side_effect = [
-            PageType.UNKNOWN,
-            PageType.APPLICATION_FORM,
-        ]
-        bridge.fill.return_value = MagicMock(success=True)
-
-        result = await orchestrator.apply(
-            url="https://jobs.smartrecruiters.com/Adidas/743999987654321-data-engineer",
-            platform="smartrecruiters",
-            cv_path=cv_path,
-            profile={"first_name": "Test"},
-        )
-        assert result["success"] is True
-
-
-# =========================================================================
-# Navigation: login / SSO
-# =========================================================================
-
-
-class TestLoginFlow:
-    @pytest.mark.asyncio
-    async def test_login_with_existing_account(self, orchestrator, bridge, cv_path):
-        """Login page detected → fills credentials from account manager."""
-        # Note: FieldInfo doesn't support 'password' type, use 'text' for password fields
-        login_snap = {
-            "url": "https://boards.greenhouse.io/stripe/login",
-            "title": "Login",
-            "fields": [
-                {"selector": "#email", "input_type": "email", "label": "Email"},
-                {"selector": "#pass", "input_type": "text", "label": "Password"},
-            ],
-            "buttons": [
-                {"selector": "#login", "text": "Sign In", "enabled": True, "type": "button"},
-            ],
-            "verification_wall": None,
-            "page_text_preview": "Sign in to continue",
-            "has_file_inputs": False,
-            "iframe_count": 0,
-            "timestamp": 1000,
-        }
-        form_snap = _snap_dict(
-            fields=[{"selector": "#q", "input_type": "text", "label": "First Name"}],
-            has_files=True,
-        )
-        confirm_snap = _snap_dict(text="Application submitted")
-
-        # Pre-create account — patch the config value used by account_manager
-        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "TestPass123!"):
-            orchestrator.accounts.create_account("boards.greenhouse.io")
-        bridge.get_snapshot.side_effect = [
-            login_snap, login_snap,     # navigate + cookie
-            form_snap, form_snap,       # after login + cookie
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.side_effect = [
-            PageType.LOGIN_FORM,
-            PageType.APPLICATION_FORM,
-        ]
-        bridge.fill.return_value = MagicMock(success=True)
-
-        result = await orchestrator.apply(
-            url="https://boards.greenhouse.io/stripe/login",
-            platform="greenhouse",
-            cv_path=cv_path,
-            profile={"first_name": "Yash"},
-        )
-        assert result["success"] is True
-        assert bridge.fill.call_count >= 2  # email + password
-
-
-# =========================================================================
-# Form filling: dry-run
-# =========================================================================
-
-
-class TestDryRun:
-    @pytest.mark.asyncio
-    async def test_dry_run_passed_to_filler(self, orchestrator, bridge, cv_path):
-        """Dry run flag is forwarded to the form filler."""
-        orchestrator._filler.fill_application = AsyncMock(
-            return_value={"success": True, "dry_run": True, "pages_filled": 1}
-        )
-        form_snap = _snap_dict(
-            fields=[{"selector": "#name", "input_type": "text", "label": "Name"}],
-        )
-        bridge.get_snapshot.side_effect = [form_snap, form_snap]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-
-        result = await orchestrator.apply(
-            url="https://jobs.lever.co/openai/e1a2b3c4-d5e6-7890-abcd-ef1234567890",
-            platform="lever",
-            cv_path=cv_path,
-            dry_run=True,
-        )
-        assert result.get("dry_run") is True
-        assert orchestrator._filler.fill_application.call_args.kwargs["dry_run"] is True
-
-
 # =========================================================================
 # Static helpers
 # =========================================================================
@@ -399,7 +71,7 @@ class TestStaticHelpers:
     def test_extract_domain_no_scheme(self):
         """URL without scheme — urlparse puts everything in path."""
         result = ApplicationOrchestrator._extract_domain("example.com")
-        assert result == "example.com"  # falls to else branch
+        assert result == "example.com"
 
     def test_find_apply_button_matches(self):
         snap = {
@@ -449,7 +121,7 @@ class TestStaticHelpers:
         assert btn is not None
 
     def test_as_dict_pydantic_model(self):
-        snap = _snap(url="https://boards.greenhouse.io/deepmind/jobs/5551234567")
+        snap = _real_snapshot(url="https://boards.greenhouse.io/deepmind/jobs/5551234567")
         result = ApplicationOrchestrator._as_dict(snap)
         assert isinstance(result, dict)
         assert result["url"] == "https://boards.greenhouse.io/deepmind/jobs/5551234567"
@@ -484,7 +156,7 @@ class TestStaticHelpers:
             "url": "",
             "title": "",
             "fields": [
-                {"bad_key": "no selector"},  # will raise on FieldInfo(**f)
+                {"bad_key": "no selector"},
                 {"selector": "#ok", "input_type": "text", "label": "OK"},
             ],
             "buttons": [],
@@ -493,7 +165,7 @@ class TestStaticHelpers:
             "has_file_inputs": False,
         }
         snap = ApplicationOrchestrator._to_page_snapshot(raw)
-        assert len(snap.fields) == 1  # malformed one skipped
+        assert len(snap.fields) == 1
 
     def test_to_page_snapshot_malformed_button_skipped(self):
         raw = {
@@ -501,7 +173,7 @@ class TestStaticHelpers:
             "title": "",
             "fields": [],
             "buttons": [
-                {"bad": True},  # malformed
+                {"bad": True},
                 {"selector": "#ok", "text": "OK"},
             ],
             "verification_wall": None,
@@ -510,381 +182,3 @@ class TestStaticHelpers:
         }
         snap = ApplicationOrchestrator._to_page_snapshot(raw)
         assert len(snap.buttons) == 1
-
-
-# =========================================================================
-# Navigation step limit
-# =========================================================================
-
-
-class TestNavigationLimit:
-    @pytest.mark.asyncio
-    async def test_max_navigation_steps_reached(self, orchestrator, bridge, cv_path):
-        """If we never reach APPLICATION_FORM within MAX_NAVIGATION_STEPS, return UNKNOWN."""
-        jd_snap = _snap_dict(
-            text="Job description content here",
-            buttons=[
-                {"selector": "#apply", "text": "Apply", "enabled": True, "type": "button"},
-            ],
-        )
-        bridge.get_snapshot.return_value = jd_snap
-        # Always return JOB_DESCRIPTION — never progresses to form
-        orchestrator.analyzer.detect.return_value = PageType.JOB_DESCRIPTION
-
-        result = await orchestrator.apply(
-            url="https://www.glassdoor.co.uk/job-listing/data-engineer-acme-JV_IC2671300_KO0,13.htm",
-            platform="glassdoor",
-            cv_path=cv_path,
-        )
-        assert result["success"] is False
-
-
-# =========================================================================
-# Learned sequence saved on success
-# =========================================================================
-
-
-class TestLearnedSequence:
-    @pytest.mark.asyncio
-    async def test_successful_apply_saves_sequence(self, orchestrator, bridge, cv_path):
-        """Successful application saves navigation steps to learner."""
-        form_snap = _snap_dict(
-            fields=[{"selector": "#name", "input_type": "text", "label": "Name"}],
-        )
-        confirm_snap = _snap_dict(text="Thank you for applying")
-
-        bridge.get_snapshot.side_effect = [
-            form_snap, form_snap,
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        with patch.object(orchestrator.learner, "save_sequence") as mock_save:
-            result = await orchestrator.apply(
-                url="https://www.reed.co.uk/jobs/ml-engineer-edinburgh/52498765",
-                platform="reed",
-                cv_path=cv_path,
-                profile={"first_name": "Yash"},
-            )
-            assert result["success"] is True
-            mock_save.assert_called_once()
-
-
-# =========================================================================
-# Execute action dispatch
-# =========================================================================
-
-
-class TestExecuteAction:
-    @pytest.mark.asyncio
-    async def test_fill_action(self, orchestrator, bridge):
-        await orchestrator._execute_action({"type": "fill", "selector": "#q", "value": "answer"})
-        bridge.fill.assert_called_once_with("#q", "answer")
-
-    @pytest.mark.asyncio
-    async def test_click_action(self, orchestrator, bridge):
-        await orchestrator._execute_action({"type": "click", "selector": "#btn"})
-        bridge.click.assert_called_once_with("#btn")
-
-    @pytest.mark.asyncio
-    async def test_select_action(self, orchestrator, bridge):
-        await orchestrator._execute_action({"type": "select", "selector": "#dd", "value": "opt1"})
-        bridge.select_option.assert_called_once_with("#dd", "opt1")
-
-    @pytest.mark.asyncio
-    async def test_check_action(self, orchestrator, bridge):
-        await orchestrator._execute_action({"type": "check", "selector": "#cb"})
-        bridge.check.assert_called_once_with("#cb", True)
-
-    @pytest.mark.asyncio
-    async def test_upload_action(self, orchestrator, bridge):
-        await orchestrator._execute_action({"type": "upload", "selector": "#file", "file_path": "/tmp/cv.pdf"})
-        bridge.upload.assert_called_once_with("#file", Path("/tmp/cv.pdf"))
-
-
-# =========================================================================
-# Login handler
-# =========================================================================
-
-
-class TestHandleLogin:
-    @pytest.mark.asyncio
-    async def test_login_fills_email_and_password(self, orchestrator, bridge):
-        """With a known account, _handle_login fills both email and password."""
-        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
-            orchestrator.accounts.create_account("jobs.lever.co")
-
-        login_snap = _snap_dict(
-            url="https://jobs.lever.co/auth/sign-in",
-            text="Sign in to continue",
-            fields=[
-                {"selector": "#email", "input_type": "email", "label": "Email"},
-                {"selector": "#pass", "input_type": "text", "label": "Password"},
-            ],
-            buttons=[
-                {"selector": "#sign-in", "text": "Sign In", "enabled": True, "type": "button"},
-            ],
-        )
-        post_snap = _snap_dict(
-            url="https://jobs.lever.co/dashboard",
-            text="Welcome back",
-        )
-        bridge.get_snapshot.return_value = post_snap
-
-        result = await orchestrator._handle_login(login_snap, "generic")
-
-        fill_calls = [str(c) for c in bridge.fill.call_args_list]
-        selectors = [c.args[0] for c in bridge.fill.call_args_list]
-        assert "#email" in selectors
-        assert "#pass" in selectors
-
-    @pytest.mark.asyncio
-    async def test_login_no_account_redirects_to_signup(self, orchestrator, bridge):
-        """No account + snapshot has signup button → clicks signup."""
-        snap = _snap_dict(
-            url="https://careers-acme.icims.com/login",
-            text="Log in",
-            buttons=[
-                {"selector": "#signup-link", "text": "Create Account", "enabled": True, "type": "button"},
-            ],
-        )
-        after_click = _snap_dict(url="https://careers-acme.icims.com/register", text="Create account")
-        bridge.get_snapshot.return_value = after_click
-
-        result = await orchestrator._handle_login(snap, "icims")
-
-        bridge.click.assert_called_once_with("#signup-link")
-        assert result["url"] == "https://careers-acme.icims.com/register"
-
-    @pytest.mark.asyncio
-    async def test_login_no_account_no_signup_returns_snapshot(self, orchestrator, bridge):
-        """No account, no signup button → returns original snapshot unchanged."""
-        snap = _snap_dict(
-            url="https://acme.bamboohr.com/careers/login",
-            text="Log in",
-            buttons=[
-                {"selector": "#about", "text": "About Us", "enabled": True, "type": "button"},
-            ],
-        )
-        result = await orchestrator._handle_login(snap, "bamboohr")
-
-        bridge.click.assert_not_called()
-        assert result["url"] == "https://acme.bamboohr.com/careers/login"
-
-    @pytest.mark.asyncio
-    async def test_login_verifies_success_before_marking(self, orchestrator, bridge):
-        """After clicking sign-in, if post-login page still looks like login, do NOT mark success."""
-        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
-            orchestrator.accounts.create_account("jobs.ashbyhq.com")
-
-        snap = _snap_dict(
-            url="https://jobs.ashbyhq.com/auth/login",
-            text="Sign in to continue",
-            fields=[
-                {"selector": "#email", "input_type": "email", "label": "Email"},
-                {"selector": "#pass", "input_type": "text", "label": "Password"},
-            ],
-            buttons=[
-                {"selector": "#btn", "text": "Sign In", "enabled": True, "type": "button"},
-            ],
-        )
-        # Post-login snapshot still looks like a login page
-        still_login = _snap_dict(
-            url="https://jobs.ashbyhq.com/auth/login",
-            text="sign in — invalid password",
-        )
-        bridge.fill.return_value = MagicMock(success=True)
-        bridge.get_snapshot.return_value = still_login
-
-        with patch.object(orchestrator.accounts, "mark_login_success") as mock_mark:
-            await orchestrator._handle_login(snap, "generic")
-            mock_mark.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_login_fill_failure_returns_early(self, orchestrator, bridge):
-        """TimeoutError on email fill → returns snapshot without clicking sign-in."""
-        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
-            orchestrator.accounts.create_account("jobs.jobvite.com")
-
-        snap = _snap_dict(
-            url="https://jobs.jobvite.com/acme/login",
-            text="Sign in",
-            fields=[
-                {"selector": "#email", "input_type": "email", "label": "Email"},
-                {"selector": "#pass", "input_type": "text", "label": "Password"},
-            ],
-            buttons=[
-                {"selector": "#btn", "text": "Log In", "enabled": True, "type": "button"},
-            ],
-        )
-        # email fill raises TimeoutError; password fill is fine
-        bridge.fill.side_effect = [TimeoutError("timeout"), MagicMock(success=True)]
-        bridge.get_snapshot.return_value = _snap_dict(url="https://jobs.jobvite.com/acme/dashboard")
-
-        result = await orchestrator._handle_login(snap, "generic")
-
-        # Should not have clicked sign-in because email fill failed
-        bridge.click.assert_not_called()
-
-
-# =========================================================================
-# Signup handler
-# =========================================================================
-
-
-class TestHandleSignup:
-    @pytest.mark.asyncio
-    async def test_signup_creates_account_fills_fields(self, orchestrator, bridge):
-        """_handle_signup creates an account and fills all profile fields."""
-        snap = _snap_dict(
-            url="https://signup.example.com/register",
-            text="Create your account",
-            fields=[
-                {"selector": "#email", "input_type": "email", "label": "Email"},
-                {"selector": "#pass", "input_type": "text", "label": "Password"},
-                {"selector": "#fname", "input_type": "text", "label": "First Name"},
-                {"selector": "#lname", "input_type": "text", "label": "Last Name"},
-                {"selector": "#phone", "input_type": "tel", "label": "Phone"},
-            ],
-            buttons=[
-                {"selector": "#create", "text": "Create Account", "enabled": True, "type": "button"},
-            ],
-        )
-        after_snap = _snap_dict(url="https://signup.example.com/verify", text="Check your email")
-        bridge.get_snapshot.return_value = after_snap
-
-        with patch("jobpulse.config.ATS_ACCOUNT_PASSWORD", "Secret123!"):
-            with patch("jobpulse.applicator.PROFILE", {
-                "first_name": "Yash",
-                "last_name": "Bishnoi",
-                "email": "yash@test.com",
-                "phone": "+447000000000",
-            }):
-                result = await orchestrator._handle_signup(snap, "generic")
-
-        filled_selectors = [c.args[0] for c in bridge.fill.call_args_list]
-        assert "#email" in filled_selectors
-        assert "#fname" in filled_selectors
-        assert "#lname" in filled_selectors
-        # Account should now exist for this domain
-        assert orchestrator.accounts.has_account("signup.example.com")
-
-
-# =========================================================================
-# Pre-submit gate
-# =========================================================================
-
-
-class TestPreSubmitGate:
-    @pytest.mark.asyncio
-    async def test_gate_passes_on_good_answers(self, orchestrator, bridge, cv_path):
-        """Gate passes → result is success=True with gate_score populated."""
-        form_snap = _snap_dict(
-            fields=[{"selector": "#q", "input_type": "text", "label": "Name"}],
-        )
-        confirm_snap = _snap_dict(text="Thank you for applying")
-        bridge.get_snapshot.side_effect = [
-            form_snap, form_snap,
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        company_research = MagicMock()
-        with patch("jobpulse.pre_submit_gate.PreSubmitGate") as MockGate:
-            from jobpulse.pre_submit_gate import GateResult
-            MockGate.return_value.review.return_value = GateResult(passed=True, score=8.5)
-            result = await orchestrator.apply(
-                url="https://example.com",
-                platform="generic",
-                cv_path=cv_path,
-                company_research=company_research,
-            )
-
-        assert result["success"] is True
-        assert result.get("gate_score") == 8.5
-
-    @pytest.mark.asyncio
-    async def test_gate_blocks_on_low_score(self, orchestrator, bridge, cv_path):
-        """Gate returns passed=False → result includes needs_human_review."""
-        form_snap = _snap_dict(
-            fields=[{"selector": "#q", "input_type": "text", "label": "Name"}],
-        )
-        confirm_snap = _snap_dict(text="Thank you for applying")
-        bridge.get_snapshot.side_effect = [
-            form_snap, form_snap,
-            confirm_snap, confirm_snap, confirm_snap,
-        ]
-        orchestrator.analyzer.detect.return_value = PageType.APPLICATION_FORM
-        bridge.fill.return_value = MagicMock(success=True)
-
-        company_research = MagicMock()
-        with patch("jobpulse.pre_submit_gate.PreSubmitGate") as MockGate:
-            from jobpulse.pre_submit_gate import GateResult
-            MockGate.return_value.review.return_value = GateResult(
-                passed=False, score=5.0, weaknesses=["Too generic"]
-            )
-            result = await orchestrator.apply(
-                url="https://example.com",
-                platform="generic",
-                cv_path=cv_path,
-                company_research=company_research,
-            )
-
-        assert result["success"] is False
-        assert result.get("needs_human_review") is True
-
-    def test_gate_import_error_blocks_submission(self, orchestrator):
-        """ImportError on PreSubmitGate → passed=False, fail-closed."""
-        company_research = MagicMock()
-        with patch.dict("sys.modules", {"jobpulse.pre_submit_gate": None}):
-            gate_result = orchestrator._run_pre_submit_gate(
-                custom_answers={"q1": "answer"},
-                jd_keywords=["python"],
-                company_research=company_research,
-            )
-        assert gate_result.passed is False
-
-
-# =========================================================================
-# Execute action — v2 action types
-# =========================================================================
-
-
-class TestExecuteActionV2Types:
-    @pytest.mark.asyncio
-    async def test_fill_radio_group_action(self, orchestrator, bridge):
-        await orchestrator._execute_action(
-            {"type": "fill_radio_group", "selector": "#radio", "value": "Yes"}
-        )
-        bridge.fill_radio_group.assert_called_once_with("#radio", "Yes")
-
-    @pytest.mark.asyncio
-    async def test_fill_custom_select_action(self, orchestrator, bridge):
-        await orchestrator._execute_action(
-            {"type": "fill_custom_select", "selector": "#cust-dd", "value": "Option B"}
-        )
-        bridge.fill_custom_select.assert_called_once_with("#cust-dd", "Option B")
-
-    @pytest.mark.asyncio
-    async def test_fill_autocomplete_action(self, orchestrator, bridge):
-        await orchestrator._execute_action(
-            {"type": "fill_autocomplete", "selector": "#ac", "value": "London"}
-        )
-        bridge.fill_autocomplete.assert_called_once_with("#ac", "London")
-
-    @pytest.mark.asyncio
-    async def test_fill_tag_input_action(self, orchestrator, bridge):
-        """fill_tag_input splits comma-separated value into list."""
-        await orchestrator._execute_action(
-            {"type": "fill_tag_input", "selector": "#tags", "value": "Python, Django, REST"}
-        )
-        bridge.fill_tag_input.assert_called_once_with("#tags", ["Python", "Django", "REST"])
-
-    @pytest.mark.asyncio
-    async def test_fill_date_action(self, orchestrator, bridge):
-        await orchestrator._execute_action(
-            {"type": "fill_date", "selector": "#dob", "value": "1995-01-15"}
-        )
-        bridge.fill_date.assert_called_once_with("#dob", "1995-01-15")

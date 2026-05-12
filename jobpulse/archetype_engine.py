@@ -17,13 +17,73 @@ logger = get_logger(__name__)
 
 _PROFILES_PATH = Path(__file__).parent.parent / "data" / "archetype_profiles.json"
 
-_DEFAULT_PROFILE = {
-    "tagline": "MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python",
+# NOTE: tagline is built dynamically from ProfileStore at runtime
+# (see _build_default_tagline below) so user's education + YOE + role
+# come from the DB, never hardcoded.
+_DEFAULT_PROFILE_TEMPLATE = {
+    "tagline": "",  # filled at access time via _build_default_tagline()
     "summary_angle": "Building production software systems",
     "project_priority": [],
     "skills_to_highlight": ["Python"],
     "yoe_framing": "2+ years",
 }
+
+
+def _build_default_tagline() -> str:
+    """Assemble a tagline from ProfileStore: degree + YOE + role + top-skill.
+
+    Falls back to a generic skill-based tagline if ProfileStore is unavailable.
+    Never embeds a specific institution or degree in source code.
+    """
+    try:
+        from shared.profile_store import get_profile_store
+        store = get_profile_store()
+        edu = store.education()
+        top = edu[0] if edu else None
+        degree_part = ""
+        if top:
+            degree_part = top.degree or ""
+            inst = (top.institution or "").strip()
+            # Use first letters of institution as abbreviation
+            if inst:
+                abbr = "".join(w[0] for w in inst.split()[:3] if w[0].isupper()) or inst.split()[0]
+                degree_part = f"{degree_part} ({abbr})"
+        # YOE: take from sensitive_fields if set, else default
+        yoe = (store.sensitive("years_of_experience") or "2+ ").strip()
+        if yoe and not yoe.endswith("YOE"):
+            yoe = f"{yoe} YOE"
+        # Role + skill come from JD context, not profile — leave placeholder
+        return f"{degree_part} | {yoe} | Software Engineer | Python".strip(" |")
+    except Exception:
+        return "Software Engineer | Python"
+
+
+def _build_default_profile() -> dict:
+    """Return a default archetype profile with tagline built from DB."""
+    out = dict(_DEFAULT_PROFILE_TEMPLATE)
+    out["tagline"] = _build_default_tagline()
+    return out
+
+
+# Lazy cache for the DB-derived default profile. Populated on first access via
+# `_get_default_profile()`. Building it eagerly at module import opens
+# user_profile.db (ProfileStore.__init__ → _connect → SQLite open + WAL pragma
+# + schema migration) just to load the module, violating Principle 1
+# (no module-level DB reads — same shape as S7 audit B-2 in skill_gap_tracker).
+_DEFAULT_PROFILE_CACHE: dict | None = None
+
+
+def _get_default_profile() -> dict:
+    """Lazy accessor for the DB-derived default profile.
+
+    Returns a cached dict on subsequent calls so the cost is paid once per
+    process. Tests that need a fresh DB read can reset the cache by setting
+    ``_DEFAULT_PROFILE_CACHE = None``.
+    """
+    global _DEFAULT_PROFILE_CACHE
+    if _DEFAULT_PROFILE_CACHE is None:
+        _DEFAULT_PROFILE_CACHE = _build_default_profile()
+    return _DEFAULT_PROFILE_CACHE
 
 
 @dataclass
@@ -114,7 +174,7 @@ def get_archetype_profile(archetype: str) -> dict:
     """Return the profile dict for an archetype, or defaults."""
     profiles = _load_profiles()
     profile = profiles.get(archetype, {})
-    result = dict(_DEFAULT_PROFILE)
+    result = dict(_get_default_profile())
     result.update({k: v for k, v in profile.items() if k != "keywords"})
     return result
 
@@ -191,7 +251,7 @@ def get_archetype_framing(
     summaries = _build_archetype_summaries()
     summary = summaries.get(archetype, summaries.get("data_scientist", ""))
     return {
-        "tagline": profile.get("tagline", _DEFAULT_PROFILE["tagline"]),
+        "tagline": profile.get("tagline", _get_default_profile()["tagline"]),
         "summary": summary,
         "project_priority": profile.get("project_priority", []),
         "skills_to_highlight": profile.get("skills_to_highlight", []),

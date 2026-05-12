@@ -1,7 +1,7 @@
 """Semantic NLP Intent Classifier — Tier 2 in the 3-tier classification pipeline.
 
-Uses sentence-transformers to embed user messages and compare against
-pre-computed intent examples via cosine similarity. Runs locally, no API cost.
+Uses the shared MemoryEmbedder (via shared.semantic_utils) to embed user messages
+and compare against pre-computed intent examples via cosine similarity.
 
 Lifecycle:
   1. On first import: loads model + embeds all examples from intent_examples.json
@@ -36,78 +36,40 @@ _loaded = False
 _learned_count = 0
 
 
-import os
+class _EmbedderAdapter:
+    """Adapts MemoryEmbedder to the encode() API expected by the classifier."""
 
-# Embedding provider toggle:
-#   EMBEDDING_PROVIDER=local  → Ollama nomic-embed-text:v1.5 (no API cost, fast)
-#   EMBEDDING_PROVIDER=local-st → sentence-transformers all-MiniLM-L6-v2 (original)
-#   EMBEDDING_PROVIDER=openai → OpenAI embeddings (if you ever want cloud)
-_EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "local").lower()
-_OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-_LOCAL_EMBED_MODEL = os.environ.get("LOCAL_EMBED_MODEL", "nomic-embed-text:v1.5")
-
-
-class _OllamaEmbedder:
-    """Wraps Ollama's /api/embeddings endpoint with a sentence-transformers-like API."""
-
-    def __init__(self, model: str, base_url: str):
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self._dim = None
+    def __init__(self, embedder):
+        self._embedder = embedder
 
     def encode(self, texts: list[str], show_progress_bar: bool = False,
                normalize_embeddings: bool = True) -> np.ndarray:
-        """Embed a list of texts via Ollama. Returns numpy array (N x D)."""
-        import urllib.request
-        import json as _json
-
-        embeddings = []
-        for text in texts:
-            payload = _json.dumps({"model": self.model, "prompt": text}).encode()
-            req = urllib.request.Request(
-                f"{self.base_url}/api/embeddings",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = _json.loads(resp.read())
-            embeddings.append(data["embedding"])
-
-        arr = np.array(embeddings, dtype=np.float32)
-
+        vectors = self._embedder.embed_batch(texts)
+        arr = np.array(vectors, dtype=np.float32)
         if normalize_embeddings:
             norms = np.linalg.norm(arr, axis=1, keepdims=True)
             norms = np.where(norms == 0, 1, norms)
             arr = arr / norms
-
         return arr
 
 
 def _load_model():
-    """Load the embedding model (once, lazy).
-
-    When EMBEDDING_PROVIDER=local, uses Ollama nomic-embed-text:v1.5.
-    When EMBEDDING_PROVIDER=local-st, uses sentence-transformers (original).
-    """
+    """Load the embedding model via shared semantic utils (once, lazy)."""
     global _model
     if _model is not None:
         return _model
 
-    if _EMBEDDING_PROVIDER == "local":
-        try:
-            _model = _OllamaEmbedder(model=_LOCAL_EMBED_MODEL, base_url=_OLLAMA_BASE_URL)
-            logger.info("Loaded NLP embedding model: %s (Ollama)", _LOCAL_EMBED_MODEL)
-        except Exception as e:
-            logger.warning("Failed to load Ollama embedder: %s", e)
-            _model = None
-    else:
-        try:
-            from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer("all-MiniLM-L6-v2")
-            logger.info("Loaded NLP model: all-MiniLM-L6-v2")
-        except Exception as e:
-            logger.warning("Failed to load NLP model: %s", e)
-            _model = None
+    try:
+        from shared.semantic_utils import _get_embedder
+        embedder = _get_embedder()
+        if embedder is None:
+            logger.warning("NLP classifier: shared embedder unavailable")
+            return None
+        _model = _EmbedderAdapter(embedder)
+        logger.info("NLP classifier: using shared MemoryEmbedder")
+    except Exception as e:
+        logger.warning("Failed to load NLP model: %s", e)
+        _model = None
     return _model
 
 
@@ -186,11 +148,25 @@ def _ensure_loaded():
             model = _load_model()
             if model is not None:
                 data = np.load(str(EMBEDDINGS_CACHE), allow_pickle=True)
-                _intent_embeddings = data["embeddings"]
-                _intent_names = list(data["names"])
-                _loaded = True
-                logger.info("Loaded %d cached embeddings", len(_intent_names))
-                return
+                cached_embeddings = data["embeddings"]
+                # Verify cached embedding dim matches the current model.
+                # If the model changed (e.g. MiniLM 384 → Voyage 1024), the
+                # cache is stale — discard and rebuild rather than crash on
+                # the first dot-product.
+                probe = model.encode(["dim_probe"], normalize_embeddings=True)
+                expected_dim = probe.shape[1]
+                cached_dim = cached_embeddings.shape[1] if cached_embeddings.ndim == 2 else 0
+                if cached_dim != expected_dim:
+                    logger.info(
+                        "Embedding dim changed (cache=%d, model=%d) — rebuilding",
+                        cached_dim, expected_dim,
+                    )
+                else:
+                    _intent_embeddings = cached_embeddings
+                    _intent_names = list(data["names"])
+                    _loaded = True
+                    logger.info("Loaded %d cached embeddings", len(_intent_names))
+                    return
         except (OSError, ValueError, KeyError) as e:
             logger.debug("Embeddings cache invalid, rebuilding: %s", e)
 

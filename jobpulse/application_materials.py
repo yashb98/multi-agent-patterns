@@ -17,6 +17,69 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _application_dir(company: str | None) -> Path:
+    """Canonical per-company materials directory.
+
+    All CV/CL/screenshot artefacts for a company live under
+    ``DATA_DIR/applications/<safe_company>/``. This matches:
+      • cv_templates.generate_cv default (line 469)
+      • cv_templates.generate_cover_letter default (line 355)
+      • drive_uploader read path (looks for Yash_Bishnoi_<Company>.pdf)
+      • post_apply_hook attachment lookup
+
+    Pre-2026-05-04 application_materials wrote to ``applications/<job_id>/``
+    (sha-named), causing drive_uploader to silently fail "file not found"
+    because it expected the company-named dir. Live regression confirmed
+    on Contentful — files split across two dirs, Drive upload failed.
+
+    For multi-job-per-company collisions (rare for a single applicant),
+    cv_templates' filename naming ``{name}_{company}.pdf`` is sufficient
+    because the file would simply be overwritten by the latest run.
+    """
+    safe = (company or "Company").replace(" ", "_").replace("/", "_")
+    return DATA_DIR / "applications" / safe
+
+
+_LOCATION_BLEED_TOKENS = (
+    "provided", "required", "subject to", "depending", "consistently", "reliable",
+    "wifi", "hours", "benefit", "equipment", "setup", "set-up", "available",
+    "preferred", "ideally", "must", "willing", "able to", "reliable", "based in",
+    "candidates", "applicants", "essential", "expected",
+)
+
+
+def _sanitize_location(raw: str | None, *, remote: bool = False) -> str:
+    """Reject JD prose bleed and return a clean location string.
+
+    The Indeed/aggregator scrapers occasionally extract the first 1-3 words
+    after "remote, " from prose like "remote, provided the working location
+    has consistently reliable Wifi". That junk then bleeds into the CV
+    contact line. This guard rejects strings that:
+      • exceed 60 chars (real locations are short),
+      • contain JD-prose markers (provided, required, wifi, …),
+      • start with a non-capitalised word and aren't a known short token,
+      • are an obvious sentence fragment (>5 tokens, no commas → prose).
+
+    Falls back to ``"Remote (UK)"`` when ``remote=True`` else
+    ``"United Kingdom"``.
+    """
+    fallback = "Remote (UK)" if remote else "United Kingdom"
+    if not raw:
+        return fallback
+    s = raw.strip()
+    if not s:
+        return fallback
+    low = s.lower()
+    if len(s) > 60:
+        return fallback
+    if any(tok in low for tok in _LOCATION_BLEED_TOKENS):
+        return fallback
+    tokens = s.replace(",", " ").split()
+    if len(tokens) > 5 and "," not in s:
+        return fallback
+    return s
+
+
 def _parse_skill_list(raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -62,17 +125,42 @@ def ensure_tailored_cv_for_job(job_id: str, db: "JobDB | None" = None) -> Path |
     matched_projects = get_best_projects_for_jd(required, preferred)
     extra = build_extra_skills(required, preferred)
 
-    # Boost extra_skills with user-corrected skill values
+    # Boost extra_skills with user-corrected skill values. Append to the
+    # existing "Also proficient in:" row rather than introducing a separate
+    # row whose label ("Corrected: …") would render as user-visible text in
+    # the CV's Technical Skills section.
     try:
         from jobpulse.correction_capture import CorrectionCapture
         user_skills = CorrectionCapture().get_skill_correction_values(min_occurrences=2)
-        if user_skills and extra is not None:
-            existing_lower = {v.lower() for v in extra.values()}
+        if user_skills:
+            label = "Also proficient in:"
+            existing_vals = extra.get(label, "") if extra else ""
+            existing_lower = {
+                s.strip().lower() for s in existing_vals.split("|") if s.strip()
+            }
+            additions: list[str] = []
             for skill in user_skills:
-                if skill.lower().strip() not in existing_lower:
-                    extra[f"Corrected: {skill}"] = skill
+                norm = skill.strip()
+                if norm and norm.lower() not in existing_lower:
+                    additions.append(norm)
+                    existing_lower.add(norm.lower())
+            if additions:
+                merged = " | ".join(
+                    [s for s in existing_vals.split(" | ") if s.strip()] + additions
+                )
+                if extra is None:
+                    extra = {}
+                extra[label] = merged
     except Exception as exc:
-        logger.debug("application_materials: correction skill boost failed: %s", exc)
+        # Correction-driven skill boost is the OPRAL learning chain's last
+        # mile — debug-only swallow means a broken CorrectionCapture path
+        # produces silent skill drift across every tailored CV. Promote to
+        # warning so the regression is visible.
+        logger.warning(
+            "application_materials: correction skill boost failed for %s — "
+            "tailored CV will not include user-corrected skills: %s",
+            job_id[:12], exc, exc_info=True,
+        )
 
     # Tailor all CV sections via parallel LLM calls
     experience_entries = get_profile_store().experience()
@@ -107,12 +195,12 @@ def ensure_tailored_cv_for_job(job_id: str, db: "JobDB | None" = None) -> Path |
             for e in tailored.experience
         ]
 
-    out_dir = str(DATA_DIR / "applications" / job_id)
+    out_dir = str(_application_dir(row.get("company")))
 
     try:
         cv_path = generate_cv_pdf(
             company=row.get("company") or "Company",
-            location=row.get("location") or "United Kingdom",
+            location=_sanitize_location(row.get("location"), remote=bool(row.get("remote"))),
             tagline=tagline,
             summary=summary,
             projects=projects,
@@ -149,7 +237,7 @@ def build_lazy_cover_letter_generator(
         required = _parse_skill_list(row.get("required_skills"))
         preferred = _parse_skill_list(row.get("preferred_skills"))
         matched = get_best_projects_for_jd(required, preferred)
-        out_dir = str(DATA_DIR / "applications" / job_id)
+        out_dir = str(_application_dir(row.get("company")))
 
         cl_prose = None
         try:
@@ -160,13 +248,21 @@ def build_lazy_cover_letter_generator(
                 matched_projects=matched,
             )
         except Exception as exc:
-            logger.debug("application_materials: CL tailoring failed: %s", exc)
+            # CL tailoring is the value-add for the lazy-CL path; silent
+            # failure ships generic templates without operator signal.
+            # Promote to warning to mirror the eager-CL path in
+            # scan_pipeline.generate_materials (S8 audit M-B).
+            logger.warning(
+                "application_materials: CL tailoring failed for %s — "
+                "lazy CL will use generic template: %s",
+                row.get("company") or "Company", exc, exc_info=True,
+            )
 
         try:
             return generate_cover_letter_pdf(
                 company=row.get("company") or "Company",
                 role=row.get("title") or "Role",
-                location=row.get("location") or "United Kingdom",
+                location=_sanitize_location(row.get("location"), remote=bool(row.get("remote"))),
                 intro=cl_prose.intro if cl_prose else None,
                 hook=cl_prose.hook if cl_prose else None,
                 closing=cl_prose.closing if cl_prose else None,

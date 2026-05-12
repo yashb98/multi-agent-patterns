@@ -4,7 +4,7 @@ Detects "Sign in with Google", "Continue with LinkedIn" etc. on login/signup pag
 When SSO is available, clicking it is faster and more reliable than creating
 a new email+password account.
 
-Also handles the Google account chooser ("Continue as Yash") that appears
+Also handles the Google account chooser ("Continue as <name>") that appears
 after the initial SSO click when the user is already signed into Google.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ _SSO_PATTERNS: list[tuple[re.Pattern, str]] = [
 
 # Google account chooser patterns — appears AFTER clicking "Sign in with Google"
 _GOOGLE_CHOOSER_PATTERNS: list[re.Pattern] = [
-    re.compile(r"continue\s+as\s+\w+", re.IGNORECASE),          # "Continue as Yash"
+    re.compile(r"continue\s+as\s+\w+", re.IGNORECASE),          # "Continue as <name>"
     re.compile(r"continue\s*", re.IGNORECASE),                   # Just "Continue"
     re.compile(r"use\s+another\s+account", re.IGNORECASE),       # "Use another account"
 ]
@@ -63,6 +63,14 @@ class SSOHandler:
                     break
 
         if not candidates:
+            # Fallback: generic SSO patterns (Okta, Auth0, corporate, etc.)
+            try:
+                from jobpulse.sso_auto_discovery import detect_sso_button_patterns
+                generic = detect_sso_button_patterns(buttons)
+                if generic:
+                    return generic
+            except Exception as exc:
+                logger.debug("Generic SSO discovery failed: %s", exc)
             return None
 
         # Return highest priority SSO option
@@ -85,7 +93,7 @@ class SSOHandler:
                     snap = snap.model_dump()
                 url = snap.get("url", "").lower()
 
-                # Handle Google account chooser ("Continue as Yash")
+                # Handle Google account chooser ("Continue as <name>")
                 if "accounts.google" in url or "oauth" in url:
                     await self._handle_google_chooser(snap)
                     continue

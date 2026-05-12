@@ -120,3 +120,57 @@ def test_expired_french():
         body=body,
     )
     assert result.status == "expired"
+
+
+# ---------------------------------------------------------------------------
+# check_liveness_batch wiring — exercises the kwargs contract end-to-end.
+# Regression for S9 audit B-1: kwargs were 'status'/'final_url'/'body_text'/
+# 'apply_controls' (none of which classify_liveness accepts), so every batch
+# raised TypeError and was silently dropped by scan_pipeline's blanket except.
+# ---------------------------------------------------------------------------
+
+
+class _StubResp:
+    def __init__(self, status_code: int, url: str, text: str) -> None:
+        self.status_code = status_code
+        self.url = url
+        self.text = text
+
+
+class _StubClient:
+    def __init__(self, *_, **__) -> None:
+        self.calls: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def get(self, url):
+        self.calls.append(url)
+        # Two URLs in the test: an expired 404, and a live posting.
+        if "expired" in url:
+            return _StubResp(404, url, "x" * 400)
+        return _StubResp(200, url, "x" * 400 + " Apply now ")
+
+
+def test_check_liveness_batch_passes_correct_kwargs(monkeypatch):
+    """End-to-end: real check_liveness_batch through real classify_liveness."""
+    import httpx
+    from jobpulse import job_scanner
+
+    monkeypatch.setattr(httpx, "Client", _StubClient)
+    monkeypatch.setattr(job_scanner.httpx, "Client", _StubClient)
+
+    listings = [
+        {"url": "https://example.com/jobs/expired-1"},
+        {"url": "https://example.com/jobs/live-1"},
+    ]
+    alive, expired = job_scanner.check_liveness_batch(listings)
+
+    assert len(expired) == 1
+    assert expired[0]["url"] == "https://example.com/jobs/expired-1"
+    assert "404" in expired[0]["liveness"]
+    assert len(alive) == 1
+    assert alive[0]["url"] == "https://example.com/jobs/live-1"

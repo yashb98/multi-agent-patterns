@@ -24,8 +24,34 @@ logger = get_logger(__name__)
 # across multiple daemon processes.
 _apply_lock = system_lock("jobpulse_apply")
 
+# Fill/submit lock — separate from _apply_lock so the fill+submit phase is
+# serialized without holding the quota lock through inter-application sleeps
+# (LinkedIn cap, session break). Only one Playwright fill+submit at a time.
+_fill_lock = system_lock("jobpulse_fill_submit")
+
 # Applicant profile and work auth loaded from env vars via config
 from jobpulse.config import APPLICANT_PROFILE as PROFILE, WORK_AUTH
+
+
+def is_first_encounter(url: str | None) -> bool:
+    """Return True if this domain has no FormExperienceDB record yet.
+
+    Used by apply_job to force extra safety on never-seen domains:
+    - dry_run is forced True regardless of caller
+    - logged with FIRST_ENCOUNTER marker so the human notices
+    - vision-DOM gate threshold lowered (caller responsibility)
+
+    Defensive: any error or empty URL is treated as first encounter.
+    """
+    if not url:
+        return True
+    try:
+        from jobpulse.form_experience_db import FormExperienceDB
+        record = FormExperienceDB().lookup(url)
+        return record is None
+    except Exception as exc:
+        logger.debug("is_first_encounter: lookup failed for %s: %s", url[:60], exc)
+        return True
 
 
 def classify_action(ats_score: float, easy_apply: bool) -> str:
@@ -45,8 +71,10 @@ def classify_action(ats_score: float, easy_apply: bool) -> str:
 
 
 def select_adapter(ats_platform: str | None) -> BaseATSAdapter:
-    """Return the appropriate ATS adapter for the given platform name."""
-    return get_adapter(ats_platform)
+    """Return the ATS adapter. ``ats_platform`` is retained for telemetry only;
+    adapter dispatch is unified post-2026-04 — `get_adapter()` always returns
+    the PlaywrightAdapter."""
+    return get_adapter()
 
 
 def _record_agent_performance(
@@ -102,24 +130,18 @@ def _call_fill_and_submit(adapter: BaseATSAdapter, **kwargs: Any) -> dict:
 
 
 def _infer_platform_from_url(url: str) -> str | None:
-    """Return an ATS platform key inferred from *url* (or None)."""
-    if "linkedin.com" in url:
-        return "linkedin"
-    if "indeed.com" in url:
-        return "indeed"
-    if "greenhouse.io" in url or "boards.greenhouse" in url:
-        return "greenhouse"
-    if "lever.co" in url or "jobs.lever" in url:
-        return "lever"
-    if "myworkdayjobs.com" in url:
-        return "workday"
-    if "smartrecruiters.com" in url:
-        return "smartrecruiters"
-    if "ashbyhq.com" in url:
-        return "ashby"
-    if "icims.com" in url:
-        return "icims"
-    return None
+    """Return an ATS platform key inferred from *url* (or None).
+
+    Delegates to ats_adapters.discovery.detect_platform_from_url which has
+    a richer pattern table (Reed, additional Workday domains, etc.). Kept
+    as a wrapper because callers import this name; new callers should use
+    detect_platform(url, snapshot) directly to also get DOM-based detection.
+    """
+    from jobpulse.ats_adapters.discovery import detect_platform_from_url
+    result = detect_platform_from_url(url)
+    # detect_platform_from_url returns "generic" on no match; preserve the
+    # original None contract for callers that branch on falsy.
+    return result if result and result != "generic" else None
 
 
 def prepare_application_inputs(
@@ -244,6 +266,27 @@ def apply_job(
     platform_key = (ats_platform or "generic").lower()
     total = 0  # fallback when dry_run skips the rate limiter section
 
+    # Drain leftover lookups from any prior apply on this thread so the
+    # current session's mark_fill_outcome calls don't accidentally tag
+    # rows that belonged to a previous job. Anything left over is
+    # written as `unconsumed` (no fill outcome ever claimed it).
+    try:
+        from shared.db_observability import flush_all as _obs_flush_all
+        _obs_flush_all()
+    except Exception:  # pragma: no cover
+        pass
+
+    # First-encounter safety: never-seen domains force dry_run regardless of caller.
+    # The system can't verify fills properly without a FormExperienceDB record, so we
+    # require human review for the first application to a new domain. Future runs to
+    # the same domain (now with FE rows) get normal behavior.
+    if not dry_run and is_first_encounter(url):
+        logger.warning(
+            "FIRST_ENCOUNTER: %s is a never-seen domain — forcing dry_run=True for safety",
+            url[:80],
+        )
+        dry_run = True
+
     if not dry_run:
         # Acquire mutex — prevents TOCTOU race between can_apply() and record()
         with _apply_lock:
@@ -320,49 +363,56 @@ def apply_job(
     adapter = select_adapter(ats_platform)
     logger.info("Applying via %s adapter to %s", adapter.name, url)
 
-    result = _call_fill_and_submit(
-        adapter,
-        url=url,
-        cv_path=cv_path,
-        cover_letter_path=cover_letter_path,
-        profile=PROFILE,
-        custom_answers=merged_answers,
-        overrides=overrides,
-        dry_run=dry_run,
-    )
-
-    # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
-    # external ATS URL. Detect the ATS platform and re-apply via the correct adapter.
-    # Supports multi-hop: LinkedIn → careers portal → ATS (up to 2 hops).
-    for _hop in range(2):
-        if not (result.get("external_redirect") and result.get("external_url")):
-            break
-        external_url = result["external_url"]
-        logger.info("External redirect hop %d: %s → %s", _hop + 1, url, external_url)
-
-        from jobpulse.jd_analyzer import detect_ats_platform
-
-        ext_platform = detect_ats_platform(external_url) or _infer_platform_from_url(external_url)
-        ext_adapter = select_adapter(ext_platform)
-        logger.info(
-            "External ATS detected: %s — using %s adapter",
-            ext_platform or "generic",
-            ext_adapter.name,
-        )
-
+    # Serialize the entire fill+submit phase (including external-redirect retry)
+    # so concurrent apply_job() calls don't race on the shared Playwright browser
+    # (single Chrome via CDP). Quota lock is already released; this lock only
+    # covers the actual form interaction.
+    with _fill_lock:
         result = _call_fill_and_submit(
-            ext_adapter,
-            url=external_url,
+            adapter,
+            url=url,
             cv_path=cv_path,
             cover_letter_path=cover_letter_path,
             profile=PROFILE,
             custom_answers=merged_answers,
             overrides=overrides,
             dry_run=dry_run,
+            job=job_context,
         )
-        result["external_redirect"] = True
-        result["external_url"] = external_url
-        result["external_platform"] = ext_platform or "generic"
+
+        # Handle external redirect — LinkedIn detected non-Easy Apply and captured the
+        # external ATS URL. Detect the ATS platform and re-apply via the correct adapter.
+        # Supports multi-hop: LinkedIn → careers portal → ATS (up to 2 hops).
+        for _hop in range(2):
+            if not (result.get("external_redirect") and result.get("external_url")):
+                break
+            external_url = result["external_url"]
+            logger.info("External redirect hop %d: %s → %s", _hop + 1, url, external_url)
+
+            from jobpulse.jd_analyzer import detect_ats_platform
+
+            ext_platform = detect_ats_platform(external_url) or _infer_platform_from_url(external_url)
+            ext_adapter = select_adapter(ext_platform)
+            logger.info(
+                "External ATS detected: %s — using %s adapter",
+                ext_platform or "generic",
+                ext_adapter.name,
+            )
+
+            result = _call_fill_and_submit(
+                ext_adapter,
+                url=external_url,
+                cv_path=cv_path,
+                cover_letter_path=cover_letter_path,
+                profile=PROFILE,
+                custom_answers=merged_answers,
+                overrides=overrides,
+                dry_run=dry_run,
+                job=job_context,
+            )
+            result["external_redirect"] = True
+            result["external_url"] = external_url
+            result["external_platform"] = ext_platform or "generic"
 
     platform_name = result.get("external_platform", adapter.name)
     if result.get("success"):
@@ -439,6 +489,11 @@ def apply_job(
         time.sleep(delay)
 
     result["rate_limited"] = False
+    try:
+        from shared.db_observability import flush_all as _obs_flush_all
+        _obs_flush_all()
+    except Exception:  # pragma: no cover
+        pass
     return result
 
 
@@ -518,6 +573,28 @@ def confirm_application(
                         )
                 except Exception as rules_exc:
                     logger.warning("confirm_application: agent rules generation: %s", rules_exc)
+
+            # Auto-capture widget pattern when final_mapping carries DOM
+            # signature alongside the corrected value. Convention:
+            # final_mapping[label + "__dom"] = {selector, widget_type,
+            # ancestor_classes, aria_label}. Closes the feedback loop —
+            # every correction becomes a permanent agent capability.
+            try:
+                from jobpulse.form_engine.gotchas import GotchasDB
+                gdb = GotchasDB()
+                for c in correction_result.get("corrections", []):
+                    sig = (final_mapping or {}).get(c["field"] + "__dom")
+                    if sig and isinstance(sig, dict):
+                        gdb.record_widget_pattern(
+                            domain=domain,
+                            label=c["field"],
+                            selector=sig.get("selector", ""),
+                            widget_type=sig.get("widget_type", "unknown"),
+                            ancestor_classes=sig.get("ancestor_classes", ""),
+                            aria_label=sig.get("aria_label", ""),
+                        )
+            except Exception as exc:
+                logger.debug("widget pattern capture: %s", exc)
         except Exception as exc:
             logger.warning("confirm_application: correction capture: %s", exc)
 
@@ -582,5 +659,11 @@ def confirm_application(
         result, ctx, url, platform_key, dry_run=False, claude_fields=claude_count,
         ai_meta=ai_meta,
     )
+
+    try:
+        from shared.db_observability import flush_all as _obs_flush_all
+        _obs_flush_all()
+    except Exception:  # pragma: no cover
+        pass
 
     return result

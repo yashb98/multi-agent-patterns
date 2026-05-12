@@ -157,68 +157,6 @@ class CorrectionCapture:
 
         return {"corrections": corrections, "unchanged": unchanged}
 
-    def get_correction_count(self, field_label: str) -> int:
-        """Count total corrections for a normalized field label."""
-        label = _normalize_label(field_label)
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) as cnt FROM field_corrections WHERE field_label = ?",
-                (label,),
-            ).fetchone()
-        return row["cnt"] if row else 0
-
-    def get_correction_rate(
-        self,
-        field_label: str,
-        total_fills: int,
-        *,
-        min_samples: int = 5,
-    ) -> float | None:
-        """Compute correction rate for a field.
-
-        Args:
-            field_label: The field label to check.
-            total_fills: Total times this field was filled (from FieldAuditDB).
-            min_samples: Minimum total fills required to compute a rate.
-
-        Returns:
-            Float 0.0-1.0, or None if total_fills < min_samples.
-        """
-        if total_fills < min_samples:
-            return None
-        corrections = self.get_correction_count(field_label)
-        return corrections / total_fills
-
-    def get_high_correction_fields(
-        self,
-        total_fills_by_field: dict[str, int],
-        *,
-        threshold: float = 0.5,
-        min_samples: int = 5,
-    ) -> list[dict]:
-        """Return fields with correction rate above threshold.
-
-        Args:
-            total_fills_by_field: {field_label: total_fill_count} from FieldAuditDB.
-            threshold: Minimum correction rate to flag (default 0.5 = 50%).
-            min_samples: Minimum fills required.
-
-        Returns:
-            List of {"field": str, "rate": float, "corrections": int, "total": int}.
-        """
-        results = []
-        for field_label, total in total_fills_by_field.items():
-            rate = self.get_correction_rate(field_label, total, min_samples=min_samples)
-            if rate is not None and rate >= threshold:
-                results.append({
-                    "field": field_label,
-                    "rate": rate,
-                    "corrections": self.get_correction_count(field_label),
-                    "total": total,
-                })
-        results.sort(key=lambda r: r["rate"], reverse=True)
-        return results
-
     def get_domain_accuracy(self, domain: str) -> float | None:
         """Return accuracy (1 - correction_rate) for a domain, or None if insufficient data."""
         with self._connect() as conn:

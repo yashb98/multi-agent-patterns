@@ -180,8 +180,8 @@ def similar_functions(ci: CodeIntelligence, name: str, top_k: int = 5) -> list[d
     n_floats = len(blob) // 4
     source_vec = list(_struct.unpack(f"{n_floats}f", blob))
 
-    # Find similar via vector search
-    similar = ci._search._voyage_vector_search(source_vec, limit=top_k + 5)
+    # Find similar via dense vector search
+    similar = ci._search._dense_vector_search(source_vec, limit=top_k + 5)
 
     results = []
     for doc_id, rank in similar:

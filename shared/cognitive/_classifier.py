@@ -47,7 +47,14 @@ class EscalationClassifier:
         try:
             from shared.optimization import get_optimization_engine
             opt_stats = get_optimization_engine().get_domain_stats(domain, domain)
-            if opt_stats.forced_level is not None and opt_stats.sample_size >= 20:
+            # forced_level set by manual override (forced_level_overrides table) is an
+            # explicit policy decision and must not be gated by sample_size — the
+            # tracker already gates the *computed* fallback by total >= 20. Without
+            # this, the optimization escalate_cognitive action wrote rows that the
+            # classifier silently ignored because cognitive_outcomes are keyed by
+            # real agent_name (cv_tailoring, screening_answers) while the classifier
+            # queries (domain, domain), so sample_size was always 0. (S10 audit B-1.)
+            if opt_stats.forced_level is not None:
                 level = ThinkLevel(opt_stats.forced_level)
                 logger.debug(
                     "Optimization override: %s forced to %s (n=%d)",
@@ -160,33 +167,54 @@ class EscalationClassifier:
         """Load classifier accuracy from MemoryManager on init.
 
         Called by CognitiveEngine.__init__ to restore cross-session stats.
-        Parses SEMANTIC tier entries with domain='cognitive_classifier'.
+        Reads SEMANTIC tier entries with domain='cognitive_classifier' via
+        the public ``MemoryManager.get_semantic_entries`` accessor (closes
+        pipeline-bugs W-11.5 / S6 W-2 — pre-fix this reached into
+        ``memory.semantic.facts.items()`` directly, bypassing the SQLite
+        source of truth).
         """
         try:
-            sem = getattr(self._memory, "semantic", None)
-            if sem is None:
-                return
-            facts = getattr(sem, "facts", None)
-            if not isinstance(facts, dict):
-                return
-            for _fact_id, entry in facts.items():
+            if hasattr(self._memory, "get_semantic_entries"):
+                entries = self._memory.get_semantic_entries("cognitive_classifier")
+            else:
+                # Test fixtures with mock memory that lack the new accessor —
+                # fall through to legacy attribute access without breaking.
+                sem = getattr(self._memory, "semantic", None)
+                facts = getattr(sem, "facts", None) if sem is not None else None
+                entries = list(facts.values()) if isinstance(facts, dict) else []
+            for entry in entries:
                 if getattr(entry, "domain", "") == "cognitive_classifier":
                     self._parse_persisted_fact(getattr(entry, "fact", ""))
         except Exception as e:
             logger.debug("Failed to load persisted classifier stats: %s", e)
 
     def _parse_persisted_fact(self, fact: str):
-        """Parse a persisted classifier fact string back into domain stats."""
+        """Parse a persisted classifier fact string back into domain stats.
+
+        Back-fill l0_total/l0_success/l1_total/l1_escalated counters
+        consistent with the persisted rates so a single new sample
+        doesn't catastrophically swing the recomputed rate. The previous
+        version reset all counters to 0, which made `update_domain_stats`
+        recompute rate from scratch and effectively forget every prior
+        sample after one new observation. S6 audit M-A.
+        """
         import re
         match = re.match(r"(\S+): L0 success (\d+)%, L1 escalation (\d+)%, n=(\d+)", fact)
         if match:
             domain = match.group(1)
+            l0_rate = int(match.group(2)) / 100
+            l1_rate = int(match.group(3)) / 100
+            n = int(match.group(4))
+            l0_total = n
+            l1_total = n
             self._domain_stats[domain] = {
-                "l0_success_rate": int(match.group(2)) / 100,
-                "l1_escalation_rate": int(match.group(3)) / 100,
-                "l0_total": 0, "l0_success": 0,
-                "l1_total": 0, "l1_escalated": 0,
-                "sample_size": int(match.group(4)),
+                "l0_success_rate": l0_rate,
+                "l1_escalation_rate": l1_rate,
+                "l0_total": l0_total,
+                "l0_success": round(l0_total * l0_rate),
+                "l1_total": l1_total,
+                "l1_escalated": round(l1_total * l1_rate),
+                "sample_size": n,
             }
 
     @staticmethod

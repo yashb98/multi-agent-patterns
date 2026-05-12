@@ -78,15 +78,6 @@ class TestQdrantStore:
         results = store.search(MemoryTier.EPISODIC, base, top_k=2)
         assert results[0][0] == "close"
 
-    def test_cross_tier_search(self, store):
-        vec = _make_vector(1.0)
-        store.upsert("ep1", MemoryTier.EPISODIC, vec, {"domain": "test"})
-        store.upsert("pr1", MemoryTier.PROCEDURAL, vec, {"domain": "test"})
-        results = store.search_all_tiers(vec, top_k=5)
-        ids = {r[0] for r in results}
-        assert "ep1" in ids
-        assert "pr1" in ids
-
     def test_delete_by_id(self, store):
         vec = _make_vector(1.0)
         store.upsert("id1", MemoryTier.EPISODIC, vec, {"domain": "test"})

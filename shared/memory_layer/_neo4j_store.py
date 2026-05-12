@@ -416,3 +416,21 @@ class Neo4jStore:
         except Exception as exc:
             logger.warning("Neo4j count_similar failed for %s: %s", memory_id, exc)
             return 0
+
+    def count_edges(self) -> int:
+        """Total number of relationships between Memory nodes."""
+        if not self._available:
+            return 0
+        driver = self._get_driver()
+        if driver is None:
+            return 0
+        try:
+            with driver.session() as session:
+                result = session.run(
+                    "MATCH (:Memory)-[r]->(:Memory) RETURN count(r) AS cnt"
+                )
+                record = result.single()
+                return record["cnt"] if record else 0
+        except Exception as exc:
+            logger.warning("Neo4j count_edges failed: %s", exc)
+            return 0

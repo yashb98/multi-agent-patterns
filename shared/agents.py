@@ -31,16 +31,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
-# Multi-provider imports — graceful degrade if packages not installed
-try:
-    from langchain_anthropic import ChatAnthropic
-except ImportError:
-    ChatAnthropic = None  # type: ignore[misc,assignment]
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:
-    ChatGoogleGenerativeAI = None  # type: ignore[misc,assignment]
+# Anthropic + Gemini SDK imports were removed 2026-05-12 per the
+# "Kimi mandatory" rule. Kimi (cloud, Moonshot's OpenAI-compatible
+# endpoint) and Ollama (local) are the only LLM vendors used.
 
 from shared.state import AgentState
 from shared.prompts import RESEARCHER_PROMPT, WRITER_PROMPT, REVIEWER_PROMPT
@@ -88,27 +81,134 @@ logger = get_logger(__name__)
 
 _OLLAMA_HOST = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 _OLLAMA_BASE_URL = _OLLAMA_HOST.rstrip("/") + "/v1"
-_LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gemma4:31b")
+_LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "qwen3.6:35b")
 
-# Cloud fallback model map: current → older/cheaper equivalent
-_FALLBACK_MODELS = {
-    "gpt-5-mini": "gpt-4o-mini",
-    "gpt-4.1-mini": "gpt-4o-mini",
-    "gpt-4.1": "gpt-4o",
-    "gpt-4.1-nano": "gpt-4o-mini",
+# ── Kimi (Moonshot) — mandatory cloud provider ─────────────────────
+# OpenAI key is exhausted (per the 2026-05-09 plan); every cloud LLM
+# call goes through Kimi via its OpenAI-compatible endpoint. When
+# ``KimiAI_API_KEY`` is set in the env we wire it into both
+# ``get_openai_client`` (raw SDK) and ``_make_openai_llm`` (LangChain
+# ChatOpenAI) so existing callers don't need to change. Caller-supplied
+# ``model="gpt-5-mini"`` arguments are remapped to Moonshot's default
+# (``moonshot-v1-auto``) — gpt-5 is not a Kimi model and would 4xx.
+_KIMI_BASE_URL = os.environ.get(
+    "KIMI_BASE_URL", "https://api.moonshot.ai/v1",
+)
+_KIMI_DEFAULT_MODEL = os.environ.get(
+    "KIMI_DEFAULT_MODEL", "moonshot-v1-auto",
+)
+
+
+def _kimi_api_key() -> str:
+    """Return the configured Kimi key (KimiAI_API_KEY) or empty string.
+
+    Read on every call so tests that monkeypatch the env via
+    ``monkeypatch.setenv`` see the change without reloading the module.
+    """
+    return os.environ.get("KimiAI_API_KEY", "").strip()
+
+
+def _use_kimi() -> bool:
+    """When True, the Kimi key short-circuits any OpenAI fallback —
+    Kimi is mandatory."""
+    return bool(_kimi_api_key())
+
+
+def _kimi_remap_model(model: str | None) -> str:
+    """Remap an OpenAI-style model name (gpt-5-mini, gpt-4o, …) to a
+    Kimi-compatible default. If the model is already a Moonshot/Kimi
+    name, leave it alone."""
+    if not model:
+        return _KIMI_DEFAULT_MODEL
+    m = model.lower()
+    if m.startswith(("kimi", "moonshot", "k2", "k3")):
+        return model
+    return _KIMI_DEFAULT_MODEL
+
+# Hard model override — when set, overrides every caller's model= argument
+# regardless of LLM_PROVIDER. Lets the user point the existing OpenAI client
+# at any OpenAI-compatible provider (Kimi/Moonshot, Together, Anyscale, etc.)
+# without code changes: just set OPENAI_BASE_URL + OPENAI_API_KEY +
+# LLM_MODEL_OVERRIDE in the env. None when the var is empty/unset, so the
+# original caller-supplied model wins.
+_MODEL_OVERRIDE = os.environ.get("LLM_MODEL_OVERRIDE", "").strip() or None
+
+
+# Per-domain model registry — used by ``cognitive_llm_call`` so reasoning
+# domains (page-reasoning, field-type analysis, recovery decisions) get
+# a reasoning model while content domains (cv_tailor, cover-letter,
+# screening-answer text) get a fast non-reasoning model. Saves cost +
+# latency on the bulk of calls while keeping reasoning where it pays
+# off.
+#
+# Resolution order (first match wins):
+#   1. LLM_MODEL_OVERRIDE  (global, applies to ALL domains)
+#   2. LLM_MODEL_FOR_<DOMAIN_UPPERCASE>  (env, per-domain)
+#   3. _DOMAIN_MODEL_REGISTRY  (built-in defaults below)
+#   4. get_model_name()  (provider-default fallback)
+#
+# Defaults below assume Kimi/Moonshot (the audit's S8 step-3 verifier).
+# OpenAI / Together users can override via the env vars; they'll see
+# their provider's models slotted in via _MODEL_OVERRIDE or
+# get_model_name's existing fallback chain.
+_DOMAIN_MODEL_REGISTRY = {
+    # Decision / reasoning domains — chain-of-thought matters.
+    # Multi-step / planning calls land here.
+    "page_reasoning":         "kimi-k2.6",
+    "form_recovery":          "kimi-k2.6",
+    "form_navigation":        "kimi-k2.6",
+    "cv_scrutiny":            "kimi-k2.6",
+    # Bulk-classification with closed enums — non-reasoning is faster and
+    # the few-shot examples in the prompt give the model deterministic
+    # rules to follow. Tried K2.6 reasoning in cache-llm Step C live test:
+    # 44-field input timed out at 180 s because each field's reasoning
+    # chain compounds. v1-auto handles 44 fields in ~3 s with the same
+    # few-shot prompt scaffolding.
+    "field_type_analysis":    "moonshot-v1-auto",
+    # Content domains — speed wins over reasoning.
+    "cv_tailoring":           "moonshot-v1-auto",
+    "cover_letter":           "moonshot-v1-auto",
+    "screening_answers":      "moonshot-v1-auto",
+    "screening_decomposition": "moonshot-v1-auto",
+    "email_classification":   "moonshot-v1-auto",
+    "skill_extraction":       "moonshot-v1-auto",
+    "strategy_reflection":    "moonshot-v1-auto",
+    "form_field_mapping":     "moonshot-v1-auto",
 }
 
-# Multi-provider model defaults
-_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
-_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
-# Provider fallback chain (when LLM_PROVIDER=auto and cloud)
-# Order: openai → anthropic → gemini
-_PROVIDER_FALLBACK_CHAIN = ["openai", "anthropic", "gemini"]
+def _model_for_domain(domain: str | None) -> str | None:
+    """Resolve the model for a cognitive-domain call.
+
+    Honours ``LLM_MODEL_OVERRIDE`` first (global), then
+    ``LLM_MODEL_FOR_<DOMAIN>`` env vars, then the built-in registry,
+    then None (caller falls back to ``get_model_name()``).
+    """
+    if _MODEL_OVERRIDE:
+        return _MODEL_OVERRIDE
+    if not domain:
+        return None
+    env_key = f"LLM_MODEL_FOR_{domain.upper().replace('-', '_')}"
+    env_val = os.environ.get(env_key, "").strip()
+    if env_val:
+        return env_val
+    return _DOMAIN_MODEL_REGISTRY.get(domain)
+
+# 2026-05-12: Anthropic / Gemini / OpenAI-direct paths are REMOVED.
+# Per `.claude/rules/jobs.md` and `shared/CLAUDE.md`, the rule is
+# Kimi (Moonshot's OpenAI-compatible endpoint) for cloud, Ollama
+# (qwen-family local models) as next-tier fallback. The remap dict
+# `_FALLBACK_MODELS` and the per-vendor constants (`_ANTHROPIC_MODEL`,
+# `_GEMINI_MODEL`) were dead code after the chain change — deleted.
+# Any caller passing `gpt-5-mini` etc. as a model name still works
+# because `_kimi_remap_model` rewrites it to `moonshot-v1-auto` when
+# KIMI_API_KEY is set in prod.
+_PROVIDER_FALLBACK_CHAIN = ["openai", "ollama"]
 
 
 def _probe_ollama() -> bool:
-    """Check if Ollama is reachable (fast 2s timeout)."""
+    """Check if Ollama is reachable AND the target model is loaded."""
+    import json as _json
     import urllib.request
     import urllib.error
     try:
@@ -116,8 +216,17 @@ def _probe_ollama() -> bool:
             _OLLAMA_HOST.rstrip("/") + "/api/tags",
             method="GET",
         )
-        with urllib.request.urlopen(req, timeout=2):
-            return True
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = _json.loads(resp.read())
+        models = [m.get("name", "") for m in data.get("models", [])]
+        if not models:
+            logger.info("Ollama reachable but no models loaded")
+            return False
+        target = _LOCAL_MODEL.split(":")[0]
+        if not any(target in m for m in models):
+            logger.info("Ollama reachable but model %s not found (available: %s)", _LOCAL_MODEL, models[:5])
+            return False
+        return True
     except (urllib.error.URLError, OSError, TimeoutError):
         return False
 
@@ -125,7 +234,7 @@ def _probe_ollama() -> bool:
 def _resolve_provider() -> str:
     """Resolve LLM_PROVIDER, auto-detecting Ollama when set to 'auto'."""
     explicit = os.environ.get("LLM_PROVIDER", "auto").lower()
-    if explicit in ("local", "openai"):
+    if explicit in ("local", "openai", "together"):
         return explicit
     # auto: probe Ollama
     if _probe_ollama():
@@ -137,15 +246,13 @@ def _resolve_provider() -> str:
 
 _LLM_PROVIDER: str | None = None
 _is_local: bool | None = None
-_use_fallback_models: bool | None = None
 
 
 def _ensure_provider():
-    global _LLM_PROVIDER, _is_local, _use_fallback_models
+    global _LLM_PROVIDER, _is_local
     if _LLM_PROVIDER is None:
         _LLM_PROVIDER = _resolve_provider()
         _is_local = _LLM_PROVIDER == "local"
-        _use_fallback_models = not _is_local and os.environ.get("LLM_PROVIDER", "auto").lower() == "auto"
 
 
 def is_local_llm() -> bool:
@@ -157,16 +264,33 @@ def is_local_llm() -> bool:
 def get_model_name(default: str = "gpt-5-mini") -> str:
     """Return the effective model name for raw OpenAI SDK calls.
 
-    When LLM_PROVIDER=local, returns LOCAL_LLM_MODEL (e.g. gemma4:31b).
-    When falling back to cloud via auto-detection, maps to older/cheaper
-    models (e.g. gpt-5-mini → gpt-4o-mini).
-    When LLM_PROVIDER=openai (explicit), returns the provided default as-is.
+    Resolution order (first match wins):
+    1. ``LLM_MODEL_OVERRIDE`` env var — when set, overrides every other
+       rule. Used to point any OpenAI-compatible provider (Kimi/Moonshot,
+       Together, Anyscale, …) at its own model without editing every
+       caller's hardcoded model= argument.
+    2. ``LLM_PROVIDER=local`` → returns ``LOCAL_LLM_MODEL`` (e.g. qwen3:32b).
+    3. ``LLM_PROVIDER=together`` → returns ``TOGETHER_MODEL`` env or default.
+    4. ``LLM_PROVIDER=auto`` falling back to cloud → maps to older/cheaper
+       OpenAI models (e.g. gpt-5-mini → gpt-4o-mini).
+    5. ``LLM_PROVIDER=openai`` (explicit) → returns the caller default.
     """
+    if _MODEL_OVERRIDE:
+        return _MODEL_OVERRIDE
     _ensure_provider()
     if _is_local:
         return _LOCAL_MODEL
-    if _use_fallback_models:
-        return _FALLBACK_MODELS.get(default, default)
+    if _LLM_PROVIDER == "together":
+        return os.environ.get("TOGETHER_MODEL", default if default != "gpt-5-mini" else "Qwen/Qwen3-30B-A3B-Instruct")
+    # Kimi (mandatory cloud provider) — remap any OpenAI-style default
+    # to the Moonshot equivalent so callers passing model="gpt-5-mini"
+    # don't 4xx against the Moonshot endpoint.
+    if _use_kimi():
+        return _kimi_remap_model(default)
+    # Per "Kimi mandatory" rule: no OpenAI/Anthropic/Gemini fallbacks.
+    # If KIMI_API_KEY isn't set, the call will surface a clear error
+    # via get_openai_client rather than silently falling through to
+    # a different vendor.
     return default
 
 
@@ -174,6 +298,53 @@ def _needs_max_completion_tokens(model: str) -> bool:
     """Return True if model requires max_completion_tokens instead of max_tokens."""
     m = model.lower()
     return m.startswith(("o1", "o3", "o4", "gpt-5"))
+
+
+def _requires_fixed_temperature(model: str) -> bool:
+    """Some models reject any temperature ≠ 1 with a 400. Detect them so
+    callers passing temperature=0.4 / 0.7 / 0.2 don't blow up.
+
+    Currently: gpt-5 family (rejects ≠ 1) and Kimi K2.6 / K2.5 (return
+    ``invalid temperature: only 1 is allowed for this model``).
+    """
+    m = model.lower()
+    if m.startswith("gpt-5"):
+        return True
+    if m.startswith("kimi-k2") or m.startswith("kimi-k3"):
+        return True
+    return False
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """Reasoning models burn tokens on chain-of-thought BEFORE producing
+    final content. Detect them so the caller can budget more tokens —
+    otherwise the reasoning_content blows the cap and the visible
+    ``content`` field comes back empty.
+
+    Currently: o1 / o3 / o4 (OpenAI reasoning), gpt-5 family,
+    Kimi K2.* / K3.* (Moonshot reasoning), DeepSeek-R1.
+    """
+    m = model.lower()
+    return (
+        m.startswith(("o1", "o3", "o4", "gpt-5"))
+        or m.startswith(("kimi-k2", "kimi-k3"))
+        or m.startswith("deepseek-r1")
+    )
+
+
+def _max_tokens_for_model(model: str, requested: int) -> int:
+    """Bump max_tokens for reasoning models so the chain-of-thought
+    can complete AND still leave room for the final content.
+
+    Empirically (probe in S8 step 3): Kimi K2.6 used 675 reasoning
+    tokens on a tiny "return JSON" prompt; cv_tailor's full prompts
+    push this past the default 2000 budget, leaving content empty.
+    16k handles the cv_tailor / page_reasoner working set. Non-reasoning
+    callers keep the requested cap so cost stays bounded.
+    """
+    if _is_reasoning_model(model):
+        return max(requested, 16000)
+    return requested
 
 
 def _token_limit_kwargs(model: str, max_tokens: int) -> dict:
@@ -184,14 +355,40 @@ def _token_limit_kwargs(model: str, max_tokens: int) -> dict:
 
 
 def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens: int) -> ChatOpenAI:
-    """Build an OpenAI LLM instance."""
-    effective_model = _FALLBACK_MODELS.get(model, model) if _use_fallback_models else model
-    effective_temp = temperature if not effective_model.startswith("gpt-5") else 1
+    """Build an OpenAI LLM instance.
+
+    When ``LLM_MODEL_OVERRIDE`` is set (Kimi / Together / Anyscale …),
+    that wins over every caller-supplied ``model`` and the fallback map.
+    Otherwise, when ``KimiAI_API_KEY`` is set, the model is remapped to
+    a Kimi-compatible default (``moonshot-v1-auto``) and the client is
+    pointed at Moonshot's endpoint — Kimi is mandatory in production.
+    Temperature heuristic still defaults to 1 for gpt-5 family — non-OpenAI
+    models with a literal ``gpt-5`` prefix would be misclassified, but
+    the override path's typical models (kimi-*, together's Qwen, …) don't
+    use that prefix so the heuristic is harmless.
+    """
+    if _MODEL_OVERRIDE:
+        effective_model = _MODEL_OVERRIDE
+    elif _use_kimi():
+        effective_model = _kimi_remap_model(model)
+    else:
+        effective_model = model
+    effective_temp = 1 if _requires_fixed_temperature(effective_model) else temperature
+    effective_max_tokens = _max_tokens_for_model(effective_model, max_tokens)
+    if _use_kimi() and not _MODEL_OVERRIDE:
+        return ChatOpenAI(
+            model=effective_model,
+            temperature=effective_temp,
+            request_timeout=timeout,
+            openai_api_base=_KIMI_BASE_URL,
+            openai_api_key=_kimi_api_key(),
+            **_token_limit_kwargs(effective_model, effective_max_tokens),
+        )
     return ChatOpenAI(
         model=effective_model,
         temperature=effective_temp,
         request_timeout=timeout,
-        **_token_limit_kwargs(effective_model, max_tokens),
+        **_token_limit_kwargs(effective_model, effective_max_tokens),
     )
 
 
@@ -208,35 +405,19 @@ def _make_local_llm(temperature: float, model: str, timeout: float, max_tokens: 
     )
 
 
-def _make_anthropic_llm(temperature: float, timeout: float, max_tokens: int):
-    """Build an Anthropic LLM instance if API key is available."""
-    if ChatAnthropic is None:
-        return None
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+def _make_together_llm(temperature: float, model: str, timeout: float, max_tokens: int) -> ChatOpenAI:
+    """Build a Together AI LLM via OpenAI-compatible endpoint."""
+    api_key = os.environ.get("TOGETHER_API_KEY", "")
     if not api_key:
-        return None
-    return ChatAnthropic(
-        model=_ANTHROPIC_MODEL,
+        raise RuntimeError("TOGETHER_API_KEY not set; cannot use LLM_PROVIDER=together")
+    effective_model = os.environ.get("TOGETHER_MODEL", model) if model == "gpt-5-mini" else model
+    return ChatOpenAI(
+        model=effective_model,
         temperature=temperature,
-        timeout=int(timeout),
+        request_timeout=timeout,
         max_tokens=max_tokens,
-        api_key=api_key,
-    )
-
-
-def _make_gemini_llm(temperature: float, timeout: float, max_tokens: int):
-    """Build a Gemini LLM instance if API key is available."""
-    if ChatGoogleGenerativeAI is None:
-        return None
-    api_key = os.environ.get("GOOGLE_API_KEY", "")
-    if not api_key:
-        return None
-    return ChatGoogleGenerativeAI(
-        model=_GEMINI_MODEL,
-        temperature=temperature,
-        timeout=int(timeout),
-        max_output_tokens=max_tokens,
-        google_api_key=api_key,
+        openai_api_base="https://api.together.xyz/v1",
+        openai_api_key=api_key,
     )
 
 
@@ -280,13 +461,33 @@ class _MultiProviderLLM:
         return self._try_providers("stream", messages, **kwargs)
 
     def bind(self, **kwargs):
-        """Return a new _MultiProviderLLM with bound kwargs on each provider."""
+        """Return a new _MultiProviderLLM with bound kwargs on each provider.
+
+        OpenAI-specific kwargs (``response_format``) are dropped for providers
+        that don't accept them — Anthropic's Messages API raises
+        ``TypeError: Messages.create() got an unexpected keyword argument
+        'response_format'`` when the kwarg propagates to it via the fallback
+        chain. Other providers may also reject it. The provider's own
+        structured-output mechanism (e.g. Anthropic tool use, Gemini schema)
+        is the right channel for JSON enforcement on non-OpenAI vendors;
+        markdown-strip retry remains the fallback when this isn't available.
+        """
+        _OPENAI_ONLY_KWARGS = {"response_format"}
+
+        def _provider_is_openai_family(p) -> bool:
+            cls_name = type(p).__name__
+            return cls_name in {"ChatOpenAI", "_InstrumentedLLM", "_MultiProviderLLM"}
+
         bound_providers = []
         for p in self._providers:
-            if hasattr(p, "bind"):
+            if not hasattr(p, "bind"):
+                bound_providers.append(p)
+                continue
+            if _provider_is_openai_family(p):
                 bound_providers.append(p.bind(**kwargs))
             else:
-                bound_providers.append(p)
+                filtered = {k: v for k, v in kwargs.items() if k not in _OPENAI_ONLY_KWARGS}
+                bound_providers.append(p.bind(**filtered) if filtered else p)
         return _MultiProviderLLM(bound_providers)
 
 
@@ -324,9 +525,12 @@ class _InstrumentedLLM:
         return getattr(self._llm, name)
 
 
+_LOCAL_TIMEOUT_MULTIPLIER = float(os.environ.get("LOCAL_TIMEOUT_MULTIPLIER", "3.0"))
+
+
 def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
             timeout: float = 30.0, max_tokens: int = 4096,
-            agent_name: str = "unknown"):
+            agent_name: str = "unknown", force_cloud: bool = False):
     """
     Factory function for LLM instances with multi-provider fallback.
 
@@ -339,15 +543,31 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     The ``model`` parameter is overridden by LOCAL_LLM_MODEL unless the
     caller explicitly passes a model name that doesn't match the default.
 
+    When LLM_PROVIDER=together, routes to Together AI's OpenAI-compatible API
+    using TOGETHER_MODEL (defaults to Qwen/Qwen3-30B-A3B-Instruct).
+
     When falling back to cloud via auto-detection, builds a provider chain:
       OpenAI → Anthropic → Gemini (whichever have API keys configured).
 
-    timeout: seconds before the HTTP request is aborted (default 30s).
+    Pass ``force_cloud=True`` to bypass both ``local`` and ``together``
+    providers and route directly to the OpenAI provider chain — used by
+    callers implementing non-cloud→cloud failover after a provider error.
+
+    timeout: seconds before the HTTP request is aborted (default 30s for
+    cloud, auto-scaled by LOCAL_TIMEOUT_MULTIPLIER for local Ollama).
     """
     _ensure_provider()
-    if _is_local:
+    if _is_local and not force_cloud:
+        local_timeout = timeout * _LOCAL_TIMEOUT_MULTIPLIER
         return _InstrumentedLLM(
-            _make_local_llm(temperature, model, timeout, max_tokens),
+            _make_local_llm(temperature, model, local_timeout, max_tokens),
+            model_hint=model,
+            agent_name=agent_name,
+        )
+
+    if _LLM_PROVIDER == "together" and not force_cloud:
+        return _InstrumentedLLM(
+            _make_together_llm(temperature, model, timeout, max_tokens),
             model_hint=model,
             agent_name=agent_name,
         )
@@ -357,10 +577,26 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     chain.append(_make_openai_llm(temperature, model, timeout, max_tokens))
 
     for provider_name in _PROVIDER_FALLBACK_CHAIN[1:]:
-        if provider_name == "anthropic":
-            llm = _make_anthropic_llm(temperature, timeout, max_tokens)
-        elif provider_name == "gemini":
-            llm = _make_gemini_llm(temperature, timeout, max_tokens)
+        if provider_name == "ollama":
+            # Local Ollama as next-tier fallback when Kimi errors.
+            # Cost-free, survives cloud outages, the embedder already
+            # requires it to be running. Uses ``_make_local_llm``
+            # (Ollama's OpenAI-compatible endpoint).
+            try:
+                local_model = os.environ.get(
+                    "OLLAMA_FALLBACK_MODEL", "qwen3:32b",
+                )
+                llm = _make_local_llm(
+                    temperature,
+                    local_model,
+                    timeout * _LOCAL_TIMEOUT_MULTIPLIER,
+                    max_tokens,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Ollama fallback unavailable (%s) — skipping", exc,
+                )
+                llm = None
         else:
             continue
         if llm is not None:
@@ -371,11 +607,23 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     return _InstrumentedLLM(_MultiProviderLLM(chain), model_hint=model, agent_name=agent_name)
 
 
-def get_openai_client(timeout: float = 30.0) -> OpenAI:
+def get_openai_client(timeout: float = 180.0) -> OpenAI:
     """Factory for raw OpenAI SDK client instances.
 
     Centralizes all direct ``OpenAI()`` calls (previously 27 scattered copies).
     When LLM_PROVIDER=local, points at Ollama's OpenAI-compatible endpoint.
+
+    **Cloud provider — Kimi (mandatory).** When ``KimiAI_API_KEY`` is
+    set (it is, in production), the client uses Moonshot's
+    OpenAI-compatible endpoint and the Kimi key. The OpenAI fallback is
+    only reachable when the Kimi key is unset — and we raise if neither
+    is present so calls never silently fail on a stale key.
+
+    Default 180s tolerates 32b local models — qwen3:32b (the
+    cache-or-llm-audit.md §2.3 Step-0 model) takes 30–60 s on real
+    cv_tailor / page-reasoner sized prompts, which the previous 30 s
+    default cut off. OpenAI cloud calls finish in <10 s so a 180 s
+    timeout still trips on real hangs.
     """
     _ensure_provider()
     if _LLM_PROVIDER == "local":
@@ -384,10 +632,19 @@ def get_openai_client(timeout: float = 30.0) -> OpenAI:
             base_url=_OLLAMA_BASE_URL,
             timeout=timeout,
         )
-    return OpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY", ""),
-        timeout=timeout,
-    )
+    if _use_kimi():
+        return OpenAI(
+            api_key=_kimi_api_key(),
+            base_url=_KIMI_BASE_URL,
+            timeout=timeout,
+        )
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not openai_key:
+        raise RuntimeError(
+            "No LLM credentials configured: set KimiAI_API_KEY (preferred) "
+            "or OPENAI_API_KEY in the env."
+        )
+    return OpenAI(api_key=openai_key, timeout=timeout)
 
 
 # ─── AGENT NODE: RESEARCHER ─────────────────────────────────────
@@ -791,7 +1048,9 @@ def cognitive_llm_call(
     scorer=None,
     fallback_llm=None,
     fallback_messages=None,
-) -> str:
+    response_format: dict | None = None,
+    max_tokens: int | None = None,
+) -> str | None:
     """Route LLM calls through CognitiveEngine when available (default-on).
 
     This is the preferred way to invoke LLMs for all medium+ stakes tasks.
@@ -806,14 +1065,35 @@ def cognitive_llm_call(
         scorer: Optional scoring function for cognitive self-improvement.
         fallback_llm: Optional LangChain LLM for direct fallback.
         fallback_messages: Optional messages list for direct fallback.
+        response_format: Optional OpenAI response_format constraint, e.g.
+            ``{"type": "json_object"}``. When set, bypasses the cognitive
+            engine (whose multi-step strategies — reflexion, tree-of-thought —
+            don't all return well-formed JSON) and goes straight to a single
+            OpenAI call with the constraint applied. Per
+            ``.claude/rules/orchestration-agents.md``: prefer this over
+            markdown stripping for any task that expects JSON.
 
     Returns:
-        The generated text answer.
+        The generated text answer, or None if all fallbacks fail.
     """
     import os
 
+    # JSON mode bypasses cognitive engine: L2 reflexion / L3 tree-of-thought
+    # produce intermediate text that isn't necessarily a JSON object, so
+    # response_format constraints aren't compatible with them. Single-call
+    # OpenAI with the constraint is both simpler and the canonical pattern.
+    if response_format is not None:
+        return _direct_llm_call(
+            task, fallback_llm, fallback_messages,
+            response_format=response_format, domain=domain,
+            max_tokens=max_tokens,
+        )
+
     if os.getenv("COGNITIVE_ENABLED", "true").lower() == "false":
-        return _direct_llm_call(task, fallback_llm, fallback_messages)
+        return _direct_llm_call(
+            task, fallback_llm, fallback_messages, domain=domain,
+            max_tokens=max_tokens,
+        )
 
     try:
         from shared.cognitive import get_cognitive_engine
@@ -823,12 +1103,37 @@ def cognitive_llm_call(
         return result.answer.strip()
     except Exception as exc:
         logger.debug("Cognitive engine failed for %s, falling back to direct LLM: %s", domain, exc)
-        return _direct_llm_call(task, fallback_llm, fallback_messages)
+        return _direct_llm_call(
+            task, fallback_llm, fallback_messages, domain=domain,
+            max_tokens=max_tokens,
+        )
 
 
-def _direct_llm_call(task: str, fallback_llm=None, fallback_messages=None) -> str:
-    """Direct LLM fallback when cognitive engine is unavailable."""
-    if fallback_llm and fallback_messages:
+def _direct_llm_call(
+    task: str,
+    fallback_llm=None,
+    fallback_messages=None,
+    response_format: dict | None = None,
+    domain: str | None = None,
+    max_tokens: int | None = None,
+) -> str | None:
+    """Direct LLM fallback when cognitive engine is unavailable.
+
+    When ``response_format`` is set (e.g. ``{"type": "json_object"}``), the
+    raw OpenAI path is preferred because LangChain's ``llm.invoke`` doesn't
+    surface ``response_format`` cleanly across all LLM providers — going
+    direct keeps the constraint applied.
+
+    ``domain`` (when provided by ``cognitive_llm_call``) routes to a
+    domain-specific model via ``_model_for_domain``: reasoning domains
+    use a reasoning model, content domains use a fast non-reasoning
+    model. Falls back to ``get_model_name()`` when no domain registry
+    entry exists.
+    """
+    # Skip the LangChain fallback when caller wants JSON mode — a raw OpenAI
+    # call with response_format gives a stronger guarantee than retrying the
+    # bound LangChain LLM and stripping markdown afterwards.
+    if not response_format and fallback_llm and fallback_messages:
         try:
             from shared.llm_retry import resilient_llm_call
             response = resilient_llm_call(fallback_llm, fallback_messages)
@@ -836,17 +1141,39 @@ def _direct_llm_call(task: str, fallback_llm=None, fallback_messages=None) -> st
         except Exception:
             pass
 
-    # Raw OpenAI fallback
+    # Raw OpenAI fallback — model picked via per-domain registry first,
+    # falling back to the provider default. cv_tailoring / cover_letter
+    # / screening_answers / etc. land on a fast non-reasoning model;
+    # page_reasoning / form_recovery / field_type_analysis land on a
+    # reasoning model. ``max_tokens`` lets a caller (e.g. field_analyzer
+    # with 40+ fields to enrich) request a larger budget; default 2000
+    # keeps cost bounded for the bulk of calls.
+    #
+    # Per-domain timeout: form_recovery runs inside the orchestrator's
+    # outer fill loop, where a 180s hang appears as a complete pipeline
+    # stall to operators (live evidence 2026-05-12, runs 1+2). Cap it at
+    # 30s — recovery LLM calls that take longer than that are signaling
+    # provider issues, not legitimate slow inference, and the orchestrator
+    # is better off skipping the field and deferring to vision verifier.
+    _PER_DOMAIN_TIMEOUTS = {
+        "form_recovery":  30.0,
+        "form_field_mapping": 30.0,
+    }
+    client_timeout = _PER_DOMAIN_TIMEOUTS.get(domain or "", 180.0)
     try:
-        client = get_openai_client()
-        model = get_model_name()
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": task}],
-            temperature=0.4,
-            **_token_limit_kwargs(model, 2000),
-        )
+        client = get_openai_client(timeout=client_timeout)
+        model = _model_for_domain(domain) or get_model_name()
+        requested = max_tokens if max_tokens is not None else 2000
+        kwargs: dict = {
+            "model": model,
+            "messages": [{"role": "user", "content": task}],
+            "temperature": 1 if _requires_fixed_temperature(model) else 0.4,
+            **_token_limit_kwargs(model, _max_tokens_for_model(model, requested)),
+        }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        response = client.chat.completions.create(**kwargs)
         return response.choices[0].message.content.strip()
     except Exception as exc:
         logger.error("Direct LLM fallback failed: %s", exc)
-        return ""
+        return None

@@ -58,10 +58,15 @@ EXCLUDE_PATTERNS = {
     ".coverage",
 }
 
-EMBEDDING_MODEL = "voyage-code-3"
+# Migrated 2026-05-10: Voyage Code 3 → BGE-M3 served via local Ollama.
+# Same 1024-dim output (Voyage code-3 == BGE-M3) so the on-disk
+# embeddings schema and query_embedding_cache stay valid; existing
+# Voyage-era vectors must be reindexed once via scripts/reindex_code_intelligence.py
+# before BGE-M3 queries return sensible neighbors.
+EMBEDDING_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "bge-m3:latest")
 EMBEDDING_DIMENSIONS = 1024
-EMBEDDING_BATCH_SIZE = 128
-EMBEDDING_ENV_VAR = "VOYAGE_API_KEY"
+EMBEDDING_BATCH_SIZE = 32  # Ollama batches are smaller than Voyage's
+EMBEDDING_ENV_VAR = "OLLAMA_BASE_URL"  # presence == endpoint configured
 
 
 def _is_excluded(path: str) -> bool:
@@ -157,18 +162,18 @@ class CodeIntelligence:
         # Project root for grep_search (set by index_directory or env)
         self._project_root = os.environ.get("CI_PROJECT_ROOT", str(Path.cwd()))
 
-        # Voyage-code-3 client (lazy init)
-        self._voyage_client = None
+        # BGE-M3 (Ollama) embedding client (lazy init)
+        self._embed_client = None
 
         # graph_only mode: skip embedding load for fast structural queries
         if not graph_only:
-            # Wire Voyage query embedding into HybridSearch (with disk cache)
+            # Wire query embedding into HybridSearch (with disk cache)
             self._query_embedding_cache: dict[str, list[float]] = {}
             self._init_query_cache_table()
             if os.environ.get(EMBEDDING_ENV_VAR):
                 self._search._query_embedding_fn = self._embed_query
 
-            # Pre-load Voyage embeddings into numpy matrix for fast search
+            # Pre-load embeddings into numpy matrix for fast search
             self._search.load_embeddings_to_memory()
 
     def _init_extended_schema(self):
@@ -190,7 +195,7 @@ class CodeIntelligence:
         if "last_indexed" not in existing:
             self.conn.execute("ALTER TABLE nodes ADD COLUMN last_indexed REAL DEFAULT 0.0")
 
-        # Embeddings table (Voyage-code-3 vectors, separate from HybridSearch's bag-of-words)
+        # Embeddings table (BGE-M3 vectors, separate from HybridSearch's bag-of-words)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS embeddings (
                 doc_id TEXT PRIMARY KEY,
@@ -203,27 +208,67 @@ class CodeIntelligence:
 
         self.conn.commit()
 
-    def _get_voyage_client(self):
-        """Lazy-init Voyage client. Returns None if no API key."""
-        if self._voyage_client is not None:
-            return self._voyage_client
+    def _get_embed_client(self):
+        """Probe the BGE-M3 (Ollama) endpoint and return a callable adapter
+        whose ``embed(texts, model, input_type=...)`` method returns an object
+        with a ``.embeddings`` list — the same shape the document indexer
+        and ``_embed_query`` already call. Returns None if Ollama is
+        unreachable, in which case search degrades to FTS5-only.
+        """
+        if self._embed_client is not None:
+            return self._embed_client
 
-        api_key = os.environ.get(EMBEDDING_ENV_VAR)
-        if not api_key:
-            logger.info("VOYAGE_API_KEY not set — using FTS5-only search")
-            return None
-
+        base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+        # Probe — if Ollama isn't reachable, fall back to FTS5-only search.
         try:
-            import voyageai
-
-            self._voyage_client = voyageai.Client(api_key=api_key)
-            return self._voyage_client
-        except ImportError:
-            logger.warning("voyageai package not installed — using FTS5-only search")
+            import urllib.request
+            with urllib.request.urlopen(f"{base}/api/tags", timeout=2) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Ollama probe returned {resp.status}")
+        except Exception as exc:
+            logger.info(
+                "Ollama unreachable at %s (%s) — using FTS5-only search",
+                base, exc,
+            )
             return None
+
+        class _BGEAdapter:
+            """BGE-M3 (Ollama) embed adapter — exposes
+            ``embed(texts, model, input_type=...) -> obj.embeddings``
+            so the document indexer and query embedder don't need to know
+            which backend is wired.
+            """
+
+            def __init__(self, base_url: str) -> None:
+                self._base = base_url
+
+            def embed(self, texts, model: str, input_type: str | None = None):
+                # input_type is ignored — BGE-M3 handles query and document
+                # text with the same model.
+                import json as _json
+                import urllib.request as _ur
+                req = _ur.Request(
+                    f"{self._base}/api/embed",
+                    data=_json.dumps({"model": model, "input": list(texts)}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with _ur.urlopen(req, timeout=120) as resp:
+                    payload = _json.loads(resp.read())
+
+                class _Result:
+                    pass
+
+                result = _Result()
+                result.embeddings = payload.get("embeddings") or []
+                return result
+
+        self._embed_client = _BGEAdapter(base)
+        logger.info("Code-intelligence embedder: BGE-M3 via Ollama (%s)", base)
+        return self._embed_client
 
     def _init_query_cache_table(self):
-        """Create disk cache table for Voyage query embeddings."""
+        """Create disk cache table for query embeddings."""
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS query_embedding_cache (
                 query_hash TEXT PRIMARY KEY,
@@ -235,9 +280,9 @@ class CodeIntelligence:
         self.conn.commit()
 
     def _embed_query(self, query: str) -> list[float] | None:
-        """Embed a search query via Voyage Code 3.
+        """Embed a search query via BGE-M3 (Ollama).
 
-        3-tier cache: in-memory dict → SQLite disk cache → Voyage API.
+        3-tier cache: in-memory dict → SQLite disk cache → Ollama /api/embed.
         """
         import struct as _struct
 
@@ -261,8 +306,8 @@ class CodeIntelligence:
         except Exception:
             pass  # Table may not exist yet
 
-        # Tier 3: Voyage API
-        client = self._get_voyage_client()
+        # Tier 3: BGE-M3 (Ollama)
+        client = self._get_embed_client()
         if client is None:
             return None
 

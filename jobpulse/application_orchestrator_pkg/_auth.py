@@ -5,6 +5,7 @@ polling during the application flow.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -35,6 +36,17 @@ class AuthHandler:
     def sso(self):
         return self._orch.sso
 
+    @property
+    def navigator(self):
+        """Access the FormNavigator from the shared orchestrator.
+
+        Goes through the orchestrator because AuthHandler is constructed
+        before FormNavigator (see application_orchestrator_pkg/__init__.py).
+        The navigator is needed at call time (handle_login/signup), by which
+        point the orchestrator has both attributes wired.
+        """
+        return self._orch._navigator
+
     @staticmethod
     def _as_dict(snapshot: Any) -> dict:
         if hasattr(snapshot, "model_dump"):
@@ -42,103 +54,93 @@ class AuthHandler:
         return snapshot
 
     async def handle_login(self, snapshot: dict, platform: str) -> dict:
-        domain = _extract_domain(snapshot.get("url", ""))
-
-        if not self.accounts.has_account(domain):
-            signup_btn = find_signup_link(snapshot)
-            if signup_btn:
-                await self.driver.click(signup_btn["selector"])
-                return self._as_dict(await self.driver.get_snapshot())
-            return snapshot
-
-        email, password = self.accounts.get_credentials(domain)
-        logger.info("Logging into %s", domain)
-
-        filled_email = False
-        filled_password = False
-        for field in snapshot.get("fields", []):
-            label = field.get("label", "").lower()
-            ftype = field.get("type", "")
-            try:
-                if ftype == "email" or "email" in label:
-                    await self.driver.fill(field["selector"], email)
-                    filled_email = True
-                elif ftype == "password" or "password" in label:
-                    await self.driver.fill(field["selector"], password)
-                    filled_password = True
-            except (TimeoutError, ConnectionError) as exc:
-                logger.warning("Login fill failed for %s: %s", field.get("selector"), exc)
-
-        if not filled_email or not filled_password:
-            logger.warning("Login: could not fill email=%s password=%s for %s", filled_email, filled_password, domain)
-            return snapshot
-
-        clicked = False
-        for btn in snapshot.get("buttons", []):
-            if btn.get("enabled") and re.search(r"(sign\s*in|log\s*in|login)", btn.get("text", ""), re.IGNORECASE):
-                await self.driver.click(btn["selector"])
-                clicked = True
-                break
-
-        if not clicked:
-            logger.warning("Login: no sign-in button found for %s", domain)
-            return snapshot
-
-        # Wait for page transition after login click
-        import asyncio
-        await asyncio.sleep(2.0)
-        post_login = self._as_dict(await self.driver.get_snapshot())
-
-        # Verify login succeeded — if we're still on the login page, don't mark success
-        post_url = post_login.get("url", "").lower()
-        post_text = post_login.get("page_text_preview", "").lower()
-        still_login = any(
-            kw in post_text for kw in ("sign in", "log in", "invalid", "incorrect", "wrong password")
-        ) and "login" in post_url
-        if still_login:
-            logger.warning("Login appears to have failed for %s — not marking success", domain)
-            return post_login
-
-        self.accounts.mark_login_success(domain)
-        return post_login
-
-    async def handle_signup(self, snapshot: dict, platform: str) -> dict:
+        """Login via reasoner — analyzes actual page content."""
+        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+        from jobpulse.navigation.action_executor import (
+            NavigationActionExecutor, emit_fill_failures,
+        )
         from jobpulse.applicator import PROFILE
 
-        domain = _extract_domain(snapshot.get("url", ""))
-        email, password = self.accounts.create_account(domain)
-        logger.info("Creating account on %s", domain)
+        reasoner = get_page_reasoner()
+        action = reasoner.reason_sync(snapshot)
+        logger.info("Auth login via reasoner: %s — %s",
+                    action.action, action.page_understanding[:60])
 
-        for field in snapshot.get("fields", []):
-            label = field.get("label", "").lower()
-            ftype = field.get("type", "")
-            sel = field.get("selector", "")
+        page = getattr(self.driver, "page", None)
+        if page is not None:
+            executor = NavigationActionExecutor(page)
+            result = await executor.execute(action, profile=PROFILE)
+            domain = _extract_domain(snapshot.get("url", ""))
+            emit_fill_failures(result, domain=domain, source="auth_login")
 
-            if ftype == "email" or "email" in label:
-                await self.driver.fill(sel, email)
-            elif ftype == "password":
-                await self.driver.fill(sel, password)
-            elif "first" in label:
-                await self.driver.fill(sel, PROFILE.get("first_name", ""))
-            elif "last" in label:
-                await self.driver.fill(sel, PROFILE.get("last_name", ""))
-            elif "name" in label and "user" not in label:
-                await self.driver.fill(sel, f"{PROFILE.get('first_name', '')} {PROFILE.get('last_name', '')}".strip())
-            elif "phone" in label or ftype == "tel":
-                await self.driver.fill(sel, PROFILE.get("phone", ""))
+        import asyncio
+        await asyncio.sleep(2.0)
+        post_snap = self._as_dict(await self.driver.get_snapshot())
 
-        for btn in snapshot.get("buttons", []):
-            if btn.get("enabled") and re.search(r"(create|sign\s*up|register|join|submit)", btn.get("text", ""), re.IGNORECASE):
-                await self.driver.click(btn["selector"])
-                break
+        nav = getattr(self._orch, "_navigator", None)
+        if nav is not None:
+            verification = await nav._verify_action(
+                pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
+            )
+            verification = nav._check_expected_outcome(action, verification)
+            if verification.ghost_click:
+                logger.warning("Auth login: ghost click detected — page did not progress")
+            if verification.expected_outcome_met is False:
+                logger.warning(
+                    "Auth login: expected_outcome '%s' not met",
+                    action.expected_outcome,
+                )
+        return post_snap
 
-        return self._as_dict(await self.driver.get_snapshot())
+    async def handle_signup(self, snapshot: dict, platform: str) -> dict:
+        """Signup via reasoner — analyzes actual page content."""
+        from jobpulse.page_analysis.page_reasoner import get_page_reasoner
+        from jobpulse.navigation.action_executor import (
+            NavigationActionExecutor, emit_fill_failures,
+        )
+        from jobpulse.applicator import PROFILE
+
+        reasoner = get_page_reasoner()
+        action = reasoner.reason_sync(snapshot)
+        logger.info("Auth signup via reasoner: %s — %s",
+                    action.action, action.page_understanding[:60])
+
+        page = getattr(self.driver, "page", None)
+        if page is not None:
+            executor = NavigationActionExecutor(page)
+            result = await executor.execute(action, profile=PROFILE)
+            domain = _extract_domain(snapshot.get("url", ""))
+            emit_fill_failures(result, domain=domain, source="auth_signup")
+
+        import asyncio
+        await asyncio.sleep(2.0)
+        post_snap = self._as_dict(await self.driver.get_snapshot())
+
+        nav = getattr(self._orch, "_navigator", None)
+        if nav is not None:
+            verification = await nav._verify_action(
+                pre_snapshot=snapshot, post_snapshot=post_snap, action_kind=action.action,
+            )
+            verification = nav._check_expected_outcome(action, verification)
+            if verification.ghost_click:
+                logger.warning("Auth signup: ghost click detected — page did not progress")
+            if verification.expected_outcome_met is False:
+                logger.warning(
+                    "Auth signup: expected_outcome '%s' not met",
+                    action.expected_outcome,
+                )
+        return post_snap
 
     async def handle_email_verification(self, snapshot: dict, platform: str, return_url: str) -> dict:
         domain = _extract_domain(snapshot.get("url", ""))
         logger.info("Waiting for verification email from %s", domain)
 
-        link = self.gmail.wait_for_verification(domain)
+        # `wait_for_verification` is a sync method that loops with
+        # `time.sleep` for up to 120 s. Calling it directly from this
+        # coroutine would block the event loop, starving the navigator's
+        # browser-intelligence pollers and per-step verification. Run on
+        # a worker thread so the loop keeps servicing the page.
+        link = await asyncio.to_thread(self.gmail.wait_for_verification, domain)
         if not link:
             logger.warning("Verification email not received for %s", domain)
             return snapshot

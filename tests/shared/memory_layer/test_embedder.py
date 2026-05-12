@@ -38,14 +38,14 @@ class TestMemoryEmbedder:
         assert _cosine(v1, v2) < 0.5
 
     def test_fallback_on_primary_failure(self):
-        embedder = MemoryEmbedder(primary="voyage", fallback="minilm")
-        with patch.object(embedder, "_embed_voyage", side_effect=ConnectionError("API down")):
+        embedder = MemoryEmbedder(primary="bge", fallback="minilm")
+        with patch.object(embedder, "_embed_bge", side_effect=ConnectionError("Ollama down")):
             vec = embedder.embed("test text")
             assert len(vec) == 384  # fell back to MiniLM
 
     def test_fallback_logs_warning(self, caplog):
-        embedder = MemoryEmbedder(primary="voyage", fallback="minilm")
-        with patch.object(embedder, "_embed_voyage", side_effect=ConnectionError("API down")):
+        embedder = MemoryEmbedder(primary="bge", fallback="minilm")
+        with patch.object(embedder, "_embed_bge", side_effect=ConnectionError("Ollama down")):
             embedder.embed("test")
             assert "falling back" in caplog.text.lower() or "fallback" in caplog.text.lower()
 

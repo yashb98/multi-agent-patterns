@@ -6,8 +6,17 @@ import time
 
 from shared.logging_config import get_logger
 from shared.memory_layer._entries import MemoryEntry, MemoryTier
+from shared.memory_layer._qdrant_store import _INDEXED_TIERS
 
 logger = get_logger(__name__)
+
+
+# Per-write linker tuning. score_threshold=0.5 short-circuits noisy hits before
+# they ever reach `classify_relationship` (which itself rejects <0.75 anyway).
+# top_k=5 per tier × 4 tiers bounds the per-write work to one Qdrant round-trip
+# per tier and at most one batched Neo4j MERGE.
+_LINKER_TOP_K = 5
+_LINKER_SCORE_THRESHOLD = 0.5
 
 
 class SyncService:
@@ -17,6 +26,7 @@ class SyncService:
         qdrant=None,
         neo4j=None,
         embedder=None,
+        linker=None,
         start_background: bool = True,
         queue_size: int = 1000,
     ):
@@ -24,6 +34,7 @@ class SyncService:
         self._qdrant = qdrant
         self._neo4j = neo4j
         self._embedder = embedder
+        self._linker = linker
         self._queue: queue.Queue[MemoryEntry] = queue.Queue(maxsize=queue_size)
         self._stop_event = threading.Event()
         self._worker: threading.Thread | None = None
@@ -63,14 +74,40 @@ class SyncService:
             finally:
                 self._queue.task_done()
 
-    def _sync_entry(self, entry: MemoryEntry) -> None:
-        if self._qdrant and self._embedder:
-            vector = self._embedder.embed(entry.content)
-            self._qdrant.upsert(
-                entry.memory_id, entry.tier, vector,
-                {"domain": entry.domain, "score": entry.score,
-                 "lifecycle": entry.lifecycle.value},
+    def _embed_for_qdrant(self, content: str, memory_id: str) -> list[float] | None:
+        """Embed and validate dimension matches the Qdrant collection.
+
+        Returns the vector when dimensions match, ``None`` (with warning) when
+        the embedder fell back to a different model whose dim doesn't fit the
+        Qdrant collections. Skipping is safer than letting Qdrant reject the
+        upsert silently in the background worker.
+        """
+        if not (self._qdrant and self._embedder):
+            return None
+        vector = self._embedder.embed(content)
+        expected = getattr(self._qdrant, "_dims", None)
+        # Only enforce when _dims is an actual int — MagicMock-based test
+        # fixtures that don't set _dims should not silently skip Qdrant writes.
+        if isinstance(expected, int) and len(vector) != expected:
+            logger.warning(
+                "Embedder produced %d-dim vector but Qdrant collection expects %d-dim — "
+                "skipping Qdrant write (memory_id=%s). "
+                "Likely a primary/fallback model dim mismatch.",
+                len(vector), expected, memory_id,
             )
+            return None
+        return vector
+
+    def _sync_entry(self, entry: MemoryEntry) -> None:
+        vector: list[float] | None = None
+        if self._qdrant and self._embedder:
+            vector = self._embed_for_qdrant(entry.content, entry.memory_id)
+            if vector is not None:
+                self._qdrant.upsert(
+                    entry.memory_id, entry.tier, vector,
+                    {"domain": entry.domain, "score": entry.score,
+                     "lifecycle": entry.lifecycle.value},
+                )
 
         if self._neo4j:
             self._neo4j.create_node(
@@ -78,6 +115,68 @@ class SyncService:
                 entry.content[:200], entry.score, entry.confidence,
                 entry.decay_score, entry.lifecycle.value,
                 entry.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+
+        # Discover and create graph edges to similar existing memories.
+        # Reuses the vector already computed for the upsert — re-embedding would
+        # waste a Voyage call and could even produce a different vector if the
+        # fallback model fires, causing the linker's search to miss its own point.
+        if self._linker is not None and self._qdrant is not None and vector is not None:
+            self._link_neighbors(entry, vector)
+
+    def _link_neighbors(
+        self,
+        entry: MemoryEntry,
+        vector: list[float],
+    ) -> None:
+        """Search Qdrant top-K across all tiers, hydrate, hand to linker.
+
+        Loops every indexed tier (not just `entry.tier`) because relationship
+        rules in `classify_relationship` are cross-tier (EXPERIENCE→EPISODIC,
+        EPISODIC→SEMANTIC, EPISODIC→PROCEDURAL). Filters self-match — the new
+        entry was upserted to Qdrant moments ago and would be its own top hit.
+        Failures here are swallowed: edge creation is a best-effort enrichment
+        on top of the source-of-truth SQLite write.
+        """
+        hits: list[tuple[str, float]] = []
+        for tier in _INDEXED_TIERS:
+            try:
+                tier_hits = self._qdrant.search(
+                    tier, vector,
+                    top_k=_LINKER_TOP_K,
+                    score_threshold=_LINKER_SCORE_THRESHOLD,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Linker: Qdrant search in tier %s failed for %s: %s",
+                    tier.value, entry.memory_id, exc,
+                )
+                continue
+            hits.extend((mid, score) for mid, score in tier_hits if mid != entry.memory_id)
+
+        if not hits:
+            return
+
+        neighbor_ids = [mid for mid, _ in hits]
+        try:
+            hydrated = self._sqlite.get_by_ids(neighbor_ids)
+        except Exception as exc:
+            logger.warning(
+                "Linker: SQLite hydration failed for %s: %s",
+                entry.memory_id, exc,
+            )
+            return
+        by_id = {e.memory_id: e for e in hydrated}
+        neighbors = [(by_id[mid], score) for mid, score in hits if mid in by_id]
+        if not neighbors:
+            return
+
+        try:
+            self._linker.link_with_neighbors(entry, neighbors)
+        except Exception as exc:
+            logger.warning(
+                "Linker: link_with_neighbors failed for %s: %s",
+                entry.memory_id, exc,
             )
 
     def reconcile(self) -> dict:
@@ -92,7 +191,7 @@ class SyncService:
 
             # Backfill Qdrant
             if self._qdrant and not self._qdrant.has_point(memory_id, entry.tier):
-                vector = self._embedder.embed(entry.content) if self._embedder else []
+                vector = self._embed_for_qdrant(entry.content, memory_id) if self._embedder else None
                 if vector:
                     self._qdrant.upsert(
                         memory_id, entry.tier, vector,

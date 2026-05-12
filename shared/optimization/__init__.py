@@ -47,4 +47,5 @@ from shared.optimization._policy import (  # noqa: F401
 from shared.optimization._engine import (  # noqa: F401
     OptimizationEngine,
     get_optimization_engine,
+    reset_optimization_engine,
 )

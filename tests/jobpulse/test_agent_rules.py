@@ -101,14 +101,59 @@ class TestRuleExpiry:
         assert db.get_exclude_keywords() == []
 
 
-class TestGetEscalationFields:
-    def test_returns_escalated_fields(self, db):
-        for _ in range(3):
-            db.auto_generate_from_correction("salary", "28000", "32000", "a.com", "generic")
-        fields = db.get_escalation_fields()
-        assert "salary" in fields
+class TestAdaptationSignalSchema:
+    """Audit S5 B-3: every emitter of `signal_type='adaptation'` must
+    populate `payload['param']` because the aggregator at
+    `shared/optimization/_aggregator._detect_adaptation_effectiveness`
+    reads `adapt.payload.get('param', 'unknown')` for the insight
+    evidence string. Pre-fix, `auto_generate_from_correction` only
+    carried `field`, so every correction-driven adaptation insight
+    showed `Adaptation 'unknown' on …`."""
 
-    def test_override_not_in_escalation(self, db):
-        db.auto_generate_from_correction("salary", "28000", "32000", "a.com", "generic")
-        fields = db.get_escalation_fields()
-        assert fields == []
+    def test_correction_emits_adaptation_with_param_key(self, db, tmp_path, monkeypatch):
+        from shared.optimization._engine import OptimizationEngine
+
+        opt_db = str(tmp_path / "optimization.db")
+        engine = OptimizationEngine(db_path=opt_db)
+        monkeypatch.setattr(
+            "shared.optimization.get_optimization_engine", lambda: engine,
+        )
+
+        db.auto_generate_from_correction(
+            field_label="salary expectation",
+            agent_value="28000",
+            user_value="35000",
+            domain="greenhouse.io",
+            platform="greenhouse",
+        )
+
+        adaptations = engine._bus.query(signal_type="adaptation")
+        assert len(adaptations) == 1
+        payload = adaptations[0].payload
+        assert payload.get("param"), (
+            "Adaptation payload must include `param` so the aggregator's "
+            "evidence string isn't 'Adaptation \"unknown\" on …'"
+        )
+        # The other emitters use rule_type / category as `param` —
+        # the correction path mirrors that with 'correction_override'.
+        assert payload["param"] == "correction_override"
+        # And the field-label provenance is preserved alongside.
+        assert payload.get("field") == "salary expectation"
+        assert payload.get("old_value") == "28000"
+        assert payload.get("new_value") == "35000"
+
+    def test_blocker_emits_adaptation_with_param_key(self, db, tmp_path, monkeypatch):
+        """Sanity check — the blocker path was correct already; lock it in."""
+        from shared.optimization._engine import OptimizationEngine
+
+        opt_db = str(tmp_path / "optimization.db")
+        engine = OptimizationEngine(db_path=opt_db)
+        monkeypatch.setattr(
+            "shared.optimization.get_optimization_engine", lambda: engine,
+        )
+
+        db.auto_generate_from_blocker("geo-restriction", "visa", 5, 10)
+
+        adaptations = engine._bus.query(signal_type="adaptation")
+        assert len(adaptations) == 1
+        assert adaptations[0].payload.get("param") == "blocker_avoidance"

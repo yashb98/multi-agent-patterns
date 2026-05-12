@@ -15,9 +15,48 @@ Public API:
 from __future__ import annotations
 
 import json
+import threading
+from datetime import datetime
 from pathlib import Path
 
 from shared.logging_config import get_logger
+
+
+def _load_variants_from_db(repo_name: str, archetype: str) -> list[str] | None:
+    """Look up archetype-specific bullets for a repo in user_profile.db.cv_variants.
+
+    Per pii-policy.md, project bullets are PII (reveal user's GitHub repos
+    and technical specifics). The canonical store is the cv_variants table.
+    The static MANUAL_VARIANTS dict in this module remains as a bootstrap
+    fallback for fresh installs only.
+
+    Lookup strategy:
+      1. Resolve repo_name → canonical URL via cv_projects (also DB-backed)
+      2. Query cv_variants WHERE repo_url = ? AND archetype = ?
+      3. Return parsed bullets or None
+    """
+    try:
+        import sqlite3
+        import json
+        from pathlib import Path
+        db_path = Path(__file__).parent.parent / "data" / "user_profile.db"
+        if not db_path.exists():
+            return None
+        # Resolve URL from cv_projects if repo_name doesn't already look like a URL
+        url = repo_name if repo_name.startswith("http") else f"https://github.com/{repo_name}"
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT bullets FROM cv_variants WHERE repo_url = ? AND archetype = ?",
+                (url, archetype),
+            ).fetchone()
+            if not row:
+                return None
+            try:
+                return list(json.loads(row[0]))
+            except Exception:
+                return None
+    except Exception:
+        return None
 
 logger = get_logger(__name__)
 
@@ -27,146 +66,16 @@ _AUTO_PATH = Path(__file__).parent.parent / "data" / "portfolio_auto.json"
 # Hand-crafted variants for hero projects
 # ---------------------------------------------------------------------------
 
-def _multi_agent_variants() -> dict[str, list[str]]:
-    from jobpulse.cv_templates import get_project_stats
-    s = get_project_stats()
-    loc = s.get("loc_display", "142,500+")
-    tests = s.get("tests_display", "3,350+")
-    files = s.get("python_files", 680)
-    dbs = s.get("databases", 57)
-    return {
-        "agentic": [
-            f'Built a <b>{loc} LOC</b> production multi-agent system with <b>10+ autonomous agents</b> orchestrated via <b>4 LangGraph</b> patterns, featuring human-in-the-loop flows, Swarm-based routing, and tool-use integration running <b>24/7</b>.',
-            'Designed agentic architectures with <b>GRPO experiential learning</b>, persona evolution, and <b>A/B testing</b>, enabling self-improving agents with <b>99.9%</b> uptime across Gmail, Calendar, GitHub, and Notion.',
-            'Engineered <b>5-gate pre-screen pipeline</b> with autonomous job scanning and application submission, processing <b>200+ JDs/day</b> with <b>92%+</b> skill match accuracy.',
-            'Built multi-source <b>fact-checking</b> agent with Semantic Scholar API, <b>9.5/10</b> accuracy gate, and automated Google Drive document management.',
-        ],
-        "data_scientist": [
-            f'Built a <b>{loc} LOC</b> production system with <b>{tests} tests</b>, deploying <b>ML classification pipelines</b> and statistical correlation engines that reduced costs by <b>96%</b> through hybrid rule-based and ML routing.',
-            'Designed <b>GRPO experiential learning</b> framework with A/B testing and adaptive thresholds, applying reinforcement learning to optimise across <b>41 intent categories</b>.',
-            'Engineered <b>NLP classification pipeline</b> with 3-tier architecture (regex, semantic embeddings, LLM fallback) and <b>250+ training examples</b> with sub-5ms embedding inference.',
-            'Built <b>statistical correlation engine</b> tracking <b>17 verification signals</b> with per-bucket block rate analysis and automated pattern detection.',
-        ],
-        "data_analyst": [
-            'Built <b>4 analytics dashboards</b> tracking conversion funnels, platform breakdowns, and gate statistics across <b>200+ daily job listings</b> with automated weekly comparison reports.',
-            f'Designed automated <b>ETL pipelines</b> aggregating data from LinkedIn, Indeed, Reed, and Greenhouse APIs into <b>{dbs} SQLite databases</b>, cutting manual data collection by <b>95%</b>.',
-            'Engineered <b>ATS scoring system</b> with deterministic keyword matching and statistical analysis, producing <b>0-100</b> match scores with category-level breakdowns.',
-            'Built <b>rejection pattern analysis</b> with blocker classification, cohort comparison, and data-driven recommendations improving application conversion rates.',
-        ],
-        "ai_ml": [
-            f'Built a <b>{loc} LOC</b> production AI system with <b>{tests} tests</b>, implementing <b>GRPO experiential learning</b>, NLP pipelines, and embedding-based semantic search across <b>19,400+</b> indexed nodes.',
-            'Designed <b>3-tier NLP pipeline</b> (regex, semantic embeddings, LLM) with <b>250+ training examples</b> and sub-5ms inference through TF-IDF vectorisation and cosine similarity.',
-            'Engineered hybrid classification reducing LLM calls by <b>96%</b> through rule-based extraction (<b>582-entry taxonomy</b>) with ML fallback, processing <b>200+ JDs/day</b>.',
-            'Built <b>fact-checking pipeline</b> with Semantic Scholar API, NLI scoring, and chain-of-thought verification achieving <b>9.5/10</b> accuracy gate.',
-        ],
-        "data_engineer": [
-            f'Built a <b>{loc} LOC</b> production system with <b>{dbs} SQLite databases</b>, <b>{files} files</b>, and automated data pipelines running <b>24/7</b> via macOS launchd with cron scheduling.',
-            'Designed <b>multi-source data ingestion</b> from GitHub, LinkedIn, Indeed, Reed, arXiv, Gmail, and Notion APIs with adaptive rate limiting and cross-platform deduplication.',
-            'Engineered <b>5-gate data processing pipeline</b> with rule-based extraction (<b>582-entry taxonomy</b>), statistical correlation, and SQLite caching, processing <b>200+ records/day</b>.',
-            'Built <b>scan learning engine</b> tracking <b>17 signals</b> per session with statistical analysis, automated cooldown scheduling, and persistent SQLite event storage.',
-        ],
-        "data_platform": [
-            f'Built a <b>{loc} LOC</b> production system with <b>{tests} tests</b>, <b>CI/CD</b> via GitHub Actions, and <b>10+ autonomous services</b> running 24/7 with <b>99.9%</b> uptime.',
-            'Designed <b>MLOps pipeline</b> with model evaluation, A/B testing, and <b>GRPO experiential learning</b> for automated model selection across <b>41 classification categories</b>.',
-            'Engineered <b>rate-limited automation</b> across 5 platforms with adaptive delays, session management, and <b>17-signal verification detection</b>.',
-            'Built <b>monitoring and alerting</b> with 5 Telegram bots, automated error reporting, conversion funnel tracking, and weekly dashboards.',
-        ],
-    }
+# Note: _multi_agent_variants() previously held hardcoded archetype variant
+# bullets for one specific repo. Removed 2026-05-04 — all variant data lives
+# in user_profile.db.cv_variants now (loaded via _load_variants_from_db).
 
 
-MANUAL_VARIANTS: dict[str, dict[str, list[str]]] = {
-    "yashb98/multi-agent-patterns": _multi_agent_variants(),
-    "yashb98/DataMind": {
-        "agentic": [
-            'Built AI analytics platform with <b>48-agent</b> Digital Labor Workforce using multi-agent orchestration for autonomous <b>ETL</b>, anomaly detection, and reporting.',
-            'Designed <b>8-layer</b> anti-hallucination stack with NLI scoring and chain-of-thought auditing, achieving <b>95%+</b> factual accuracy on agent-generated insights.',
-            'Implemented agent coordination across <b>Apache Kafka</b> streaming, <b>DuckDB</b> analytics, and <b>Pinecone</b> vector search, processing <b>1M+</b> records.',
-        ],
-        "data_scientist": [
-            'Built AI analytics platform processing <b>1M+</b> records with automated anomaly detection, statistical profiling, and ML-driven insight generation.',
-            'Designed <b>8-layer</b> anti-hallucination stack with NLI scoring achieving <b>95%+</b> factual accuracy on generated predictions and recommendations.',
-            'Implemented <b>DuckDB</b> analytical queries with <b>Pinecone</b> vector search for semantic similarity, enabling natural language queries with sub-second latency.',
-        ],
-        "data_analyst": [
-            'Built AI analytics platform automating <b>ETL</b>, anomaly detection, and dashboard generation across structured and unstructured data, processing <b>1M+</b> records.',
-            'Designed automated reporting pipeline with <b>48 agents</b> handling data profiling, trend analysis, and insight generation with <b>95%+</b> accuracy.',
-            'Implemented <b>DuckDB</b> for analytical queries and <b>Apache Kafka</b> real-time streaming, enabling sub-second dashboard refreshes.',
-        ],
-        "data_engineer": [
-            'Built multi-cloud lakehouse with <b>Apache Kafka</b> for real-time streaming, <b>DuckDB</b> for analytical queries, and <b>Pinecone</b> for vector search, processing <b>1M+</b> records.',
-            'Designed <b>ETL</b> orchestration across 48 processing agents handling data ingestion, transformation, and loading across structured and unstructured sources.',
-            'Implemented automated data quality pipeline with <b>8-layer</b> validation stack achieving <b>95%+</b> data accuracy on processed outputs.',
-        ],
-        "data_platform": [
-            'Built AI analytics platform with <b>48-agent</b> workforce deployed via <b>Docker</b>, handling autonomous <b>ETL</b>, anomaly detection, and reporting across <b>1M+</b> records.',
-            'Designed <b>Apache Kafka</b> real-time streaming pipeline with <b>DuckDB</b> analytics and <b>Pinecone</b> vector search, achieving sub-second query latency.',
-            'Implemented <b>8-layer</b> anti-hallucination stack with automated model output verification, ensuring <b>95%+</b> accuracy in production responses.',
-        ],
-    },
-    "yashb98/Velox_AI": {
-        "data_analyst": [
-            'Built real-time <b>dashboards</b> tracking voice agent performance across <b>1,000+</b> concurrent sessions, reducing anomaly detection time by <b>70%</b>.',
-            'Automated analysis of <b>50K+</b> daily session metrics via <b>API</b> pipelines with statistical profiling, cutting manual reporting by <b>80%</b>.',
-            'Delivered <b>sub-150ms</b> response times through performance analysis and query optimisation on <b>GCP</b>.',
-        ],
-        "data_platform": [
-            'Built enterprise voice agent platform handling <b>1,000+</b> concurrent sessions with <b>sub-150ms</b> response times on <b>GCP</b> infrastructure.',
-            'Automated <b>API</b>-driven monitoring pipelines tracking <b>50K+</b> daily session metrics with anomaly detection and alerting.',
-            'Designed real-time dashboards reducing operational anomaly detection by <b>70%</b> and manual reporting by <b>80%</b>.',
-        ],
-        "data_engineer": [
-            'Built <b>API</b>-driven data pipelines processing <b>50K+</b> daily session metrics from enterprise voice platform with automated ingestion and aggregation.',
-            'Designed real-time monitoring infrastructure on <b>GCP</b> handling <b>1,000+</b> concurrent sessions with <b>sub-150ms</b> query latency.',
-            'Automated metric collection and reporting pipelines, reducing manual data processing by <b>80%</b>.',
-        ],
-    },
-    "yashb98/nexusmind": {
-        "data_scientist": [
-            'Built <b>NLP</b> pipelines extracting insights from <b>10K+</b> unstructured documents with <b>94%</b> retrieval precision using vector embeddings.',
-            'Developed <b>clustering</b> workflows grouping <b>500+</b> policy documents by topic, risk level, and compliance status using unsupervised learning.',
-            'Optimised vector insertion pipeline, reducing indexing time by <b>60%</b> through batch processing and embedding optimisation.',
-        ],
-        "data_analyst": [
-            'Built automated dashboards surfacing compliance metrics from <b>10K+</b> unstructured documents, reducing manual review time by <b>55%</b>.',
-            'Developed <b>clustering</b> workflows categorising <b>500+</b> policy documents by topic and risk level for compliance reporting.',
-            'Designed <b>NLP</b> extraction pipelines with <b>94%</b> retrieval precision, enabling automated policy analysis and trend identification.',
-        ],
-        "ai_ml": [
-            'Built <b>NLP</b> pipelines with vector embeddings achieving <b>94%</b> retrieval precision on <b>10K+</b> unstructured documents using <b>Pinecone</b>.',
-            'Developed unsupervised <b>clustering</b> models grouping <b>500+</b> documents by semantic similarity across topic, risk, and compliance dimensions.',
-            'Optimised vector insertion pipeline, reducing indexing time by <b>60%</b> through batch processing and embedding dimensionality tuning.',
-        ],
-    },
-    "yashb98/90Days_Machine_learinng": {
-        "data_scientist": [
-            '<b>30+ ML projects</b> spanning NLP, forecasting, and statistical testing, with t-test, chi-squared, and ANOVA across <b>15+ datasets</b> improving prediction accuracy by <b>12%</b>.',
-            'Implemented <b>ML pipelines</b> with feature engineering, cross-validation, and hyperparameter tuning using <b>Scikit-learn</b> (regression, random forest, gradient boosting, K-means).',
-            'Built web scraping pipelines collecting <b>100K+ records</b> and automated <b>EDA</b> workflows with Pandas profiling across <b>20+</b> business domains.',
-        ],
-        "data_analyst": [
-            'Ran statistical tests (t-test, chi-squared, ANOVA) across <b>15+ datasets</b>, standardising data cleaning workflows resolving format issues in <b>40%</b> of raw inputs.',
-            'Automated <b>SQL</b> data extraction and <b>EDA</b> workflows with Pandas profiling, generating reproducible analysis reports across <b>20+</b> business domains.',
-            'Built <b>30+ projects</b> spanning web scraping, clustering, and forecasting, collecting <b>100K+ records</b> from multiple sources using BeautifulSoup and Scrapy.',
-        ],
-        "ai_ml": [
-            'Implemented <b>ML pipelines</b> with feature engineering, cross-validation, and hyperparameter tuning across regression, random forest, gradient boosting, and K-means models.',
-            '<b>30+ projects</b> spanning NLP, clustering, and forecasting with <b>Scikit-learn</b>, improving prediction accuracy by <b>12%</b> through statistical testing.',
-            'Built web scraping pipelines collecting <b>100K+ records</b> and automated preprocessing workflows resolving format issues in <b>40%</b> of raw inputs.',
-        ],
-    },
-    "yashb98/Fintech_customer_churn": {
-        "data_scientist": [
-            'Built churn prediction model achieving <b>87%</b> accuracy using gradient boosting with <b>SHAP</b>-based explainability on <b>10K+</b> customer records.',
-            'Identified <b>5</b> key churn drivers through correlation and cohort analysis, with automated <b>A/B test</b> simulation validating intervention effectiveness.',
-            'Designed end-to-end <b>ML pipeline</b> with feature selection (mutual information + RFE), model training, and stakeholder presentation reports.',
-        ],
-        "data_analyst": [
-            'Analysed <b>10K+</b> customer records identifying <b>5</b> key churn drivers through correlation analysis, cohort segmentation, and trend visualisation.',
-            'Delivered actionable retention strategies reducing predicted churn by <b>18%</b>, with <b>A/B test</b> simulation validating intervention effectiveness.',
-            'Built <b>SHAP</b>-based explainability reports translating ML predictions into business recommendations for stakeholder presentations.',
-        ],
-    },
-}
+MANUAL_VARIANTS: dict[str, dict[str, list[str]]] = {}
+# All archetype variant bullets live in user_profile.db.cv_variants
+# (loaded via _load_variants_from_db). To re-populate after a fresh
+# install run: python -m jobpulse.runner profile-sync
+# Empty fallback intentional — forces all lookups through DB.
 
 
 # ---------------------------------------------------------------------------
@@ -197,9 +106,17 @@ def save_auto_portfolio(data: dict) -> None:
 def get_variant_bullets(repo_name: str, archetype: str) -> list[str] | None:
     """Return archetype-specific bullets for hero projects only (instant, no LLM).
 
+    DB-first via `_load_variants_from_db`; falls back to the legacy
+    MANUAL_VARIANTS dict only if cv_variants table has no row for this
+    (repo_url, archetype) combination. Per pii-policy.md the canonical store
+    is `user_profile.db.cv_variants`.
+
     For non-hero projects, returns None — caller should use
     get_or_generate_variant_bullets() for on-demand JD-aware generation.
     """
+    db_bullets = _load_variants_from_db(repo_name, archetype)
+    if db_bullets:
+        return db_bullets
     return MANUAL_VARIANTS.get(repo_name, {}).get(archetype)
 
 
@@ -225,7 +142,8 @@ def get_or_generate_variant_bullets(
 
     Falls back to default_bullets if generation fails.
     """
-    manual = MANUAL_VARIANTS.get(repo_name, {}).get(archetype)
+    manual = _load_variants_from_db(repo_name, archetype) or \
+        MANUAL_VARIANTS.get(repo_name, {}).get(archetype)
     if manual:
         return manual
 
@@ -282,10 +200,26 @@ def _generate_jd_aware_bullets(
     archetype: str,
     jd_skills: list[str],
 ) -> list[str] | None:
-    """Generate JD-tailored bullet variants via LLM at CV time."""
+    """Generate JD-tailored bullet variants via LLM at CV time. Cached
+    for 14 days per (jd_skills + archetype + title + bullets) hash so
+    re-applying the same JD skips the LLM."""
+
     label = _ARCHETYPE_LABELS.get(archetype)
     if not label:
         return None
+
+    cache_key = _portfolio_cache_key(
+        kind="bullets", title=title, archetype=archetype,
+        bullets=bullets, jd_skills=jd_skills,
+    )
+    cached = _portfolio_variant_cache_lookup("bullets", cache_key)
+    if cached is not None:
+        try:
+            parsed = json.loads(cached) if isinstance(cached, str) else cached
+            if isinstance(parsed, list) and len(parsed) >= 2:
+                return parsed[:4]
+        except (TypeError, ValueError):
+            pass
 
     from shared.agents import get_llm, smart_llm_call
 
@@ -311,7 +245,14 @@ def _generate_jd_aware_bullets(
         if not isinstance(parsed, list) or len(parsed) < 2:
             return None
 
-        return parsed[:4]
+        result = parsed[:4]
+        try:
+            _portfolio_variant_cache_store(
+                "bullets", cache_key, json.dumps(result),
+            )
+        except Exception as exc:
+            logger.debug("portfolio_variants: cache store failed: %s", exc)
+        return result
     except Exception as exc:
         logger.warning("portfolio_variants: on-demand generation failed for %s/%s: %s", title, archetype, exc)
         return None
@@ -351,7 +292,28 @@ def generate_portfolio_entry(
     topics: list[str],
     url: str,
 ) -> dict | None:
-    """Generate a PORTFOLIO entry for a repo via LLM. Returns dict with title, url, bullets."""
+    """Generate a PORTFOLIO entry for a repo via LLM. Returns dict with
+    title, url, bullets. Cached 14 days per (repo + content) hash —
+    nightly profile-sync re-runs the same readme until a real edit
+    bumps the hash."""
+
+    cache_key = _portfolio_cache_key(
+        kind="entry", repo_name=repo_name, description=description,
+        readme_content=readme_content, languages=languages, topics=topics,
+    )
+    cached = _portfolio_variant_cache_lookup("entry", cache_key)
+    if cached is not None:
+        try:
+            parsed = json.loads(cached) if isinstance(cached, str) else cached
+            if isinstance(parsed, dict) and "title" in parsed and "bullets" in parsed:
+                return {
+                    "title": parsed["title"],
+                    "url": url,
+                    "bullets": parsed["bullets"][:4],
+                }
+        except (TypeError, ValueError):
+            pass
+
     from shared.agents import get_llm, smart_llm_call
 
     prompt = _ENTRY_PROMPT.format(
@@ -376,11 +338,137 @@ def generate_portfolio_entry(
         if "title" not in parsed or "bullets" not in parsed:
             return None
 
-        return {
+        result = {
             "title": parsed["title"],
             "url": url,
             "bullets": parsed["bullets"][:4],
         }
+        try:
+            _portfolio_variant_cache_store(
+                "entry", cache_key,
+                json.dumps({"title": result["title"], "bullets": result["bullets"]}),
+            )
+        except Exception as exc:
+            logger.debug("portfolio_variants: cache store failed: %s", exc)
+        return result
     except Exception as exc:
         logger.warning("portfolio_variants: entry generation failed for %s: %s", repo_name, exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# portfolio_variant_cache (Items 6 + 7) — 14-day per-input cache
+# ---------------------------------------------------------------------------
+#
+# Single SQLite table inside applications.db (lazily created), keyed by
+# (kind, cache_key) where kind ∈ {"bullets", "entry"}. Same shape as
+# tailored_cv_cache (S4 / commit 4509f6d) and cover_letter_cache
+# (S5 / commit 7aba244): TTL → miss; hit_count incremented; test mode
+# short-circuits to None when no JobDB is supplied.
+#
+# Why combined rather than two tables: keeping one table reduces
+# migration churn — adding a new kind is just a new ``kind`` value, not
+# a new schema migration.
+
+import hashlib  # noqa: E402 — keep adjacent to the cache helpers
+
+
+_PORTFOLIO_CACHE_TTL_DAYS = 14
+_PORTFOLIO_CACHE_LOCK = threading.Lock()
+
+
+def _portfolio_cache_key(*, kind: str, **inputs: object) -> str:
+    """Stable SHA256 over the cache inputs. Sorting keys keeps the
+    hash deterministic across Python versions."""
+
+    h = hashlib.sha256()
+    h.update(kind.encode("utf-8"))
+    for k in sorted(inputs):
+        v = inputs[k]
+        if isinstance(v, list):
+            v = "|".join(str(x) for x in v)
+        elif v is None:
+            v = ""
+        h.update(b"|")
+        h.update(str(k).encode("utf-8"))
+        h.update(b"=")
+        h.update(str(v).encode("utf-8"))
+    return h.hexdigest()
+
+
+def _portfolio_variant_cache_init(db) -> None:
+    conn = db._connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS portfolio_variant_cache ("
+        "kind TEXT NOT NULL, cache_key TEXT NOT NULL, "
+        "payload TEXT NOT NULL, generated_at TEXT NOT NULL, "
+        "hit_count INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (kind, cache_key))"
+    )
+    conn.commit()
+
+
+def _portfolio_variant_cache_lookup(
+    kind: str, cache_key: str, *, db=None,
+) -> str | None:
+    """Return cached payload string or ``None`` on miss / TTL expiry.
+
+    JOBPULSE_TEST_MODE=1 with ``db=None`` short-circuits to None so
+    unrelated test runs don't see prior cache entries — same guard as
+    ``cv_tailor._tailored_cv_cache_lookup``.
+    """
+
+    import os as _os
+    if not (kind and cache_key):
+        return None
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return None
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    with _PORTFOLIO_CACHE_LOCK:
+        _portfolio_variant_cache_init(db)
+        conn = db._connect()
+        row = conn.execute(
+            "SELECT payload, generated_at FROM portfolio_variant_cache "
+            "WHERE kind = ? AND cache_key = ?",
+            (kind, cache_key),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            generated = datetime.fromisoformat(row["generated_at"])
+            if (datetime.now() - generated).days > _PORTFOLIO_CACHE_TTL_DAYS:
+                return None
+        except (ValueError, TypeError):
+            return None
+        conn.execute(
+            "UPDATE portfolio_variant_cache SET hit_count = hit_count + 1 "
+            "WHERE kind = ? AND cache_key = ?",
+            (kind, cache_key),
+        )
+        conn.commit()
+        return row["payload"]
+
+
+def _portfolio_variant_cache_store(
+    kind: str, cache_key: str, payload: str, *, db=None,
+) -> None:
+    """Persist a freshly-generated bullets / entry payload."""
+
+    import os as _os
+    if not (kind and cache_key and payload):
+        return
+    if db is None and _os.environ.get("JOBPULSE_TEST_MODE") == "1":
+        return
+    from jobpulse.job_db import JobDB
+    db = db or JobDB()
+    with _PORTFOLIO_CACHE_LOCK:
+        _portfolio_variant_cache_init(db)
+        conn = db._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO portfolio_variant_cache "
+            "(kind, cache_key, payload, generated_at, hit_count) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (kind, cache_key, payload, datetime.now().isoformat()),
+        )
+        conn.commit()

@@ -417,7 +417,17 @@ class TestAdaptiveThresholds:
         assert strong == 70
         assert apply_ == 50
 
-    def test_fallback_on_import_error(self, store):
+    def test_fallback_on_import_error(self, store, monkeypatch):
+        """When get_conversion_funnel raises, the method must fall back to
+        the baseline (75, 55). Previously this test assumed an empty funnel
+        would naturally fall through, but now production has real data so we
+        must actively trigger the import-error path to test the fallback."""
+        def _boom(*_a, **_k):
+            raise ImportError("simulated module-load failure")
+
+        monkeypatch.setattr(
+            "jobpulse.job_analytics.get_conversion_funnel", _boom,
+        )
         strong, apply_ = store._get_adaptive_thresholds()
         assert strong == 75
         assert apply_ == 55

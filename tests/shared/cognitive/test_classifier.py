@@ -104,3 +104,43 @@ class TestEscalationClassifier:
         ))
         level = classifier.classify("do something", "tricky_domain", "medium")
         assert level == ThinkLevel.L2_REFLEXION
+
+    def test_optimization_forced_level_honored_when_sample_size_zero(
+        self, mock_memory, monkeypatch, tmp_path,
+    ):
+        """S10 audit B-1: escalate_cognitive policy action writes a forced_level
+        override into forced_level_overrides, but cognitive_outcomes are stored
+        with the real agent_name (cv_tailoring, screening_answers, …) while the
+        classifier looks up (domain, domain). Pre-fix the classifier required
+        sample_size>=20 from cognitive_outcomes, which is always 0 for the
+        (domain, domain) shape, so the override silently never fired.
+        """
+        import shared.optimization as opt_pkg
+        from shared.optimization._engine import OptimizationEngine
+
+        engine = OptimizationEngine(
+            db_path=str(tmp_path / "opt.db"),
+            memory_manager=None,
+            cognitive_engine=None,
+        )
+        # Write a manual forced override exactly the way escalate_cognitive
+        # writes one (agent_name=domain), with NO cognitive_outcomes recorded
+        # for that key — sample_size will be 0.
+        engine._tracker.set_forced_level(
+            domain="forced_demo.io", agent_name="forced_demo.io",
+            level=2, reason="S10-B1 regression test",
+        )
+        stats = engine.get_domain_stats("forced_demo.io", "forced_demo.io")
+        assert stats.forced_level == 2
+        assert stats.sample_size == 0  # confirms the original failure shape
+
+        # Make get_optimization_engine() return our isolated engine so the
+        # classifier doesn't touch the production singleton.
+        monkeypatch.setattr(opt_pkg, "get_optimization_engine", lambda: engine)
+
+        classifier = self._make_classifier(mock_memory)
+        level = classifier.classify(
+            task="generate cover letter for forced_demo.io",
+            domain="forced_demo.io", stakes="medium",
+        )
+        assert level == ThinkLevel.L2_REFLEXION

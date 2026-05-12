@@ -27,6 +27,33 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "slow: marks tests as slow-running")
 
 
+@pytest.fixture(autouse=True)
+def isolate_optimization_db(monkeypatch, tmp_path):
+    """Redirect every `get_optimization_engine()` write to a per-test tmp DB.
+
+    The S6 T-1 / S10 T-10.1 audit found that `data/optimization.db` had
+    47-54% of its `cognitive_outcomes` rows under `agent_name='test_agent'`
+    — tests were leaking into production via the singleton. Cognitive
+    consumers (`shared/cognitive/_engine.py:155, 174`) call
+    `get_optimization_engine().record_cognitive_outcome(...)`, and the
+    cached singleton points at the default DB path.
+
+    This fixture:
+      1. Sets `OPTIMIZATION_DB` so `_default_db_path()` returns tmp_path.
+      2. Resets `_shared_engine = None` BEFORE the test, so the next
+         lazy build picks up the env var.
+      3. Resets again AFTER, so tests that run after this one don't
+         inherit the tmp engine (or accidentally rebuild against
+         production).
+    """
+    from shared.optimization import _engine as _opt_engine
+
+    monkeypatch.setenv("OPTIMIZATION_DB", str(tmp_path / "optimization.db"))
+    monkeypatch.setattr(_opt_engine, "_shared_engine", None)
+    yield
+    _opt_engine._shared_engine = None
+
+
 def pytest_collection_modifyitems(config, items):
     if not config.getoption("-m", default=""):
         skip_live = pytest.mark.skip(reason="live tests require -m live")

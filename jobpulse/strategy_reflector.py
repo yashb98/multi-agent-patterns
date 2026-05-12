@@ -15,7 +15,7 @@ import json
 from collections import Counter
 from typing import TYPE_CHECKING
 
-from shared.agents import get_llm, smart_llm_call
+from shared.agents import cognitive_llm_call
 from shared.logging_config import get_logger
 
 from jobpulse.trajectory_store import _is_sensitive_field
@@ -29,6 +29,12 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
+
+
+def get_memory_manager():
+    """Lazy accessor — patchable in tests via jobpulse.strategy_reflector.get_memory_manager."""
+    from shared.memory_layer import get_shared_memory_manager
+    return get_shared_memory_manager()
 
 
 # ------------------------------------------------------------------
@@ -177,24 +183,29 @@ def reflect_with_llm(
     strategy: ApplicationStrategy,
     trajectories: list[FieldTrajectory],
 ) -> list[dict]:
-    """Pass 2: LLM reflection for edge cases. Returns parsed heuristics."""
-    from shared.cost_tracker import track_llm_usage
+    """Pass 2: LLM reflection for edge cases. Returns parsed heuristics.
 
+    Routes through ``cognitive_llm_call`` so L0 Memory Recall can return
+    a templated heuristic set without firing an LLM call when this
+    domain/platform has been reflected on before. Cognitive engine handles
+    L0 → L1 → L2 → L3 escalation internally; cost tracking happens via
+    its own infra (no separate ``track_llm_usage`` call needed).
+    """
     prompt = _build_reflection_prompt(strategy, trajectories)
 
     try:
-        llm = get_llm(temperature=0.3, tier="mini", agent_name="strategy_reflector")
-        response = smart_llm_call(
-            llm, prompt, agent_name="strategy_reflection",
+        raw = cognitive_llm_call(
+            task=prompt,
+            domain="strategy_reflection",
+            stakes="medium",
         )
-
-        raw = response.content if hasattr(response, "content") else str(response)
+        if not raw:
+            return []
         raw = raw.strip()
-
-        if hasattr(response, "_jobpulse_usage"):
-            pass
-        else:
-            track_llm_usage(response, agent_name="strategy_reflection")
+        # Strip markdown fences so cognitive engine outputs that wrap JSON
+        # in ```...``` parse correctly without a separate retry.
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
         parsed = json.loads(raw)
         if isinstance(parsed, list):
@@ -297,6 +308,7 @@ def reflect_on_application(
 
     # Feed to ExperienceMemory (GRPO) for cross-domain learning
     _feed_experience_memory(strategy, all_heuristics)
+    _record_failure_episode(strategy, all_heuristics)
 
     return strategy
 
@@ -332,13 +344,65 @@ def _feed_experience_memory(
             score=score,
             domain="job_application",
         )
-        em.store(exp)
+        em.add(exp)
         logger.info(
             "strategy_reflector: stored experience (score=%.1f) for %s",
             score, strategy.domain,
         )
     except Exception as exc:
         logger.debug("strategy_reflector: ExperienceMemory feed failed: %s", exc)
+
+
+def _record_failure_episode(
+    strategy: "ApplicationStrategy",
+    heuristics: list[dict],
+) -> None:
+    """Record failure as an episode so the memory stack learns from what didn't work.
+
+    Successful runs go through _feed_experience_memory + ExperienceMemory.
+    Failures are higher signal but were previously dropped. This routes them
+    through MemoryManager.record_episode where the 3-engine memory stack
+    captures the weaknesses for future avoidance.
+    """
+    if strategy.success:
+        return
+
+    try:
+        mm = get_memory_manager()
+        score = _compute_strategy_score(strategy)  # returns 2.0 for failures
+        weaknesses = []
+        if hasattr(strategy, "failure_reason") and strategy.failure_reason:
+            weaknesses.append(str(strategy.failure_reason))
+        if strategy.fields_total > 0 and strategy.fields_corrected > 0:
+            corr_pct = strategy.fields_corrected / strategy.fields_total * 100
+            weaknesses.append(f"required {corr_pct:.0f}% corrections")
+
+        strengths = [f"{h['trigger']} → {h['action']}" for h in heuristics[:5]]
+
+        summary = (
+            f"FAILED job_application on {strategy.domain} "
+            f"({strategy.platform}): "
+            f"{strategy.fields_total} fields, {strategy.fields_corrected} corrected. "
+            + (str(getattr(strategy, "failure_reason", "")) or "no specific reason recorded")
+        )
+
+        mm.record_episode(
+            topic=f"job_application_failure:{strategy.domain}:{strategy.platform}",
+            final_score=score,
+            iterations=1,
+            pattern_used="form_fill",
+            agents_used=["NativeFormFiller"],
+            strengths=strengths,
+            weaknesses=weaknesses,
+            output_summary=summary,
+            domain="job_application",
+        )
+        logger.info(
+            "strategy_reflector: recorded failure episode for %s (score=%.1f)",
+            strategy.domain, score,
+        )
+    except Exception as exc:
+        logger.debug("strategy_reflector: failure episode record failed: %s", exc)
 
 
 def _compute_strategy_score(strategy: ApplicationStrategy) -> float:

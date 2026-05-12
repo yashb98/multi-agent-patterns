@@ -1,0 +1,1324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobPulse — Job Application Pipeline Architecture</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-green: #3fb950;
+    --accent-orange: #d29922;
+    --accent-red: #f85149;
+    --accent-purple: #bc8cff;
+    --accent-teal: #1a5276;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .header {
+    text-align: center;
+    padding: 3rem 2rem 2rem;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #161b22 0%, #0d1117 100%);
+  }
+  .header h1 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent-purple));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 0.5rem;
+  }
+  .header p {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    max-width: 700px;
+    margin: 0 auto;
+  }
+  .stats-bar {
+    display: flex;
+    justify-content: center;
+    gap: 2rem;
+    margin-top: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .stat {
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .stat-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(22, 27, 34, 0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0.75rem 2rem;
+    display: flex;
+    gap: 0.5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .nav a {
+    color: var(--text-muted);
+    text-decoration: none;
+    padding: 0.4rem 1rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.2s;
+  }
+  .nav a:hover, .nav a.active {
+    color: var(--text);
+    background: var(--border);
+  }
+  .section {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 3rem 2rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .section:last-child { border-bottom: none; }
+  .section h2 {
+    font-size: 1.6rem;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .section h2 .badge {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .badge-stage { background: var(--accent); color: #000; }
+  .badge-learn { background: var(--accent-green); color: #000; }
+  .badge-gate { background: var(--accent-orange); color: #000; }
+  .badge-db { background: var(--accent-purple); color: #000; }
+  .section .desc {
+    color: var(--text-muted);
+    margin-bottom: 2rem;
+    max-width: 800px;
+  }
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2rem;
+    overflow-x: auto;
+    margin-bottom: 1.5rem;
+  }
+  .mermaid {
+    display: flex;
+    justify-content: center;
+  }
+  .mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+  .legend {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--surface);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  .legend-color {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+  }
+  .module-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1rem;
+    margin-top: 1.5rem;
+  }
+  .module-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    transition: border-color 0.2s;
+  }
+  .module-card:hover {
+    border-color: var(--accent);
+  }
+  .module-card h4 {
+    font-size: 0.95rem;
+    margin-bottom: 0.5rem;
+    color: var(--accent);
+  }
+  .module-card .filepath {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-family: 'SF Mono', Consolas, monospace;
+    margin-bottom: 0.5rem;
+  }
+  .module-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .module-card li {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding: 0.15rem 0;
+  }
+  .module-card li::before {
+    content: ">";
+    color: var(--accent-green);
+    margin-right: 0.4rem;
+    font-weight: bold;
+  }
+  .db-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+  }
+  .db-table th {
+    text-align: left;
+    padding: 0.75rem 1rem;
+    background: var(--surface);
+    color: var(--accent);
+    border-bottom: 2px solid var(--border);
+    font-weight: 600;
+  }
+  .db-table td {
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .db-table tr:hover td {
+    color: var(--text);
+    background: rgba(88, 166, 255, 0.04);
+  }
+  .db-table code {
+    font-family: 'SF Mono', Consolas, monospace;
+    font-size: 0.8rem;
+    color: var(--accent-green);
+    background: rgba(63, 185, 80, 0.1);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+  }
+  .flow-steps {
+    display: flex;
+    gap: 0;
+    overflow-x: auto;
+    padding: 1rem 0;
+  }
+  .flow-step {
+    min-width: 160px;
+    text-align: center;
+    position: relative;
+  }
+  .flow-step .icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 0.5rem;
+    font-size: 1.2rem;
+    font-weight: 700;
+    border: 2px solid;
+  }
+  .flow-step .label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .flow-step .sub {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+  }
+  .flow-step::after {
+    content: "";
+    position: absolute;
+    top: 24px;
+    right: -1px;
+    width: calc(100% - 48px);
+    height: 2px;
+    background: var(--border);
+  }
+  .flow-step:last-child::after { display: none; }
+  @media (max-width: 768px) {
+    .header h1 { font-size: 1.6rem; }
+    .section { padding: 2rem 1rem; }
+    .module-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>JobPulse Application Pipeline</h1>
+  <p>End-to-end autonomous job application system — from job discovery to post-apply learning. Every action captured, every decision logged, every failure teaches.</p>
+  <div class="stats-bar">
+    <div class="stat"><div class="stat-value">7</div><div class="stat-label">Pipeline Stages</div></div>
+    <div class="stat"><div class="stat-value">27</div><div class="stat-label">Active Databases</div></div>
+    <div class="stat"><div class="stat-value">50+</div><div class="stat-label">Action Points</div></div>
+    <div class="stat"><div class="stat-value">5</div><div class="stat-label">Gates</div></div>
+    <div class="stat"><div class="stat-value">3</div><div class="stat-label">Adaptation Layers</div></div>
+    <div class="stat"><div class="stat-value">10</div><div class="stat-label">Learning Systems</div></div>
+  </div>
+</div>
+
+<nav class="nav">
+  <a href="#overview">Overview</a>
+  <a href="#entry">Entry Points</a>
+  <a href="#scan">Scan & Filter</a>
+  <a href="#prescreen">Pre-Screen</a>
+  <a href="#materials">Materials</a>
+  <a href="#navigation">Navigation</a>
+  <a href="#formfill">Form Fill</a>
+  <a href="#screening">Screening</a>
+  <a href="#submit">Submit</a>
+  <a href="#postapply">Post-Apply</a>
+  <a href="#learning">Learning</a>
+  <a href="#databases">Databases</a>
+</nav>
+
+<!-- ═══════════════ SECTION 1: OVERVIEW ═══════════════ -->
+<div class="section" id="overview">
+  <h2>End-to-End Pipeline <span class="badge badge-stage">Overview</span></h2>
+  <p class="desc">The complete job application pipeline from URL entry to Notion update and learning. 7 stages, each with multiple substeps, feedback loops, and database writes.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'primaryTextColor': '#e6edf3', 'primaryBorderColor': '#30363d', 'lineColor': '#58a6ff', 'secondaryColor': '#161b22', 'tertiaryColor': '#0d1117', 'fontSize': '14px'}}}%%
+flowchart TB
+    subgraph ENTRY["1. ENTRY POINTS"]
+        direction LR
+        CRON["Cron Schedule\n2AM / 7-1-7 PM"]
+        CLI["CLI\njob-process-url"]
+        TG["Telegram\nApprove Jobs"]
+    end
+
+    subgraph SCAN["2. SCAN & FILTER"]
+        direction TB
+        PLATFORMS["Scan Platforms\nLinkedIn | Indeed | Reed | TotalJobs"]
+        GHOST["Ghost Detection\n12 expired patterns, 3 languages"]
+        DEDUP["Cross-Platform Dedup\nsame company+title = 1 job"]
+        PLATFORMS --> GHOST --> DEDUP
+    end
+
+    subgraph PRESCREEN["3. PRE-SCREEN (Gates 0-4)"]
+        direction TB
+        G0["Gate 0: Title Filter\nrecruiter_screen.py"]
+        G1["Gate 1: Kill Signals\nseniority >= 3yr"]
+        G2["Gate 2: Must-Haves\n>= 3 of top-5 skills"]
+        G3["Gate 3: Competitiveness\n>= 92% match"]
+        G4A["Gate 4A: Quality\nJD quality + Blocklist"]
+        G4B["Gate 4B: CV Scrutiny\nDeterministic + LLM"]
+        G0 --> G1 --> G2 --> G3 --> G4A --> G4B
+    end
+
+    subgraph MATERIALS["4. GENERATE MATERIALS"]
+        direction TB
+        PROFILE["Profile Sync\nskill_tracker_notion"]
+        ARCHETYPE["Role Detection\n6 archetypes"]
+        CVGEN["CV Generation\nReportLab PDF"]
+        ATS["ATS Scoring\n0-100 deterministic"]
+        PROFILE --> ARCHETYPE --> CVGEN --> ATS
+    end
+
+    subgraph APPLY["5. LIVE APPLICATION"]
+        direction TB
+        NAV["Navigate\ncookie dismiss -> page detect -> SSO -> auth"]
+        FILL["Form Fill\nfield scan -> map -> fill -> verify"]
+        SCREEN_Q["Screening Questions\n10-module pipeline"]
+        GATE["Pre-Submit Gate\nLLM review >= 7"]
+        NAV --> FILL --> SCREEN_Q --> GATE
+    end
+
+    subgraph SUBMIT["6. SUBMIT"]
+        direction TB
+        DRYRUN["Dry Run\nStop before Submit"]
+        APPROVE["Human Approval\nTelegram yes/no"]
+        CONFIRM["confirm_application\nRate limiter + mutex"]
+        DRYRUN --> APPROVE --> CONFIRM
+    end
+
+    subgraph LEARN["7. POST-APPLY LEARNING"]
+        direction TB
+        HOOK["post_apply_hook\n9 DB writes"]
+        REFLECT["Strategy Reflection\n2-pass heuristics"]
+        ADAPT["3 Adaptation Layers\nCorrection -> Rules -> Cognitive"]
+        HOOK --> REFLECT --> ADAPT
+    end
+
+    ENTRY --> SCAN
+    SCAN --> PRESCREEN
+    PRESCREEN --> MATERIALS
+    MATERIALS --> APPLY
+    APPLY --> SUBMIT
+    SUBMIT --> LEARN
+
+    LEARN -.->|"Corrections feed\nnext application"| APPLY
+
+    style ENTRY fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style SCAN fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style PRESCREEN fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style MATERIALS fill:#0a3a1a,stroke:#3fb950,color:#e6edf3
+    style APPLY fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style SUBMIT fill:#3a1a1a,stroke:#f85149,color:#e6edf3
+    style LEARN fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    </pre>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 2: ENTRY POINTS ═══════════════ -->
+<div class="section" id="entry">
+  <h2>Entry Points <span class="badge badge-stage">Stage 1</span></h2>
+  <p class="desc">Three ways a job enters the pipeline. All converge to the same scan → apply → learn flow.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart LR
+    subgraph CRON["Cron Triggers"]
+        C1["2 AM\nOvernight Scan"]
+        C2["7 AM / 1 PM / 7 PM\nFull Job Scan"]
+        C3["10 AM / 4:30 PM\nQuick Scan"]
+    end
+
+    subgraph CLI_ENTRY["CLI Commands"]
+        CLI1["job-scan\nAll platforms"]
+        CLI2["job-process-url URL\nSingle job pipeline"]
+        CLI3["job-apply-next N\nApply N from queue"]
+    end
+
+    subgraph TELEGRAM_ENTRY["Telegram Approval"]
+        TG1["approve_jobs\nBatch review"]
+        TG2["Reply 'yes'\nSingle approval"]
+    end
+
+    CRON --> RSW["run_scan_window()"]
+    CLI1 --> RSW
+    CLI2 --> LR["live_review_applicator\nstart_live_review()"]
+    CLI3 --> LR
+    TG1 --> LR
+    TG2 --> LR
+
+    RSW --> PIPELINE["Scan Pipeline\nfetch → analyze → prescreen → materials"]
+    LR --> APPLICATOR["Applicator\napply_job()"]
+
+    PIPELINE --> QUEUE["Review Queue\nTelegram batch"]
+    QUEUE --> LR
+
+    style CRON fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style CLI_ENTRY fill:#0a3a1a,stroke:#3fb950,color:#e6edf3
+    style TELEGRAM_ENTRY fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    </pre>
+  </div>
+
+  <div class="module-grid">
+    <div class="module-card">
+      <h4>job_autopilot.py</h4>
+      <div class="filepath">jobpulse/job_autopilot.py</div>
+      <ul>
+        <li>run_scan_window(platforms) — batch scan + apply</li>
+        <li>apply_pending_job_from_cli() — single URL</li>
+        <li>approve_jobs() — Telegram approval</li>
+        <li>check_follow_ups() — 9AM daily reminders</li>
+        <li>set_autopilot_paused() / is_paused()</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <h4>live_review_applicator.py</h4>
+      <div class="filepath">jobpulse/live_review_applicator.py</div>
+      <ul>
+        <li>start_live_review(payload) — opens Chrome</li>
+        <li>Fills form with dry_run=True</li>
+        <li>Blocks on Telegram approval</li>
+        <li>On "yes": click Submit + confirm_application()</li>
+        <li>Persistent async event loop</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <h4>scan_pipeline.py</h4>
+      <div class="filepath">jobpulse/scan_pipeline.py</div>
+      <ul>
+        <li>fetch_and_filter_jobs() — scan + ghost + gate0</li>
+        <li>analyze_and_deduplicate() — JD parse + dedup</li>
+        <li>prescreen_listings() — Gates 1-4</li>
+        <li>generate_materials() — CV/CL/ATS/Notion</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 3: SCAN & FILTER ═══════════════ -->
+<div class="section" id="scan">
+  <h2>Scan & Filter <span class="badge badge-stage">Stage 2</span></h2>
+  <p class="desc">Multi-platform job discovery with ghost detection and cross-platform deduplication.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    subgraph SCANNERS["Platform Scanners"]
+        direction LR
+        LI["LinkedIn\njob_scanners/linkedin.py"]
+        IND["Indeed\njob_scanners/indeed.py"]
+        REED["Reed\njob_scanners/reed.py"]
+        TJ["TotalJobs\njob_scanners/totaljobs.py"]
+    end
+
+    SCANNERS --> RAW["Raw Job Listings\ntitle, company, URL, platform"]
+
+    RAW --> LIVE["Liveness Check\nliveness_checker.py"]
+    LIVE -->|"12 expired patterns\n3 languages EN/DE/FR"| FILTERED["Live Jobs Only"]
+
+    FILTERED --> JD["JD Analysis\njd_analyzer.py"]
+    JD -->|"LLM parsing:\nskills, salary, seniority,\nremote, ATS platform"| ANALYZED["Analyzed Listings"]
+
+    ANALYZED --> DEDUP["Deduplication\njob_deduplicator.py"]
+    DEDUP -->|"same company + title\n= one job"| UNIQUE["Unique Listings"]
+
+    UNIQUE --> GHOST["Ghost Filter\nwith_ghost_detection()"]
+    GHOST --> CLEAN["Clean Job Queue"]
+
+    CLEAN -->|"save_listing()"| DB_JOBS[("JobDB\njob_listings")]
+
+    style SCANNERS fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style DB_JOBS fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    </pre>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-color" style="background:#58a6ff"></div> Processing Stage</div>
+    <div class="legend-item"><div class="legend-color" style="background:#bc8cff"></div> Database Write</div>
+    <div class="legend-item"><div class="legend-color" style="background:#3fb950"></div> Decision Point</div>
+    <div class="legend-item"><div class="legend-color" style="background:#f85149"></div> Rejection</div>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 4: PRE-SCREEN ═══════════════ -->
+<div class="section" id="prescreen">
+  <h2>Pre-Screen Gates <span class="badge badge-gate">5 Gates</span></h2>
+  <p class="desc">5-gate filtering pipeline: from free title matching to paid LLM review. Each gate progressively narrows the candidate pool.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    INPUT["Clean Job Queue"] --> G0
+
+    subgraph GATE0["Gate 0 — Title Filter (FREE)"]
+        G0["recruiter_screen.py\nTitle + keyword match"]
+        G0 -->|PASS| G0P["Title relevant"]
+        G0 -->|KILL| G0K["Title mismatch\nor blocked keyword"]
+    end
+
+    G0P --> G1
+
+    subgraph GATE1["Gate 1 — Kill Signals (FREE)"]
+        G1["skill_graph_store.py\nSeniority + foreign domain"]
+        G1 -->|PASS| G1P["No kill signals"]
+        G1 -->|KILL| G1K["Seniority >= 3yr\nor domain mismatch"]
+    end
+
+    G1P --> G2
+
+    subgraph GATE2["Gate 2 — Must-Haves (FREE)"]
+        G2["skill_graph_store.py\nTop-5 skill matching"]
+        G2 -->|PASS >= 3| G2P["3+ of top-5 skills"]
+        G2 -->|FAIL < 3| G2K["Insufficient\nskill overlap"]
+    end
+
+    G2P --> G3
+
+    subgraph GATE3["Gate 3 — Competitiveness (FREE)"]
+        G3["skill_graph_store.py\nOverall match scoring"]
+        G3 -->|PASS >= 92%| G3P["Competitive match"]
+        G3 -->|FAIL < 92%| G3K["Below threshold"]
+    end
+
+    G3P --> G4A
+
+    subgraph GATE4A["Gate 4A — Quality Check (FREE)"]
+        G4A1["JD Quality\n< 200 chars / < 5 skills = block"]
+        G4A2["Company Blocklist\nNotion DB spam detection"]
+        G4A3["Company Background\nHistorical reliability"]
+        G4A --> G4A1
+        G4A --> G4A2
+        G4A --> G4A3
+        G4A1 --> G4AP
+        G4A2 --> G4AP
+        G4A3 --> G4AP["All clear"]
+    end
+
+    G4AP --> G4B
+
+    subgraph GATE4B["Gate 4B — CV Scrutiny (~$0.002)"]
+        G4B1["Deterministic Scrutiny\nRed flag detection"]
+        G4B2["LLM Recruiter Review\nScore 0-10"]
+        G4B --> G4B1 --> G4B2
+        G4B2 -->|">= 7"| G4BP["APPROVED\nProceed to materials"]
+        G4B2 -->|"< 7"| G4BK["NEEDS REVIEW\nHuman decision"]
+    end
+
+    G0K --> REJ["REJECTED\nsave_application(status=Rejected)"]
+    G1K --> REJ
+    G2K --> SKIP["SKIPPED\nsave_application(status=Skipped)"]
+    G3K --> SKIP
+    G4BK --> REVIEW["MANUAL REVIEW"]
+
+    REJ -->|"record_gap()"| GAPS[("skill_gaps.db")]
+    G4BP --> MAT["Generate Materials"]
+
+    style GATE0 fill:#0a3a1a,stroke:#3fb950,color:#e6edf3
+    style GATE1 fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style GATE2 fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style GATE3 fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style GATE4A fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style GATE4B fill:#3a1a1a,stroke:#f85149,color:#e6edf3
+    style GAPS fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    </pre>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 5: MATERIALS ═══════════════ -->
+<div class="section" id="materials">
+  <h2>Material Generation <span class="badge badge-stage">Stage 4</span></h2>
+  <p class="desc">CV and cover letter generation with role-adaptive profiling, JD-tailored content, and ATS scoring.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    START["Approved Job Listing"] --> NOTION_CREATE["Create Notion Page\njob_notion_sync.create_application_page()"]
+
+    NOTION_CREATE --> SYNC["Skill Sync\nsync_verified_to_profile()"]
+
+    SYNC --> ARCH["Archetype Detection\n6 types: agentic, data_scientist,\ndata_analyst, ai_ml, data_engineer, data_platform"]
+
+    ARCH --> PROJECTS["Project Selection\nMindGraph + portfolio_variants\narchetype-aware bullet variants"]
+
+    PROJECTS --> TAILOR["CV Tailoring\ncv_tailor.tailor_all_sections()\nLLM content tuning"]
+
+    TAILOR --> EXTRA["Extra Skills\nbuild_extra_skills()\nfrom JD requirements"]
+
+    EXTRA --> PDF_CV["CV PDF Generation\ncv_templates/generate_cv.py\nReportLab, 2-page max"]
+
+    subgraph SCORING["ATS Scoring"]
+        ATS["ats_scorer.score_ats()\n0-100 deterministic"]
+        SCRUTINY_D["Deterministic Scrutiny\nRed flag detection"]
+        SCRUTINY_L["LLM Scrutiny\nRecruiter score 0-10"]
+        ATS --> SCRUTINY_D --> SCRUTINY_L
+    end
+
+    PDF_CV --> SCORING
+
+    SCORING --> TIER{"Match Tier?"}
+    TIER -->|">= 90%"| AUTO["auto\nQueued for review"]
+    TIER -->|">= 82%"| REVIEW["review\nTelegram batch"]
+    TIER -->|"< 82%"| SKIP["skip"]
+
+    AUTO --> NOTION_UPDATE["Update Notion\nATS score, tier, projects"]
+    REVIEW --> NOTION_UPDATE
+
+    NOTION_UPDATE --> DB_APP[("JobDB\napplications table")]
+
+    style SCORING fill:#0a3a1a,stroke:#3fb950,color:#e6edf3
+    style DB_APP fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    </pre>
+  </div>
+
+  <div class="module-grid">
+    <div class="module-card">
+      <h4>archetype_engine.py</h4>
+      <div class="filepath">jobpulse/archetype_engine.py</div>
+      <ul>
+        <li>detect_archetype(jd, skills, title)</li>
+        <li>6 types: agentic, data_scientist, data_analyst, ai_ml, data_engineer, data_platform</li>
+        <li>Keyword scoring (free) + LLM fallback</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <h4>cv_templates/generate_cv.py</h4>
+      <div class="filepath">jobpulse/cv_templates/generate_cv.py</div>
+      <ul>
+        <li>ReportLab PDF, 2-page max</li>
+        <li>Quantified metrics in every bullet</li>
+        <li>5 base categories + dynamic "Also proficient in"</li>
+        <li>Naming: Yash_Bishnoi_{Company}.pdf</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <h4>ats_scorer.py</h4>
+      <div class="filepath">jobpulse/ats_scorer.py</div>
+      <ul>
+        <li>Keywords (0-70) + Sections (0-20) + Format (0-10)</li>
+        <li>Synonym matching via skill_synonyms.json</li>
+        <li>Returns: total, keyword_score, missing_keywords</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 6: NAVIGATION ═══════════════ -->
+<div class="section" id="navigation">
+  <h2>Browser Navigation <span class="badge badge-stage">Stage 5a</span></h2>
+  <p class="desc">From URL to application form: cookie dismissal, page detection, SSO, authentication, security wall bypass, and navigation replay.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    URL["Job URL"] --> REPLAY{"Learned\nsequence?"}
+
+    REPLAY -->|"Yes"| NAV_REPLAY["Replay Navigation\nnavigation_learner.get_sequence()"]
+    REPLAY -->|"No"| COOKIE["Cookie Dismissal\ncookie_dismisser.py"]
+
+    COOKIE --> DETECT["Page Detection\n3-tier: DOM -> LLM -> Vision"]
+
+    subgraph PAGE_DETECT["Page Type Detection"]
+        direction LR
+        DOM["Tier 1: DOM Classifier\nclassifier.py\nWeighted signals"]
+        LLM_PAGE["Tier 2: LLM Reasoner\npage_reasoner.py\nCached per domain+hash"]
+        VISION["Tier 3: Vision\nvision_tier.py\nScreenshot + OCR"]
+        DOM -->|"confidence < 0.6"| LLM_PAGE
+        LLM_PAGE -->|"still uncertain"| VISION
+    end
+
+    DETECT --> PAGE_DETECT
+
+    PAGE_DETECT --> TYPE{"Page Type?"}
+
+    TYPE -->|"LOGIN"| AUTH["Authentication\n_auth.py"]
+    TYPE -->|"VERIFICATION_WALL"| BYPASS["Security Bypass\n6-stage pipeline"]
+    TYPE -->|"SSO_PROMPT"| SSO["SSO Handler\nGoogle > LinkedIn > MS > Apple"]
+    TYPE -->|"APPLICATION_FORM"| FORM["Form Ready"]
+    TYPE -->|"REDIRECT"| COOKIE
+
+    subgraph BYPASS_STAGES["Security Wall Bypass Pipeline"]
+        direction TB
+        B1["1. Auto-wait 15s\nCloudflare JS resolves 3-10s"]
+        B2["2. Human Simulation\nmouse.move(), scrollBy()"]
+        B3["3. Turnstile Click\nCloudflare iframe checkbox"]
+        B4["4. Reload #1\ndomcontentloaded"]
+        B5["5. Reload #2\nnetworkidle"]
+        B6["6. Human Fallback\nTelegram alert, 120s poll"]
+        B1 --> B2 --> B3 --> B4 --> B5 --> B6
+    end
+
+    BYPASS --> BYPASS_STAGES
+    BYPASS_STAGES -->|"still blocked\n(aggregator)"| PLAT_BYPASS["Platform Bypass\nDirect ATS URL resolution"]
+    BYPASS_STAGES -->|"cleared"| COOKIE
+
+    subgraph PLAT_BYPASS_FLOW["Platform Bypass Resolution"]
+        direction TB
+        PB1["1. Cached mapping"]
+        PB2["2. FormExperienceDB"]
+        PB3["3. ATS board patterns\nhttpx HEAD check"]
+        PB4["4. Playwright web search"]
+        PB1 -->|miss| PB2 -->|miss| PB3 -->|miss| PB4
+    end
+
+    PLAT_BYPASS --> PLAT_BYPASS_FLOW
+    PLAT_BYPASS_FLOW --> COOKIE
+
+    AUTH --> GMAIL["Gmail Verify\ngmail_verify.py\nExponential backoff"]
+    AUTH --> ACCT["Account Manager\naccount_manager.py\nSQLite credentials"]
+    GMAIL --> COOKIE
+    SSO --> COOKIE
+
+    NAV_REPLAY --> FORM
+
+    style PAGE_DETECT fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style BYPASS_STAGES fill:#3a1a1a,stroke:#f85149,color:#e6edf3
+    style PLAT_BYPASS_FLOW fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    </pre>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 7: FORM FILL ═══════════════ -->
+<div class="section" id="formfill">
+  <h2>Adaptive Form Filling <span class="badge badge-stage">Stage 5b</span></h2>
+  <p class="desc">Multi-page form filling with container scoping, semantic matching, 7-tier field resolution, and failure classification.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    START["Form Ready\nNativeFormFiller.fill()"] --> PAGELOOP
+
+    subgraph PAGELOOP["Multi-Page Loop (max 20 pages)"]
+        direction TB
+
+        subgraph CONTAINER["Container Scoping (3-tier)"]
+            direction LR
+            CS1["1. Learned\nFormExperienceDB\nget_container(domain)"]
+            CS2["2. Auto-detect\nJS common ancestor\n+ submit button check"]
+            CS3["3. Strategy Hint\nstrategy.form_container_hint()\nplatform CSS selector"]
+            CS1 -->|miss| CS2 -->|miss| CS3
+        end
+
+        CONTAINER --> SCAN["Field Scan\nCDP Accessibility.getPartialAXTree\nContainer-scoped"]
+
+        SCAN --> VALIDATE["Validate Scan\nvalidate_field_scan()\n0 fields? >1.5x expected? dupes?"]
+
+        VALIDATE --> MAP["Field Mapping\nfield_mapper.map_fields()\nLLM: label -> profile key"]
+
+        MAP --> FILL_LOOP
+
+        subgraph FILL_LOOP["Fill Each Field (top-to-bottom DOM order)"]
+            direction TB
+
+            subgraph RESOLVE["7-Tier Field Resolution"]
+                direction TB
+                R1["1. FormExperienceDB cache\n(zero LLM cost)"]
+                R2["2. AgentRulesDB\nlearned rules"]
+                R3["3. Pattern match\ncanonical aliases"]
+                R4["4. Profile lookup\nWORK_AUTH, skills, experience"]
+                R5["5. Screening Pipeline\n10-module pipeline"]
+                R6["6. LLM fallback\nCognitiveEngine"]
+                R7["7. Vision fallback\nscreenshot + OCR"]
+                R1 -->|miss| R2 -->|miss| R3 -->|miss| R4 -->|miss| R5 -->|miss| R6 -->|miss| R7
+            end
+
+            RESOLVE --> MATCH["Option Matching\nsemantic_matcher.py"]
+        end
+
+        subgraph SEMANTIC["5-Tier Semantic Matching"]
+            direction LR
+            S1["Exact"]
+            S2["Aliases"]
+            S3["Numeric\nRanges"]
+            S4["Token\nOverlap"]
+            S5["Substring"]
+            S1 -->|miss| S2 -->|miss| S3 -->|miss| S4 -->|miss| S5
+        end
+
+        MATCH --> SEMANTIC
+
+        SEMANTIC --> DRIVER["Playwright Fill\ndriver.fill() / click() / select()"]
+
+        DRIVER --> VERIFY["Post-Fill Verify\ndriver.rescan_after_fill()"]
+
+        VERIFY --> FAIL_CHECK{"Fill OK?"}
+        FAIL_CHECK -->|"Yes"| NEXT_FIELD["Next Field"]
+        FAIL_CHECK -->|"No"| CLASSIFY
+
+        subgraph CLASSIFY["Failure Classification"]
+            direction LR
+            F1["no_field\n-> skip"]
+            F2["blocked\n-> scroll retry"]
+            F3["wrong_value\n-> LLM recovery"]
+            F4["readonly\n-> skip"]
+            F5["unknown\n-> vision fallback"]
+        end
+
+        CLASSIFY --> NEXT_FIELD
+
+        NEXT_FIELD --> NEXT_BTN["Find Next Button\nSubmit > Review > Save > Continue > Next"]
+    end
+
+    NEXT_BTN --> MORE{"More\npages?"}
+    MORE -->|"Yes"| PAGELOOP
+    MORE -->|"No"| DONE["Form Complete"]
+
+    DONE --> TIMING[("FormExperienceDB\nstore_timing()\nstore_container()")]
+    DONE --> LOG[("FormInteractionLog\nlog_step() per field")]
+
+    style CONTAINER fill:#0a3a1a,stroke:#3fb950,color:#e6edf3
+    style RESOLVE fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style SEMANTIC fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style CLASSIFY fill:#3a1a1a,stroke:#f85149,color:#e6edf3
+    style TIMING fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    style LOG fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    </pre>
+  </div>
+
+  <div class="module-grid">
+    <div class="module-card">
+      <h4>NativeFormFiller</h4>
+      <div class="filepath">jobpulse/native_form_filler.py</div>
+      <ul>
+        <li>fill(platform, cv_path, cl_path, profile, custom_answers, dry_run)</li>
+        <li>Multi-page loop with stuck detection</li>
+        <li>Fingerprint comparison, abort after 2 identical pages</li>
+        <li>Max 10 nav steps, 20 form pages</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <h4>Field Scanner</h4>
+      <div class="filepath">jobpulse/form_engine/field_scanner.py</div>
+      <ul>
+        <li>CDP Accessibility.getPartialAXTree</li>
+        <li>Container-scoped (not full page)</li>
+        <li>Self-healing: stale selectors auto-deleted</li>
+        <li>Falls back to getFullAXTree</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <h4>Semantic Matcher</h4>
+      <div class="filepath">jobpulse/form_engine/semantic_matcher.py</div>
+      <ul>
+        <li>semantic_option_match() — 5-tier</li>
+        <li>CANONICAL_ALIASES: gender/boolean/ethnicity/visa/notice</li>
+        <li>checkbox_intent(): consent->True, marketing->False</li>
+        <li>seed_mapping(): resolve options before LLM</li>
+      </ul>
+    </div>
+    <div class="module-card">
+      <h4>Platform Strategies</h4>
+      <div class="filepath">jobpulse/ats_adapters/strategy.py</div>
+      <ul>
+        <li>LinkedIn: container .jobs-easy-apply-modal, 3-10 fields</li>
+        <li>Greenhouse: container #application, 3-15 fields</li>
+        <li>Workday: 3-20 fields, 10s hydration</li>
+        <li>get_strategy(platform) with GenericStrategy fallback</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 8: SCREENING ═══════════════ -->
+<div class="section" id="screening">
+  <h2>Screening Pipeline <span class="badge badge-stage">10 Modules</span></h2>
+  <p class="desc">10-module pipeline for answering screening questions: from semantic cache to LLM fallback with validation.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    Q["Screening Question\nDetected by field_mapper"] --> DECOMP["Compound Decomposition\nscreening_decomposer.py\nSplit multi-part questions"]
+
+    DECOMP --> CACHE["Semantic Cache\nscreening_semantic_cache.py\nQdrant embedding lookup"]
+
+    CACHE -->|"HIT"| ALIGN
+    CACHE -->|"MISS"| INTENT
+
+    INTENT["Intent Classification\nscreening_intent.py\nEmbedding-based intent"]
+
+    INTENT --> PROFILE_RESOLVE["Profile Resolution\nscreening_answers.py\nwork_auth, salary, DEI, skills"]
+
+    PROFILE_RESOLVE -->|"resolved"| ALIGN
+    PROFILE_RESOLVE -->|"unresolved"| RULES
+
+    RULES["Agent Rules\nagent_rules.py\nLearned overrides"]
+
+    RULES -->|"rule found"| ALIGN
+    RULES -->|"no rule"| EXACT_CACHE
+
+    EXACT_CACHE["Exact Cache\nSQLite prior answers"]
+
+    EXACT_CACHE -->|"hit"| ALIGN
+    EXACT_CACHE -->|"miss"| LLM_FB
+
+    LLM_FB["LLM Fallback\ncognitive_llm_call()\nJD + CV + company context"]
+
+    LLM_FB --> ALIGN
+
+    ALIGN["Option Alignment\nscreening_option_aligner.py\nMap answer to dropdown options"]
+
+    ALIGN --> VALIDATE["Validation\nscreening_validator.py\nPost-generation quality check"]
+
+    VALIDATE --> RECORD["Outcome Recorder\nscreening_outcome_recorder.py\nCentralized feedback"]
+
+    RECORD --> LEARN_CACHE[("Screening Cache\nSQLite + Qdrant")]
+    RECORD --> PATTERN["Pattern Extractor\nscreening_pattern_extractor.py\nAuto-pattern extraction"]
+    RECORD --> FEEDBACK["Feedback Loop\nscreening_feedback_loop.py\nCorrections teach pipeline"]
+
+    style CACHE fill:#0a3a1a,stroke:#3fb950,color:#e6edf3
+    style LLM_FB fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style LEARN_CACHE fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    </pre>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 9: SUBMIT ═══════════════ -->
+<div class="section" id="submit">
+  <h2>Submit & Approval <span class="badge badge-stage">Stage 6</span></h2>
+  <p class="desc">Human-in-the-loop: dry run, Telegram approval, rate limiting, and mandatory confirmation.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    FILLED["Form Filled\ndry_run=True"] --> GATE["Pre-Submit Gate\npre_submit_gate.py\nLLM recruiter review"]
+
+    GATE -->|"Score >= 7"| TELEGRAM["Telegram Notification\n'Review ready, reply yes/no'"]
+    GATE -->|"Score < 7"| WEAK["Flagged for Review\nWeaknesses listed"]
+    WEAK --> TELEGRAM
+
+    TELEGRAM --> WAIT["Block on Approval\nPoll Telegram API"]
+
+    WAIT -->|"'yes'"| RATE["Rate Limiter Check\nrate_limiter.py"]
+    WAIT -->|"'no'"| SKIP["Skip Job\nReturn to queue"]
+
+    RATE -->|"Under cap"| MUTEX["Acquire Mutex\napply_job() lock"]
+    RATE -->|"Over cap"| DEFER["Defer to Tomorrow\nDaily limit reached"]
+
+    subgraph CAPS["Per-Platform Daily Caps"]
+        direction LR
+        CAP1["LinkedIn: 15/day\n5 per session, 30min break"]
+        CAP2["Greenhouse: 7/day"]
+        CAP3["Indeed: 8/day"]
+        CAP4["Workday: 5/day"]
+        CAP5["Total: 30/day"]
+    end
+
+    RATE -.-> CAPS
+
+    MUTEX --> CLICK["Click Submit\nPlaywright"]
+    CLICK --> SUCCESS{"Success\nPage?"}
+
+    SUCCESS -->|"Yes"| CONFIRM["confirm_application()\nMandatory"]
+    SUCCESS -->|"No"| RETRY["Retry or\nHuman Fallback"]
+
+    CONFIRM --> HOOK["post_apply_hook()\nFires ALWAYS"]
+    CONFIRM --> QUOTA["Record Quota\nRate limiter update"]
+
+    style CAPS fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    </pre>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 10: POST-APPLY ═══════════════ -->
+<div class="section" id="postapply">
+  <h2>Post-Apply Hook <span class="badge badge-learn">9 DB Writes</span></h2>
+  <p class="desc">Fires after EVERY submission. 5 concerns: form experience, document uploads, Notion sync, job DB, and learning signals.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    HOOK["post_apply_hook()\nFires after every submission"] --> C1 & C2 & C3 & C4 & C5
+
+    subgraph C1["1. Form Experience"]
+        FE1["FormExperienceDB.record()\npages, fields, time, success"]
+        FE2["FormExperienceDB.store_timing()\nrunning averages"]
+        FE3["FormExperienceDB.store_container()\nlearned CSS selector"]
+        FE4["PlatformTransferEngine\ncross-domain similarity"]
+        FE1 --> FE2 --> FE3 --> FE4
+    end
+
+    subgraph C2["2. Document Uploads"]
+        DU1["drive_uploader.upload_cv()\nGoogle Drive"]
+        DU2["drive_uploader.upload_cover_letter()\nGoogle Drive"]
+        DU1 --> LINKS["Shareable Drive Links"]
+        DU2 --> LINKS
+    end
+
+    subgraph C3["3. Notion Sync"]
+        NS1["update_application_page()\nStatus = Applied"]
+        NS2["Applied date + time"]
+        NS3["Follow-up date (+7 days)"]
+        NS4["Drive links + ATS score"]
+    end
+
+    subgraph C4["4. Job DB Updates"]
+        JD1["JobDB.mark_applied()\napplied_at timestamp"]
+        JD2["JobDB.save_outcome()\noutcome=applied, stage=applied"]
+        JD3["JobDB.update_company_reliability()\ninterview_rate, offer_rate"]
+    end
+
+    subgraph C5["5. Learning Signals"]
+        LS1["strategy_reflector.reflect()\n2-pass: deterministic + LLM"]
+        LS2["navigation_learner.save_sequence()\nper-domain, 30-day TTL"]
+        LS3["correction_capture.record_corrections()\nuser diff -> field_corrections"]
+        LS4["OptimizationEngine.after_learning_action()\noptimization_actions, metrics"]
+        LS5["AgentPerformanceDB.record_session()\nagent vs Claude stats"]
+    end
+
+    C1 --> DB_FE[("form_experience.db")]
+    C4 --> DB_APP[("applications.db")]
+    C5 --> DB_TRAJ[("trajectories.db")]
+    C5 --> DB_NAV[("navigation_sequences.db")]
+    C5 --> DB_CORR[("field_corrections.db")]
+    C5 --> DB_OPT[("optimization.db")]
+    C5 --> DB_PERF[("agent_performance.db")]
+
+    style C1 fill:#0a3a1a,stroke:#3fb950,color:#e6edf3
+    style C2 fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style C3 fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style C4 fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style C5 fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    style DB_FE fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    style DB_APP fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    style DB_TRAJ fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    style DB_NAV fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    style DB_CORR fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    style DB_OPT fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    style DB_PERF fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    </pre>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 11: LEARNING ═══════════════ -->
+<div class="section" id="learning">
+  <h2>3 Self-Adaptation Layers <span class="badge badge-learn">Learning</span></h2>
+  <p class="desc">Every application makes the system smarter. Three independent feedback loops that compound over time.</p>
+
+  <div class="diagram-container">
+    <pre class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#1a5276', 'lineColor': '#58a6ff', 'fontSize': '13px'}}}%%
+flowchart TB
+    APP["Application Completed"] --> L1 & L2 & L3
+
+    subgraph L1["Layer 1: Correction -> Rule -> Consumption"]
+        direction LR
+        CORR["Human Correction\n'salary should be 35k not 42k'"]
+        CAPTURE["CorrectionCapture\nfield_corrections.db\nbefore/after diff"]
+        RULES["AgentRulesDB\nagent_rules.db\n30-day TTL"]
+        CONSUME["NativeFormFiller\nconsumes rules\non next fill"]
+        CORR --> CAPTURE --> RULES --> CONSUME
+    end
+
+    subgraph L2["Layer 2: Strategy Reflection"]
+        direction LR
+        REFLECT_S["strategy_reflector\n2-pass analysis"]
+        TRAJ["TrajectoryStore\nfield_trajectories\napplication_strategies\nheuristics"]
+        EXP["ExperienceMemory\nepisodic storage"]
+        GRPO["GRPO Signal\nenhanced_swarm\nadaptive threshold"]
+        REFLECT_S --> TRAJ --> EXP --> GRPO
+    end
+
+    subgraph L3["Layer 3: Cognitive Escalation"]
+        direction LR
+        STUCK["Form Page Stuck\nor field unresolvable"]
+        COG_L0["L0: Memory Recall\ncached solution"]
+        COG_L1["L1: Single Shot\ndirect LLM"]
+        COG_L2["L2: Reflexion\nself-critique loop"]
+        COG_L3["L3: Tree of Thought\nbranching exploration"]
+        ESC["EscalationClassifier\nroute to human\nif all levels fail"]
+        STUCK --> COG_L0 -->|miss| COG_L1 -->|fail| COG_L2 -->|fail| COG_L3 -->|fail| ESC
+    end
+
+    L1 -.->|"Next application\nuses learned rules"| NEXT["Next Application"]
+    L2 -.->|"Heuristics injected\ninto agent prompts"| NEXT
+    L3 -.->|"Cognitive patterns\ncached for reuse"| NEXT
+
+    subgraph ADDITIONAL["Additional Learning Systems"]
+        direction LR
+        NAV_L["NavigationLearner\nPer-domain replay\n30-day TTL"]
+        GOTCHA["GotchasDB\nPlatform quirks\nfrom failures"]
+        FORM_EXP["FormExperienceDB\nContainers, timing\nfield mappings"]
+        SCAN_L["ScanLearning\n17 signals\nstatistical correlation"]
+        GATE_T["GateThresholdAdapter\nAdaptive thresholds\nfrom history"]
+    end
+
+    APP --> ADDITIONAL
+    ADDITIONAL -.-> NEXT
+
+    style L1 fill:#0a3a1a,stroke:#3fb950,color:#e6edf3
+    style L2 fill:#1a3a5c,stroke:#58a6ff,color:#e6edf3
+    style L3 fill:#3a2a0a,stroke:#d29922,color:#e6edf3
+    style ADDITIONAL fill:#2a1a3a,stroke:#bc8cff,color:#e6edf3
+    </pre>
+  </div>
+</div>
+
+<!-- ═══════════════ SECTION 12: DATABASES ═══════════════ -->
+<div class="section" id="databases">
+  <h2>Database Map <span class="badge badge-db">27 Active</span></h2>
+  <p class="desc">Every database in the job pipeline, what writes to it, and what reads from it.</p>
+
+  <table class="db-table">
+    <thead>
+      <tr>
+        <th>Database</th>
+        <th>Key Tables</th>
+        <th>Written By</th>
+        <th>Read By</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>applications.db</code></td>
+        <td>job_listings, applications, application_outcomes, company_reliability, gate_effectiveness</td>
+        <td>JobDB, post_apply_hook, gate4_quality</td>
+        <td>job_analytics, scan_pipeline, gate_threshold_adapter</td>
+      </tr>
+      <tr>
+        <td><code>form_experience.db</code></td>
+        <td>form_experience, field_label_mappings, fill_techniques, container_selectors, page_timings</td>
+        <td>FormExperienceDB, NativeFormFiller</td>
+        <td>field_scanner (container), field_mapper (cache), _navigator (timing)</td>
+      </tr>
+      <tr>
+        <td><code>form_interactions.db</code></td>
+        <td>form_interactions, form_page_structure</td>
+        <td>FormInteractionLog</td>
+        <td>Introspection system (planned)</td>
+      </tr>
+      <tr>
+        <td><code>field_corrections.db</code></td>
+        <td>field_corrections</td>
+        <td>CorrectionCapture</td>
+        <td>AgentRulesDB, NativeFormFiller</td>
+      </tr>
+      <tr>
+        <td><code>agent_rules.db</code></td>
+        <td>agent_rules (30-day TTL)</td>
+        <td>AgentRulesDB</td>
+        <td>NativeFormFiller, screening_pipeline</td>
+      </tr>
+      <tr>
+        <td><code>agent_performance.db</code></td>
+        <td>fill_sessions</td>
+        <td>AgentPerformanceDB</td>
+        <td>ab_dashboard, job_analytics</td>
+      </tr>
+      <tr>
+        <td><code>trajectories.db</code></td>
+        <td>field_trajectories, application_strategies, heuristics</td>
+        <td>TrajectoryStore, strategy_reflector</td>
+        <td>GRPO, enhanced_swarm, ExperienceMemory</td>
+      </tr>
+      <tr>
+        <td><code>navigation_sequences.db</code></td>
+        <td>sequences (domain, steps, platform, content_hash)</td>
+        <td>NavigationLearner</td>
+        <td>_navigator.py (replay)</td>
+      </tr>
+      <tr>
+        <td><code>form_gotchas.db</code></td>
+        <td>gotchas</td>
+        <td>GotchasDB, ai_assist_logger</td>
+        <td>NativeFormFiller, platform_bypass</td>
+      </tr>
+      <tr>
+        <td><code>screening_cache.db</code></td>
+        <td>screening_answers, screening_feedback, screening_patterns</td>
+        <td>ScreeningPipeline</td>
+        <td>screening_pipeline (cache lookup)</td>
+      </tr>
+      <tr>
+        <td><code>optimization.db</code></td>
+        <td>optimization_actions, metrics, cognitive_outcomes, performance_snapshots</td>
+        <td>OptimizationEngine, CognitiveEngine</td>
+        <td>_policy.py, gate_threshold_adapter</td>
+      </tr>
+      <tr>
+        <td><code>experience_memory.db</code></td>
+        <td>episodes, facts, procedures</td>
+        <td>ExperienceMemory, MemoryManager</td>
+        <td>All patterns, enhanced_swarm, GRPO</td>
+      </tr>
+      <tr>
+        <td><code>ai_assist_sessions.db</code></td>
+        <td>ai_assist_sessions, ai_fixes, ai_strategies</td>
+        <td>AIAssistLogger</td>
+        <td>CorrectionCapture, GotchasDB, OptimizationEngine</td>
+      </tr>
+      <tr>
+        <td><code>skill_gaps.db</code></td>
+        <td>skill_gaps, skill_matches</td>
+        <td>SkillGapTracker</td>
+        <td>skill-gaps CLI, Notion sync</td>
+      </tr>
+      <tr>
+        <td><code>accounts.db</code></td>
+        <td>credentials</td>
+        <td>AccountManager</td>
+        <td>_auth.py (login)</td>
+      </tr>
+      <tr>
+        <td><code>scan_learning.db</code></td>
+        <td>scan_signals</td>
+        <td>ScanLearning</td>
+        <td>scan_pipeline (signal correlation)</td>
+      </tr>
+      <tr>
+        <td><code>llm_usage.db</code></td>
+        <td>usage_records</td>
+        <td>_InstrumentedLLM (via track_llm_usage)</td>
+        <td>cost reports, budget enforcement</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div style="text-align: center; padding: 3rem 2rem; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border);">
+  <p>JobPulse Pipeline Architecture &mdash; Auto-generated from codebase analysis</p>
+  <p style="margin-top: 0.5rem;">156,000 LOC &bull; 729 Python files &bull; 51 databases &bull; 3,967 tests</p>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#0d1117',
+      primaryColor: '#1a5276',
+      primaryTextColor: '#e6edf3',
+      primaryBorderColor: '#30363d',
+      lineColor: '#58a6ff',
+      secondaryColor: '#161b22',
+      tertiaryColor: '#0d1117',
+      fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif',
+      fontSize: '14px',
+      nodeBorder: '#30363d',
+      clusterBkg: '#161b22',
+      clusterBorder: '#30363d',
+      edgeLabelBackground: '#161b22',
+    },
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: true,
+      curve: 'basis',
+      padding: 20,
+      nodeSpacing: 40,
+      rankSpacing: 60,
+    }
+  });
+
+  // Sticky nav active state
+  const sections = document.querySelectorAll('.section');
+  const navLinks = document.querySelectorAll('.nav a');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        navLinks.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.nav a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-100px 0px -60% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+
+</body>
+</html>

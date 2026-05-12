@@ -40,6 +40,11 @@ def post_apply_hook(
     """
     company = job_context.get("company", "Unknown")
     url = job_context.get("url", "")
+    # Netloc form for OptimizationEngine signals so they bucket per-domain,
+    # not per-job-URL (the FormExperienceDB writers self-normalize, but the
+    # signal emitters below need the netloc explicitly — same defect class
+    # as bug_010 in NativeFormFiller, fixed here for the post-apply path).
+    _domain = FormExperienceDB.normalize_domain(url) if url else ""
 
     if not result.get("success"):
         try:
@@ -69,7 +74,7 @@ def post_apply_hook(
             from shared.optimization import get_optimization_engine
             get_optimization_engine().emit(
                 signal_type="failure", source_loop="form_experience",
-                domain=url, agent_name="form_filler",
+                domain=_domain, agent_name="form_filler",
                 payload={"error": result.get("error", ""), "pages_reached": result.get("pages_filled", 0)},
                 session_id=f"fe_fail_{company}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
             )
@@ -84,17 +89,27 @@ def post_apply_hook(
     start = time.monotonic()
 
     # --- 0. Before-measurement for optimization engine ---
+    # Audit S5 B-2: previously this snapshotted form-fill metrics
+    # (fields_filled / pages_filled / time_seconds) that the hook never
+    # mutates, so `after_learning_action` always saw zero deltas on the
+    # only common keys. The Drive / Notion / nav booleans we *do*
+    # change had no `_before` counterpart and were dropped by the
+    # tracker's `set(before) & set(after)` intersection. Now we
+    # baseline the things this hook actually owns — every outcome
+    # starts at 0 here and the after-block writes the real value.
     opt_action_id = ""
     try:
         from shared.optimization import get_optimization_engine
         _engine = get_optimization_engine()
         _before = {
-            "fields_filled": len(result.get("field_types", [])),
-            "pages_filled": result.get("pages_filled", 0),
-            "time_seconds": result.get("time_seconds", 0.0),
+            "drive_cv_uploaded": 0,
+            "drive_cl_uploaded": 0,
+            "notion_updated": 0,
+            "nav_learned": 0,
+            "elapsed_seconds": 0.0,
         }
         opt_action_id = _engine.before_learning_action(
-            "post_apply", domain=url, metrics=_before,
+            "post_apply", domain=_domain, metrics=_before,
         )
     except Exception as exc:
         logger.debug("post_apply_hook: before_learning_action failed: %s", exc)
@@ -222,6 +237,22 @@ def post_apply_hook(
         except Exception as exc:
             logger.warning("post_apply_hook: JobDB mark_applied failed: %s", exc)
 
+    # --- 3b. Record application outcome + company reliability ---
+    if job_id:
+        try:
+            jdb = JobDB()
+            jdb.save_outcome(
+                job_id=job_id,
+                outcome="applied",
+                stage_reached="applied",
+            )
+            jdb.update_company_reliability(
+                company=company,
+                outcome="applied",
+            )
+        except Exception as exc:
+            logger.warning("post_apply_hook: outcome/reliability recording failed: %s", exc)
+
     # --- 4. Strategy reflection + heuristic extraction ---
     if job_id:
         try:
@@ -276,13 +307,10 @@ def post_apply_hook(
             from shared.optimization import get_optimization_engine
             _engine = get_optimization_engine()
             _after = {
-                "fields_filled": len(result.get("field_types", [])),
-                "pages_filled": result.get("pages_filled", 0),
-                "time_seconds": result.get("time_seconds", 0.0),
-                "drive_cv_uploaded": bool(cv_drive_link),
-                "drive_cl_uploaded": bool(cl_drive_link),
-                "notion_updated": bool(notion_page_id),
-                "nav_learned": nav_saved,
+                "drive_cv_uploaded": int(bool(cv_drive_link)),
+                "drive_cl_uploaded": int(bool(cl_drive_link)),
+                "notion_updated": int(bool(notion_page_id)),
+                "nav_learned": int(bool(nav_saved)),
                 "elapsed_seconds": round(time.monotonic() - start, 1),
             }
             _engine.after_learning_action(opt_action_id, metrics=_after)

@@ -25,20 +25,40 @@ def register_strategy(cls: type["BasePlatformStrategy"]) -> type["BasePlatformSt
     return cls
 
 
-def get_strategy(platform: str | None) -> "BasePlatformStrategy":
-    """Return the strategy for a platform, or GenericStrategy as fallback."""
+def get_strategy(
+    platform: str | None,
+    url: str | None = None,
+) -> "BasePlatformStrategy":
+    """Return the strategy for a platform.
+
+    Resolution order:
+    1. Hand-coded strategy registered by name (greenhouse, workday, etc.)
+    2. LearnedStrategy synthesized from FormExperienceDB if URL's domain
+       has ≥3 successful applications (only when url is provided)
+    3. GenericStrategy as final fallback
+    """
     key = (platform or "generic").lower()
     cls = _STRATEGY_REGISTRY.get(key)
-    if cls is None:
-        from jobpulse.ats_adapters.generic import GenericStrategy
+    if cls is not None:
+        return cls()
 
-        return GenericStrategy()
-    return cls()
+    # Synthesis path — runtime-generated strategy from accumulated FE data
+    if url:
+        try:
+            from jobpulse.ats_adapters._strategy_synthesis import (
+                synthesize_strategy_for_domain,
+            )
+            learned = synthesize_strategy_for_domain(url)
+            if learned is not None:
+                return learned
+        except Exception as exc:
+            # OPRAL: synthesis is the runtime alternative to a hand-coded
+            # strategy. A failure here means the apply pipeline silently
+            # falls back to GenericStrategy without using accumulated FE data.
+            logger.warning("get_strategy: synthesis failed for %r: %s", url, exc)
 
-
-def list_registered_strategies() -> list[str]:
-    """Return names of all registered strategies."""
-    return list(_STRATEGY_REGISTRY.keys())
+    from jobpulse.ats_adapters.generic import GenericStrategy
+    return GenericStrategy()
 
 
 class BasePlatformStrategy(ABC):
@@ -141,9 +161,11 @@ class BasePlatformStrategy(ABC):
         """Extra label → profile-key mappings for this platform."""
         return {}
 
-    def screening_defaults(self) -> dict[str, str]:
-        """Default answers for common screening questions on this platform."""
-        return {}
+    # NOTE: screening defaults are NOT defined on strategies. Screening answers
+    # are PII (.claude/rules/pii-policy.md) and MUST come from `ScreeningPipeline`
+    # at runtime (DB cache → intent classifier → option aligner → LLM fallback).
+    # Per-platform hardcoded answer dicts were removed in the S12 audit (2026-05-08)
+    # — they were both a PII-policy violation and dead code (zero production callers).
 
     # ------------------------------------------------------------------
     # Pre / post hooks

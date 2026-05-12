@@ -76,13 +76,6 @@ class GreenhouseStrategy(BasePlatformStrategy):
             "how did you hear about this job?": "referral_source",
         }
 
-    def screening_defaults(self) -> dict[str, str]:
-        return {
-            "are you legally authorized to work": "yes",
-            "do you now or will you in the future require sponsorship": "no",
-            "will you now or in the future require sponsorship": "no",
-        }
-
     async def pre_fill(
         self,
         page: "Page",

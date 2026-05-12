@@ -28,6 +28,13 @@ CDP_CONNECT_TIMEOUT_SECONDS = 20
 CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_PROFILE_DIR = os.path.expanduser("~/.chrome-playwright-profile")
 
+# ATS form iframes whose contents we want to scan instead of the top-level
+# document. iCIMS is the only known case today; add new platforms here
+# rather than reaching into `get_snapshot` to grow the list. Keep this
+# data-driven so a future second match doesn't tangle with the existing
+# `break` (we always pick the first match).
+_FORM_IFRAME_NAMES: tuple[str, ...] = ("icims_content_iframe",)
+
 
 async def _with_retry(fn, max_retries=2, delay_ms=500):
     """Retry an async function on transient errors."""
@@ -196,11 +203,17 @@ class PlaywrightDriver:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._intelligence: "BrowserIntelligence | None" = None
 
     @property
     def page(self) -> "Page | None":
         """Expose the Playwright Page for native locator access."""
         return self._page
+
+    @property
+    def intelligence(self) -> "BrowserIntelligence | None":
+        """Expose the BrowserIntelligence instance for signal capture."""
+        return self._intelligence
 
     async def _move_mouse_to(self, el) -> None:
         """Move mouse to element along a Bezier curve."""
@@ -223,16 +236,36 @@ class PlaywrightDriver:
         self._mouse_y = target_y
 
     async def _smart_scroll(self, el) -> None:
-        """Scroll element into view and wait proportionally to distance."""
-        box_before = await el.bounding_box()
-        await el.scroll_into_view_if_needed()
-        box_after = await el.bounding_box()
+        """Scroll element into view and wait proportionally to distance.
+
+        5s timeout (was Playwright default 30s). When the element is
+        technically visible (offsetParent != null) but obscured —
+        sticky-header overlay, dismissed cookie modal still in DOM,
+        off-viewport honeypot — the 30s default blocks the entire
+        fill chain. Confirmed live on pls-solicitors.co.uk where the
+        page-header Search bar tripped this for full 30s before failure.
+        On timeout: log and proceed (caller may still interact via JS
+        even without the scroll).
+        """
+        try:
+            box_before = await el.bounding_box()
+        except Exception:
+            box_before = None
+        try:
+            await el.scroll_into_view_if_needed(timeout=5000)
+        except Exception as exc:
+            logger.debug("_smart_scroll: scroll timeout — proceeding: %s", exc)
+            return
+        try:
+            box_after = await el.bounding_box()
+        except Exception:
+            box_after = None
         if box_before and box_after:
             dist = abs(box_after["y"] - box_before["y"])
             delay = _scroll_delay(dist)
             await asyncio.sleep(delay)
 
-    async def connect(self, cdp_url: str | None = None) -> None:
+    async def connect(self, cdp_url: str | None = None, *, prefer_url: str | None = None) -> None:
         """Connect to Chrome via CDP. Call before any other method."""
         url = cdp_url or CDP_URL
 
@@ -270,11 +303,63 @@ class PlaywrightDriver:
             ) from last_exc
         self._context = self._browser.contexts[0]
         pages = self._context.pages
-        self._page = pages[-1] if pages else await self._context.new_page()
+        self._attached_existing_url = False  # set True when prefer_url match keeps the page intact
+        # When `prefer_url` is supplied, pick the tab whose URL matches —
+        # otherwise we'd grab pages[-1] (whatever was opened last) and then
+        # navigate it away, destroying any in-progress session (e.g. the
+        # user's manually-logged-in JPMC tab). Match by exact URL, then by
+        # URL-prefix, then by host+path-prefix as a fallback.
+        self._page = None
+        if prefer_url and pages:
+            from urllib.parse import urlparse
+            try:
+                want = urlparse(prefer_url)
+            except Exception:
+                want = None
+            for p in pages:
+                if (p.url or "") == prefer_url:
+                    self._page = p
+                    break
+            if self._page is None:
+                for p in pages:
+                    if (p.url or "").startswith(prefer_url):
+                        self._page = p
+                        break
+            if self._page is None and want and want.netloc:
+                for p in pages:
+                    try:
+                        got = urlparse(p.url or "")
+                    except Exception:
+                        continue
+                    if got.netloc == want.netloc and got.path.startswith(want.path):
+                        self._page = p
+                        break
+            if self._page is not None:
+                self._attached_existing_url = True
+                logger.info(
+                    "PlaywrightDriver attached to existing tab %s (prefer_url match)",
+                    self._page.url[:100],
+                )
+        if self._page is None:
+            self._page = pages[-1] if pages else await self._context.new_page()
         logger.info("PlaywrightDriver connected to Chrome at %s (tab: %s)", url, self._page.url[:80])
+
+        try:
+            from jobpulse.browser_intelligence import BrowserIntelligence
+            self._intelligence = BrowserIntelligence()
+            await self._intelligence.attach(self._page)
+        except Exception as exc:
+            logger.debug("BrowserIntelligence attach failed (non-critical): %s", exc)
+            self._intelligence = None
 
     async def close(self) -> None:
         """Disconnect from Chrome without closing the user's tab."""
+        if self._intelligence:
+            try:
+                await self._intelligence.detach()
+            except Exception:
+                pass
+            self._intelligence = None
         self._page = None
         self._browser = None
         self._context = None
@@ -298,9 +383,9 @@ class PlaywrightDriver:
 
     async def get_snapshot(self, **kwargs) -> dict:
         """Scan DOM for form fields, buttons, and page text — returns same shape as extension snapshots."""
-        # Use iframe content frame if an ATS iframe exists (e.g. iCIMS)
+        # Use iframe content frame if a known ATS iframe exists (e.g. iCIMS)
         scan_frame = self._page
-        for iframe_name in ("icims_content_iframe",):
+        for iframe_name in _FORM_IFRAME_NAMES:
             frame = self._page.frame(name=iframe_name)
             if frame is not None:
                 scan_frame = frame
@@ -366,12 +451,57 @@ class PlaywrightDriver:
                 });
             });
 
-            // 3. Page text preview
+            // 3. Page text preview + dialog text
             const textRoot = dialog || document.body;
             const page_text_preview = textRoot ? textRoot.innerText.substring(0, 3000) : '';
+            const dialog_text = dialog ? dialog.innerText.substring(0, 1000) : '';
 
             // 4. File inputs
             const has_file_inputs = root.querySelectorAll('input[type="file"]').length > 0;
+
+            // 5. Verification wall detection (Cloudflare, reCAPTCHA, hCaptcha)
+            let verification_wall = null;
+            const vwSelectors = [
+                ['#challenge-running', 'cloudflare'],
+                ['.cf-turnstile', 'cloudflare'],
+                ['#cf-challenge-running', 'cloudflare'],
+                ['.g-recaptcha', 'recaptcha'],
+                ['#recaptcha-anchor', 'recaptcha'],
+                ['.h-captcha', 'hcaptcha'],
+            ];
+            for (const [sel, wtype] of vwSelectors) {
+                if (document.querySelector(sel)) {
+                    verification_wall = {type: wtype, selector: sel};
+                    break;
+                }
+            }
+            if (!verification_wall) {
+                const bodyLower = (document.body?.innerText || '').toLowerCase();
+                const vwTexts = [
+                    ['verify you are human', 'text_challenge'],
+                    ['unusual traffic', 'text_challenge'],
+                    ['access denied', 'http_block'],
+                    ['403 forbidden', 'http_block'],
+                    ['you have been blocked', 'http_block'],
+                    ['troubleshooting cloudflare', 'cloudflare'],
+                    ['checking your browser', 'cloudflare'],
+                    ['just a moment', 'cloudflare'],
+                ];
+                for (const [txt, wtype] of vwTexts) {
+                    if (bodyLower.includes(txt)) {
+                        verification_wall = {type: wtype, text: txt};
+                        break;
+                    }
+                }
+            }
+            if (!verification_wall) {
+                for (const frame of document.querySelectorAll('iframe')) {
+                    const src = (frame.src || '').toLowerCase();
+                    if (src.includes('challenges.cloudflare.com')) { verification_wall = {type: 'cloudflare', iframe: src}; break; }
+                    if (src.includes('google.com/recaptcha')) { verification_wall = {type: 'recaptcha', iframe: src}; break; }
+                    if (src.includes('hcaptcha.com')) { verification_wall = {type: 'hcaptcha', iframe: src}; break; }
+                }
+            }
 
             return {
                 url: location.href,
@@ -379,8 +509,10 @@ class PlaywrightDriver:
                 fields,
                 buttons,
                 page_text_preview,
+                dialog_text,
                 has_file_inputs,
                 has_dialog: !!dialog,
+                verification_wall,
             };
         }""")
 

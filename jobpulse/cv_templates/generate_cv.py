@@ -2,15 +2,17 @@
 
 Matches the reference design: teal section headers, clean spacing,
 proper bullet alignment, 5 skill categories, 8 certifications,
-Community & Leadership section, References.
+Community & Leadership section.
 
 Usage:
     from jobpulse.cv_templates.generate_cv import generate_cv_pdf
-    path = generate_cv_pdf(company="OakNorth", location="London, UK")
+    path = generate_cv_pdf(company="OakNorth")
 """
 
 import os
+import re
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
@@ -184,6 +186,12 @@ _role_profiles_cache: dict[str, dict[str, str]] | None = None
 
 
 def _build_role_profiles() -> dict[str, dict[str, str]]:
+    """Static summary text per role archetype.
+
+    Tagline is intentionally NOT stored here — it is built dynamically by
+    `_build_default_tagline()` from ProfileStore.education() so source code
+    never embeds the user's specific institution. See pii-policy.md.
+    """
     global _role_profiles_cache
     if _role_profiles_cache is not None:
         return _role_profiles_cache
@@ -193,7 +201,6 @@ def _build_role_profiles() -> dict[str, dict[str, str]]:
     dbs = s.get("databases", 57)
     _role_profiles_cache = {
         "data scientist": {
-            "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Scientist | Python | Machine Learning | SQL | NLP",
             "summary": (
                 f'<b>Data Scientist</b> with hands-on experience building production ML systems, '
                 f'statistical models, and data pipelines. Built a <b>{loc} LOC</b> autonomous system '
@@ -201,9 +208,9 @@ def _build_role_profiles() -> dict[str, dict[str, str]]:
                 f'experiential learning (GRPO). Specialises in <b>Python</b>, <b>SQL</b>, '
                 f'<b>machine learning</b>, and translating complex data into <b>actionable business insights</b>.'
             ),
+            "skills": "Python | Machine Learning | SQL | NLP",
         },
         "data analyst": {
-            "tagline": "MSc Computer Science (UOD) | 3+ YOE | Data Analyst | Python | SQL | Power BI | Statistical Analysis",
             "summary": (
                 '<b>Data Analyst</b> with experience building dashboards, automating ETL workflows, '
                 'and delivering actionable insights. Built <b>Power BI</b> dashboards with <b>DAX</b> '
@@ -211,9 +218,9 @@ def _build_role_profiles() -> dict[str, dict[str, str]]:
                 'data pipelines, cutting report prep time by <b>35%</b>. Specialises in '
                 '<b>statistical testing</b>, <b>forecasting</b>, and <b>data-driven decision making</b>.'
             ),
+            "skills": "Python | SQL | Power BI | Statistical Analysis",
         },
         "ml engineer": {
-            "tagline": "MSc Computer Science (UOD) | 2+ YOE | ML Engineer | Python | PyTorch | MLOps | System Design",
             "summary": (
                 f'<b>ML Engineer</b> who built a <b>{loc} LOC</b> production AI system with '
                 f'<b>{tests} tests</b> and <b>MLOps</b> pipelines. Designed multi-agent orchestration with '
@@ -221,9 +228,9 @@ def _build_role_profiles() -> dict[str, dict[str, str]]:
                 f'<b>10+ autonomous agents</b> running 24/7 with rate-limited automation, '
                 f'compiled policy gates, and <b>Docker</b>-based sandboxing.'
             ),
+            "skills": "Python | PyTorch | MLOps | System Design",
         },
         "ai engineer": {
-            "tagline": "MSc Computer Science (UOD) | 2+ YOE | AI Engineer | Python | LangChain | RAG | Multi-Agent Systems",
             "summary": (
                 f'<b>AI Engineer</b> who built a <b>{loc} LOC</b> production multi-agent system with '
                 f'<b>4 LangGraph orchestration patterns</b>, <b>GRPO experiential learning</b>, and '
@@ -231,9 +238,9 @@ def _build_role_profiles() -> dict[str, dict[str, str]]:
                 f'persona evolution, and human-in-the-loop approval flows. Specialises in '
                 f'<b>agentic architectures</b>, <b>tool-use</b>, and <b>production AI deployment</b>.'
             ),
+            "skills": "Python | LangChain | RAG | Multi-Agent Systems",
         },
         "data engineer": {
-            "tagline": "MSc Computer Science (UOD) | 2+ YOE | Data Engineer | Python | SQL | ETL | Airflow | Cloud",
             "summary": (
                 f'<b>Data Engineer</b> with hands-on experience building data pipelines, ETL workflows, '
                 f'and database systems. Built a <b>{loc} LOC</b> autonomous system with '
@@ -241,9 +248,9 @@ def _build_role_profiles() -> dict[str, dict[str, str]]:
                 f'Specialises in <b>Python</b>, <b>SQL</b>, <b>pipeline orchestration</b>, '
                 f'and <b>scalable data infrastructure</b>.'
             ),
+            "skills": "Python | SQL | ETL | Airflow | Cloud",
         },
         "software engineer": {
-            "tagline": "MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | System Design | APIs | Testing",
             "summary": (
                 f'<b>Software Engineer</b> who built a <b>{loc} LOC</b> production system with '
                 f'<b>{tests} tests</b>, <b>RESTful APIs</b>, and multi-service architecture. '
@@ -251,9 +258,21 @@ def _build_role_profiles() -> dict[str, dict[str, str]]:
                 f'and CI/CD automation. Specialises in <b>Python</b>, <b>system design</b>, '
                 f'<b>API development</b>, and <b>production-grade software delivery</b>.'
             ),
+            "skills": "Python | System Design | APIs | Testing",
         },
     }
     return _role_profiles_cache
+
+
+def _build_default_tagline(role_title: str, profile_skills: str = "") -> str:
+    """Build a tagline dynamically from ProfileStore education + role title.
+
+    Mirrors `cv_tailor.build_required_tagline` so the fallback path (when the
+    LLM tailoring chain returns nothing) doesn't hardcode the user's degree.
+    """
+    from jobpulse.cv_tailor import build_required_tagline
+    yoe = "3+" if "data analyst" in role_title.lower() else "2+"
+    return build_required_tagline(yoe, role_title, profile_skills)
 
 
 _SOFT_SKILL_WORDS = {
@@ -326,24 +345,42 @@ def get_role_profile(role_title: str) -> dict[str, str]:
     """Match a JD role title to the best tagline + summary profile.
 
     Returns dict with 'tagline' and 'summary' keys, or empty dict if no match.
+    Priority list is ordered most-specific → least-specific so 'Senior ML
+    Engineer / Data Scientist' resolves to ML, not DS (a substring of the
+    earlier dict-iteration order).
     """
     profiles = _build_role_profiles()
     role_lower = role_title.lower()
-    for key, profile in profiles.items():
-        if key in role_lower:
-            return profile
-    if any(kw in role_lower for kw in ("data scien", "ds ", "machine learn")):
-        return profiles["data scientist"]
-    if any(kw in role_lower for kw in ("data analy", "bi ", "business intel")):
-        return profiles["data analyst"]
-    if any(kw in role_lower for kw in ("ml eng", "mlops")):
-        return profiles["ml engineer"]
-    if any(kw in role_lower for kw in ("ai eng", "llm", "agent")):
-        return profiles["ai engineer"]
-    if any(kw in role_lower for kw in ("data eng", "etl", "pipeline eng")):
-        return profiles["data engineer"]
-    if any(kw in role_lower for kw in ("software eng", "backend", "fullstack", "full stack")):
-        return profiles["software engineer"]
+
+    priority: list[tuple[str, str]] = [
+        ("ml engineer", "ml engineer"),
+        ("ml ops", "ml engineer"),
+        ("mlops", "ml engineer"),
+        ("ai engineer", "ai engineer"),
+        ("llm engineer", "ai engineer"),
+        ("agent engineer", "ai engineer"),
+        ("data engineer", "data engineer"),
+        ("etl engineer", "data engineer"),
+        ("pipeline engineer", "data engineer"),
+        ("data scientist", "data scientist"),
+        ("data scien", "data scientist"),
+        ("machine learning engineer", "ml engineer"),
+        ("machine learn", "ml engineer"),
+        ("data analyst", "data analyst"),
+        ("data analy", "data analyst"),
+        ("business intel", "data analyst"),
+        ("software engineer", "software engineer"),
+        ("backend", "software engineer"),
+        ("fullstack", "software engineer"),
+        ("full stack", "software engineer"),
+    ]
+    for keyword, profile_key in priority:
+        if keyword in role_lower:
+            base = profiles[profile_key]
+            return {
+                "summary": base["summary"],
+                "tagline": _build_default_tagline(role_title, base.get("skills", "")),
+            }
     return {}
 
 
@@ -352,9 +389,39 @@ def get_role_profile(role_title: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+_COUNTRY_SYNONYMS = {
+    "uk": "united kingdom", "u.k.": "united kingdom", "gb": "united kingdom",
+    "usa": "united states", "u.s.": "united states", "us": "united states",
+}
+
+
+def _build_applicant_location_line() -> str:
+    """Build TIH-format 'City, Country, Postcode' from APPLICANT_* config.
+
+    Case-insensitive dedup: if APPLICANT_LOCATION already names the country
+    (e.g. 'Dundee, UK'), don't append APPLICANT_COUNTRY again. Postcode is
+    appended verbatim. Returns empty string if no location data configured.
+    """
+    from jobpulse.config import APPLICANT_LOCATION, APPLICANT_POSTCODE, APPLICANT_COUNTRY
+    loc = (APPLICANT_LOCATION or "").strip()
+    country = (APPLICANT_COUNTRY or "").strip()
+    postcode = (APPLICANT_POSTCODE or "").strip()
+
+    seen = set()
+    for segment in re.split(r"[,;]\s*", loc.lower()):
+        seg = segment.strip()
+        if seg:
+            seen.add(_COUNTRY_SYNONYMS.get(seg, seg))
+    if country and _COUNTRY_SYNONYMS.get(country.lower(), country.lower()) in seen:
+        country = ""
+
+    parts = [p for p in (loc, country, postcode) if p]
+    return ", ".join(parts)
+
+
 def generate_cv_pdf(
     company: str,
-    location: str = "London, UK",
+    location: str | None = None,
     tagline: str | None = None,
     summary: str | None = None,
     projects: list[dict] | None = None,
@@ -364,26 +431,53 @@ def generate_cv_pdf(
 ) -> Path:
     """Generate a tailored CV PDF matching the reference design.
 
+    `location` defaults to the applicant's City/Country/Postcode pulled from
+    config (TIH expects the candidate's location in the contact line, not
+    the job's). Pass an explicit value to override.
+
     Returns Path to generated PDF.
     """
     _register_fonts()
     identity = build_applicant_identity()
+    if not location:
+        location = _build_applicant_location_line()
 
+    # Helper: normalise Unicode + escape XML/HTML special chars so dynamic
+    # text from ProfileStore or LLM tailoring can't break ReportLab's
+    # paragraph parser. ReportLab markup we add ourselves (e.g. `<b>`,
+    # `<link>`) is composed AFTER this on already-escaped input.
+    def _safe(text: str | None) -> str:
+        if not text:
+            return ""
+        normalized, _ = normalize_text_for_ats(str(text))
+        return _xml_escape(normalized)
+
+    # Top-of-function: only Unicode-normalise. XML escaping is applied at
+    # each render site below — applying it here as well would double-escape
+    # entities (e.g. `&amp;` → `&amp;amp;`).
     if tagline:
-        tagline = normalize_text_for_ats(tagline)[0]
+        tagline, _ = normalize_text_for_ats(tagline)
+        tagline = _xml_escape(tagline)
     if summary:
-        summary = normalize_text_for_ats(summary)[0]
+        # Summary intentionally keeps the `<b>` markup the LLM is required
+        # to emit per the cv_tailor validator contract — Unicode-normalise
+        # only, do not XML-escape.
+        summary, _ = normalize_text_for_ats(summary)
     if projects:
         projects = [
-            {**p, "title": normalize_text_for_ats(p["title"])[0],
+            {**p,
+             "title": normalize_text_for_ats(p["title"])[0],
              "bullets": [normalize_text_for_ats(b)[0] for b in p["bullets"]]}
             for p in projects
         ]
     if extra_skills:
-        extra_skills = {k: normalize_text_for_ats(v)[0] for k, v in extra_skills.items()}
+        extra_skills = {
+            normalize_text_for_ats(k)[0]: normalize_text_for_ats(v)[0]
+            for k, v in extra_skills.items()
+        }
 
     F = 'MyArial'
-    SZ = 9.5
+    SZ = 10
     PW = A4[0] - 28 * mm
     LN = 11.5
     LW = 29 * mm
@@ -409,8 +503,6 @@ def generate_cv_pdf(
                         spaceAfter=0, leading=LN, textColor=TEXT_COLOR)
     it = ParagraphStyle('I', fontName=F, fontSize=SZ, spaceAfter=1,
                         leading=LN, textColor=TEXT_COLOR, leftIndent=0)
-    center_s = ParagraphStyle('Cn', fontName=F, fontSize=SZ, alignment=TA_CENTER,
-                              spaceAfter=1, leading=LN, textColor=LINK_COLOR)
     comm_s = ParagraphStyle('Co', fontName=F, fontSize=SZ, spaceAfter=2,
                             leading=LN, textColor=TEXT_COLOR, alignment=TA_LEFT)
 
@@ -473,18 +565,25 @@ def generate_cv_pdf(
     safe_co = company.replace(' ', '_')
     cv_path = out / f"{safe_name}_{safe_co}.pdf"
 
+    # Identity values are user-supplied and may contain `&` / `<` etc.
+    # Escape before they reach any ReportLab Paragraph markup.
+    ident_safe = {k: _xml_escape(v or "") for k, v in identity.items()}
+    location_safe = _xml_escape(location or "")
+
     doc = SimpleDocTemplate(str(cv_path), pagesize=A4,
                             leftMargin=14 * mm, rightMargin=14 * mm,
                             topMargin=12 * mm, bottomMargin=12 * mm)
     el = []
 
     # ── HEADER ──
-    el.append(Paragraph(B(identity["name"]), name_s))
+    el.append(Paragraph(B(ident_safe["name"]), name_s))
     el.append(Spacer(1, 1))
-    tag = tagline or 'MSc Computer Science (UOD) | 2+ YOE | Software Engineer | Python | AI/ML | NLP | System Design'
+    # Fallback tagline is built dynamically from ProfileStore — never embed
+    # the user's specific institution as a literal here.
+    tag = tagline or _xml_escape(_build_default_tagline("Software Engineer"))
     el.append(Paragraph(tag, tag_s))
     el.append(Paragraph(
-        f'{location} | {identity["phone"]} | '
+        f'{location_safe} | {ident_safe["phone"]} | '
         f'{L("mailto:" + identity["email"], "Email")} | '
         f'{L(identity["linkedin"], "LinkedIn")} | '
         f'{L(identity["github"], "GitHub")} | '
@@ -510,62 +609,67 @@ def generate_cv_pdf(
     for i, edu in enumerate(_load_education()):
         if i > 0:
             el.append(Spacer(1, 3))
-        row(f'{B(edu["degree"])}, {edu["institution"]}', edu["dates"])
+        row(f'{B(_safe(edu["degree"]))}, {_safe(edu["institution"])}', _safe(edu["dates"]))
         if "dissertation" in edu:
-            diss_text = edu["dissertation"]
+            diss_text = _safe(edu["dissertation"])
             if "dissertation_url" in edu:
-                diss_text = f'{L(edu["dissertation_url"], edu["dissertation"])}'
+                diss_text = L(edu["dissertation_url"], _safe(edu["dissertation"]))
             el.append(Paragraph(f'{B("Dissertation:")} {diss_text}', body_s))
         if "modules" in edu:
-            el.append(Paragraph(f'{B("Core Modules:")} {edu["modules"]}', body_s))
+            el.append(Paragraph(f'{B("Core Modules:")} {_safe(edu["modules"])}', body_s))
         if "cgpa" in edu:
-            el.append(Paragraph(f'CGPA: {edu["cgpa"]}', body_s))
+            el.append(Paragraph(f'CGPA: {_safe(edu["cgpa"])}', body_s))
 
     # ── TECHNICAL SKILLS ──
     section('Technical Skills')
     for label, vals in _load_base_skills().items():
-        skill_row(label, vals)
+        skill_row(_safe(label), _safe(vals))
     if extra_skills:
         for label, vals in extra_skills.items():
-            skill_row(label, vals)
+            skill_row(_safe(label), _safe(vals))
 
     # ── PROJECTS ──
     section('Projects')
     proj_list = projects or _load_default_projects()
     import re as _re
     for i, proj in enumerate(proj_list):
-        title = _re.sub(r"^\d+\.\s*", "", proj["title"])
-        row(B(f"{i+1}. {title}"), L(proj["url"], '(Link)'), split=0.90)
+        raw_title = _re.sub(r"^\d+\.\s*", "", proj["title"])
+        title = _safe(raw_title)
+        url = proj.get("url") or ""
+        link_cell = L(url, '(Link)') if url else ""
+        row(B(f"{i+1}. {title}"), link_cell, split=0.90)
         for b in proj["bullets"]:
-            bul(b)
+            bul(_safe(b))
         if i < len(proj_list) - 1:
             el.append(Spacer(1, 2))
 
     # ── EXPERIENCE ──
     section('Experience')
-    for i, exp in enumerate(experience if experience is not None else _load_experience()):
+    exp_source = experience if experience is not None else _load_experience()
+    for i, exp in enumerate(exp_source):
         if i > 0:
             el.append(Spacer(1, 2))
-        row(B(exp["title"]), exp["dates"])
-        el.append(Paragraph(exp["company"], it))
+        row(B(_safe(exp["title"])), _safe(exp["dates"]))
+        el.append(Paragraph(_safe(exp["company"]), it))
         for b in exp["bullets"]:
-            bul(b)
+            bul(_safe(b))
 
     # ── CERTIFICATIONS ──
     section('Certifications')
     for cert_name, cert_date, cert_url in _load_certifications():
-        verify_text = f'{cert_date} - {L(cert_url, "Verify")}' if cert_url else cert_date
-        row(B(cert_name), verify_text, body_s, sr)
+        verify_text = (
+            f'{_safe(cert_date)} - {L(cert_url, "Verify")}'
+            if cert_url else _safe(cert_date)
+        )
+        row(B(_safe(cert_name)), verify_text, body_s, sr)
 
     # ── COMMUNITY AND LEADERSHIP ──
     section('Community and Leadership')
     for i, item in enumerate(_load_community()):
+        title_safe = _safe(item["title"])
+        text_safe = _safe(item["text"])
         el.append(Paragraph(
-            f'{B(f"{i+1}.  {item["title"]}")}  {item["text"]}', comm_s))
-
-    # ── REFERENCES ──
-    section('References')
-    el.append(Paragraph(f'{B(I("Available upon request"))}', center_s))
+            f'{B(f"{i+1}.  {title_safe}")}  {text_safe}', comm_s))
 
     doc.build(el)
 

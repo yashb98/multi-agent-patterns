@@ -12,22 +12,19 @@ from jobpulse.ats_adapters.base import BaseATSAdapter
 
 
 def test_get_adapter_returns_playwright_adapter():
-    """get_adapter() should return a PlaywrightAdapter for standard platforms."""
+    """get_adapter() returns the unified PlaywrightAdapter."""
     from jobpulse.ats_adapters import get_adapter
-    adapter = get_adapter("linkedin")
+    adapter = get_adapter()
     assert adapter.name == "playwright"
 
 
-def test_get_adapter_all_platforms():
-    """All standard platforms route to PlaywrightAdapter."""
+def test_get_adapter_is_platform_agnostic():
+    """get_adapter() takes no arguments — platform dispatch is handled by
+    `get_strategy(platform, url)` inside the form engine, not by adapter selection."""
     from jobpulse.ats_adapters import get_adapter
-    for platform in ["greenhouse", "indeed", "linkedin", "lever", "workday", None]:
-        adapter = get_adapter(platform)
-        assert adapter.name == "playwright", f"{platform} should route to playwright"
-
-
-def test_smartrecruiters_routes_to_playwright():
-    """SmartRecruiters now routes through PlaywrightAdapter (collapsed into strategy)."""
-    from jobpulse.ats_adapters import get_adapter
-    adapter = get_adapter("smartrecruiters")
-    assert adapter.name == "playwright"
+    import inspect
+    sig = inspect.signature(get_adapter)
+    assert len(sig.parameters) == 0, (
+        "get_adapter must not accept a platform parameter — adapter dispatch is "
+        "unified post-2026-04. Platform-specific behavior belongs in BasePlatformStrategy."
+    )

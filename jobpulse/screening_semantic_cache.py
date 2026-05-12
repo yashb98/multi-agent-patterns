@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Optional
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
-from shared.memory_layer._embedder import MemoryEmbedder
 
 logger = get_logger(__name__)
 
@@ -35,13 +35,18 @@ def _to_qdrant_id(text: str) -> int:
     return int(hashlib.md5(text.encode()).hexdigest(), 16) % (2 ** 63)
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+def _compose_key(question: str, profile_state_hash: str, jd_context_hash: str) -> str:
+    """Compose the cache-key string from question + profile + JD context.
+
+    Audit S1 (TP-1): the same question can have different correct answers
+    across profile states (visa renewed) and JD contexts (UK vs US JD).
+    Folding both hashes into the cache key produces distinct entries per
+    (profile, JD) pair while keeping the lookup *vector* over question
+    text alone (paraphrase matching survives).
+    """
+    q = (question or "").strip().lower()
+    return f"{q}|{profile_state_hash or ''}|{jd_context_hash or ''}"
+
 
 
 @dataclass
@@ -71,7 +76,7 @@ class ScreeningSemanticCache:
         self,
         sqlite_path: str | None = None,
         qdrant_location: str | None = None,
-        embedder: MemoryEmbedder | None = None,
+        embedder: object | None = None,
     ) -> None:
         self._sqlite_path = sqlite_path or _default_sqlite_path()
         self._embedder = embedder
@@ -82,8 +87,10 @@ class ScreeningSemanticCache:
         # Resolve embedder dims BEFORE creating Qdrant collection
         if self._embedder is None:
             try:
-                self._embedder = MemoryEmbedder()
-                self._dims = self._embedder.dims
+                from shared.semantic_utils import _get_embedder
+                self._embedder = _get_embedder()
+                if self._embedder:
+                    self._dims = self._embedder.dims
             except Exception as exc:
                 logger.warning("ScreeningSemanticCache: Embedder init failed (%s). Semantic search disabled.", exc)
                 self._embedder = None
@@ -157,13 +164,16 @@ class ScreeningSemanticCache:
                 ON screening_semantic_cache(question_text)
             """)
 
-            # Migration: add option-aware + embedding columns
+            # Migration: add option-aware + embedding + context-hash columns
             existing = {r[1] for r in conn.execute("PRAGMA table_info(screening_semantic_cache)").fetchall()}
             for col, typ in [
                 ("selected_option", "TEXT DEFAULT ''"),
                 ("field_type", "TEXT DEFAULT ''"),
                 ("field_options_json", "TEXT DEFAULT ''"),
                 ("embedding_vector", "TEXT DEFAULT ''"),
+                # Audit S1 / TP-1: scope cache entries to (profile, JD) context
+                ("profile_state_hash", "TEXT DEFAULT ''"),
+                ("jd_context_hash", "TEXT DEFAULT ''"),
             ]:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE screening_semantic_cache ADD COLUMN {col} {typ}")
@@ -187,17 +197,46 @@ class ScreeningSemanticCache:
         selected_option: str = "",
         field_type: str = "",
         field_options: list[str] | None = None,
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
     ) -> None:
         """Store a question+answer pair in the semantic cache.
 
         For option-based fields (dropdowns, radios, checkboxes), also store
         the exact option text that was selected and the available options,
         so future lookups can align to different option sets.
+
+        ``profile_state_hash`` and ``jd_context_hash`` (audit S1 / TP-1)
+        scope the entry to a single (profile, JD) context. Two callers
+        differing only by profile state or JD context get distinct cache
+        rows; a profile-state mutation invalidates the prior entry by
+        producing a new key.
         """
         if not question or not answer:
             return
 
-        qid = str(_to_qdrant_id(question.strip().lower()))
+        # Length cap (DB safety, 2026-05-10): refuse to cache pathological
+        # values that would bloat the table if Kimi or any future LLM ever
+        # returns garbage. 8 KB is well above the largest legitimate
+        # cover-letter-style answer we've seen (~1.5 KB) and below the
+        # bloat threshold. Also caps the field_options blob.
+        _MAX_STR = 8192
+        if len(question) > _MAX_STR or len(answer) > _MAX_STR:
+            logger.warning(
+                "screening_cache: skipping store — value over %d-char cap "
+                "(question=%d, answer=%d). Likely an LLM output anomaly.",
+                _MAX_STR, len(question), len(answer),
+            )
+            return
+        if field_options and sum(len(o) for o in field_options) > _MAX_STR:
+            logger.warning(
+                "screening_cache: skipping store — field_options blob over %d-char cap",
+                _MAX_STR,
+            )
+            return
+
+        composed_key = _compose_key(question, profile_state_hash, jd_context_hash)
+        qid = str(_to_qdrant_id(composed_key))
         now = datetime.now(UTC).isoformat()
         options_json = json.dumps(field_options) if field_options else ""
 
@@ -207,7 +246,20 @@ class ScreeningSemanticCache:
         if self._embedder is not None:
             try:
                 vector = self._embedder.embed(question.strip())
-                vec_json = json.dumps(vector)
+                # Dim guard: MemoryEmbedder silently falls from BGE-M3 (1024)
+                # to MiniLM (384) when Ollama errors. A mixed-dim cache breaks
+                # every subsequent Qdrant query. Refuse the write rather than
+                # poison the index.
+                if vector is not None and len(vector) != self._dims:
+                    logger.warning(
+                        "Embedder returned %d dims, expected %d — skipping cache "
+                        "write for %r (Ollama/BGE-M3 likely degraded)",
+                        len(vector), self._dims, question[:60],
+                    )
+                    vector = None
+                    vec_json = ""
+                else:
+                    vec_json = json.dumps(vector)
             except Exception as exc:
                 logger.debug("Embedding failed during cache: %s", exc)
 
@@ -218,8 +270,8 @@ class ScreeningSemanticCache:
                 INSERT INTO screening_semantic_cache
                 (qdrant_id, question_text, intent, answer, confidence, times_used,
                  created_at, last_used_at, selected_option, field_type, field_options_json,
-                 embedding_vector)
-                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                 embedding_vector, profile_state_hash, jd_context_hash)
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(qdrant_id) DO UPDATE SET
                     last_used_at = excluded.last_used_at,
                     answer = excluded.answer,
@@ -228,10 +280,13 @@ class ScreeningSemanticCache:
                     selected_option = CASE WHEN excluded.selected_option != '' THEN excluded.selected_option ELSE selected_option END,
                     field_type = CASE WHEN excluded.field_type != '' THEN excluded.field_type ELSE field_type END,
                     field_options_json = CASE WHEN excluded.field_options_json != '' THEN excluded.field_options_json ELSE field_options_json END,
-                    embedding_vector = CASE WHEN excluded.embedding_vector != '' THEN excluded.embedding_vector ELSE embedding_vector END
+                    embedding_vector = CASE WHEN excluded.embedding_vector != '' THEN excluded.embedding_vector ELSE embedding_vector END,
+                    profile_state_hash = excluded.profile_state_hash,
+                    jd_context_hash = excluded.jd_context_hash
                 """,
                 (qid, question.strip(), intent, answer, confidence, now, now,
-                 selected_option, field_type, options_json, vec_json),
+                 selected_option, field_type, options_json, vec_json,
+                 profile_state_hash, jd_context_hash),
             )
 
         # Qdrant upsert (reuses pre-computed vector)
@@ -242,7 +297,7 @@ class ScreeningSemanticCache:
                     collection_name=_COLLECTION_NAME,
                     points=[
                         qm.PointStruct(
-                            id=_to_qdrant_id(question.strip().lower()),
+                            id=_to_qdrant_id(composed_key),
                             vector=vector,
                             payload={
                                 "qdrant_id": qid,
@@ -251,8 +306,14 @@ class ScreeningSemanticCache:
                                 "answer": answer,
                                 "confidence": confidence,
                                 "job_context_hash": job_context_hash,
+                                "profile_state_hash": profile_state_hash,
+                                "jd_context_hash": jd_context_hash,
                                 "selected_option": selected_option,
                                 "field_type": field_type,
+                                # Persist the options that were on the form
+                                # when this answer was correct. Future hits
+                                # use this list to align our cached answer
+                                "field_options": field_options or [],
                             },
                         )
                     ],
@@ -260,36 +321,91 @@ class ScreeningSemanticCache:
             except Exception as exc:
                 logger.debug("Qdrant upsert failed: %s", exc)
 
+    @observe_lookup("screening_semantic_cache", "screening_semantic_cache", key_arg=None)
     def lookup(
         self,
         question: str,
         min_score: float = 0.85,
         field_options: list[str] | None = None,
         field_type: str = "",
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
     ) -> CacheHit | None:
         """Search for a semantically similar question. Returns best match above threshold.
 
         If field_options are provided (dropdown/radio/checkbox), the returned
         answer is aligned to the best-matching option using the OptionAligner.
+
+        ``profile_state_hash`` / ``jd_context_hash`` (audit S1 / TP-1) scope
+        the lookup to entries cached for the same (profile, JD) context.
+        Lookups with no hashes (legacy callers) only match entries that
+        were stored with no hashes — so the migration is safe by construction.
         """
         if not question or not question.strip():
             return None
 
         hit: CacheHit | None = None
 
-        # 1. Try Qdrant first
+        # 1. Try Qdrant first.
+        # Gap 3: when the field has options, fetch the top-K matches (not just
+        # top-1) and filter them down to entries whose stored answer/selected
+        # option IS in the current field's options. This prevents a
+        # semantically-similar but option-incompatible cache entry from
+        # winning the lookup. Without this, a question like "Are you eligible
+        # to work in the country..." matches "Country*" via shared "country"
+        # tokens, and the cached "United Kingdom" answer leaks into a Yes/No
+        # field. Filtering at search-time complements the align-time fix in
+        # _align_to_options for defence-in-depth.
         if self._qdrant_available and self._embedder is not None and self._qdrant is not None:
             try:
                 vector = self._embedder.embed(question.strip())
+                # Dim guard mirrors the writer's: a wrong-dim query against a
+                # 1024-dim collection silently returns nothing, so abort
+                # before the round-trip and let the SQLite cosine fallback
+                # try (which compares stored vec dim to query vec dim).
+                if vector is None or len(vector) != self._dims:
+                    if vector is not None:
+                        logger.warning(
+                            "Lookup embedder returned %d dims, expected %d — "
+                            "skipping Qdrant query for %r",
+                            len(vector), self._dims, question[:60],
+                        )
+                    raise RuntimeError("dim mismatch")
                 from qdrant_client import models as qm
+                # Filter on (profile_state_hash, jd_context_hash) so the
+                # vector search only returns entries scoped to this caller's
+                # context (audit S1 / TP-1). Empty-string hashes match
+                # legacy entries that were stored before the slice landed.
+                qdrant_filter = qm.Filter(
+                    must=[
+                        qm.FieldCondition(
+                            key="profile_state_hash",
+                            match=qm.MatchValue(value=profile_state_hash or ""),
+                        ),
+                        qm.FieldCondition(
+                            key="jd_context_hash",
+                            match=qm.MatchValue(value=jd_context_hash or ""),
+                        ),
+                    ]
+                )
+                limit = 10 if field_options else 1
                 results = self._qdrant.query_points(
                     collection_name=_COLLECTION_NAME,
                     query=vector,
-                    limit=1,
+                    query_filter=qdrant_filter,
+                    limit=limit,
                     score_threshold=min_score,
                 )
-                if results.points:
-                    point = results.points[0]
+                points = list(results.points)
+                if points and field_options:
+                    options_lower = {(o or "").lower().strip() for o in field_options}
+                    points = [
+                        p for p in points
+                        if (p.payload.get("answer", "") or "").lower().strip() in options_lower
+                        or (p.payload.get("selected_option", "") or "").lower().strip() in options_lower
+                    ] or points[:1]  # if zero option-compatible, fall back to top — let _align_to_options decide
+                if points:
+                    point = points[0]
                     self._touch_sqlite(str(point.payload.get("qdrant_id", "")))
                     hit = CacheHit(
                         answer=point.payload.get("answer", ""),
@@ -308,11 +424,32 @@ class ScreeningSemanticCache:
         if hit is None and self._embedder is not None:
             try:
                 query_vec = self._embedder.embed(question.strip())
+                # Compose the same key the writer used. Two SQLite rows with
+                # different (profile_state_hash, jd_context_hash) live under
+                # different qdrant_ids and remain segregated; the cosine
+                # similarity is still computed over question text so
+                # paraphrases hit, but only within the same context bucket.
+                # We segregate by SUBSTR matching the qdrant_id prefix derived
+                # from the *exact* composed key for the question — paraphrases
+                # of the question text would hash to a different qdrant_id, so
+                # a strict prefix match would lose paraphrase recall. Instead,
+                # we filter rows by their composed key suffix (the
+                # `|profile|jd` tail). This is achieved by storing the
+                # canonical question text alongside and filtering rows whose
+                # `qdrant_id` derives from the same (profile, jd) suffix —
+                # but qdrant_id is a hash, not reversible. So we widen: scan
+                # all rows, then drop ones whose stored profile/jd hashes
+                # don't match. The hash columns were added to SQLite in the
+                # same migration. See the ALTER TABLE in `_init_sqlite`.
                 with self._sqlite_conn() as conn:
                     rows = conn.execute(
                         "SELECT qdrant_id, question_text, intent, answer, confidence,"
-                        " selected_option, field_type, embedding_vector"
+                        " selected_option, field_type, embedding_vector,"
+                        " profile_state_hash, jd_context_hash"
                         " FROM screening_semantic_cache"
+                        " WHERE COALESCE(profile_state_hash, '') = ?"
+                        " AND COALESCE(jd_context_hash, '') = ?",
+                        ((profile_state_hash or ""), (jd_context_hash or "")),
                     ).fetchall()
 
                 best: tuple[float, sqlite3.Row] | None = None
@@ -325,7 +462,12 @@ class ScreeningSemanticCache:
                         # Legacy entry — embed once and queue for backfill
                         row_vec = self._embedder.embed(row["question_text"])
                         backfill.append((json.dumps(row_vec), row["qdrant_id"]))
-                    score = _cosine_similarity(query_vec, row_vec)
+                    import numpy as np
+                    a = np.array(query_vec, dtype=np.float32)
+                    b = np.array(row_vec, dtype=np.float32)
+                    norm_a = np.linalg.norm(a)
+                    norm_b = np.linalg.norm(b)
+                    score = float(np.dot(a, b) / (norm_a * norm_b)) if norm_a > 0 and norm_b > 0 else 0.0
                     if score >= min_score and (best is None or score > best[0]):
                         best = (score, row)
 
@@ -367,8 +509,13 @@ class ScreeningSemanticCache:
         hit: CacheHit,
         field_options: list[str],
         field_type: str,
-    ) -> CacheHit:
-        """Align a cache hit's answer to the current field's available options."""
+    ) -> CacheHit | None:
+        """Align a cache hit's answer to the current field's available options.
+
+        Returns the aligned hit, or `None` when the aligned answer is not in
+        `field_options` — the caller treats `None` as a cache miss and falls
+        through to the LLM tier with an options constraint.
+        """
         from jobpulse.screening_option_aligner import (
             OptionAligner, BoolFieldHandler, SalaryFieldHandler,
         )
@@ -415,16 +562,46 @@ class ScreeningSemanticCache:
                 hit.answer = target
                 return hit
 
-        # Priority 5: fuzzy alignment via OptionAligner
+        # Priority 5: fuzzy alignment via OptionAligner.
         aligned = aligner.align_answer(hit.answer, field_options, field_type)
+        # OptionAligner returns the original answer unchanged when no option
+        # is similar enough. That's a cache MISS for an option-bearing field —
+        # we must not return a free-text answer for a closed-set picker.
+        # Returning None forces the caller's V2 pipeline to fall through to
+        # the LLM tier, which is option-constrained (Fix #4) and will pick
+        # one of `field_options` exactly. Without this, semantic-similar
+        # cache hits from unrelated questions (e.g. cached "Country*" →
+        # "United Kingdom" matching against "Are you eligible to work in the
+        # country...?" via the shared word "country") leak into option-only
+        # fields, producing a country name as the answer to a Yes/No.
+        options_lower_set = {o.lower().strip() for o in field_options}
+        if aligned.lower().strip() not in options_lower_set:
+            logger.info(
+                "screening_cache: dropping non-option answer %r for field with "
+                "options %s — forcing LLM-tier regeneration",
+                hit.answer[:60], [o[:30] for o in field_options[:5]],
+            )
+            return None  # signal cache miss → V2 → LLM tier with options constraint
         if aligned != hit.answer:
             hit.selected_option = aligned
         hit.answer = aligned
         return hit
 
-    def record_outcome(self, question: str, success: bool) -> None:
-        """Update success/correction counters for a cached question."""
-        qid = str(_to_qdrant_id(question.strip().lower()))
+    def record_outcome(
+        self,
+        question: str,
+        success: bool,
+        *,
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
+    ) -> None:
+        """Update success/correction counters for a cached question.
+
+        ``profile_state_hash`` / ``jd_context_hash`` (audit S1) must match
+        the values used at cache() time — counters track outcomes per
+        (profile, JD) context, not globally per question.
+        """
+        qid = str(_to_qdrant_id(_compose_key(question, profile_state_hash, jd_context_hash)))
         with self._sqlite_conn() as conn:
             if success:
                 conn.execute(
@@ -464,6 +641,7 @@ class ScreeningSemanticCache:
             logger.info("Pruned %d stale screening cache entries", total)
         return total
 
+    @observe_lookup("screening_semantic_cache", "screening_semantic_cache.stats", key_arg=None)
     def get_stats(self) -> dict:
         """Return cache statistics."""
         with self._sqlite_conn() as conn:
@@ -490,13 +668,24 @@ class ScreeningSemanticCache:
                 (now, qdrant_id),
             )
 
-    def _qid_for(self, question: str) -> str:
-        """Return the qdrant_id string for a question."""
-        return str(_to_qdrant_id(question.strip().lower()))
+    def _qid_for(
+        self,
+        question: str,
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
+    ) -> str:
+        """Return the qdrant_id string for a question scoped to a context."""
+        return str(_to_qdrant_id(_compose_key(question, profile_state_hash, jd_context_hash)))
 
-    def increment_usage(self, question: str) -> None:
-        """Increment times_used for a question. Only way to bump the counter."""
-        qid = self._qid_for(question)
+    def increment_usage(
+        self,
+        question: str,
+        *,
+        profile_state_hash: str = "",
+        jd_context_hash: str = "",
+    ) -> None:
+        """Increment times_used for a context-scoped cache entry."""
+        qid = self._qid_for(question, profile_state_hash, jd_context_hash)
         with self._sqlite_conn() as conn:
             conn.execute(
                 "UPDATE screening_semantic_cache SET times_used = times_used + 1 WHERE qdrant_id = ?",
@@ -519,24 +708,43 @@ def get_screening_semantic_cache() -> ScreeningSemanticCache:
     return _cached_instance
 
 
-_AFFIRMATIVE = {"i have", "i am", "i can", "i do", "i hold", "permits", "eligible", "authorized", "authorised", "entitled", "visa"}
-_NEGATIVE = {"i don't", "i do not", "i can't", "i cannot", "i require", "i need", "no ", "not eligible", "not authorized", "not authorised"}
-
-
 def _infer_boolean_from_text(text: str) -> bool | None:
-    """Infer yes/no meaning from a long-form answer (e.g. 'I have a visa...' → True)."""
-    t = text.lower().strip()
-    if len(t) < 8:
+    """Infer yes/no meaning from a long-form answer using embedding similarity."""
+    if not text or len(text.strip()) < 8:
         return None
-    neg_score = sum(1 for p in _NEGATIVE if p in t)
-    aff_score = sum(1 for p in _AFFIRMATIVE if p in t)
-    if aff_score > neg_score:
-        return True
-    if neg_score > aff_score:
-        return False
+    try:
+        from shared.semantic_utils import semantic_similarity
+        yes_score = semantic_similarity(text, "yes I do, I am, I have, I can, I agree")
+        no_score = semantic_similarity(text, "no I do not, I am not, I cannot, I don't have")
+        if yes_score > no_score and yes_score > 0.5:
+            return True
+        if no_score > yes_score and no_score > 0.5:
+            return False
+    except Exception:
+        pass
     return None
 
 
 def _get_qdrant_url_from_env() -> str:
     import os
     return os.environ.get("MEMORY_QDRANT_URL", "").strip()
+
+
+def _get_qdrant_client():
+    """Return a connected QdrantClient, or None if Qdrant is unavailable.
+
+    Used by sibling subsystems (e.g. `cross_platform_field_transfer`) that
+    need to share the same Qdrant configuration as the screening cache
+    without instantiating a `ScreeningSemanticCache`. Audit S4 B-3 added
+    this accessor — its absence had been silently breaking the
+    cross-platform vector path.
+    """
+    url = _get_qdrant_url_from_env()
+    if not url:
+        return None
+    try:
+        from qdrant_client import QdrantClient
+        return QdrantClient(url=url)
+    except Exception as exc:
+        logger.debug("_get_qdrant_client: Qdrant unavailable (%s)", exc)
+        return None

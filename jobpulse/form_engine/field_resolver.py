@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from shared.db_observability import observe_lookup
 from shared.logging_config import get_logger
 from shared.pii import pii_json, wrap_pii_value
 
@@ -310,6 +311,7 @@ class LabelMappingStore:
         except Exception as exc:
             logger.debug("Could not load label mappings: %s", exc)
 
+    @observe_lookup("field_label_mappings", "label_mappings", key_arg=1)
     def get(self, label: str) -> str | None:
         return self._mappings.get(label.lower().strip())
 
@@ -360,18 +362,27 @@ _SEED_LABELS: dict[str, str] = {
     "github": "github",
     "github url": "github",
     "city": "location",
+    "city or town": "location",
+    "town/city": "location",
     "location": "location",
+    "given name": "first_name",
+    "preferred name": "first_name",
     "headline": "headline",
     "current title": "headline",
     "title": "title",
     "salutation": "title",
     "prefix": "title",
     "address": "address",
+    "address line 1": "address",
     "street address": "address",
     "postcode": "postcode",
     "zip code": "postcode",
     "postal code": "postcode",
     "country": "country",
+    "country/region": "country",
+    "country phone code": "phone_code",
+    "phone device type": "phone_device_type",
+    "phone extension": "phone_extension",
     "name": "full_name",
 }
 
@@ -420,21 +431,81 @@ _BIGRAM_TO_PROFILE_KEY: list[tuple[tuple[str, str], str]] = [
     (("job", "title"), "headline"),
     (("current", "title"), "headline"),
     (("email", "address"), "email"),
+    (("city", "town"), "location"),
+    (("phone", "code"), "phone_code"),
+    (("country", "phone"), "phone_code"),
+    (("phone", "extension"), "phone_extension"),
+    (("phone", "device"), "phone_device_type"),
 ]
 
 
-def fuzzy_label_to_profile_key(label: str) -> str | None:
-    """Match a field label to a profile key using token overlap."""
-    tokens = set(re.sub(r"[^a-z0-9]+", " ", label.lower()).split())
+def _is_sentence_question(label: str, tokens_list: list[str]) -> bool:
+    """Detect whether a label is a sentence-shaped question vs an identity-
+    field label.
 
+    Sentence questions use natural-language phrasing where any single profile
+    keyword (country, email, phone, etc.) is incidental to the actual semantic
+    intent of the question. Identity field labels are typically 1-4 tokens
+    naming the field directly ("Email", "First Name", "City or Town").
+
+    Heuristic signals:
+      - Trailing "?" — almost always a question
+      - Interrogative starter ("are you", "do you", "have you", "would you",
+        "will you", "can you", "is there", etc.)
+      - Length > 4 tokens — very few identity fields exceed this
+    """
+    stripped = (label or "").strip().rstrip("*").rstrip()
+    if stripped.endswith("?"):
+        return True
+    if len(tokens_list) > 4:
+        return True
+    if len(tokens_list) >= 2:
+        head2 = tokens_list[0] + " " + tokens_list[1]
+        if head2 in {
+            "are you", "do you", "have you", "had you",
+            "would you", "will you", "can you", "could you",
+            "is there", "is your", "what is", "what was", "where do",
+            "where are", "where is", "how many", "how do", "how would",
+            "why do", "why are", "tell us", "describe your", "please describe",
+            "please explain", "please provide",
+        }:
+            return True
+    return False
+
+
+def fuzzy_label_to_profile_key(label: str) -> str | None:
+    """Match a field label to a profile key using token overlap.
+
+    Hard correctness rule: profile-key matches do NOT fire on sentence-
+    shaped questions. Without this guard, a long question like
+    "Are you eligible to work in the country you have applied to?"
+    matches "country" → returns profile.country = "United Kingdom" as the
+    answer to a Yes/No question. Words like "country", "phone", "email"
+    appear incidentally in many compound questions whose semantic intent
+    has nothing to do with filling that profile field.
+
+    Both bigram and single-token matches are gated by `_is_sentence_question`,
+    not just length, because some short questions ("Are you a veteran?")
+    can still over-match if we only check length.
+    """
+    tokens_list = re.sub(r"[^a-z0-9]+", " ", label.lower()).split()
+    tokens = set(tokens_list)
+
+    if _is_sentence_question(label, tokens_list):
+        return None
+
+    # Bigram match — specific 2-word phrases like "first name", "phone code".
     for (t1, t2), key in _BIGRAM_TO_PROFILE_KEY:
         if t1 in tokens and t2 in tokens:
             return key
 
+    # Single-token match — gated on label length. ≤ 3 tokens means an
+    # identity-field-shaped label ("Email", "Country", "Postal Code").
     _AMBIGUOUS_SINGLE = {"name", "number", "type", "line"}
-    for token in tokens - _AMBIGUOUS_SINGLE:
-        if token in _TOKEN_TO_PROFILE_KEY:
-            return _TOKEN_TO_PROFILE_KEY[token]
+    if len(tokens_list) <= 3:
+        for token in tokens - _AMBIGUOUS_SINGLE:
+            if token in _TOKEN_TO_PROFILE_KEY:
+                return _TOKEN_TO_PROFILE_KEY[token]
 
     return None
 
@@ -521,6 +592,20 @@ def canonicalize_country_value(label: str, value: str, locale: LocaleProfile | N
         return value
 
     norm_value = _normalize_match_text(value)
+
+    # The original "country in label" check is too loose — labels like
+    # "Will you ... require employment visa sponsorship to work in the
+    # **country** in which the job ..." trigger canonicalization on
+    # answer 'No', which then matches Norway's ISO 'no' abbreviation
+    # and returns 'Norway'. Verified live (visa Yes/No → 'Norway' bug,
+    # 2026-05-10 run1.2 + run2). Bail out for unambiguous Yes/No
+    # answers — they are never country names.
+    if norm_value in ("yes", "no", "y", "n", "true", "false"):
+        return value
+    # Bail for visa/work-auth labels regardless of length — they ask
+    # WHERE you'll work, not what country you ARE.
+    if any(kw in norm_label for kw in ("visa", "sponsorship", "right to work", "authorized to work", "will you require")):
+        return value
 
     # Try locale country first
     if locale and locale.country:
@@ -610,10 +695,17 @@ def best_option_match(
         if norm_opt == norm_value:
             return opt
 
-    # Starts with
-    for opt, norm_opt in zip(options, normalized_options):
-        if norm_opt.startswith(norm_value):
-            return opt
+    # Starts with — guarded for short values to prevent "No" matching "Norway"
+    # when option scoping leaks (the visa Yes/No → 'Norway' bug, 2026-05-10).
+    # Short ≤2-char values must match as a whole word, not a prefix substring.
+    if len(norm_value) >= 3:
+        for opt, norm_opt in zip(options, normalized_options):
+            if norm_opt.startswith(norm_value):
+                return opt
+    else:
+        for opt, norm_opt in zip(options, normalized_options):
+            if norm_opt == norm_value or norm_opt.startswith(norm_value + " "):
+                return opt
 
     # Contains (for values >= 4 chars)
     if len(norm_value) >= 4:

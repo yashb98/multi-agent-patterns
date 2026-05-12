@@ -121,7 +121,14 @@ class SessionSignals:
 
 
 def handle_block(engine: ScanLearningEngine, platform: str, wall: Any, signals: SessionSignals) -> None:
-    """Record block event, start cooldown, update rules, optionally run LLM analysis."""
+    """Record block event, start cooldown, update rules, optionally run LLM analysis.
+
+    ``wall`` accepts either a ``VerificationWall`` (LinkedIn cognitive path)
+    or a plain string like ``"http_429"`` (httpx scanners). Pre-fix this only
+    worked for the wall-object shape, leaving httpx-based scanners with no
+    way to log blocks (pipeline-bugs M-9.D).
+    """
+    wall_type = wall.wall_type if hasattr(wall, "wall_type") else str(wall)
     engine.record_event(
         platform=platform,
         requests_in_session=signals.requests_count,
@@ -138,9 +145,9 @@ def handle_block(engine: ScanLearningEngine, platform: str, wall: Any, signals: 
         waited_for_page_load=signals.waited_for_load,
         page_load_time_ms=signals.last_load_time_ms,
         outcome="blocked",
-        wall_type=wall.wall_type,
+        wall_type=wall_type,
     )
-    engine.start_cooldown(platform, wall.wall_type)
+    engine.start_cooldown(platform, wall_type)
     engine.update_learned_rules(platform)
     if engine.should_run_llm_analysis():
         engine.run_llm_analysis(platform)

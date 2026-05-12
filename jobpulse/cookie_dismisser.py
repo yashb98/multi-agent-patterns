@@ -2,6 +2,16 @@
 
 Runs before every page type detection to clear overlays that would
 interfere with form detection and field scanning.
+
+Wiring note (S3 audit, 2026-05-07):
+The accept/anti regex tiers below cover en/de/fr/es. CJK locales
+(zh/ja/ko) and others slip through and reach the form scanner with
+the banner still up. Migration tracked at
+`docs/superpowers/plans/2026-05-04-regex-to-dynamic-migration.md`
+(replace with embedding match against learned banner anchors). Not
+migrated in S3 because the playwright-native fallback
+(`dismiss_cookie_banner_playwright`) covers most production cases via
+container-scoped selectors that don't depend on text language.
 """
 from __future__ import annotations
 

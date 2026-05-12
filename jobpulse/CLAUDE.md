@@ -10,7 +10,7 @@
 - notion_agent.py — Tasks CRUD, dedup, priorities, due dates, subtasks, weekly plan
 - budget_agent.py — Spending/income/savings, 17 categories, recurring, alerts, undo
 - budget_tracker.py — Weekly archival, category sub-pages, weekly comparison
-- salary_agent.py — Hours at £13.99/hr, tax calc, Notion timesheet
+- budget_salary.py — Hours at £13.99/hr, tax calc, Notion timesheet
 - briefing_agent.py — Collects all agents → RLM synthesis → Telegram
 - job_autopilot.py — Scan → analyze JD → tailor CV → ATS score → apply/queue
 - cv_templates/generate_cv.py — ReportLab PDF CV generator
@@ -22,7 +22,7 @@
 - github_profile_sync.py — Nightly 3am sync → MindGraph graph
 - skill_gap_tracker.py — Records missing skills, exports ranked CSV
 - skill_tracker_notion.py — Notion Skill Tracker: pending skills for verification
-- verification_detector.py — Universal CAPTCHA/verification wall detection
+- verification_detector.py — Universal CAPTCHA/verification wall detection + human interaction simulation
 - scan_learning.py — Scan learning engine: 17 signals, statistical correlation
 - drive_uploader.py — Google Drive auto-upload for CV/CL PDFs
 - gate4_quality.py — Gate 4: JD quality, company blocklist, CV scrutiny, LLM review
@@ -30,9 +30,14 @@
 - correction_capture.py — Reinforcement learning from user corrections: diffs agent vs user values, caches corrections, feeds back into screening answers
 - job_analytics.py — Conversion funnel, platform breakdown, gate stats
 - ats_adapters/smartrecruiters.py — SmartRecruiters adapter (shadow DOM, spl-* web components, Playwright CDP)
-- application_orchestrator.py — Full external application lifecycle: navigate → account → verify → fill → submit
+- application_orchestrator.py — Re-export shim. Actual code in `application_orchestrator_pkg/`:
+  - `_navigator.py` — navigation/redirect handling
+  - `_form_filler.py` — delegates to NativeFormFiller
+  - `_executor.py` — action execution (fill/click/upload)
+  - `_auth.py` — login, signup, email verification
 - form_experience_db.py — Per-domain form experience store (SQLite): adapter, pages, fields, timing
-- page_analyzer.py — Hybrid DOM+Vision page type detection (PageType enum: 8 types)
+- page_analyzer.py — 3-tier page type detection: DOM classifier → semantic reasoning (LLM, cached) → vision fallback
+- page_analysis/page_reasoner.py — LLM semantic page understanding: returns action + target + reasoning, cached per domain
 - post_apply_hook.py — Unified post-apply: form experience DB, Drive upload, Notion update
 - cookie_dismisser.py — Pattern-based cookie banner detection and dismissal
 - account_manager.py — SQLite credential store per domain, ATS_ACCOUNT_PASSWORD
@@ -59,7 +64,7 @@ Kill switch: `COGNITIVE_ENABLED=false`
 
 ## Dispatch
 Enhanced Swarm when JOBPULSE_SWARM=true (default). Flat dispatcher when false.
-IMPORTANT: New intents MUST be added to BOTH dispatcher.py AND swarm_dispatcher.py.
+IMPORTANT: New intents MUST be added via handler_registry.py + intent_registry.py + command_router.py. Both dispatcher.py AND swarm_dispatcher.py consume from get_handler_map().
 
 ## Code Exploration — Use MCP Tools First
 Use CodeGraph MCP tools for ALL code exploration. Never use raw Grep/Glob.
@@ -86,8 +91,14 @@ All fall back to `TELEGRAM_BOT_TOKEN` if dedicated token not set.
 **Playwright:** `ATS_ACCOUNT_PASSWORD` (for Greenhouse/Lever/Workday logins)
 
 ## Application Orchestrator (Playwright)
-Cookie dismiss → hybrid page detect → SSO → account create → Gmail verify → multi-page fill → submit
+Cookie dismiss → site prompt dismiss → security wall bypass → hybrid page detect → semantic reasoning → SSO → account create → Gmail verify → multi-page fill → submit
 Navigation learning replays per domain (SQLite). Max 10 nav steps, 20 form pages.
+**Security wall bypass**: 6 stages (auto-wait → human simulation → Turnstile click → reload × 2 → human fallback via Telegram). Human fallback is MANDATORY — never skip.
+**Platform bypass**: When aggregators (Indeed/LinkedIn/TotalJobs/Reed/Glassdoor) block persistently, `platform_bypass.py` resolves the direct ATS URL via: cached mapping → FormExperienceDB → known ATS board patterns (httpx HEAD) → Playwright web search. Stores results across all learning systems.
+**Semantic reasoning**: When DOM classifier is uncertain, LLM analyzes page text/buttons/fields and returns action (dismiss_dialog, click_apply, fill_form, etc.). Cached per domain+content hash.
+**Per-action verification**: Every `NavigationActionExecutor.execute()` returns an `ExecutorResult` with per-fill verified/failed counts. Failures emit `failure` signals via `emit_fill_failures`. Both `_phase_act` and `AuthHandler.handle_login/handle_signup` route through `FormNavigator._verify_action`, which produces an `ActionVerification` (pre/post URL + content hash + ghost-click flag + `expected_outcome_met`).
+**Reasoner contract**: `PageAction` includes `expected_outcome` (`url_changes|fields_filled|dialog_dismissed|page_unchanged|unknown`). The reasoner applies a field-count guard that lowers `confidence` when required snapshot fields are dropped from `field_fills`.
+**Failure recovery**: On confirmed ghost click → `PageReasoner.invalidate(snapshot)` + `reason_with_failure(snapshot, failure_context)` for re-grounding. When `PageAction.confidence < 0.7`, the navigator runs `classify_page_type_from_screenshot` and escalates on disagreement.
 
 ## Adaptive Form Pipeline (form_engine/)
 The form-filling pipeline uses 3 layers of adaptive intelligence:
@@ -124,12 +135,15 @@ The form-filling pipeline uses 3 layers of adaptive intelligence:
 - `unknown` → vision fallback
 
 **Platform Strategies** (`ats_adapters/strategy.py`):
-- `BasePlatformStrategy` ABC with: `form_container_hint()`, `expected_field_range()`, `screening_defaults()`, `normalize_label()`, `extra_label_mappings()`
+- `BasePlatformStrategy` ABC. Of 17 declared methods, only **6 are reachable in the default apply path**: `pre_fill`, `fill_combobox`, `form_container_hint`, `expected_field_range`, `extra_label_mappings`, `normalize_label`. (`screening_defaults` was deliberately removed — PII policy. The remaining methods — `submit_selectors`, `next_page_selectors`, `post_page`, `known_widget_libraries`, `apply_button_selectors`, `wait_for_form_hydrated_ms`, `iframe_names`, `custom_field_scan`, `field_fill_overrides` — are only consulted via `form_engine/engine.py` `FormFillEngine`, which is gated behind `UNIFIED_FORM_ENGINE=true` and **not enabled in production**. Tracked in `pipeline-bugs.md` S12 D-12.1 / D-12.2.)
 - `get_strategy(platform)` returns the registered strategy or GenericStrategy fallback
 - LinkedIn: container `.jobs-easy-apply-modal`, range 3-10
 - Greenhouse: container `#application`, range 3-15
 - Workday: range 3-20, hydration 10s
 - Strategies store successful containers via `FormExperienceDB.store_container()` after fill
+
+**Adapter Registry** (`ats_adapters/__init__.py`):
+- `get_adapter()` takes **no arguments** — the universal `playwright_adapter` is returned for every platform after the 2026-04 unification. Adapter selection by `ats_platform` happens at the strategy layer (`get_strategy(platform)`), not the adapter layer.
 
 ## Dry Run & Platform Learning
 - Always dry-run new platforms first: `apply_job(url, dry_run=True)`
@@ -171,9 +185,88 @@ CLI: `python -m jobpulse.runner ai-assist-summary [agent] [days]`
 
 ## Memory Layer Integration
 All old API calls (`learn_fact`, `record_episode`, `learn_procedure`) now automatically
-feed the 3-engine memory stack (SQLite + Qdrant + Neo4j). No caller code changes required.
+feed the 3-engine memory stack (SQLite + Qdrant + Neo4j) on the **write path**. No caller
+code changes required.
+
+As of `pipeline-bugs.md` S7, **read-path is unified** with the write path:
+`MemoryManager.get_procedural_entries` / `get_episodic_entries` /
+`get_semantic_entries` now read SQLite first (with JSON fallback for legacy
+`sqlite_store=None` mode). Procedural reads use a single windowed SQL query
+to dedup write-amplified rows by `SUBSTR(content,1,50)`, returning aggregated
+`times_used` / `avg_score_when_used` / `success_rate` per distinct strategy.
 
 Forgetting sweep runs automatically every hour via the daemon optimization tick.
+
+## Undocumented Subsystems
+
+### Screening Pipeline (10 files)
+`screening_pipeline.py` (orchestrator), `screening_decomposer.py` (compound question splitting), `screening_detector.py` (universal detector), `screening_feedback_loop.py` (corrections teach pipeline), `screening_intent.py` (embedding-based intent), `screening_option_aligner.py` (answer-to-option alignment), `screening_outcome_recorder.py` (centralized feedback), `screening_pattern_extractor.py` (auto-pattern extraction), `screening_semantic_cache.py` (Qdrant cache), `screening_validator.py` (post-generation quality checks).
+
+### ATS Adapters (`ats_adapters/`)
+`base.py` (BaseATSAdapter ABC), `discovery.py` (auto-discovery from URL/DOM).
+Platform adapters: `ashby.py`, `greenhouse.py`, `icims.py`, `indeed.py`, `lever.py`, `linkedin.py`, `workday.py`, `generic.py`.
+
+### Platform Adapters (`platforms/`)
+`base.py`, `discord_adapter.py`, `slack_adapter.py`, `telegram_adapter.py`.
+
+### A/B Testing
+`ab_testing.py` (engine comparison), `ab_dashboard.py` (Telegram dashboard), `tracked_driver.py` (per-field metrics, ABTracker).
+
+### Dispatch & Routing
+- `command_router.py` — Intent enum + classification (43 intents)
+- `handler_registry.py` — Shared handler map consumed by both dispatchers
+- `intent_registry.py` — Canonical intent groupings (budget, jobs, research, etc.)
+- `dispatcher.py` — Flat intent dispatch
+- `swarm_dispatcher.py` — Enhanced Swarm dispatch (GRPO + personas)
+
+### Application Pipeline
+- `playwright_driver.py` — Core CDP driver, foundation of all form filling
+- `playwright_adapter.py` — ATS adapter extending BaseATSAdapter, default for ALL platforms
+- `driver_protocol.py` — Driver interface protocol shared by both drivers
+- `applicator.py` — Job application executor (dry run + submit paths)
+- `native_form_filler.py` — Adaptive form filler (field scan → map → fill → verify)
+- `scan_pipeline.py` — Orchestrates: pre-screen → CV/CL gen → materials prep
+- `draft_applicator.py` / `draft_queue.py` — Human-in-the-loop draft review flow
+- `pre_submit_gate.py` — LLM pre-submit quality review before submission
+- `cross_platform_field_transfer.py` / `platform_transfer.py` — Semantic field transfer (Thompson Sampling)
+
+### Learning & Adaptation
+- `strategy_reflector.py` — Post-apply strategy analysis → TrajectoryStore + ExperienceMemory
+- `agent_rules.py` — AgentRulesDB: stores corrections as rules for NativeFormFiller
+- `agent_performance.py` — AgentPerformanceDB: per-application metrics + success tracking
+- `trajectory_store.py` — Application trajectory recording for optimization
+- `ai_assist_logger.py` — Logs AI-assisted fixes (Kimi/Claude/Codex) into learning pipeline
+- `gotchas_db.py` — Platform-specific gotchas learned from failures
+- `platform_bypass.py` — Direct ATS URL resolution when aggregators block (cache → FormExperienceDB → ATS patterns → web search). Emits to NavigationLearner, GotchasDB, OptimizationEngine, ExperienceMemory, TrajectoryStore.
+
+### CV & Profile
+- `application_materials.py` — Material generation coordinator (CV + CL + profile)
+- `cv_tailor.py` — JD-adaptive CV content selection
+- `archetype_engine.py` — Role archetype detection for CV profile tuning
+- `portfolio_variants.py` — Project variant selection per JD requirements
+- `github_profile_sync.py` — Nightly GitHub → MindGraph sync
+
+### Scanning & Analysis
+- `gate_threshold_adapter.py` — Adaptive gate thresholds from historical data
+- `ghost_detector.py` — Expired/ghost job detection (12 patterns, 3 languages)
+- `jd_analyzer.py` — JD parsing, ATS platform detection, requirement extraction
+- `job_dedup.py` — Cross-platform dedup (same company+title = one job)
+- `ext_adapter.py` — External job board adapter
+
+### Webhook/API Layer
+- `webhook_server.py` — FastAPI server (port 8080, Swagger at /docs)
+- `job_api.py` — Job CRUD API endpoints
+- `analytics_api.py` — Analytics dashboard API
+- `calibration_api.py` — Gate calibration endpoints
+- `health_api.py` — Health check endpoint for daemon monitoring
+
+### Infrastructure
+- `config.py` — ALL env vars centralized (never os.getenv() elsewhere)
+- `runner.py` — CLI entrypoint: daemon, briefing, job-scan, multi-bot, etc.
+- `multi_bot_listener.py` — Concurrent polling for all 5 Telegram bots
+- `voice_handler.py` — Whisper transcription for voice messages
+- `healthcheck.py` — Daemon health monitoring + Telegram alerts
+- `rate_limiter.py` — Per-platform daily caps + session breaks
 
 ## Commands
 ```

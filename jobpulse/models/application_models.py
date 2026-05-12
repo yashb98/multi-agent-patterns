@@ -92,6 +92,10 @@ class JobListing(BaseModel):
         default=False,
         description="True if the platform offers a one-click / Easy Apply flow.",
     )
+    direct_url: str | None = Field(
+        default=None,
+        description="Direct ATS application URL bypassing the aggregator (e.g. Greenhouse/Lever link from Indeed).",
+    )
     recruiter_email: str | None = Field(
         default=None,
         description="Recruiter or HR contact email extracted from the job description.",

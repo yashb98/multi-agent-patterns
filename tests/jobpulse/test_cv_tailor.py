@@ -14,7 +14,8 @@ from jobpulse.cv_tailor import (
     TailoredCV,
     TailoredCoverLetter,
     TailoredHeader,
-    _send_validation_alert,
+    _parse_llm_json,
+    _record_validation_failure,
     tailor_all_sections,
     tailor_cover_letter_prose,
     tailor_experience_bullets,
@@ -71,31 +72,32 @@ class TestDataclasses:
 # ---------------------------------------------------------------------------
 
 class TestValidateSummary:
+    # 36 words, contains <b>, has metrics, no soft-skill words
     _VALID = (
-        "I am a <b>data engineer</b> with 3 years of experience building scalable "
-        "pipelines that process over 50k events per second, reducing costs by 30% "
-        "and improving throughput by 2x across distributed systems."
+        "<b>Data Engineer</b> with 3 years building scalable pipelines that process "
+        "50k events per second, cutting costs by 30% and doubling throughput across "
+        "distributed systems for fintech and e-commerce platforms in production."
     )
 
     def test_clean_pass(self):
         assert validate_summary(self._VALID) is None
 
     def test_too_short(self):
-        result = validate_summary("Short <b>text</b>.")
+        result = validate_summary("<b>Short</b> two words")
         assert result is not None
-        assert "100-500" in result
+        assert "30-50" in result
 
     def test_too_long(self):
-        long_text = "<b>x</b> " + "a" * 500
+        long_text = "<b>x</b> " + " ".join(["word"] * 60)
         result = validate_summary(long_text)
         assert result is not None
-        assert "100-500" in result
+        assert "30-50" in result
 
     def test_soft_skill_detected(self):
         text = (
-            "I am a <b>data engineer</b> with strong leadership skills, having built "
-            "pipelines processing 50k events/sec and reducing latency by 40% over 3 years "
-            "of professional experience in distributed systems and cloud infrastructure."
+            "<b>Data Engineer</b> with strong leadership skills, building pipelines "
+            "processing 50k events per second and reducing latency by 40% over three years "
+            "of experience in distributed systems and cloud infrastructure across teams."
         )
         result = validate_summary(text)
         assert result is not None
@@ -103,36 +105,34 @@ class TestValidateSummary:
 
     def test_no_bold_tag(self):
         text = (
-            "I am a data engineer with 3 years of experience building scalable pipelines "
-            "that process over 50k events per second, reducing costs by 30% and improving "
-            "throughput by 2x across distributed systems environments."
+            "Data engineer with three years of experience building scalable pipelines "
+            "that process 50k events per second, reducing costs by 30% and doubling "
+            "throughput across distributed systems for fintech and e-commerce."
         )
         result = validate_summary(text)
         assert result is not None
         assert "<b>" in result
 
-    def test_exactly_100_chars_with_bold(self):
-        # Boundary: exactly 100 chars should pass length check
-        base = "<b>eng</b> " + "a" * 88  # 11 + 88 = 99 chars — still too short, need 100
-        text = "<b>eng</b> " + "a" * 89  # 100 chars
-        assert len(text) == 100
+    def test_exactly_30_words_passes_length(self):
+        # 30 words including the <b>-wrapped one (markup is stripped before counting)
+        words = ["<b>Engineer</b>"] + ["word"] * 29
+        text = " ".join(words)
         result = validate_summary(text)
-        # May fail soft-skill or metric check but NOT length
-        assert result is None or "100-500" not in result
+        # May still fail soft-skill or other checks, but NOT length
+        assert result is None or "30-50" not in result
 
-    def test_exactly_500_chars_passes_length(self):
-        filler = "a" * (500 - len("<b>x</b> ") - 1)
-        text = "<b>x</b> " + filler + "z"
-        assert len(text) == 500
+    def test_exactly_50_words_passes_length(self):
+        words = ["<b>Engineer</b>"] + ["word"] * 49
+        text = " ".join(words)
         result = validate_summary(text)
-        assert result is None or "100-500" not in result
+        assert result is None or "30-50" not in result
 
-    def test_501_chars_fails(self):
-        text = "<b>x</b> " + "a" * 492
-        assert len(text) == 501
+    def test_51_words_fails(self):
+        words = ["<b>Engineer</b>"] + ["word"] * 50
+        text = " ".join(words)
         result = validate_summary(text)
         assert result is not None
-        assert "100-500" in result
+        assert "30-50" in result
 
 
 # ---------------------------------------------------------------------------
@@ -159,21 +159,35 @@ class TestValidateExperience:
         assert "expected 2" in result
         assert "got 1" in result
 
-    def test_missing_metric_in_bullet(self):
-        original = [self._make_entry(["Did some engineering work"])]
-        tailored = [self._make_entry(["Did some engineering work"])]
+    def test_missing_metric_when_no_bullet_has_one(self):
+        """Per-entry rule (loosened 2026-05-04): only fails when NO bullet
+        in the entry has a metric. The previous per-bullet rule produced
+        too many false positives where the LLM dropped a metric from a
+        supporting bullet but kept the headline number elsewhere."""
+        original = [self._make_entry(["Did some engineering work", "Another bullet"])]
+        tailored = [self._make_entry(["Did some engineering work", "Another bullet"])]
         result = validate_experience(original, tailored)
         assert result is not None
-        assert "missing quantified metric" in result
+        assert "no quantified metric" in result
+
+    def test_one_metric_per_entry_passes(self):
+        """If at least one bullet has a metric, the entry validates."""
+        e = self._make_entry([
+            "Headline: shipped 12 features, +30% throughput",
+            "Supporting: refactored architecture",
+        ])
+        assert validate_experience([e], [e]) is None
 
     def test_bullet_too_long(self):
-        long_bullet = "Built a " + "scalable " * 22 + "pipeline processing 50k events"
-        assert len(long_bullet) > 200
+        # Threshold loosened to 220 chars (from 200) to absorb minor LLM
+        # overshoot without false positives.
+        long_bullet = "Built a " + "scalable " * 30 + "pipeline processing 50k events"
+        assert len(long_bullet) > 220
         original = [self._make_entry([long_bullet])]
         tailored = [self._make_entry([long_bullet])]
         result = validate_experience(original, tailored)
         assert result is not None
-        assert "exceeds 200 chars" in result
+        assert "exceeds 220 chars" in result
 
     def test_multiple_entries_all_valid(self):
         e1 = self._make_entry(["Processed 1M records daily, reducing latency by 40%"])
@@ -317,77 +331,47 @@ class TestValidateCoverLetter:
 
 
 # ---------------------------------------------------------------------------
-# _send_validation_alert
+# _record_validation_failure (replaced _send_validation_alert 2026-05-04;
+# Telegram per-failure alerts caused a flood — now logger-only)
 # ---------------------------------------------------------------------------
 
-class TestSendValidationAlert:
-    def test_calls_send_jobs_with_correct_format(self, monkeypatch):
-        captured = []
-
-        def fake_send_jobs(text: str) -> bool:
-            captured.append(text)
-            return True
-
-        monkeypatch.setattr("jobpulse.cv_tailor.send_jobs", fake_send_jobs, raising=False)
-
-        # Patch send_jobs at the module level by importing and patching
-        import jobpulse.telegram_bots as tb_module
-        monkeypatch.setattr(tb_module, "send_jobs", fake_send_jobs)
-
-        # Directly call with monkeypatched module
-        import jobpulse.cv_tailor as cv_tailor_module
-
-        original_send_jobs = None
-        try:
-            from jobpulse import telegram_bots as _tb
-            original_send_jobs = _tb.send_jobs
-            _tb.send_jobs = fake_send_jobs
-            _send_validation_alert("summary", "Acme Corp", "too short", "short text")
-        finally:
-            if original_send_jobs is not None:
-                _tb.send_jobs = original_send_jobs
-
-        assert len(captured) == 1
-        msg = captured[0]
+class TestRecordValidationFailure:
+    def test_logs_with_section_company_reason_and_text(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="jobpulse.cv_tailor"):
+            _record_validation_failure(
+                "summary", "Acme Corp", "too short", "short text",
+            )
+        msg = caplog.records[-1].getMessage()
         assert "summary" in msg
         assert "Acme Corp" in msg
         assert "too short" in msg
 
-    def test_send_jobs_receives_truncated_text(self, monkeypatch):
-        captured = []
+    def test_truncates_long_generated_text_in_log(self, caplog):
+        import logging
+        long_text = "x" * 500
+        with caplog.at_level(logging.WARNING, logger="jobpulse.cv_tailor"):
+            _record_validation_failure(
+                "summary", "TestCo", "too long", long_text,
+            )
+        msg = caplog.records[-1].getMessage()
+        # Truncated to 200 chars in the log
+        assert "x" * 200 in msg
+        assert "x" * 201 not in msg
 
-        from jobpulse import telegram_bots as _tb
-        original = _tb.send_jobs
+    def test_does_not_send_telegram(self, monkeypatch):
+        # Sentinel: send_jobs MUST NOT be called from cv_tailor anymore.
+        called = []
 
-        def fake_send_jobs(text: str) -> bool:
-            captured.append(text)
+        def boom(*_a, **_kw):
+            called.append(True)
             return True
 
-        _tb.send_jobs = fake_send_jobs
-        try:
-            long_text = "x" * 500
-            _send_validation_alert("summary", "TestCo", "too long", long_text)
-        finally:
-            _tb.send_jobs = original
-
-        assert len(captured) == 1
-        # Text is truncated to 200 chars in the message
-        assert "x" * 200 in captured[0]
-        assert "x" * 201 not in captured[0]
-
-    def test_suppresses_exception_on_telegram_failure(self, monkeypatch):
         from jobpulse import telegram_bots as _tb
-        original = _tb.send_jobs
+        monkeypatch.setattr(_tb, "send_jobs", boom)
 
-        def failing_send(text: str) -> bool:
-            raise RuntimeError("Telegram down")
-
-        _tb.send_jobs = failing_send
-        try:
-            # Should not raise
-            _send_validation_alert("summary", "Acme", "bad", "generated text")
-        finally:
-            _tb.send_jobs = original
+        _record_validation_failure("summary", "Acme", "bad", "generated text")
+        assert called == [], "cv_tailor should not call send_jobs anymore"
 
 
 # ---------------------------------------------------------------------------
@@ -463,18 +447,21 @@ class TestTailorSummaryAndTagline:
         )
         assert result is None
 
-    def test_tailor_summary_and_tagline_validation_failure_sends_alert(self, monkeypatch):
-        # Summary too short — fails validate_summary but result still returned
+    def test_tailor_summary_validation_failure_logs_no_telegram(self, monkeypatch, caplog):
+        """Validation failure must log a warning but NOT call send_jobs.
+        The retry path returns the same short summary so the second
+        attempt also fails — the result is still returned (not None) so
+        the caller can fall back to template values."""
+        import logging
         short_summary = "<b>Engineer</b> short."
         payload = json.dumps({"tagline": _VALID_TAGLINE, "summary": short_summary})
         monkeypatch.setattr("jobpulse.cv_tailor.cognitive_llm_call", lambda **kw: payload)
 
-        alerts = []
-
+        alerts: list[str] = []
         from jobpulse import telegram_bots as _tb
-        original = _tb.send_jobs
-        _tb.send_jobs = lambda msg: alerts.append(msg)
-        try:
+        monkeypatch.setattr(_tb, "send_jobs", lambda msg: alerts.append(msg))
+
+        with caplog.at_level(logging.WARNING, logger="jobpulse.cv_tailor"):
             result = tailor_summary_and_tagline(
                 jd_title="Data Scientist",
                 jd_description="desc",
@@ -482,15 +469,13 @@ class TestTailorSummaryAndTagline:
                 required_skills=["Python"],
                 preferred_skills=[],
             )
-        finally:
-            _tb.send_jobs = original
 
-        # Result still returned despite validation failure
         assert result is not None
         assert result.summary == short_summary
-        # Alert was sent
-        assert len(alerts) == 1
-        assert "Acme Corp" in alerts[0]
+        # No Telegram alert
+        assert alerts == []
+        # But the failure was logged
+        assert any("Acme Corp" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -824,3 +809,115 @@ class TestTailorAllSections:
         assert result.tagline is not None
         assert result.projects is not None
         assert result.cover_letter is not None
+
+
+# ---------------------------------------------------------------------------
+# _parse_llm_json — robust JSON extraction (regression for Tier-2 fix)
+# ---------------------------------------------------------------------------
+
+class TestParseLlmJson:
+    def test_clean_object(self):
+        assert _parse_llm_json('{"a": 1}') == {"a": 1}
+
+    def test_clean_array(self):
+        assert _parse_llm_json('[1, 2, 3]') == [1, 2, 3]
+
+    def test_markdown_fenced_json(self):
+        raw = '```json\n{"tagline": "x", "summary": "y"}\n```'
+        assert _parse_llm_json(raw) == {"tagline": "x", "summary": "y"}
+
+    def test_markdown_fenced_no_lang(self):
+        raw = '```\n[{"a": 1}]\n```'
+        assert _parse_llm_json(raw) == [{"a": 1}]
+
+    def test_prose_prefix_then_object(self):
+        raw = 'Here is the JSON:\n{"intro": "hello"}'
+        assert _parse_llm_json(raw) == {"intro": "hello"}
+
+    def test_prose_prefix_then_array(self):
+        raw = 'Sure! [{"title": "x", "bullets": []}]'
+        assert _parse_llm_json(raw) == [{"title": "x", "bullets": []}]
+
+    def test_empty_string_raises_decode_error(self):
+        # Caller handles JSONDecodeError specifically — must keep that contract.
+        with pytest.raises(json.JSONDecodeError):
+            _parse_llm_json("")
+
+    def test_none_raises_decode_error(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_llm_json(None)
+
+    def test_whitespace_only_raises_decode_error(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_llm_json("   \n  ")
+
+    def test_no_json_in_string_raises(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_llm_json("the model refused to answer")
+
+    def test_unwraps_single_key_object_wrapping_array(self):
+        """OpenAI's response_format={"type":"json_object"} forces a top-level
+        object even when the prompt asks for an array — the LLM wraps with a
+        single key like {"experience": [...]}. Unwrap when the only value is
+        a list so callers expecting arrays see them directly.
+        """
+        wrapped = '{"experience": [{"title": "Engineer", "bullets": ["b1"]}]}'
+        result = _parse_llm_json(wrapped)
+        assert isinstance(result, list)
+        assert result == [{"title": "Engineer", "bullets": ["b1"]}]
+
+    def test_does_not_unwrap_multi_key_object(self):
+        """Multi-key dicts (e.g. {"intro":..., "hook":..., "closing":...} for
+        cover letters) must be returned as-is — only single-key objects get
+        unwrapped.
+        """
+        multi = '{"intro": "hi", "hook": "there", "closing": "bye"}'
+        result = _parse_llm_json(multi)
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"intro", "hook", "closing"}
+
+    def test_does_not_unwrap_when_value_is_not_list(self):
+        single_scalar = '{"answer": "yes"}'
+        result = _parse_llm_json(single_scalar)
+        assert isinstance(result, dict)
+        assert result == {"answer": "yes"}
+
+
+class TestTailorParsesMarkdownFencedJson:
+    """Regression: 4 cv_tailor functions used to fail every run because the
+    cognitive engine wraps JSON in markdown fences. Now they tolerate fences,
+    prose prefixes, and a few other realistic shapes from the LLM.
+    """
+    def test_summary_and_tagline_accepts_markdown_fence(self, monkeypatch):
+        wrapped = '```json\n{"tagline": "MSc CS | 3+ YOE | Data Engineer", "summary": "Strong data engineer with experience in Python and SQL."}\n```'
+        monkeypatch.setattr(
+            "jobpulse.cv_tailor.cognitive_llm_call",
+            lambda **kwargs: wrapped,
+        )
+        result = tailor_summary_and_tagline(
+            jd_title="Data Engineer",
+            jd_description="Build data pipelines",
+            company="Acme",
+            required_skills=["python", "sql"],
+            preferred_skills=[],
+        )
+        assert result is not None
+        assert result.tagline.startswith("MSc CS")
+        assert "Acme" not in result.summary or "data" in result.summary.lower()
+
+    def test_summary_and_tagline_returns_none_on_empty_response(self, monkeypatch):
+        # Empty response from cognitive engine used to crash json.loads with
+        # "Expecting value: line 1 column 1 (char 0)". Now we return None
+        # cleanly so the caller can fall back to defaults.
+        monkeypatch.setattr(
+            "jobpulse.cv_tailor.cognitive_llm_call",
+            lambda **kwargs: "",
+        )
+        result = tailor_summary_and_tagline(
+            jd_title="Data Engineer",
+            jd_description="Build data pipelines",
+            company="Acme",
+            required_skills=["python"],
+            preferred_skills=[],
+        )
+        assert result is None

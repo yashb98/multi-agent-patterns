@@ -62,5 +62,25 @@
   "mistral": {
     "input_per_1m": 0.0,
     "output_per_1m": 0.0
+  },
+  "moonshot-v1-8k": {
+    "input_per_1m": 0.15,
+    "output_per_1m": 0.30
+  },
+  "moonshot-v1-32k": {
+    "input_per_1m": 0.30,
+    "output_per_1m": 0.60
+  },
+  "moonshot-v1-128k": {
+    "input_per_1m": 0.60,
+    "output_per_1m": 1.20
+  },
+  "moonshot-v1-auto": {
+    "input_per_1m": 0.30,
+    "output_per_1m": 0.60
+  },
+  "kimi": {
+    "input_per_1m": 0.30,
+    "output_per_1m": 0.60
   }
 }

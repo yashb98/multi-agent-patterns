@@ -1,0 +1,225 @@
+[shared.cost_tracker] Loaded 21 model prices from snapshot | {"snapshot_path": "/Users/yashbishnoi/projects/multi_agent_patterns/shared/model_costs/2026-04-22.json"}
+========================================================================
+O-live: apply_job direct invocation (Graphcore grad ML)
+========================================================================
+  URL: https://job-boards.greenhouse.io/graphcore/jobs/8234675002
+  CV : data/applications/Graphcore/Yash_Bishnoi_Graphcore.pdf
+  CL : data/applications/Graphcore/Cover_Letter_Graphcore.pdf
+  dry_run=True
+
+[jobpulse.form_prefetch] form_prefetch: https://job-boards.greenhouse.io/graphcore/jobs/8234675002 — 1 pages, 42 field types, 0 screening Qs, nav=no, applied 7x
+[jobpulse.applicator] Applying via playwright adapter to https://job-boards.greenhouse.io/graphcore/jobs/8234675002
+[jobpulse.playwright_adapter] PlaywrightAdapter: applying to https://job-boards.greenhouse.io/graphcore/jobs/8234675002 via greenhouse
+(node:12325) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[jobpulse.playwright_driver] PlaywrightDriver connected to Chrome at http://localhost:9222 (tab: https://job-boards.greenhouse.io/graphcore/jobs/8234675002)
+[jobpulse.browser_intelligence] BrowserIntelligence attached — console + network + mutation + CDP log
+[shared.memory_layer._manager] Memory SQLite store initialised at /Users/yashbishnoi/projects/multi_agent_patterns/data/agent_memory/memories.db
+[httpx] HTTP Request: GET http://localhost:6333/collections "HTTP/1.1 200 OK"
+[httpx] HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+[shared.memory_layer._manager] Qdrant connected at http://localhost:6333 (dims=1024)
+/opt/homebrew/anaconda3/lib/python3.12/site-packages/qdrant_client/qdrant_remote.py:280: UserWarning: Qdrant client version 1.17.1 is incompatible with server version 1.14.0. Major versions should match and minor version difference must not exceed 1. Set check_compatibility=False to skip version check.
+  show_warning(
+[neo4j.notifications] Received notification from DBMS server: <GqlStatusObject gql_status='00NA0', status_description="note: successful completion - index or constraint already exists. The command 'CREATE CONSTRAINT IF NOT EXISTS FOR (e:Memory) REQUIRE (e.memory_id) IS UNIQUE' has no effect. The index or constraint specified by 'CONSTRAINT constraint_637b34ed FOR (e:Memory) REQUIRE (e.memory_id) IS UNIQUE' already exists.", position=None, raw_classification='SCHEMA', classification=<NotificationClassification.SCHEMA: 'SCHEMA'>, raw_severity='INFORMATION', severity=<NotificationSeverity.INFORMATION: 'INFORMATION'>, diagnostic_record={'_classification': 'SCHEMA', '_severity': 'INFORMATION', 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: 'CREATE CONSTRAINT IF NOT EXISTS FOR (m:Memory) REQUIRE m.memory_id IS UNIQUE'
+[shared.memory_layer._neo4j_store] Neo4j connected and constraint verified at bolt://localhost:7687
+[shared.memory_layer._manager] Shared MemoryManager initialised at /Users/yashbishnoi/projects/multi_agent_patterns/data/agent_memory (3-engine: sqlite_store, qdrant, neo4j)
+[jobpulse.application_orchestrator_pkg._navigator] navigate_to_form: skipping initial navigate — already on https://job-boards.greenhouse.io/graphcore/jobs/8234675002
+[jobpulse.form_scanner] FormScanner: 56 fields, 14 required-empty, 0 invalid
+[jobpulse.form_scanner] FormScanner: 56 fields, 14 required-empty, 0 invalid
+[jobpulse.form_scanner] FormScanner: 56 fields, 14 required-empty, 0 invalid
+[jobpulse.form_engine.field_scanner] Container Tier 1 (learned): #application-form for job-boards.greenhouse.io
+[jobpulse.native_form_filler] Form container resolved: #application-form
+[jobpulse.native_form_filler] Loaded 52 field mappings for job-boards.greenhouse.io (52 global)
+[jobpulse.native_form_filler] DIAG field_mapping_keys (first 15): ['Are you Hispanic/Latino?', 'Country*', 'Disability Status', 'Do you have any family members or individuals with whom you have a close personal relationship currently employed by Octus?*', 'Do you have any restrictive covenants that would prevent you from working at Octus?*', 'Email*', 'First Name*', 'Gender', 'Last Name*', 'LinkedIn Profile URL*', 'Phone*', 'Please identify your race', 'Preferred first and last name*', 'Veteran Status', '*email']
+[jobpulse.native_form_filler] Loaded 237 cached screening answers
+[jobpulse.native_form_filler] DIRECT ID FILL: 2/6 fields set in single evaluate()
+[jobpulse.native_form_filler] DIRECT ID FILL: 4 fields failed: {'education': 'NOT_FOUND', 'phone-number-input': 'NOT_FOUND', 'title': 'NOT_FOUND', 'what': 'NOT_FOUND'}
+[jobpulse.native_form_filler] DIRECT ID FILL: pre-filled 2 fields before page loop
+[jobpulse.native_form_filler] Loaded 5 field overrides from agent rules
+[shared.experiential_learning] Loaded 20 experiences from /Users/yashbishnoi/projects/multi_agent_patterns/data/experience_memory.db
+[jobpulse.native_form_filler] Loaded 1 domain + 0 platform heuristics for job-boards.greenhouse.io
+[jobpulse.form_scanner] FormScanner: 3 fields, 0 required-empty, 0 invalid
+[jobpulse.form_engine.semantic_scanner] scan_semantic: matched 6/6 questions to widgets on https://job-boards.greenhouse.io/graphcore/jobs/8234675002
+[jobpulse.form_engine.field_scanner] Scan strategy dom_query (preferred) found 24 fields for job-boards.greenhouse.io
+[jobpulse.form_engine.field_scanner] Scan strategy playwright_locators found 21 fields for job-boards.greenhouse.io
+[jobpulse.form_engine.field_scanner] Scan strategy semantic found 6 fields for job-boards.greenhouse.io
+[jobpulse.form_engine.field_scanner] Scan winner: dom_query with 24 fields (41 after merge) for job-boards.greenhouse.io
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[jobpulse.form_engine.field_analyzer] field_analyzer: LLM returned 40 fields, expected 41 — falling back
+[jobpulse.native_form_filler] field_analyzer: opening 24 combobox(es) to extract real options from DOM (analyzer-inferred options can hallucinate on EEO / closed-enum fields)
+[jobpulse.native_form_filler]   ✓ 'Country*' → 244 options: ['United States +1', 'Afghanistan +93', 'Åland Islands +358', 'Albania +355', 'Algeria +213']…
+[jobpulse.native_form_filler]   ✓ 'Location (City)*' → 10 options: ['Bristol, England, United Kingdom', 'Bristol, Connecticut, United States', 'Town of Bristol, Connecticut, United States', 'Bristol, Tennessee, United States', 'Bristol, Rhode Island, United States']…
+[jobpulse.native_form_filler]   ✓ 'School*' → 100 options: ['Aalborg University', 'Aalto University', 'Aarhus University', 'Abertay University', 'Aberystwyth University']…
+[jobpulse.native_form_filler]   ✓ 'Degree*' → 10 options: ["Associate's Degree", "Bachelor's Degree", 'Doctor of Medicine (M.D.)', 'Doctor of Philosophy (Ph.D.)', "Engineer's Degree"]…
+[jobpulse.native_form_filler]   ✓ 'Discipline*' → 72 options: ['Accounting', 'African Studies', 'Agriculture', 'Anthropology', 'Applied Health Services']…
+[jobpulse.native_form_filler]   ✓ 'Have you added your full legal name and surname (i' → 2 options: ['Yes', 'No']
+[jobpulse.native_form_filler]   ✓ 'Do you have the legal right to work in the UK?*' → 2 options: ['Yes', 'No']
+[jobpulse.native_form_filler]   ✓ 'Please select your right to work status*' → 10 options: ['British or Irish Citizen', 'EU Pre-Settled Status', 'EU Settled Status', 'Indefinite leave to remain (ILR)', 'Skilled worker or Tier 2 (General) Visa']…
+[jobpulse.native_form_filler]   ✓ 'What is your predicted/final degree classification' → 6 options: ['1st', '2.1', '2.2', 'Merit', 'Pass']…
+[jobpulse.native_form_filler]   ✓ 'I identify my gender as*' → 4 options: ['Woman', 'Non-binary', "I don't wish to answer", 'Other - Prefer to self-describe']
+[jobpulse.native_form_filler]   ✓ 'What is your ethnicity?*' → 7 options: ['Arab', 'Asian (Indian, Pakistani, Bangladeshi, Chinese, Any other Asian background)', 'Black (Black British, Caribbean, African, Any other Black background)', 'Mixed (White and Black Caribbean, White and Black African, White and Asian, Any other mixed or multiple ethnic background)', 'White (English, Welsh, Scottish, Northern Irish, Irish, Roma, European, Any other white background)']…
+[jobpulse.native_form_filler]   ✓ 'Do you consider yourself to have a disability?*' → 3 options: ['Yes', 'No', "I don't wish to answer"]
+[jobpulse.native_form_filler]   ✓ 'Country' → 244 options: ['United States +1', 'Afghanistan +93', 'Åland Islands +358', 'Albania +355', 'Algeria +213']…
+[jobpulse.native_form_filler]   ✓ 'Location (City)' → 10 options: ['Bristol, England, United Kingdom', 'Bristol, Connecticut, United States', 'Town of Bristol, Connecticut, United States', 'Bristol, Tennessee, United States', 'Bristol, Rhode Island, United States']…
+[jobpulse.native_form_filler]   ✓ 'School' → 100 options: ['Aalborg University', 'Aalto University', 'Aarhus University', 'Abertay University', 'Aberystwyth University']…
+[jobpulse.native_form_filler]   ✓ 'Degree' → 10 options: ["Associate's Degree", "Bachelor's Degree", 'Doctor of Medicine (M.D.)', 'Doctor of Philosophy (Ph.D.)', "Engineer's Degree"]…
+[jobpulse.native_form_filler]   ✓ 'Discipline' → 72 options: ['Accounting', 'African Studies', 'Agriculture', 'Anthropology', 'Applied Health Services']…
+[jobpulse.native_form_filler]   ✓ 'Have you added your full legal name and surname (i' → 2 options: ['Yes', 'No']
+[jobpulse.native_form_filler]   ✓ 'Do you have the legal right to work in the UK?' → 2 options: ['Yes', 'No']
+[jobpulse.native_form_filler]   ✓ 'Please select your right to work status' → 10 options: ['British or Irish Citizen', 'EU Pre-Settled Status', 'EU Settled Status', 'Indefinite leave to remain (ILR)', 'Skilled worker or Tier 2 (General) Visa']…
+[jobpulse.native_form_filler]   ✓ 'What is your predicted/final degree classification' → 6 options: ['1st', '2.1', '2.2', 'Merit', 'Pass']…
+[jobpulse.native_form_filler]   ✓ 'I identify my gender as' → 4 options: ['Woman', 'Non-binary', "I don't wish to answer", 'Other - Prefer to self-describe']
+[jobpulse.native_form_filler]   ✓ 'What is your ethnicity?' → 7 options: ['Arab', 'Asian (Indian, Pakistani, Bangladeshi, Chinese, Any other Asian background)', 'Black (Black British, Caribbean, African, Any other Black background)', 'Mixed (White and Black Caribbean, White and Black African, White and Asian, Any other mixed or multiple ethnic background)', 'White (English, Welsh, Scottish, Northern Irish, Irish, Roma, European, Any other white background)']…
+[jobpulse.native_form_filler]   ✓ 'Do you consider yourself to have a disability?' → 3 options: ['Yes', 'No', "I don't wish to answer"]
+[jobpulse.form_experience_db] form_experience: DIVERGENCE on job-boards.greenhouse.io — match 19% (threshold 80%), diverged fields: ['checkbox:by_checking_this_box,_i_consent_to_graph', 'combobox:ai_policy_for_application', 'combobox:ai_policy_for_application*', 'combobox:are_you_hispanic/latino?', 'combobox:are_you_open_to_relocation_for_this_role', 'combobox:are_you_open_to_working_in-person_in_one', 'combobox:degree', 'combobox:degree*', 'combobox:disability_status', 'combobox:discipline']. Falling back to LLM detection.
+[jobpulse.native_form_filler] DRIFT DETECTED on job-boards.greenhouse.io — match 19%, diverged: ['checkbox:by_checking_this_box,_i_consent_to_graph', 'combobox:ai_policy_for_application', 'combobox:ai_policy_for_application*', 'combobox:are_you_hispanic/latino?', 'combobox:are_you_open_to_relocation_for_this_role']. Using full LLM path.
+[jobpulse.form_interaction_log] form_interactions: page 1/Job Application for 2026 Graduate Machine Learning Engineer - Applied AI at Graphcore on job-boards.greenhouse.io — 41 fields, buttons=None
+[jobpulse.form_experience_db] Saved 1 field mappings for _global
+[jobpulse.form_experience_db] Saved 1 field mappings for _global
+[jobpulse.form_experience_db] Saved 1 field mappings for _global
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[jobpulse.form_engine.field_mapper] LLM returned invalid JSON for field mapping: Expecting value: line 1 column 1 (char 0)
+[httpx] HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+[httpx] HTTP Request: GET http://localhost:6333/collections "HTTP/1.1 200 OK"
+/opt/homebrew/anaconda3/lib/python3.12/site-packages/qdrant_client/qdrant_remote.py:280: UserWarning: Qdrant client version 1.17.1 is incompatible with server version 1.14.0. Major versions should match and minor version difference must not exceed 1. Set check_compatibility=False to skip version check.
+  show_warning(
+[jobpulse.screening_semantic_cache] ScreeningSemanticCache: Qdrant connected at http://localhost:6333
+[jobpulse.screening_intent] IntentClassifier: loaded 676 prototypes across 32 intents
+[httpx] HTTP Request: GET http://localhost:6333/collections "HTTP/1.1 200 OK"
+[httpx] HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+[jobpulse.screening_semantic_cache] ScreeningSemanticCache: Qdrant connected at http://localhost:6333
+[jobpulse.screening_intent] IntentClassifier: loaded 676 prototypes across 32 intents
+[httpx] HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='School*' field_type='combobox' has_options=True n_options=100 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='Degree*' field_type='combobox' has_options=True n_options=10 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='Discipline*' field_type='combobox' has_options=True n_options=72 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='End date year*' field_type='text' has_options=False n_options=0 is_option_field=False
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[jobpulse.native_form_filler] screening answer 'MSc Computer Science' did not align to any option for 'What is your predicted/final degree classification? *' — dropping (opts=['1st', '2.1', '2.2', 'Merit', 'Pass'])
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[shared.memory_layer._embedder] BGE-M3 embed attempt 1/3 failed: HTTP Error 500: Internal Server Error — retrying in 1.0s
+[shared.memory_layer._embedder] BGE-M3 embed attempt 2/3 failed: HTTP Error 500: Internal Server Error — retrying in 2.0s
+[shared.memory_layer._embedder] BGE-M3 embed failed after 3 attempts (consecutive_failures=1/3) — falling back to minilm [DIM MISMATCH RISK: 384 != 1024]: HTTP Error 500: Internal Server Error
+[sentence_transformers.SentenceTransformer] Use pytorch device_name: mps
+[sentence_transformers.SentenceTransformer] Load pretrained SentenceTransformer: sentence-transformers/all-MiniLM-L6-v2
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:01<00:00,  1.57s/it]Batches: 100%|██████████| 1/1 [00:01<00:00,  1.57s/it]
+[jobpulse.native_form_filler] screening answer 'Asian or Asian British - Indian' did not align to any option for 'What is your ethnicity?*' — dropping (opts=['Arab', 'Asian (Indian, Pakistani,', 'Black (Black British, Car', 'Mixed (White and Black Ca', 'White (English, Welsh, Sc'])
+[shared.memory_layer._embedder] BGE-M3 recovered (was 1 consecutive failures) — resetting circuit breaker.
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='School' field_type='combobox' has_options=True n_options=100 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='Degree' field_type='combobox' has_options=True n_options=10 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='Discipline' field_type='combobox' has_options=True n_options=72 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[jobpulse.native_form_filler] screening answer 'MSc Computer Science' did not align to any option for 'What is your predicted/final degree classification?' — dropping (opts=['1st', '2.1', '2.2', 'Merit', 'Pass'])
+[jobpulse.native_form_filler] _cached_screening: stale entry for 'I identify my gender as' (answer='Male' doesn't fit options=['Woman', 'Non-binary', "I don't wish to answer", 'Other - Prefer to self-describ']) — skipping cache, falling through to screening pipeline
+[jobpulse.native_form_filler] screening answer 'Male' did not align to any option for 'I identify my gender as' — dropping (opts=['Woman', 'Non-binary', "I don't wish to answer", 'Other - Prefer to self-de'])
+[jobpulse.native_form_filler] _cached_screening: stale entry for 'What is your ethnicity?' (answer='Asian or Asian British - Other' doesn't fit options=['Arab', 'Asian (Indian, Pakistani, Bang', 'Black (Black British, Caribbea', 'Mixed (White and Black Caribbe', 'White (English, Welsh, Scottis']) — skipping cache, falling through to screening pipeline
+[jobpulse.native_form_filler] screening answer 'Asian or Asian British - Indian' did not align to any option for 'What is your ethnicity?' — dropping (opts=['Arab', 'Asian (Indian, Pakistani,', 'Black (Black British, Car', 'Mixed (White and Black Ca', 'White (English, Welsh, Sc'])
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: GET http://localhost:6333/collections "HTTP/1.1 200 OK"
+[httpx] HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+[jobpulse.screening_semantic_cache] ScreeningSemanticCache: Qdrant connected at http://localhost:6333
+/opt/homebrew/anaconda3/lib/python3.12/site-packages/qdrant_client/qdrant_remote.py:280: UserWarning: Qdrant client version 1.17.1 is incompatible with server version 1.14.0. Major versions should match and minor version difference must not exceed 1. Set check_compatibility=False to skip version check.
+  show_warning(
+[jobpulse.screening_intent] IntentClassifier: loaded 676 prototypes across 32 intents
+[httpx] HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='Predicted degree classification?' field_type='combobox' has_options=True n_options=6 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='Final degree classification?' field_type='combobox' has_options=True n_options=6 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='What is your ethnicity?*' field_type='combobox' has_options=True n_options=7 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='Predicted degree classification?' field_type='combobox' has_options=True n_options=6 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='Final degree classification?' field_type='combobox' has_options=True n_options=6 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='I identify my gender as' field_type='combobox' has_options=True n_options=4 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[httpx] HTTP Request: POST http://localhost:6333/collections/screening_questions/points/query "HTTP/1.1 200 OK"
+[jobpulse.screening_pipeline] DIAG _llm_answer: question='What is your ethnicity?' field_type='combobox' has_options=True n_options=7 is_option_field=True
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[jobpulse.form_engine.field_mapper] ScreeningPipeline resolved all 5 screening fields (0 LLM calls)
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[httpx] HTTP Request: PUT http://localhost:6333/collections/screening_questions/points?wait=true "HTTP/1.1 200 OK"
+[jobpulse.native_form_filler] fill ✓ 'Country*' = 'United Kingdom +44' [tech=combobox_type_to_search, expected='United Kingdom +44']
+[jobpulse.native_form_filler] fill ✓ 'Location (City)*' = 'Bristol, England, United Kingdom' [tech=combobox_type_to_search, expected='Bristol, England, United Kingdom']
+[jobpulse.native_form_filler] fill ✓ 'Country' = 'United Kingdom +44' [tech=combobox_type_to_search, expected='United Kingdom +44']
+[jobpulse.native_form_filler] fill ✓ 'Location (City)' = 'Bristol, England, United Kingdom' [tech=combobox_type_to_search, expected='Bristol, England, United Kingdom']
+[jobpulse.native_form_filler] fill ✓ 'School*' = 'Abertay University' [tech=combobox_type_to_search, expected='Abertay University']
+[jobpulse.native_form_filler] fill ✓ 'Degree*' = "Master's Degree" [tech=combobox_type_to_search, expected="Master's Degree"]
+[jobpulse.native_form_filler] fill ✓ 'Discipline*' = 'Computer Science' [tech=combobox_type_to_search, expected='Computer Science']
+[jobpulse.native_form_filler] Field fill failed for 'Start date year*': Locator.fill: Error: Cannot type text into input[type=number]
+Call log:
+  - waiting for get_by_label("Start date year").first
+    - locator resolved to <input value="" type="number" id="start-year--0" aria-invalid="false" aria-required="true" aria-label="Start date year" class="input input__single-line" aria-errormessage="start-year--0-error" aria-describedby="start-year--0-description start-year--0-error start-year--0-help"/>
+    - fill("Immediately")
+  - attempting fill action
+    - waiting for element to be visible, enabled and editable
+
+[jobpulse.native_form_filler] Field fill failed for 'End date year*': Locator.fill: Error: Cannot type text into input[type=number]
+Call log:
+  - waiting for get_by_label("End date year").first
+    - locator resolved to <input value="" type="number" id="end-year--0" aria-invalid="false" aria-required="true" aria-label="End date year" class="input input__single-line" aria-errormessage="end-year--0-error" aria-describedby="end-year--0-description end-year--0-error end-year--0-help"/>
+    - fill("My education at the University of Dundee is scheduled to end in January 2026.")
+  - attempting fill action
+    - waiting for element to be visible, enabled and editable
+
+[jobpulse.native_form_filler] fill ✓ 'Do you have the legal right to work in the UK?*' = 'Yes' [tech=combobox_type_to_search, expected='Yes']
+[jobpulse.native_form_filler] fill ✓ 'Please select your right to work status*' = 'Tier 4 (General) Student Visa' [tech=combobox_type_to_search, expected='Tier 4 (General) Student Visa']
+[jobpulse.native_form_filler] fill ✗ 'I identify my gender as*' (intended='Woman', actual='') [tech=combobox_type_to_search, options_seen=1]
+[jobpulse.native_form_filler] fill ✓ 'Do you consider yourself to have a disability?*' = 'No' [tech=combobox_type_to_search, expected='No']
+[jobpulse.native_form_filler] fill ✓ 'School' = 'Abertay University' [tech=combobox_type_to_search, expected='Abertay University']
+[jobpulse.native_form_filler] fill ✓ 'Degree' = "Master's Degree" [tech=combobox_type_to_search, expected="Master's Degree"]
+[jobpulse.native_form_filler] fill ✓ 'Discipline' = 'Computer Science' [tech=combobox_type_to_search, expected='Computer Science']
+[jobpulse.native_form_filler] fill ✓ 'Do you have the legal right to work in the UK?' = 'Yes' [tech=combobox_type_to_search, expected='Yes']
+[jobpulse.native_form_filler] fill ✓ 'Please select your right to work status' = 'Graduate Visa' [tech=combobox_type_to_search, expected='Graduate Visa']
+[jobpulse.native_form_filler] fill ✓ 'Do you consider yourself to have a disability?' = 'No' [tech=combobox_type_to_search, expected='No']
+[jobpulse.native_form_filler] fill ✓ 'What is your predicted/final degree classification? *' = '1st' [tech=combobox_type_to_search, expected='1st']
+[jobpulse.native_form_filler] fill ✓ 'What is your ethnicity?*' = 'Asian (Indian, Pakistani, Bangladeshi, Chinese, Any other As' [tech=combobox_type_to_search, expected='Asian (Indian, Pakistani, Bangladeshi, Chinese, Any other As']
+[jobpulse.native_form_filler] fill ✓ 'What is your predicted/final degree classification?' = '1st' [tech=combobox_type_to_search, expected='1st']
+[jobpulse.native_form_filler] fill ✗ 'I identify my gender as' (intended="I don't wish to answer", actual='') [tech=combobox_type_to_search, options_seen=1]
+[jobpulse.native_form_filler] fill ✓ 'What is your ethnicity?' = 'Asian (Indian, Pakistani, Bangladeshi, Chinese, Any other As' [tech=combobox_type_to_search, expected='Asian (Indian, Pakistani, Bangladeshi, Chinese, Any other As']
+[jobpulse.native_form_filler] native_form_filler: invoking upload_files (cv_path=True)
+[jobpulse.form_engine.file_uploader] upload_files: entry — cv=data/applications/Graphcore/Yash_Bishnoi_Graphcore.pdf cl=data/applications/Graphcore/Cover_Letter_Graphcore.pdf
+[jobpulse.form_engine.file_uploader] upload_files: scanned 1 file input(s) on page
+[jobpulse.form_engine.file_uploader] upload_pdf: ✓ uploaded Yash_Bishnoi_Graphcore.pdf — input was re-rendered post-upload, filename visible in page DOM
+[httpx] HTTP Request: POST https://api.moonshot.ai/v1/chat/completions "HTTP/1.1 200 OK"
+[jobpulse.form_engine.gotchas] gotchas: stored job-boards.greenhouse.io/Start date year* [playwright] -> LLM recovery suggested '2025' after 'Immediately' verified as '<empty>'
+[jobpulse.form_engine.gotchas] gotchas: stored job-boards.greenhouse.io/End date year* [playwright] -> LLM recovery suggested '2026' after 'My education at the University of Dundee is scheduled to end in January 2026.' verified as '<empty>'
+[jobpulse.native_form_filler] fill ✓ 'Start date year*' = '2025' [tech=direct_fill, expected='2025']
+[jobpulse.native_form_filler] fill ✓ 'End date year*' = '2026' [tech=direct_fill, expected='2026']
+/opt/homebrew/anaconda3/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

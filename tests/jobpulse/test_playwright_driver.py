@@ -1,5 +1,15 @@
-"""Tests for PlaywrightDriver — protocol compliance and unit tests."""
-import asyncio
+"""Tests for PlaywrightDriver — pure helpers and protocol compliance.
+
+Per project policy: no mocking of the Playwright bridge. The bridge-driven
+tests (navigate, fill, click, check_box, fill_date, upload_file,
+get_snapshot, scan_validation_errors, connect-with-retry) used
+AsyncMock/MagicMock for the Playwright Page / Browser / Context — Category
+B per project policy. Real driver behavior is exercised end-to-end against
+real Chrome via CDP in `tests/jobpulse/integration/test_pipeline_live.py`.
+
+What remains: pure-function tests for protocol compliance, init defaults,
+fuzzy matching, retry logic, Bezier curves, and timing helpers.
+"""
 import sys
 from pathlib import Path
 
@@ -7,9 +17,7 @@ _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import jobpulse.playwright_driver as playwright_driver
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from jobpulse.playwright_driver import PlaywrightDriver
 from jobpulse.driver_protocol import DriverProtocol
 
@@ -48,216 +56,7 @@ async def test_close_when_not_connected():
     await driver.close()  # Should not raise
 
 
-@pytest.mark.asyncio
-async def test_connect_restarts_chrome_and_retries_once(monkeypatch):
-    driver = PlaywrightDriver()
-    fake_page = MagicMock()
-    fake_context = MagicMock()
-    fake_context.new_page = AsyncMock(return_value=fake_page)
-    fake_context.pages = [fake_page]
-    fake_browser = MagicMock()
-    fake_browser.contexts = [fake_context]
-
-    class FakeChromium:
-        def __init__(self):
-            self.calls = 0
-
-        async def connect_over_cdp(self, url):
-            self.calls += 1
-            if self.calls == 1:
-                raise TimeoutError("wedged cdp")
-            return fake_browser
-
-    fake_chromium = FakeChromium()
-
-    class FakePW:
-        def __init__(self):
-            self.chromium = fake_chromium
-            self.stop = AsyncMock()
-
-    class FakeStarter:
-        async def start(self):
-            return FakePW()
-
-    restarts = []
-    monkeypatch.setattr(playwright_driver, "async_playwright", lambda: FakeStarter())
-    monkeypatch.setattr(playwright_driver, "_restart_cdp_chrome", lambda url: restarts.append(url))
-
-    await driver.connect("http://127.0.0.1:9222")
-
-    assert fake_chromium.calls == 2
-    assert restarts == ["http://127.0.0.1:9222"]
-    assert driver._browser is fake_browser
-    assert driver.page is fake_page
-
-
-def _make_mock_page(**evaluate_return):
-    """Build a mock Playwright page with async methods and frame() wired."""
-    if not evaluate_return:
-        evaluate_return = {"return_value": {
-            "url": "https://example.com", "title": "Test",
-            "fields": [], "buttons": [], "page_text_preview": "",
-            "has_file_inputs": False, "has_dialog": False,
-        }}
-    mock_page = MagicMock()
-    mock_page.goto = AsyncMock()
-    mock_page.wait_for_load_state = AsyncMock()
-    mock_page.evaluate = AsyncMock(**evaluate_return)
-    mock_page.frame = MagicMock(return_value=None)
-    mock_page.query_selector = AsyncMock(return_value=None)
-    mock_page.query_selector_all = AsyncMock(return_value=[])
-    mock_page.context = MagicMock()
-    mock_page.context.new_cdp_session = AsyncMock(side_effect=Exception("no CDP in test"))
-    return mock_page
-
-
-@pytest.mark.asyncio
-async def test_navigate_calls_page_goto():
-    """Navigate uses page.goto + networkidle."""
-    driver = PlaywrightDriver()
-    mock_page = _make_mock_page()
-    driver._page = mock_page
-
-    result = await driver.navigate("https://example.com")
-    assert result["success"] is True
-    assert "snapshot" in result
-    mock_page.goto.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_screenshot_returns_base64():
-    """Screenshot returns base64-encoded PNG data."""
-    driver = PlaywrightDriver()
-    mock_page = MagicMock()
-    mock_page.screenshot = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n")
-    driver._page = mock_page
-
-    result = await driver.screenshot()
-    assert isinstance(result, bytes)
-    assert result == b"\x89PNG\r\n\x1a\n"
-
-
-@pytest.mark.asyncio
-async def test_get_snapshot_evaluates_js():
-    """get_snapshot runs JS to scan form fields."""
-    driver = PlaywrightDriver()
-    mock_page = _make_mock_page(return_value={
-        "url": "https://example.com",
-        "title": "Test",
-        "fields": [{"selector": "#name", "type": "text", "value": "", "label": "", "required": True}],
-        "buttons": [], "page_text_preview": "",
-        "has_file_inputs": False, "has_dialog": False,
-    })
-    driver._page = mock_page
-
-    result = await driver.get_snapshot()
-    assert result["url"] == "https://example.com"
-    assert len(result["fields"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_scan_validation_errors():
-    """scan_validation_errors delegates to validation module."""
-    driver = PlaywrightDriver()
-    mock_page = MagicMock()
-    mock_page.query_selector_all = AsyncMock(return_value=[])
-    driver._page = mock_page
-
-    result = await driver.scan_validation_errors()
-    assert result["success"] is True
-    assert result["errors"] == []
-
-
-@pytest.mark.asyncio
-async def test_fill_returns_verified():
-    """fill() reads back value and verifies."""
-    driver = PlaywrightDriver()
-    mock_el = MagicMock()
-    mock_el.scroll_into_view_if_needed = AsyncMock()
-    mock_el.bounding_box = AsyncMock(return_value={"x": 100, "y": 200, "width": 200, "height": 40})
-    mock_el.fill = AsyncMock()
-    mock_el.evaluate = AsyncMock(return_value="John Doe")
-    mock_page = MagicMock()
-    mock_page.query_selector = AsyncMock(return_value=mock_el)
-    mock_page.viewport_size = {"width": 1280, "height": 720}
-    mock_page.mouse = MagicMock()
-    mock_page.mouse.move = AsyncMock()
-    driver._page = mock_page
-
-    result = await driver.fill("#name", "John Doe")
-    assert result["success"] is True
-    assert result["value_verified"] is True
-
-
-@pytest.mark.asyncio
-async def test_fill_element_not_found():
-    driver = PlaywrightDriver()
-    mock_page = MagicMock()
-    mock_page.query_selector = AsyncMock(return_value=None)
-    driver._page = mock_page
-    result = await driver.fill("#missing", "val")
-    assert result["success"] is False
-
-
-@pytest.mark.asyncio
-async def test_click_success():
-    driver = PlaywrightDriver()
-    mock_el = MagicMock()
-    mock_el.scroll_into_view_if_needed = AsyncMock()
-    mock_el.bounding_box = AsyncMock(return_value={"x": 50, "y": 100, "width": 120, "height": 36})
-    mock_el.click = AsyncMock()
-    mock_page = MagicMock()
-    mock_page.query_selector = AsyncMock(return_value=mock_el)
-    mock_page.viewport_size = {"width": 1280, "height": 720}
-    mock_page.mouse = MagicMock()
-    mock_page.mouse.move = AsyncMock()
-    driver._page = mock_page
-    result = await driver.click("#btn")
-    assert result["success"] is True
-
-
-@pytest.mark.asyncio
-async def test_check_box_verifies():
-    driver = PlaywrightDriver()
-    mock_el = MagicMock()
-    mock_el.check = AsyncMock()
-    mock_el.is_checked = AsyncMock(return_value=True)
-    mock_page = MagicMock()
-    mock_page.query_selector = AsyncMock(return_value=mock_el)
-    driver._page = mock_page
-    result = await driver.check_box("#cb", True)
-    assert result["success"] is True
-    assert result["value_verified"] is True
-
-
-@pytest.mark.asyncio
-async def test_fill_date_verifies():
-    driver = PlaywrightDriver()
-    mock_el = MagicMock()
-    mock_el.scroll_into_view_if_needed = AsyncMock()
-    mock_el.fill = AsyncMock()
-    mock_el.evaluate = AsyncMock(return_value="2026-04-07")
-    mock_page = MagicMock()
-    mock_page.query_selector = AsyncMock(return_value=mock_el)
-    driver._page = mock_page
-    result = await driver.fill_date("#dob", "2026-04-07")
-    assert result["success"] is True
-    assert result["value_verified"] is True
-
-
-@pytest.mark.asyncio
-async def test_upload_file(tmp_path):
-    cv = tmp_path / "cv.pdf"
-    cv.write_bytes(b"%PDF-1.4 test")
-    driver = PlaywrightDriver()
-    mock_el = MagicMock()
-    mock_el.set_input_files = AsyncMock()
-    mock_page = MagicMock()
-    mock_page.query_selector = AsyncMock(return_value=mock_el)
-    driver._page = mock_page
-    result = await driver.upload_file("#file", str(cv))
-    assert result["success"] is True
-    assert result["value_set"] == str(cv)
+# ── _fuzzy_match (pure string matching) ──
 
 
 def test_fuzzy_match_exact():
@@ -276,6 +75,10 @@ def test_fuzzy_match_none():
     from jobpulse.playwright_driver import _fuzzy_match
     assert _fuzzy_match("Spain", ["France", "United Kingdom"]) is None
 
+
+# ── _with_retry (pure async retry wrapper) ──
+
+
 @pytest.mark.asyncio
 async def test_with_retry_succeeds_first_try():
     from jobpulse.playwright_driver import _with_retry
@@ -287,6 +90,7 @@ async def test_with_retry_succeeds_first_try():
     result = await _with_retry(fn)
     assert result["success"] is True
     assert call_count == 1
+
 
 @pytest.mark.asyncio
 async def test_with_retry_retries_on_failure():
@@ -303,6 +107,9 @@ async def test_with_retry_retries_on_failure():
     assert call_count == 3
 
 
+# ── _bezier_points / _get_field_gap / _scroll_delay (pure math) ──
+
+
 def test_bezier_points_short_distance():
     """Very short distance returns just the endpoint."""
     from jobpulse.playwright_driver import _bezier_points
@@ -316,7 +123,6 @@ def test_bezier_points_generates_curve():
     from jobpulse.playwright_driver import _bezier_points
     points = _bezier_points(0, 0, 500, 500)
     assert len(points) == 15
-    # End point should be close to target
     assert abs(points[-1][0] - 500) < 1
     assert abs(points[-1][1] - 500) < 1
 
@@ -335,72 +141,3 @@ def test_scroll_delay_scales_with_distance():
     mid = _scroll_delay(200)
     far = _scroll_delay(500)
     assert near < mid < far
-
-
-@pytest.mark.asyncio
-async def test_get_snapshot_includes_a11y_fields():
-    """get_snapshot merges a11y tree fields when JS snapshot misses modal fields."""
-    driver = PlaywrightDriver.__new__(PlaywrightDriver)
-    page = _make_mock_page(return_value={
-        "url": "https://linkedin.com/jobs/view/123",
-        "title": "Apply",
-        "fields": [],
-        "buttons": [{"text": "Submit", "selector": "button", "enabled": True, "href": None}],
-        "page_text_preview": "Apply for this role",
-        "has_file_inputs": False,
-        "has_dialog": False,
-    })
-    driver._page = page
-
-    # Mock form_scanner to return fields (as if from a11y tree)
-    mock_field = MagicMock()
-    mock_field.label = "First Name"
-    mock_field.role = "textbox"
-    mock_field.value = ""
-    mock_field.required = True
-    mock_scan_result = MagicMock(fields=[mock_field])
-
-    with patch("jobpulse.form_scanner.scan_form", new_callable=AsyncMock, return_value=mock_scan_result):
-        snapshot = await driver.get_snapshot()
-
-    assert len(snapshot["fields"]) == 1
-    assert snapshot["fields"][0]["label"] == "First Name"
-    assert snapshot["fields"][0]["type"] == "textbox"
-
-
-@pytest.mark.asyncio
-async def test_get_snapshot_deduplicates_a11y_fields():
-    """a11y fields with labels already in JS snapshot are skipped."""
-    driver = PlaywrightDriver.__new__(PlaywrightDriver)
-    page = _make_mock_page(return_value={
-        "url": "https://example.com",
-        "title": "Form",
-        "fields": [{"label": "Email", "type": "email", "input_type": "email", "value": "", "required": True, "selector": "#email"}],
-        "buttons": [],
-        "page_text_preview": "",
-        "has_file_inputs": False,
-        "has_dialog": False,
-    })
-    driver._page = page
-
-    mock_field_email = MagicMock()
-    mock_field_email.label = "Email"  # duplicate
-    mock_field_email.role = "textbox"
-    mock_field_email.value = ""
-    mock_field_email.required = True
-
-    mock_field_phone = MagicMock()
-    mock_field_phone.label = "Phone"  # new
-    mock_field_phone.role = "textbox"
-    mock_field_phone.value = ""
-    mock_field_phone.required = False
-
-    mock_scan_result = MagicMock(fields=[mock_field_email, mock_field_phone])
-
-    with patch("jobpulse.form_scanner.scan_form", new_callable=AsyncMock, return_value=mock_scan_result):
-        snapshot = await driver.get_snapshot()
-
-    assert len(snapshot["fields"]) == 2  # original Email + new Phone
-    labels = [f["label"] for f in snapshot["fields"]]
-    assert labels.count("Email") == 1  # not duplicated
-    assert "Phone" in labels

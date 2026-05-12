@@ -163,6 +163,7 @@ def test_classify_from_features():
         session_expired_signals=[],
         consent_signals=[],
         dialog_present=False,
+        dialog_is_site_prompt=False,
         field_count=2,
         button_count=0,
         url_path="",
@@ -260,3 +261,43 @@ def test_calibration_schema(tmp_path):
 def test_calibration_db_uses_data_dir_by_default():
     cal = ClassifierCalibration()
     assert cal.db_path.endswith("page_classifier_examples.db")
+
+
+# ---------------------------------------------------------------------------
+# Real-data regression test for the dialog_is_site_prompt deserializer fix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.live
+def test_dict_to_features_works_against_production_examples():
+    """Every row in the production page_classifier_examples DB must deserialize.
+
+    Prior to the 2026-05-03 fix, rows written before `dialog_is_site_prompt`
+    was added to PageFeatures crashed `_dict_to_features` with TypeError.
+    This test reads the actual production DB (read-only) and confirms every
+    stored example deserializes through the production code path.
+    """
+    from pathlib import Path
+    from jobpulse.config import DATA_DIR
+    from jobpulse.page_analysis.calibration import _dict_to_features
+
+    db_path = Path(DATA_DIR) / "page_classifier_examples.db"
+    if not db_path.exists():
+        pytest.skip(f"No production DB at {db_path}")
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, url, features_json, true_label FROM examples"
+        ).fetchall()
+
+    if not rows:
+        pytest.skip("Production DB has no examples to verify")
+
+    for row_id, url, features_json, true_label in rows:
+        d = json.loads(features_json)
+        features = _dict_to_features(d)
+        # If we got here without TypeError, the deserializer works for this row.
+        assert hasattr(features, "dialog_is_site_prompt"), (
+            f"row id={row_id} url={url} produced PageFeatures without "
+            "dialog_is_site_prompt (the bug this regression test guards)"
+        )
