@@ -583,8 +583,9 @@ class PageReasoner:
                 from shared.agents import is_local_llm
                 if is_local_llm():
                     logger.warning("PageReasoner local LLM failed, falling back to cloud: %s", local_err)
+                    # Kimi-mandatory: cloud fallback uses Kimi (model name
+                    # gets remapped to moonshot-v1-auto by get_llm).
                     cloud_llm = get_llm(
-                        model="gpt-4o-mini",
                         temperature=0,
                         max_tokens=4046,
                         timeout=30,

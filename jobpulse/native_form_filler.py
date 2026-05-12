@@ -1637,10 +1637,12 @@ class NativeFormFiller:
             f"alone, no explanation."
         )
         try:
+            # Kimi-mandatory: drop the explicit model arg so smart_llm_call
+            # picks the form_recovery domain default (kimi-k2.6).
+            # Pre-2026-05-12 this passed model="claude-haiku-4-5" but
+            # Anthropic is no longer in the chain.
             resp = await asyncio.wait_for(
-                asyncio.to_thread(
-                    smart_llm_call, prompt, model="claude-haiku-4-5",
-                ),
+                asyncio.to_thread(smart_llm_call, prompt),
                 timeout=15,
             )
             text = (resp or "").strip()
@@ -4453,6 +4455,7 @@ class NativeFormFiller:
                     screening, s_calls = await screen_questions(
                         still_unresolved, custom_answers.get("_job_context"),
                         self._profile_store, _enriched_warning,
+                        session_state=getattr(self, "_session_state", None),
                     )
                     self._llm_fallback_count += s_calls
                     screening = clean_mapping(screening)
@@ -4859,6 +4862,11 @@ class NativeFormFiller:
                     page_num=page_num,
                     fill_callback=self._fill_by_label,
                     field_metadata=getattr(self, "_fields_by_label", None),
+                    # S26-follow-up-O-4: pass session_state so the verifier
+                    # can emit the coverage_realtime block. Without this
+                    # the sidecar has scanner_coverage but no per-field
+                    # fill-time/deferred bucketing.
+                    session_state=getattr(self, "_session_state", None),
                 )
                 if vv_result.mismatches or vv_result.vision_unavailable:
                     logger.warning(

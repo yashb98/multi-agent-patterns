@@ -53,13 +53,16 @@ async def _vision_detect(screenshot_bytes: bytes) -> tuple[PageType, float]:
         logger.warning("OpenAI not available for vision detection")
         return PageType.UNKNOWN, 0.0
 
-    vision_model = "gpt-4o-mini"
+    # Kimi-mandatory: use kimi-k2.6 for vision in cloud, leave local to
+    # the Ollama default. `get_model_name` remaps any OpenAI-style hint
+    # to the Moonshot equivalent when KIMI_API_KEY is set.
+    vision_model = "kimi-k2.6"
     if is_local_llm():
         from openai import OpenAI as _OpenAI
         client = _OpenAI()
     else:
         client = get_openai_client()
-        vision_model = get_model_name("gpt-4o-mini")
+        vision_model = get_model_name("kimi-k2.6")
     b64 = base64.b64encode(screenshot_bytes).decode()
 
     try:

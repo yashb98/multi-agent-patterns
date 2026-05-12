@@ -31,16 +31,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
-# Multi-provider imports — graceful degrade if packages not installed
-try:
-    from langchain_anthropic import ChatAnthropic
-except ImportError:
-    ChatAnthropic = None  # type: ignore[misc,assignment]
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:
-    ChatGoogleGenerativeAI = None  # type: ignore[misc,assignment]
+# Anthropic + Gemini SDK imports were removed 2026-05-12 per the
+# "Kimi mandatory" rule. Kimi (cloud, Moonshot's OpenAI-compatible
+# endpoint) and Ollama (local) are the only LLM vendors used.
 
 from shared.state import AgentState
 from shared.prompts import RESEARCHER_PROMPT, WRITER_PROMPT, REVIEWER_PROMPT
@@ -201,29 +194,15 @@ def _model_for_domain(domain: str | None) -> str | None:
         return env_val
     return _DOMAIN_MODEL_REGISTRY.get(domain)
 
-# Cloud fallback model map: current → older/cheaper equivalent
-_FALLBACK_MODELS = {
-    "gpt-5-mini": "gpt-4o-mini",
-    "gpt-4.1-mini": "gpt-4o-mini",
-    "gpt-4.1": "gpt-4o",
-    "gpt-4.1-nano": "gpt-4o-mini",
-}
-
-# Multi-provider model defaults
-_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
-_GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
-
-# Provider fallback chain (when LLM_PROVIDER=auto and cloud).
-# Order: openai (= Kimi via Moonshot's OpenAI-compatible endpoint in
-# production) → ollama (local fallback). Anthropic and Gemini are
-# intentionally REMOVED per the "Kimi mandatory" rule in
-# `.claude/rules/jobs.md` + `shared/CLAUDE.md`. Live evidence
-# 2026-05-12: Anthropic returned 401 on the page-reasoner fallback
-# because ANTHROPIC_API_KEY isn't set in prod, which then propagated to
-# the orchestrator as "all providers failed" and aborted the apply
-# before reaching form fill. Ollama (local) is the correct next-tier
-# fallback: it's already running for the embedder / local-mode primary,
-# costs nothing, and survives cloud outages.
+# 2026-05-12: Anthropic / Gemini / OpenAI-direct paths are REMOVED.
+# Per `.claude/rules/jobs.md` and `shared/CLAUDE.md`, the rule is
+# Kimi (Moonshot's OpenAI-compatible endpoint) for cloud, Ollama
+# (qwen-family local models) as next-tier fallback. The remap dict
+# `_FALLBACK_MODELS` and the per-vendor constants (`_ANTHROPIC_MODEL`,
+# `_GEMINI_MODEL`) were dead code after the chain change — deleted.
+# Any caller passing `gpt-5-mini` etc. as a model name still works
+# because `_kimi_remap_model` rewrites it to `moonshot-v1-auto` when
+# KIMI_API_KEY is set in prod.
 _PROVIDER_FALLBACK_CHAIN = ["openai", "ollama"]
 
 
@@ -267,15 +246,13 @@ def _resolve_provider() -> str:
 
 _LLM_PROVIDER: str | None = None
 _is_local: bool | None = None
-_use_fallback_models: bool | None = None
 
 
 def _ensure_provider():
-    global _LLM_PROVIDER, _is_local, _use_fallback_models
+    global _LLM_PROVIDER, _is_local
     if _LLM_PROVIDER is None:
         _LLM_PROVIDER = _resolve_provider()
         _is_local = _LLM_PROVIDER == "local"
-        _use_fallback_models = not _is_local and os.environ.get("LLM_PROVIDER", "auto").lower() == "auto"
 
 
 def is_local_llm() -> bool:
@@ -310,8 +287,10 @@ def get_model_name(default: str = "gpt-5-mini") -> str:
     # don't 4xx against the Moonshot endpoint.
     if _use_kimi():
         return _kimi_remap_model(default)
-    if _use_fallback_models:
-        return _FALLBACK_MODELS.get(default, default)
+    # Per "Kimi mandatory" rule: no OpenAI/Anthropic/Gemini fallbacks.
+    # If KIMI_API_KEY isn't set, the call will surface a clear error
+    # via get_openai_client rather than silently falling through to
+    # a different vendor.
     return default
 
 
@@ -392,8 +371,6 @@ def _make_openai_llm(temperature: float, model: str, timeout: float, max_tokens:
         effective_model = _MODEL_OVERRIDE
     elif _use_kimi():
         effective_model = _kimi_remap_model(model)
-    elif _use_fallback_models:
-        effective_model = _FALLBACK_MODELS.get(model, model)
     else:
         effective_model = model
     effective_temp = 1 if _requires_fixed_temperature(effective_model) else temperature
@@ -441,38 +418,6 @@ def _make_together_llm(temperature: float, model: str, timeout: float, max_token
         max_tokens=max_tokens,
         openai_api_base="https://api.together.xyz/v1",
         openai_api_key=api_key,
-    )
-
-
-def _make_anthropic_llm(temperature: float, timeout: float, max_tokens: int):
-    """Build an Anthropic LLM instance if API key is available."""
-    if ChatAnthropic is None:
-        return None
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return None
-    return ChatAnthropic(
-        model=_ANTHROPIC_MODEL,
-        temperature=temperature,
-        timeout=int(timeout),
-        max_tokens=max_tokens,
-        api_key=api_key,
-    )
-
-
-def _make_gemini_llm(temperature: float, timeout: float, max_tokens: int):
-    """Build a Gemini LLM instance if API key is available."""
-    if ChatGoogleGenerativeAI is None:
-        return None
-    api_key = os.environ.get("GOOGLE_API_KEY", "")
-    if not api_key:
-        return None
-    return ChatGoogleGenerativeAI(
-        model=_GEMINI_MODEL,
-        temperature=temperature,
-        timeout=int(timeout),
-        max_output_tokens=max_tokens,
-        google_api_key=api_key,
     )
 
 
@@ -632,16 +577,11 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
     chain.append(_make_openai_llm(temperature, model, timeout, max_tokens))
 
     for provider_name in _PROVIDER_FALLBACK_CHAIN[1:]:
-        if provider_name == "anthropic":
-            llm = _make_anthropic_llm(temperature, timeout, max_tokens)
-        elif provider_name == "gemini":
-            llm = _make_gemini_llm(temperature, timeout, max_tokens)
-        elif provider_name == "ollama":
-            # Local Ollama as next-tier fallback when the primary
-            # (Kimi via OpenAI-compatible endpoint) errors. Cost-free,
-            # survives cloud outages, and the embedder already requires
-            # it to be running. Uses the existing _make_local_llm
-            # factory (Ollama's OpenAI-compatible endpoint).
+        if provider_name == "ollama":
+            # Local Ollama as next-tier fallback when Kimi errors.
+            # Cost-free, survives cloud outages, the embedder already
+            # requires it to be running. Uses ``_make_local_llm``
+            # (Ollama's OpenAI-compatible endpoint).
             try:
                 local_model = os.environ.get(
                     "OLLAMA_FALLBACK_MODEL", "qwen3:32b",
