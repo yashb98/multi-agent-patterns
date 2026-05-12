@@ -502,6 +502,84 @@ def test_composite_built_when_field_bboxes_resolve(_enable_verifier, tmp_path,
     assert result.verdicts[0].tier_reached == "passed"
 
 
+def test_non_contiguous_ordinals_after_dedup_align_caption_with_prompt(
+    _enable_verifier, monkeypatch,
+):
+    """S26-follow-up-M-5: when dedup creates non-contiguous original claim
+    ordinals (e.g. [1, 2, 3, 5, 7]), the caption stamps + prompt
+    enumeration MUST agree on a single contiguous panel-position scheme
+    (1..N). Otherwise the vision model keys its verdicts to the caption
+    it sees while the verifier's lookup keys them to the prompt index —
+    causing a one-row shift after the first dedup collapse.
+
+    Regression for live evidence in 1778592280_*.json: 14 claim rows + 5
+    bbox-collapses, "Please select your right to work status" verdict
+    came back with observed_value="Man" because qwen's "ordinal 7"
+    answered the prompt's claim 7 (gender) while the verifier mapped
+    panel-original-ordinal 7 (visa-status) to it.
+    """
+    page = _fake_page_with_screenshot()
+    page.screenshot = AsyncMock(return_value=_png_bytes((1000, 800)))
+
+    # Three FieldCrops with non-contiguous original ordinals [1, 3, 5] —
+    # simulates two dedup collapses upstream (ords 2+3 → 3, ords 4+5 → 5).
+    async def _fake_extract_crops(_page, _claim_rows, _meta):
+        return [
+            _fake_field_crop(1, "Field A", "value-a"),
+            _fake_field_crop(3, "Field B", "value-b", dedup_with=[2]),
+            _fake_field_crop(5, "Field C", "value-c", dedup_with=[4]),
+        ]
+
+    monkeypatch.setattr(vv, "_extract_field_crops", _fake_extract_crops)
+
+    # Vision returns ordinals 1/2/3 (contiguous, matching what it sees
+    # in the caption stamps after M-5 fix). If the caption used the
+    # original ordinals [1,3,5], vision would either pass those back
+    # (correct) or hallucinate sequential 1/2/3 (the pre-M-5 failure
+    # mode). The test asserts the verifier handles the contiguous
+    # response correctly.
+    response = _vision_response({
+        "verdicts": [
+            {"ordinal": 1, "observed_value": "value-a",
+             "matches_claim": True, "contradicts_help_text": False, "reason": "ok"},
+            {"ordinal": 2, "observed_value": "value-b",
+             "matches_claim": True, "contradicts_help_text": False, "reason": "ok"},
+            {"ordinal": 3, "observed_value": "value-c",
+             "matches_claim": True, "contradicts_help_text": False, "reason": "ok"},
+        ]
+    })
+    with patch.object(vv, "get_openai_client") as mock_client:
+        create_mock = MagicMock(return_value=response)
+        mock_client.return_value.chat.completions.create = create_mock
+        result = asyncio.run(
+            vv.verify_form_page(
+                page,
+                {
+                    "Field A": "value-a",  # claim 1 → panel 1
+                    "Field A2": "value-a", # claim 2 — collapsed into panel 2
+                    "Field B": "value-b",  # claim 3 → panel 2
+                    "Field B2": "value-b", # claim 4 — collapsed into panel 3
+                    "Field C": "value-c",  # claim 5 → panel 3
+                },
+                page_url="https://x.example/y", platform="greenhouse",
+            )
+        )
+
+    # 5 claim rows → 5 verdicts; observed_value must match the panel each
+    # claim was rendered into (no off-by-one shift).
+    assert len(result.verdicts) == 5
+    obs = [v.observed_value for v in result.verdicts]
+    # Claims 1+2 share panel-pos 1; claims 3+4 share panel-pos 2; claim 5 → panel 3.
+    # Pre-M-5 bug would have shifted these.
+    # Note: claim 2 is collapsed into panel 2 (NOT panel 1) per the
+    # FieldCrop's dedup_with=[2] declaration above.
+    assert obs[0] == "value-a", f"claim 1 should read panel 1; got {obs[0]!r}"
+    assert obs[1] == "value-b", f"claim 2 (dedup→panel 2) should read panel 2; got {obs[1]!r}"
+    assert obs[2] == "value-b", f"claim 3 should read panel 2; got {obs[2]!r}"
+    assert obs[3] == "value-c", f"claim 4 (dedup→panel 3) should read panel 3; got {obs[3]!r}"
+    assert obs[4] == "value-c", f"claim 5 should read panel 3; got {obs[4]!r}"
+
+
 def test_duplicate_bbox_dedupes_to_single_panel(_enable_verifier, monkeypatch):
     """S26-follow-up-M Requirement 4: Greenhouse demographic-survey
     duplicates (same DOM widget rendered with required + optional labels

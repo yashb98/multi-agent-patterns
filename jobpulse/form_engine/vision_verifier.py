@@ -422,11 +422,21 @@ def _build_composite(
     draw = ImageDraw.Draw(composite)
     font = _composite_font()
 
+    # S26-follow-up-M-5: caption + prompt ordinals must align. After dedup
+    # the FieldCrop's `ordinal` is non-contiguous (e.g. [1,2,3,4,5,7,9,11,13]
+    # when 5 pairs collapsed), but `_build_prompt` enumerates the panel list
+    # 1..N contiguously. If we stamped `c.ordinal` on the caption, the
+    # vision model would key its verdicts to the captions it sees in the
+    # image, while the verifier's lookup keyed them to the prompt indices —
+    # causing a one-row shift for every dedup collapse upstream. Use the
+    # contiguous panel position for BOTH the caption stamp AND the
+    # panels_meta `ordinal` so the prompt index, caption marker, and
+    # verdict-mapping key agree. `original_ordinal` + `dedup_with` carry the
+    # claim-row mapping for downstream consumers.
     y_cursor = 3
     panels_meta: list[dict] = []
-    for c, img in pil_crops:
-        ordinal = c.ordinal
-        caption = f"[{ordinal:02d}]"
+    for panel_pos, (c, img) in enumerate(pil_crops, start=1):
+        caption = f"[{panel_pos:02d}]"
         draw.rectangle(
             (0, y_cursor, max_w + 6, y_cursor + _CAPTION_STRIP_PX),
             fill=(228, 238, 255),
@@ -450,7 +460,8 @@ def _build_composite(
         )
         y_cursor += img.height + 6
         panels_meta.append({
-            "ordinal": ordinal,
+            "ordinal": panel_pos,           # caption + prompt index
+            "original_ordinal": c.ordinal,  # original claim-row index
             "label": c.label,
             "value": c.value,
             "resolve_method": c.resolve_method,
@@ -1242,20 +1253,23 @@ async def verify_form_page(
             if stripped != label:
                 by_label.setdefault(stripped, entry)
 
-    # Map every claim ordinal → the panel it was rendered into. Greenhouse-
-    # style required + optional copies of the same widget collapse into one
-    # panel; ``dedup_with`` carries the collapsed ordinals so both original
-    # claim rows still receive a verdict from the single panel's vision
-    # output.
-    panel_ordinal_by_claim_ordinal: dict[int, int] = {}
-    panel_ordinal_by_label: dict[str, int] = {}
+    # Map every original claim-row ordinal → the panel-position the row
+    # was rendered into. Panel positions are contiguous 1..N matching the
+    # caption strip + prompt enumeration (S26-follow-up-M-5).
+    # Greenhouse-style required + optional copies of the same widget
+    # collapse into one panel; ``dedup_with`` carries the original
+    # claim-row ordinals collapsed into the kept panel so each original
+    # claim row still receives a verdict from the panel's vision output.
+    panel_pos_by_claim_ordinal: dict[int, int] = {}
+    panel_pos_by_label: dict[str, int] = {}
     for p in panels:
-        panel_ord = p["ordinal"]
-        panel_ordinal_by_claim_ordinal[panel_ord] = panel_ord
+        panel_pos = p["ordinal"]  # post-M-5: this IS the contiguous panel position
+        original_claim = p.get("original_ordinal", panel_pos)
+        panel_pos_by_claim_ordinal[original_claim] = panel_pos
         for collapsed in p.get("dedup_with", []) or []:
-            panel_ordinal_by_claim_ordinal[collapsed] = panel_ord
+            panel_pos_by_claim_ordinal[collapsed] = panel_pos
         if p.get("label"):
-            panel_ordinal_by_label[p["label"]] = panel_ord
+            panel_pos_by_label[p["label"]] = panel_pos
 
     correct = correction_enabled if correction_enabled is not None else _correction_enabled()
     if correct and fill_callback is None:
@@ -1269,11 +1283,11 @@ async def verify_form_page(
     for claim_idx, (label, claimed) in enumerate(claim_rows, start=1):
         entry: dict | None = None
         if used_composite:
-            panel_ord = panel_ordinal_by_claim_ordinal.get(claim_idx)
-            if panel_ord is not None:
-                entry = by_ordinal.get(panel_ord)
-            if entry is None and label in panel_ordinal_by_label:
-                entry = by_ordinal.get(panel_ordinal_by_label[label])
+            panel_pos = panel_pos_by_claim_ordinal.get(claim_idx)
+            if panel_pos is not None:
+                entry = by_ordinal.get(panel_pos)
+            if entry is None and label in panel_pos_by_label:
+                entry = by_ordinal.get(panel_pos_by_label[label])
         if entry is None:
             entry = by_label.get(label) or by_label.get(_strip_required_marker(label))
         if entry is None:
