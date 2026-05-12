@@ -579,6 +579,52 @@ def _domain_from_url(url: str) -> str:
         return ""
 
 
+def _compute_coverage_realtime(
+    field_metadata: dict[str, dict] | None,
+    filled_mapping: dict[str, str],
+    session_state,  # SessionFillState | None
+    scanner_unfilled_required: list[dict],
+    scanner_unfilled_optional: list[dict],
+    scanner_noise_excluded: list[dict],
+) -> dict | None:
+    """S26-follow-up-O-4: per-field outcome bucketing keyed by WHERE
+    verification happened (fill-time DOM vs deferred-to-vision).
+
+    Buckets:
+      - filled_verified_at_fill_time: session_state.was_verified == True
+      - filled_deferred_to_vision   : session_state has the label but
+        wasn't verified (e.g. combobox — DOM couldn't decide)
+      - scanner_saw_filler_skipped_required / *_optional / scanner_noise_excluded:
+        carried forward from the M-4 / N-1 surfacing.
+
+    Returns None when no session_state is supplied (legacy callers) or
+    when field_metadata is empty (fallback code paths). The sidecar
+    invariant ``sum(buckets) == scanner_coverage.total`` is what the
+    audit doc machine-checks.
+    """
+    if session_state is None or not field_metadata:
+        return None
+    verified_at_fill_time: list[dict] = []
+    deferred_to_vision: list[dict] = []
+    for label, value in filled_mapping.items():
+        bucket = {"label": label, "claimed_value": value}
+        try:
+            was_verified = session_state.was_verified(label)
+        except Exception:
+            was_verified = False
+        if was_verified:
+            verified_at_fill_time.append(bucket)
+        else:
+            deferred_to_vision.append(bucket)
+    return {
+        "filled_verified_at_fill_time": verified_at_fill_time,
+        "filled_deferred_to_vision": deferred_to_vision,
+        "scanner_saw_filler_skipped_required": list(scanner_unfilled_required),
+        "scanner_saw_filler_skipped_optional": list(scanner_unfilled_optional),
+        "scanner_noise_excluded": list(scanner_noise_excluded),
+    }
+
+
 def _persist_verified_fills_cache(
     verdicts: list[FieldVerdict],
     field_metadata: dict[str, dict] | None,
@@ -690,6 +736,7 @@ def _save_artifact(
     composite_layout: dict | None,
     scanner_unfilled_required: list[dict] | None = None,
     scanner_coverage: dict | None = None,
+    coverage_realtime: dict | None = None,
 ) -> str | None:
     """Persist the image + verdicts JSON for replayable human spot-check.
 
@@ -770,6 +817,11 @@ def _save_artifact(
             # field count so the assertion ``sum(buckets) == total``
             # machine-checks coverage from the sidecar alone.
             "scanner_coverage": scanner_coverage,
+            # O-4: same field set, bucketed by WHERE verification
+            # happened (fill-time DOM vs end-of-page vision). The
+            # sidecar invariant is ``sum(coverage_realtime buckets) ==
+            # scanner_coverage.total``.
+            "coverage_realtime": coverage_realtime,
         }
         with open(f"{base}.json", "w") as fh:
             json.dump(payload, fh, indent=2)
@@ -1141,6 +1193,7 @@ async def verify_form_page(
     fill_callback: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
     trajectory_id: str | None = None,
     field_metadata: dict[str, dict] | None = None,
+    session_state: Any = None,
 ) -> VerifierResult:
     """Run vision verification on the current form page.
 
@@ -1379,6 +1432,12 @@ async def verify_form_page(
                 scanner_unfilled_optional,
                 scanner_noise_excluded,
             ),
+            coverage_realtime=_compute_coverage_realtime(
+                field_metadata, filled_mapping, session_state,
+                scanner_unfilled_required,
+                scanner_unfilled_optional,
+                scanner_noise_excluded,
+            ),
         )
         logger.info(
             "vision_verifier: page %d (%s) — all %d field(s) DOM-matched, vision skipped",
@@ -1486,6 +1545,12 @@ async def verify_form_page(
             scanner_unfilled_required=scanner_unfilled_required,
             scanner_coverage=_compute_scanner_coverage(
                 field_metadata, result.verdicts,
+                scanner_unfilled_required,
+                scanner_unfilled_optional,
+                scanner_noise_excluded,
+            ),
+            coverage_realtime=_compute_coverage_realtime(
+                field_metadata, filled_mapping, session_state,
                 scanner_unfilled_required,
                 scanner_unfilled_optional,
                 scanner_noise_excluded,
@@ -1700,6 +1765,12 @@ async def verify_form_page(
         composite_layout=composite_layout,
         scanner_coverage=_compute_scanner_coverage(
             field_metadata, result.verdicts,
+            scanner_unfilled_required,
+            scanner_unfilled_optional,
+            scanner_noise_excluded,
+        ),
+        coverage_realtime=_compute_coverage_realtime(
+            field_metadata, filled_mapping, session_state,
             scanner_unfilled_required,
             scanner_unfilled_optional,
             scanner_noise_excluded,
