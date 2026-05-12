@@ -57,15 +57,20 @@ def _strip_required_marker(label: str) -> str:
 # Also returns metadata via a sibling JS call so Python knows which tier
 # matched.
 #
-# Strategy (5-tier cascade per advisor):
+# Strategy (6-tier cascade):
 #   T1. The element handed in (after a visible-walk for degenerate
 #       react-select 1x1 inputs). This handles inputs that already
 #       represent the visible widget.
-#   T2. closest('fieldset')  — universal ATS wrapper.
-#   T3. closest('[role="group"]')  — ARIA-grouping convention.
-#   T4. Ancestor walk for: 40 < offsetHeight ≤ 250 AND offsetWidth > 100
+#   T2. closest('label')  — handles Ashby-style per-option radios where
+#       the input is wrapped in `<label><input> option text</label>`.
+#       The label is naturally small (a single option row) and includes
+#       both the input + its visible text. Bounded by height ≤ 80 px to
+#       avoid pathological multi-line labels.
+#   T3. closest('fieldset')  — universal ATS wrapper.
+#   T4. closest('[role="group"]')  — ARIA-grouping convention.
+#   T5. Ancestor walk for: 40 < offsetHeight ≤ 250 AND offsetWidth > 100
 #       AND textContent (normalized) contains the stripped label.
-#   T5. Same walk relaxed to drop the label-containment requirement
+#   T6. Same walk relaxed to drop the label-containment requirement
 #       (label may render in a sibling outside the chosen ancestor).
 #   Last-resort: visible target itself.
 #
@@ -110,7 +115,18 @@ _FORM_ROW_JS = """
     visible = visible.parentElement;
   }
 
-  // T2 + T3: closest() ancestor of a known wrapper kind.
+  // T2: closest('label') — handles per-option radios where each option
+  // is `<label><input> option text</label>`. Only accept if the label
+  // is small (single-row, ≤ 80 px tall) and includes the option text.
+  // Without this, Ashby/etc per-option radios fall through to T6
+  // element_fallback (clean but label-less).
+  const lbl = visible.closest && visible.closest('label');
+  if (lbl && isVisible(lbl) && lbl.offsetHeight > 20 && lbl.offsetHeight <= 80
+      && lbl.offsetWidth > 100 && containsLabel(lbl)) {
+    return { el: lbl, meta: reportTag(lbl, 'option_label') };
+  }
+
+  // T3 + T4: closest() ancestor of a known wrapper kind.
   const fieldset = visible.closest && visible.closest('fieldset');
   if (fieldset && isVisible(fieldset) && fieldset.offsetHeight <= 400 && containsLabel(fieldset)) {
     return { el: fieldset, meta: reportTag(fieldset, 'fieldset') };
@@ -160,7 +176,7 @@ class FieldCrop:
     label: str
     value: str
     crop_bytes: bytes | None
-    resolve_method: str  # fieldset | role_group | form_row | form_row_relaxed | element_fallback | unresolved
+    resolve_method: str  # option_label | fieldset | role_group | form_row | form_row_relaxed | element_fallback | unresolved
     dedup_with: list[int] = dataclass_field(default_factory=list)
     bbox: tuple[float, float, float, float] | None = None
 

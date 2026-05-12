@@ -507,13 +507,33 @@ class _MultiProviderLLM:
         return self._try_providers("stream", messages, **kwargs)
 
     def bind(self, **kwargs):
-        """Return a new _MultiProviderLLM with bound kwargs on each provider."""
+        """Return a new _MultiProviderLLM with bound kwargs on each provider.
+
+        OpenAI-specific kwargs (``response_format``) are dropped for providers
+        that don't accept them — Anthropic's Messages API raises
+        ``TypeError: Messages.create() got an unexpected keyword argument
+        'response_format'`` when the kwarg propagates to it via the fallback
+        chain. Other providers may also reject it. The provider's own
+        structured-output mechanism (e.g. Anthropic tool use, Gemini schema)
+        is the right channel for JSON enforcement on non-OpenAI vendors;
+        markdown-strip retry remains the fallback when this isn't available.
+        """
+        _OPENAI_ONLY_KWARGS = {"response_format"}
+
+        def _provider_is_openai_family(p) -> bool:
+            cls_name = type(p).__name__
+            return cls_name in {"ChatOpenAI", "_InstrumentedLLM", "_MultiProviderLLM"}
+
         bound_providers = []
         for p in self._providers:
-            if hasattr(p, "bind"):
+            if not hasattr(p, "bind"):
+                bound_providers.append(p)
+                continue
+            if _provider_is_openai_family(p):
                 bound_providers.append(p.bind(**kwargs))
             else:
-                bound_providers.append(p)
+                filtered = {k: v for k, v in kwargs.items() if k not in _OPENAI_ONLY_KWARGS}
+                bound_providers.append(p.bind(**filtered) if filtered else p)
         return _MultiProviderLLM(bound_providers)
 
 
