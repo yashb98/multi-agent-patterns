@@ -433,28 +433,44 @@ def test_single_shot_call_count_tall_screenshot(_enable_verifier):
     assert tiers == {"Email": "passed", "AI Policy": "mismatch_detected"}
 
 
-def test_composite_built_when_field_bboxes_resolve(_enable_verifier, tmp_path):
-    """When bbox extraction succeeds the verifier builds a composite WebP
-    and sends ONE kimi call keyed by ordinal — Outcome 2 evidence."""
+def _png_bytes(size=(100, 30), color=(220, 220, 220)) -> bytes:
+    """Return a small valid PNG used as a fake per-field crop."""
     import io
     from PIL import Image
+    img = Image.new("RGB", size, color=color)
+    buf = io.BytesIO(); img.save(buf, "PNG"); return buf.getvalue()
 
-    img = Image.new("RGB", (1000, 800), color=(255, 255, 255))
-    buf = io.BytesIO(); img.save(buf, "PNG"); raw = buf.getvalue()
 
-    page = _fake_page_with_screenshot()
-    page.screenshot = AsyncMock(return_value=raw)
-
-    # get_by_label returns a locator that resolves to a bbox.
-    fake_locator = MagicMock()
-    fake_locator.count = AsyncMock(return_value=1)
-    fake_locator.evaluate = AsyncMock(
-        return_value={"x": 100.0, "y": 100.0, "width": 200.0, "height": 30.0},
+def _fake_field_crop(ordinal: int, label: str, value: str, *,
+                     bbox=(0.0, 0.0, 100.0, 30.0),
+                     dedup_with=None) -> object:
+    """Build a _field_crop.FieldCrop instance with a stub PNG payload."""
+    from jobpulse.form_engine._field_crop import FieldCrop
+    return FieldCrop(
+        ordinal=ordinal, label=label, value=value,
+        crop_bytes=_png_bytes(),
+        resolve_method="form_row",
+        dedup_with=list(dedup_with or []),
+        bbox=bbox,
     )
-    fake_locator.first = fake_locator
-    page.get_by_label = MagicMock(return_value=fake_locator)
-    page.get_by_placeholder = MagicMock(return_value=fake_locator)
-    page.get_by_role = MagicMock(return_value=fake_locator)
+
+
+def test_composite_built_when_field_bboxes_resolve(_enable_verifier, tmp_path,
+                                                   monkeypatch):
+    """When per-field crops can be captured the verifier builds a composite
+    WebP and sends ONE kimi call keyed by ordinal — Outcome 2 evidence.
+
+    S26-follow-up-M: replaces the pre-M bbox-extract+full-page-crop test.
+    """
+    page = _fake_page_with_screenshot()
+    page.screenshot = AsyncMock(return_value=_png_bytes((1000, 800), (255, 255, 255)))
+
+    # Stub _extract_field_crops to return one valid FieldCrop. This is the
+    # M-era replacement for the old _extract_field_bboxes JS path.
+    async def _fake_extract_crops(_page, claim_rows, _meta):
+        return [_fake_field_crop(1, claim_rows[0][0], claim_rows[0][1])]
+
+    monkeypatch.setattr(vv, "_extract_field_crops", _fake_extract_crops)
 
     response = _vision_response({
         "verdicts": [
@@ -479,12 +495,76 @@ def test_composite_built_when_field_bboxes_resolve(_enable_verifier, tmp_path):
             )
         )
     assert create_mock.call_count == 1
-    # The image MIME sent to vision is WebP (composite path) not PNG (fallback)
     sent_args = create_mock.call_args.kwargs["messages"][0]["content"]
     image_url = sent_args[1]["image_url"]["url"]
     assert image_url.startswith("data:image/webp"), \
         "composite path should send WebP"
     assert result.verdicts[0].tier_reached == "passed"
+
+
+def test_duplicate_bbox_dedupes_to_single_panel(_enable_verifier, monkeypatch):
+    """S26-follow-up-M Requirement 4: Greenhouse demographic-survey
+    duplicates (same DOM widget rendered with required + optional labels
+    sharing one bbox) collapse to ONE composite panel, but the verifier
+    still emits ONE FieldVerdict per original claim row.
+
+    Two claim rows in, one panel sent to vision, two verdicts out — both
+    pointing at the same observed value.
+    """
+    page = _fake_page_with_screenshot()
+    page.screenshot = AsyncMock(return_value=_png_bytes((1000, 800)))
+
+    # Two claim rows that share a bbox → one panel after dedup. The
+    # FieldCrop returned for ordinal=2 carries dedup_with=[1] (the
+    # collapsed first claim row).
+    async def _fake_extract_crops(_page, _claim_rows, _meta):
+        same_bbox = (10.0, 10.0, 100.0, 30.0)
+        return [
+            _fake_field_crop(
+                2, "Right to work?",  "Yes",
+                bbox=same_bbox, dedup_with=[1],
+            ),
+        ]
+
+    monkeypatch.setattr(vv, "_extract_field_crops", _fake_extract_crops)
+
+    response = _vision_response({
+        "verdicts": [
+            {
+                "ordinal": 2,
+                "label": "Right to work?",
+                "observed_value": "Yes",
+                "matches_claim": True,
+                "contradicts_help_text": False,
+                "reason": "dedup-shared panel",
+            },
+        ]
+    })
+
+    with patch.object(vv, "get_openai_client") as mock_client:
+        create_mock = MagicMock(return_value=response)
+        mock_client.return_value.chat.completions.create = create_mock
+        result = asyncio.run(
+            vv.verify_form_page(
+                page,
+                {
+                    "Right to work?*": "Yes",      # ordinal 1
+                    "Right to work?": "Yes",       # ordinal 2 — shares bbox
+                },
+                page_url="https://x.example/y", platform="greenhouse",
+            )
+        )
+
+    assert create_mock.call_count == 1, "duplicate-bbox claims share ONE vision call"
+    # Both original claim rows produce a verdict.
+    assert len(result.verdicts) == 2
+    # Both verdicts received the same observed value from the shared panel.
+    observed = [v.observed_value for v in result.verdicts]
+    assert observed == ["Yes", "Yes"], (
+        f"both collapsed claims should inherit the panel's observed value; got {observed}"
+    )
+    tiers = [v.tier_reached for v in result.verdicts]
+    assert all(t == "passed" for t in tiers), tiers
 
 
 def test_decision_rows_written(_enable_verifier):

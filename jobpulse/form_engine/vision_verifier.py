@@ -152,106 +152,13 @@ def _strip_required_marker(label: str) -> str:
     return _REQUIRED_MARKER_RE.sub("", label).rstrip()
 
 
-# JS that computes the document-relative bounding box for a form-input
-# element by unioning the input rect with its associated <label> rect and
-# any aria-describedby help-text rect. Returns ``null`` if no rect could
-# be measured (off-screen / display:none).
-_FIELD_BBOX_JS = """
-(el) => {
-  // Discipline (S26-follow-up-K post-review): only TRUST direct DOM
-  // label associations — el.labels[0] (set by <label for=>) and
-  // aria-labelledby. The speculative parentElement walk had a high
-  // false-positive rate on free-text textareas without proper labels
-  // (Anthropic free-text fields → bbox union pulled in JD body text
-  // from the nearest <h2>; ~14/19 panels in the live Anthropic
-  // artifact contained "Diversity & inclusion" / "Your safety matters"
-  // section headings instead of field labels). Without the walk,
-  // unlabeled fields get an input-only crop — small but clean.
-
-  // Walk up to a visibly-rendered ancestor when the input element
-  // itself is degenerate (React-select / shadow-DOM combobox patterns
-  // use a 1×1 hidden <input> with the actual visible widget rendered
-  // as a sibling DIV). Without this, the verifier crops a 1×1 region
-  // whose pixels in the full-page screenshot happen to be whatever JD
-  // body text sat behind the hidden input.
-  let target = el;
-  for (let depth = 0; depth < 5; depth++) {
-    const r = target.getBoundingClientRect();
-    if (r.width >= 40 && r.height >= 20) break;
-    if (!target.parentElement) break;
-    target = target.parentElement;
-  }
-  const ir = target.getBoundingClientRect();
-  let lbl = null;
-  try { if (el.labels && el.labels.length) lbl = el.labels[0]; } catch (e) {}
-  if (!lbl) {
-    const aby = el.getAttribute('aria-labelledby');
-    if (aby) {
-      for (const id of aby.split(/\\s+/)) {
-        const e = document.getElementById(id);
-        if (e) { lbl = e; break; }
-      }
-    }
-  }
-  let lr = lbl ? lbl.getBoundingClientRect() : null;
-  // Reject labels that aren't actually field labels:
-  //   1. Wrapper labels that fully contain the input (Greenhouse free-
-  //      text textareas have <label> blocks wrapping JD body + the
-  //      textarea — label.height is several hundred px and includes
-  //      paragraph text).
-  //   2. Labels far away from the input top (> 80 px gap on both
-  //      sides — not adjacent, so probably not associated).
-  //   3. Labels taller than 60 px (real field labels are 1–2 lines;
-  //      tall labels are wrappers or section blocks).
-  if (lr) {
-    const wraps_input = (
-      lr.top <= ir.top + 2 && lr.bottom >= ir.bottom - 2
-      && lr.left <= ir.left + 2 && lr.right >= ir.right - 2
-    );
-    const too_tall = lr.height > 60;
-    const far_above = (ir.top - lr.bottom) > 80;
-    const far_below = (lr.top - ir.bottom) > 80;
-    if (wraps_input || too_tall || far_above || far_below) {
-      lr = null;
-    }
-  }
-  let dr = null;
-  const dby = el.getAttribute('aria-describedby');
-  if (dby) {
-    for (const id of dby.split(/\\s+/)) {
-      const e = document.getElementById(id);
-      if (e) {
-        const r = e.getBoundingClientRect();
-        // Help-text rect must be within 100 px of input — otherwise
-        // it's likely a global help block, not field-scoped.
-        if (r.width > 0 && r.height > 0
-            && Math.abs(r.top - ir.bottom) < 100
-            && Math.abs(ir.top - r.bottom) < 100) {
-          dr = r;
-          break;
-        }
-      }
-    }
-  }
-  const rects = [ir, lr, dr].filter(r => r && r.width > 0 && r.height > 0);
-  if (rects.length === 0) return null;
-  const x_min = Math.min(...rects.map(r => r.left));
-  const y_min = Math.min(...rects.map(r => r.top));
-  const x_max = Math.max(...rects.map(r => r.right));
-  const y_max = Math.max(...rects.map(r => r.bottom));
-  // Hard height cap — defends against pathological textareas / wrapper
-  // divs whose computed bbox spans an entire form section. Crop the
-  // input + ≤ 250 px context, no more.
-  const h_raw = y_max - y_min;
-  const h = Math.min(h_raw, 250);
-  return {
-    x: Math.max(0, x_min + window.scrollX),
-    y: Math.max(0, y_min + window.scrollY),
-    width: Math.max(1, x_max - x_min),
-    height: Math.max(1, h)
-  };
-}
-"""
+# S26-follow-up-M: per-field crops now go through
+# ``_field_crop.probe_page``, which uses Playwright's native
+# ``ElementHandle.screenshot()`` on a dynamically-resolved form-row
+# container. Coordinate math + full-page crop are gone — see
+# ``docs/audits/2026-05-11-vision-bbox-fix-prompt.md`` for the live
+# evidence that drove this replacement (JD-body bleed in the M-1
+# Graphcore artifact).
 
 
 def _encode_webp(img) -> bytes:
@@ -407,75 +314,34 @@ async def _resolve_label_locator(
     return None
 
 
-async def _extract_field_bboxes(
+async def _extract_field_crops(
     page: "Page",
     claim_rows: list[tuple[str, str]],
     field_metadata: dict | None,
-) -> list[dict]:
-    """Resolve a locator per filled label, extract document-relative bbox.
+) -> list:
+    """Capture one per-field crop per filled label via locator.screenshot().
 
-    Returns one entry per claim in the same order, each with keys:
-      - ``ordinal`` (1-indexed)
-      - ``label`` (original, including any required marker)
-      - ``value`` (claimed value)
-      - ``bbox`` (dict {x,y,width,height}) or ``None`` if unresolvable
+    Replaces the pre-M ``_extract_field_bboxes`` + JS bbox-math + PIL.crop
+    pipeline. Each entry returned is a ``_field_crop.FieldCrop`` carrying
+    PNG bytes for the form-row container around the input. See
+    ``_field_crop.py`` for the resolver cascade (fieldset → role=group →
+    form-row → relaxed → element-fallback) — no per-platform branches.
 
-    Bbox-coordinate handling depends on whether the locator resolved in
-    the main page or inside an iframe:
-      * **Main page** — ``locator.evaluate(_FIELD_BBOX_JS)`` runs in the
-        page's window, unioning input + ``el.labels[0]`` + ``aria-
-        describedby``. Coords are document-relative via
-        ``window.scrollX/Y`` — which lines up 1:1 with the
-        ``page.screenshot(full_page=True)`` pixel grid.
-      * **Inside an iframe** — the same JS would return *frame-local*
-        coords (the iframe has its own ``window``). The page screenshot
-        captures the iframe's rendered pixels at the iframe element's
-        page-relative position, so we must translate. Playwright's
-        ``locator.bounding_box()`` is documented to return main-page
-        coords for locators inside any frame, so we use it as a single
-        source of truth for iframe-resolved locators and skip the
-        label/help union (cleaner than translating coords per element).
+    Greenhouse-style duplicate-bbox claims (the same widget rendered with
+    a required + optional label) collapse to one panel here; the
+    ``dedup_with`` list on the returned crop records the collapsed
+    ordinals so the verdict-mapping step still emits one ``FieldVerdict``
+    per original claim row.
     """
-    entries: list[dict] = []
+    from jobpulse.form_engine._field_crop import _capture_field_crop, _dedup_crops
+
+    crops = []
     for idx, (label, value) in enumerate(claim_rows, start=1):
-        entry = {
-            "ordinal": idx,
-            "label": label,
-            "value": value,
-            "bbox": None,
-        }
-        result = await _resolve_label_locator(page, label, field_metadata)
-        if result is None:
-            entries.append(entry)
-            continue
-        locator, owner_frame = result
-
-        box: dict | None = None
-        if owner_frame is None:
-            try:
-                box = await locator.evaluate(_FIELD_BBOX_JS)
-            except Exception as exc:
-                logger.debug("vision_verifier: bbox js failed for %r: %s", label[:60], exc)
-                box = None
-        else:
-            try:
-                box = await locator.bounding_box()
-            except Exception as exc:
-                logger.debug(
-                    "vision_verifier: iframe bounding_box failed for %r: %s",
-                    label[:60], exc,
-                )
-                box = None
-
-        if isinstance(box, dict) and all(k in box for k in ("x", "y", "width", "height")):
-            entry["bbox"] = {
-                "x": float(box["x"]),
-                "y": float(box["y"]),
-                "width": float(box["width"]),
-                "height": float(box["height"]),
-            }
-        entries.append(entry)
-    return entries
+        crop = await _capture_field_crop(
+            page, label, value, idx, field_metadata,
+        )
+        crops.append(crop)
+    return _dedup_crops(crops)
 
 
 def _composite_font():
@@ -500,16 +366,16 @@ def _composite_font():
 
 
 def _build_composite(
-    screenshot_png: bytes,
-    bbox_entries: list[dict],
+    crops: list,
 ) -> tuple[bytes | None, list[dict]]:
-    """Crop each filled field from the full-page screenshot, stamp an
-    ordinal caption, vertically tile into one WebP composite.
+    """Vertically tile per-field crops into one WebP-lossless composite.
 
-    Returns ``(composite_bytes, panels)`` where ``panels`` is the subset of
-    ``bbox_entries`` that produced a valid crop. ``composite_bytes`` is
-    ``None`` if no field could be cropped (caller falls back to the whole
-    screenshot via ``_compress_for_vision``).
+    Takes the ``_field_crop.FieldCrop`` objects produced by
+    ``_extract_field_crops`` and lays them out with pale-blue caption
+    strips carrying the ordinal marker (``[01]``, ``[02]``, ...).
+    Returns ``(composite_bytes, panels_meta)`` — ``panels_meta`` carries
+    one entry per panel in the composite (post-dedup), so the verdict-
+    mapping step can key by ordinal back to the original claim rows.
     """
     try:
         import io
@@ -519,83 +385,48 @@ def _build_composite(
         logger.debug("vision_verifier: PIL unavailable: %s", exc)
         return None, []
 
-    try:
-        img = Image.open(io.BytesIO(screenshot_png))
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-    except Exception as exc:
-        logger.debug("vision_verifier: screenshot decode failed: %s", exc)
+    panels = [c for c in crops if c.crop_bytes is not None]
+    if not panels:
         return None, []
 
-    img_w, img_h = img.size
-    if img_w == 0 or img_h == 0:
-        return None, []
-
-    panels_with_bbox = [e for e in bbox_entries if e.get("bbox")]
-    if not panels_with_bbox:
-        return None, []
-
-    panels_with_bbox.sort(key=lambda e: (e["bbox"]["y"], e["bbox"]["x"]))
-
-    # First pass with full margin; shrink if the projected composite would
-    # exceed the height cap (rarely fires on Greenhouse forms).
-    margin = _CROP_MARGIN
-    while True:
-        total_h = 0
-        for e in panels_with_bbox:
-            b = e["bbox"]
-            crop_h = max(1, int(b["height"] + 2 * margin))
-            total_h += crop_h + _CAPTION_STRIP_PX + 6  # 6 px gap
-        if total_h <= _COMPOSITE_HEIGHT_CAP or margin <= _MIN_CROP_MARGIN:
-            break
-        margin = max(_MIN_CROP_MARGIN, margin - 4)
-
-    crops: list[dict] = []
+    pil_crops: list = []
     max_w = 0
-    for e in panels_with_bbox:
-        b = e["bbox"]
-        x0 = max(0, int(b["x"] - margin))
-        y0 = max(0, int(b["y"] - margin))
-        x1 = min(img_w, int(b["x"] + b["width"] + margin))
-        y1 = min(img_h, int(b["y"] + b["height"] + margin))
-        if x1 - x0 < 4 or y1 - y0 < 4:
+    for c in panels:
+        try:
+            img = Image.open(io.BytesIO(c.crop_bytes))
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+        except Exception as exc:
+            logger.debug("vision_verifier: crop decode failed for ord %d: %s",
+                         c.ordinal, exc)
             continue
-        crop = img.crop((x0, y0, x1, y1))
-        crops.append({"entry": e, "crop": crop})
-        if crop.width > max_w:
-            max_w = crop.width
+        pil_crops.append((c, img))
+        if img.width > max_w:
+            max_w = img.width
 
-    if not crops:
+    if not pil_crops:
         return None, []
+
+    # Edge-case: any crop wider than Kimi 4K rec → scale that crop only.
     if max_w > _MAX_LONG_EDGE:
-        # Edge-case: a single field wider than the Kimi 4K rec — scale just
-        # the offending crops, not the whole composite, so non-wide fields
-        # stay 1:1.
-        for c in crops:
-            if c["crop"].width > _MAX_LONG_EDGE:
-                scale = _MAX_LONG_EDGE / float(c["crop"].width)
+        for i, (c, img) in enumerate(pil_crops):
+            if img.width > _MAX_LONG_EDGE:
+                scale = _MAX_LONG_EDGE / float(img.width)
                 nw = _MAX_LONG_EDGE
-                nh = max(1, int(c["crop"].height * scale))
-                c["crop"] = c["crop"].resize((nw, nh), Image.LANCZOS)
+                nh = max(1, int(img.height * scale))
+                pil_crops[i] = (c, img.resize((nw, nh), Image.LANCZOS))
         max_w = min(max_w, _MAX_LONG_EDGE)
 
-    total_h = sum(c["crop"].height + _CAPTION_STRIP_PX + 6 for c in crops)
+    total_h = sum(img.height + _CAPTION_STRIP_PX + 6 for _c, img in pil_crops)
     composite = Image.new("RGB", (max_w + 6, total_h + 6), color=(255, 255, 255))
     draw = ImageDraw.Draw(composite)
     font = _composite_font()
 
     y_cursor = 3
     panels_meta: list[dict] = []
-    for c in crops:
-        entry = c["entry"]
-        crop = c["crop"]
-        ordinal = entry["ordinal"]
-        # Caption strip carrying the ordinal marker — kept short so vision
-        # can read it without OCR drama. Stripping label here is fine:
-        # the prompt already enumerates the full label per ordinal.
+    for c, img in pil_crops:
+        ordinal = c.ordinal
         caption = f"[{ordinal:02d}]"
-        # Caption strip is pale-blue band so vision sees a clear panel
-        # boundary even when crops have similar backgrounds.
         draw.rectangle(
             (0, y_cursor, max_w + 6, y_cursor + _CAPTION_STRIP_PX),
             fill=(228, 238, 255),
@@ -611,16 +442,21 @@ def _build_composite(
             except Exception:
                 pass
         y_cursor += _CAPTION_STRIP_PX
-        composite.paste(crop, (3, y_cursor))
-        # Thin red border around each crop so vision can clearly tell
-        # where one field ends and the next begins.
+        composite.paste(img, (3, y_cursor))
         draw.rectangle(
-            (2, y_cursor - 1, 3 + crop.width + 1, y_cursor + crop.height + 1),
+            (2, y_cursor - 1, 3 + img.width + 1, y_cursor + img.height + 1),
             outline=(220, 30, 30),
             width=1,
         )
-        y_cursor += crop.height + 6
-        panels_meta.append({**entry, "ordinal": ordinal})
+        y_cursor += img.height + 6
+        panels_meta.append({
+            "ordinal": ordinal,
+            "label": c.label,
+            "value": c.value,
+            "resolve_method": c.resolve_method,
+            "bbox": list(c.bbox) if c.bbox else None,
+            "dedup_with": list(c.dedup_with),
+        })
 
     try:
         composite_bytes = _encode_webp(composite)
@@ -794,6 +630,8 @@ def _save_artifact(
                     "label": p.get("label"),
                     "value": p.get("value"),
                     "bbox": p.get("bbox"),
+                    "resolve_method": p.get("resolve_method"),
+                    "dedup_with": p.get("dedup_with"),
                 }
                 for p in panels
             ],
@@ -1293,17 +1131,19 @@ async def verify_form_page(
         result.elapsed_ms = (time.monotonic() - started) * 1000
         return result
 
-    # 2-3) Resolve locators + extract bboxes per filled field.
-    bbox_entries = await _extract_field_bboxes(page, claim_rows, field_metadata)
-    resolved = sum(1 for e in bbox_entries if e.get("bbox"))
+    # 2-3) Resolve locators + capture per-field crops (S26-follow-up-M).
+    #      Uses ElementHandle.screenshot() on a dynamically-resolved
+    #      form-row container — no coordinate math, no full-page crop.
+    field_crops = await _extract_field_crops(page, claim_rows, field_metadata)
+    captured = sum(1 for c in field_crops if c.crop_bytes is not None)
     logger.info(
-        "vision_verifier: bbox resolution %d/%d fields  page=%d domain=%s",
-        resolved, len(bbox_entries), page_num, domain,
+        "vision_verifier: per-field crops %d/%d  page=%d domain=%s",
+        captured, len(field_crops), page_num, domain,
     )
 
-    # 4) Build the composite. If no bbox was resolvable, fall back to
-    #    sending the whole-page screenshot (still single-shot).
-    composite_bytes, panels = _build_composite(screenshot_png, bbox_entries)
+    # 4) Build the composite. If no crop could be captured, fall back to
+    #    the whole-page screenshot (still single-shot).
+    composite_bytes, panels = _build_composite(field_crops)
     used_composite = composite_bytes is not None
     if used_composite:
         vision_input = composite_bytes
@@ -1311,7 +1151,7 @@ async def verify_form_page(
         prompt = _build_prompt(ordered_for_prompt, ordinals=True)
         composite_layout = {
             "panels_total": len(panels),
-            "panels_unresolved": len(bbox_entries) - len(panels),
+            "panels_unresolved": len(claim_rows) - len(panels),
             "image_bytes": len(composite_bytes),
         }
     else:
@@ -1322,9 +1162,9 @@ async def verify_form_page(
         prompt = _build_prompt(ordered_for_prompt, ordinals=False)
         composite_layout = {
             "panels_total": 0,
-            "panels_unresolved": len(bbox_entries),
+            "panels_unresolved": len(field_crops),
             "image_bytes": len(vision_input),
-            "fallback_reason": "no_field_bboxes_resolved",
+            "fallback_reason": "no_field_crops_captured",
         }
         panels = []
 
@@ -1402,9 +1242,20 @@ async def verify_form_page(
             if stripped != label:
                 by_label.setdefault(stripped, entry)
 
-    panel_ordinal_by_label: dict[str, int] = {
-        p["label"]: p["ordinal"] for p in panels
-    }
+    # Map every claim ordinal → the panel it was rendered into. Greenhouse-
+    # style required + optional copies of the same widget collapse into one
+    # panel; ``dedup_with`` carries the collapsed ordinals so both original
+    # claim rows still receive a verdict from the single panel's vision
+    # output.
+    panel_ordinal_by_claim_ordinal: dict[int, int] = {}
+    panel_ordinal_by_label: dict[str, int] = {}
+    for p in panels:
+        panel_ord = p["ordinal"]
+        panel_ordinal_by_claim_ordinal[panel_ord] = panel_ord
+        for collapsed in p.get("dedup_with", []) or []:
+            panel_ordinal_by_claim_ordinal[collapsed] = panel_ord
+        if p.get("label"):
+            panel_ordinal_by_label[p["label"]] = panel_ord
 
     correct = correction_enabled if correction_enabled is not None else _correction_enabled()
     if correct and fill_callback is None:
@@ -1415,10 +1266,14 @@ async def verify_form_page(
 
     verdicts: list[FieldVerdict] = []
     correction_queue: list[int] = []
-    for label, claimed in claim_rows:
+    for claim_idx, (label, claimed) in enumerate(claim_rows, start=1):
         entry: dict | None = None
-        if used_composite and label in panel_ordinal_by_label:
-            entry = by_ordinal.get(panel_ordinal_by_label[label])
+        if used_composite:
+            panel_ord = panel_ordinal_by_claim_ordinal.get(claim_idx)
+            if panel_ord is not None:
+                entry = by_ordinal.get(panel_ord)
+            if entry is None and label in panel_ordinal_by_label:
+                entry = by_ordinal.get(panel_ordinal_by_label[label])
         if entry is None:
             entry = by_label.get(label) or by_label.get(_strip_required_marker(label))
         if entry is None:
