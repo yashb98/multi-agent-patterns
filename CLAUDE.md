@@ -83,7 +83,19 @@ All applications run the real live pipeline. No mocks, no headless, no silent ru
 3. **Form Fill** — System dynamically resolves: field discovery method, container scoping, option matching strategy, timing, screening answers. Log every decision + outcome per field (what was tried, what worked, what failed) so agents learn which approach works best per domain/platform.
 4. **Dry Run** — Human reviews live. Every mismatch = correction signal with before/after values.
 5. **Submit** — Rate limiter + mutex + `confirm_application()` (mandatory)
-6. **Learning** — Verify ALL fire and capture maximum data: `post_apply_hook` → `CorrectionCapture` → `AgentRulesDB` → `strategy_reflector` → `OptimizationEngine` signals → `AgentPerformanceDB`. Each system stores what worked AND what didn't — failures are learning data too.
+6. **Learning** — Verify ALL fire and capture maximum data. Actual chain shape (audit 2026-05-12, Bug #2): `confirm_application` is the orchestrator and fans out to **siblings**, not children:
+   ```
+   confirm_application
+     ├── CorrectionCapture.record_corrections  → field_corrections.db
+     ├── AgentRulesDB.auto_generate_from_correction → agent_rules.db
+     └── post_apply_hook
+           ├── FormExperienceDB.record → form_experience.db
+           ├── strategy_reflector.reflect_on_application → trajectory.db + experience_memory.db
+           ├── OptimizationEngine signals (correction / failure / success)
+           ├── NavigationLearner.save_sequence → navigation_sequences.db
+           └── Notion update + JobDB.mark_applied
+   ```
+   CorrectionCapture is a **sibling** of post_apply_hook, not its child — only the live-review path (`confirm_application`) fires it. The cron path (`apply_job(dry_run=False)`) intentionally skips CorrectionCapture (no human-vs-agent diff exists) and relies on the trajectory + agent_rules chain through `NativeFormFiller._log_field_trajectory`. Verify field_corrections.db and agent_rules.db gain rows with timestamps within ~30s of each other after a live submission. Failures are learning data too — strategy_reflector records failure episodes.
 
 **On error — OPRAL loop (Observe → Plan → Reason → Act → Learn):**
 1. **Observe** — Capture the error in context: logs, DOM state, DB state, which agent failed and where
@@ -162,7 +174,7 @@ Config: `shared/logging_config.py`. All loggers via `get_logger(__name__)`.
 Setup: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 
 ## Stats
-~190,000 LOC | 896 Python files | 64 databases | 4683 tests | 4 dashboards | 5 Telegram bots | 3 platforms
+~191,000 LOC | 903 Python files | 52 databases | 4709 tests | 4 dashboards | 5 Telegram bots | 3 platforms
 > Auto-updated by pre-commit hook. Manual: `python scripts/update_stats.py`
 
 ## Module Context (loaded when working in that directory)

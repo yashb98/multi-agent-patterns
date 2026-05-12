@@ -43,10 +43,50 @@ from jobpulse.screening_intent import ScreeningIntentClassifier, ScreeningIntent
 from jobpulse.screening_detector import ScreeningDetector
 from jobpulse.screening_decomposer import QuestionDecomposer, AnswerRecombiner
 from jobpulse.screening_option_aligner import OptionAligner, BoolFieldHandler, SalaryFieldHandler
+from jobpulse.screening_session_state import SessionFillState
 from jobpulse.screening_validator import ScreeningValidator
 from jobpulse.screening_pattern_extractor import PatternExtractor
 
 logger = get_logger(__name__)
+
+
+# S26-follow-up-O-1: extract field references from an introspection
+# question. The handler needs to know WHICH session-filled fields the
+# question is asking about ("legal name" → First Name + Last Name).
+# Embedding similarity catches paraphrases at the consumer level; the
+# session_state.references_present() check is the final authority, so
+# false-positive references (synonym matched but field not in session)
+# collapse to "No" via the unfilled branch — the correct conservative
+# answer.
+_INTROSPECTION_REFERENCE_SYNONYMS: dict[str, list[str]] = {
+    "legal name": ["First Name", "Last Name"],
+    "full name": ["First Name", "Last Name"],
+    "first name and last name": ["First Name", "Last Name"],
+    "first and last name": ["First Name", "Last Name"],
+    "surname": ["Last Name"],
+    "given name": ["First Name"],
+    "name and surname": ["First Name", "Last Name"],
+    "contact information": ["Email", "Phone"],
+    "contact details": ["Email", "Phone"],
+    "email address": ["Email"],
+    "phone number": ["Phone"],
+    "resume": ["Resume"],
+    "cv": ["Resume"],
+    "cover letter": ["Cover Letter"],
+}
+
+
+def _extract_referenced_fields(question: str) -> list[str]:
+    """Return canonical label tokens referenced by an introspection question."""
+    if not question:
+        return []
+    q = question.lower()
+    out: list[str] = []
+    for synonym, labels in _INTROSPECTION_REFERENCE_SYNONYMS.items():
+        if synonym in q:
+            out.extend(labels)
+    seen: set[str] = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
 
 
 class ScreeningPipeline:
@@ -145,6 +185,7 @@ class ScreeningPipeline:
         question: str,
         field: dict[str, Any] | None = None,
         job_context: dict[str, Any] | None = None,
+        session_state: "SessionFillState | None" = None,
     ) -> dict[str, Any]:
         """Answer a screening question through the full v2 pipeline.
 
@@ -171,6 +212,16 @@ class ScreeningPipeline:
             result["source"] = "empty_question"
             return result
 
+        # ── S26-follow-up-O-1: introspection_confirmation short-circuit ───
+        # "Have you added your full legal name?" et al. — answer depends
+        # on what the current session has already filled, not on the
+        # profile / JD / LLM. Must run BEFORE the semantic cache because
+        # caching session-derived answers across runs would be wrong.
+        if session_state is not None:
+            intro = self._try_introspection_answer(question, field, session_state)
+            if intro is not None:
+                return self._finalise(intro, question, field)
+
         # ── Step 1: Compound Decomposition ──────────────────────────────────
         sub_questions = self._decomposer.decompose(question)
         if sub_questions:
@@ -191,6 +242,69 @@ class ScreeningPipeline:
         single = self._answer_single(question, field, job_context)
         result.update(single)
         return self._finalise(result, question, field)
+
+    def _try_introspection_answer(
+        self,
+        question: str,
+        field: dict[str, Any] | None,
+        session_state: SessionFillState,
+    ) -> dict[str, Any] | None:
+        """If the question is an introspection_confirmation (e.g. "Have
+        you added your legal name?"), answer Yes/No based on whether the
+        referenced fields are present in this session. Returns None when
+        the intent doesn't match (caller falls through to normal flow).
+        """
+        try:
+            intent, intent_confidence = self._intent_classifier.classify(question)
+        except Exception as exc:
+            logger.debug("introspection intent classify failed: %s", exc)
+            return None
+        if intent != ScreeningIntent.INTROSPECTION_CONFIRMATION:
+            return None
+
+        refs = _extract_referenced_fields(question)
+        options = (field or {}).get("options") or []
+        # Resolve Yes/No against the field's options (semantic match) so
+        # downstream form filling gets the exact string the dropdown
+        # expects ("Yes", "Confirmed", "I agree", etc.).
+        try:
+            from jobpulse.form_engine.semantic_matcher import semantic_option_match
+        except Exception:
+            semantic_option_match = None  # type: ignore[assignment]
+
+        if refs and session_state.references_present(refs):
+            verdict = "yes"
+            confidence = 0.95
+        else:
+            verdict = "no"
+            confidence = 0.85
+
+        answer_str: str
+        if options and semantic_option_match is not None:
+            matched = semantic_option_match(verdict, options)
+            answer_str = matched or ("Yes" if verdict == "yes" else "No")
+        else:
+            answer_str = "Yes" if verdict == "yes" else "No"
+
+        logger.info(
+            "screening: introspection_confirmation %r → %s (refs=%s, session_present=%s)",
+            question[:60], answer_str, refs, bool(
+                refs and session_state.references_present(refs),
+            ),
+        )
+        return {
+            "answer": answer_str,
+            "confidence": confidence,
+            "source": "introspection_session_state",
+            "intent": ScreeningIntent.INTROSPECTION_CONFIRMATION.value,
+            "metadata": {
+                "references": refs,
+                "references_present": bool(
+                    refs and session_state.references_present(refs),
+                ),
+                "intent_confidence": float(intent_confidence),
+            },
+        }
 
     def _answer_single(
         self,

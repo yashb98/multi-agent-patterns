@@ -61,6 +61,7 @@ class ScreeningIntent(str, Enum):
     BACKGROUND_CHECK = "background_check"
     DIVERSITY_MONITORING = "diversity_monitoring"
     CONSENT_DATA = "consent_data"
+    INTROSPECTION_CONFIRMATION = "introspection_confirmation"
     OPEN_ENDED = "open_ended"
     UNKNOWN = "unknown"
 
@@ -228,6 +229,18 @@ _SEED_PROTOTYPES: dict[ScreeningIntent, list[str]] = {
         "Agree to privacy policy?",
         "Consent to GDPR?",
         "Is this information accurate?",
+    ],
+    ScreeningIntent.INTROSPECTION_CONFIRMATION: [
+        "Have you added your full legal name and surname?",
+        "Have you completed the previous step?",
+        "Did you upload your resume?",
+        "Have you reviewed the privacy policy?",
+        "Do you confirm the information above is accurate?",
+        "Can you confirm you have entered your name correctly?",
+        "Did you fill in your contact information?",
+        "Have you read the terms and conditions?",
+        "Please confirm you have provided all required information.",
+        "Are the details above correct?",
     ],
     ScreeningIntent.OPEN_ENDED: [
         "Why do you want this role?",
@@ -417,3 +430,14 @@ def get_intent_classifier() -> ScreeningIntentClassifier:
     if _classifier_instance is None:
         _classifier_instance = ScreeningIntentClassifier()
     return _classifier_instance
+
+
+def classify_intent(question: str) -> str:
+    """Module-level convenience wrapper used by screening_pipeline + tests.
+
+    Returns the intent as a string (the enum ``.value``) — most callers
+    care about the routing key, not the tuple/Enum shape. Confidence is
+    discarded; if you need it, call ``get_intent_classifier().classify``.
+    """
+    intent, _confidence = get_intent_classifier().classify(question)
+    return intent.value
