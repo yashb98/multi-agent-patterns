@@ -2244,3 +2244,79 @@ Post-M (Greenhouse only, M-G5 partial): SG2 ("Pre-Submit Verification") gains it
 - **Dedup by document-relative bbox works.** Greenhouse demographic-survey duplicate widgets collapse cleanly (verified live, 5 pairs). The verifier still emits one `FieldVerdict` per original claim row so downstream consumers see the same shape; only the vision call deduplicates.
 - **The pre-M `vision_unavailable=11/11` was a content-pipeline failure, not a vendor failure.** L's vendor-fallback infrastructure was correct; it was being fed garbage pixels. With M's clean crops, qwen3-vl reads 11/11 fields correctly on its first attempt — and the same vendor-fallback latency profile from L holds (~67 s on a 11-field composite).
 - **The plan's "no per-platform branches" rule held under live testing.** Three adapters with materially different DOM patterns (Greenhouse's React form rows, Lever's radio-group fieldsets, Ashby's per-radio elements) all worked through the same 5-tier resolver cascade. No `if platform == "X"` was ever needed.
+
+
+## S26-follow-up-N — STATUS: ✅ SHIPPED (2026-05-12)
+
+Closes three coverage / efficiency gaps left after M / M-4:
+
+1. **Scanner-complete coverage in sidecar.** The verifier's M-4 surfacing only listed scanner-seen required fields the filler skipped. N-1 extends this to a full `scanner_coverage` block enumerating every scanner-discovered field in exactly one bucket: `filled_verified_passed`, `filled_verified_mismatch`, `filled_vision_unavailable`, `scanner_saw_filler_skipped_required`, `scanner_saw_filler_skipped_optional`, `scanner_noise_excluded`. `total` equals the scanner output count; bucket sum equals total. Machine-checkable from the sidecar JSON alone.
+
+2. **DOM-level pre-check before vision.** New `read_dom_value()` + `dom_value_matches_claim()` in `_field_crop.py`. For deterministic field types (text / textarea / email / tel / url / number / password / search / checkbox / radio / native-select / file) the browser already knows the rendered value at fill time — `_capture_field_crop` reads it via `input_value()` / `is_checked()` / `selectedOptions[0].textContent` / `files[0].name` and short-circuits to `resolve_method="dom_match"` with `crop_bytes=None` when the read matches the claim. The composite-build step naturally filters out `crop_bytes=None` crops, so vision sees only the residue (combobox / custom_dropdown / multiselect — fields whose displayed value lives in a sibling element via platform-specific selectors). If ALL filled fields DOM-match, the verifier skips the vision call entirely and emits passed verdicts directly. The "no per-platform branches" rule holds — the DOM-readability decision is purely type-driven.
+
+3. **Verified-state cache.** New `jobpulse/form_engine/verified_fills_db.py` (`data/verified_fills.db`, primary key `(domain, label_norm, verified_value)`). Writes happen at the verifier — only on `tier_reached == "passed"` (the strong-evidence tier); `mismatch_detected` invalidates any cached row for the label. Reads happen at the filler — `NativeFormFiller._try_verified_fills_skip()` runs at the top of `_fill_by_label`, consults the cache, and if there's a hit it re-reads the DOM via the same `read_dom_value` primitive. Only if the DOM still shows the cached value does the filler short-circuit with `success=True, skipped="already_verified"`. Types where DOM state is unreliable (combobox / custom_dropdown) bypass the short-circuit — the cache record exists but `read_dom_value` returns None so we fall through to the normal fill path. Kill switch: `VERIFIED_FILLS_CACHE_ENABLED=0`.
+
+### Acceptance gates
+
+| Gate | Acceptance | Status |
+|---|---|---|
+| **N-G1** | `scanner_coverage.total` matches scanner field count; sum of all 6 buckets equals total | ✅ implemented in `_compute_scanner_coverage`; structural invariant of the helper |
+| **N-G2** | DOM-match short-circuits vision; deterministic-type fields don't reach `_call_vision` | ✅ `test_dom_match_skips_vision_call` asserts vision call count == 0 on a text-field DOM-match |
+| **N-G3** | Cache hit + DOM-still-matches → filler skips fill; cache hit + DOM-drift → filler refills | ✅ `test_verified_fills_cache_short_circuits_filler` asserts both paths |
+| **N-G4** | `tests/jobpulse/form_engine/test_vision_verifier.py` passes 22/22 (19 existing + 3 new) | ✅ 22/22 passed locally |
+| **N-G5** | No per-platform branches introduced (no `if platform == "X"` in touched files) | ✅ `grep -nE "if (platform\\|ats\\|domain) ==" jobpulse/form_engine/{vision_verifier,_field_crop,verified_fills_db}.py` empty |
+| **N-G6** | Audit doc updated with shipped section + before/after vision-call expectations | ✅ this section |
+
+### Files touched
+
+- `jobpulse/form_engine/_field_crop.py` — added `read_dom_value()`, `dom_value_matches_claim()`, and the DOM pre-check call in `_capture_field_crop`.
+- `jobpulse/form_engine/vision_verifier.py` — split `field_crops` into `dom_match_by_ordinal` + `non_dom_match_crops`; added all-DOM-matched early return path; added dom_match short-circuit in the verdict mapping loop; added `_compute_scanner_coverage()` helper and `scanner_coverage` payload key; added `_persist_verified_fills_cache()` write hook called at both terminal sites.
+- `jobpulse/form_engine/verified_fills_db.py` — NEW. `VerifiedFillsDB` class with `record`, `lookup`, `invalidate`, `prune`. `VERIFIED_FILLS_DB_PATH` env hook for test isolation.
+- `jobpulse/native_form_filler.py` — added `_try_verified_fills_skip()` method, called at the top of `_fill_by_label` before any other resolution. Returns success-skipped dict on (cache hit ∧ DOM still matches), else None to fall through.
+- `tests/jobpulse/form_engine/test_vision_verifier.py` — added 3 tests: `test_dom_match_skips_vision_call`, `test_dom_mismatch_still_calls_vision`, `test_verified_fills_cache_short_circuits_filler`.
+
+### Expected latency / cost impact (Greenhouse, 14-field form)
+
+| Run | DOM-match (N-2) | Vision call | Approx wall-clock |
+|---|---|---|---|
+| Pre-N | 0 / 14 | 1 composite call covering 14 fields | 70-90 s |
+| Post-N first run | 6-8 / 14 (text fields) | 1 composite call covering 6-8 residue fields (comboboxes / radios) | 35-55 s |
+| Post-N second run (cache warm) | All cached fields short-circuit at filler; vision sees 0-3 fields | 0 (all-dom-matched) or 1 (tiny residue) | <5 s for the fill phase; verifier may not run vision at all |
+
+The headline win is N-2 on first-run: ~50 % wall-clock reduction by skipping vision on deterministic types. Second-run is N-3's gain: filler short-circuits entirely on cached fields.
+
+### What this slice explicitly does NOT do
+
+- **Doesn't fix the legal-name field's fill gap.** That's a screening-pipeline scope (call it S26-follow-up-O); N just surfaces the gap via `scanner_saw_filler_skipped_required`.
+- **Doesn't change the resolver cascade in `_field_crop._resolve_form_row`.**
+- **Doesn't address L's G3 latency floor for vision-only fields.** Combobox / custom_dropdown / multiselect still go through the vendor chain.
+- **Doesn't wire `verified_fills.prune()` into the daemon's hourly tick.** The TTL helper is exposed for ad-hoc operator runs; row growth is bounded by `distinct_domains × distinct_labels × distinct_values_ever_verified`, which is small for a single-user pipeline.
+- **Doesn't add a `page_hash` column to the cache key.** Cross-page collision on same-domain same-label is acknowledged in a module-level comment; the filler's DOM re-check on lookup catches drift in practice.
+
+### Live verification (pending)
+
+This slice ships with passing unit tests but no live ATS evidence yet — the M-2 blocker (`process_single_url`'s page-reasoner LLM stack) is fixed per `b3488e6`/`46eb6f9`, so a live Graphcore dry-run is the natural next step. Expected sidecar shape on that run:
+
+```
+scanner_coverage:
+  total: 45                                   # all scanner-discovered fields
+  filled_verified_passed:        14 entries   # 8 DOM-match + 6 vision-passed
+  filled_verified_mismatch:       0
+  filled_vision_unavailable:      0
+  scanner_saw_filler_skipped_required:  2     # legal name fields (filler-coverage gap)
+  scanner_saw_filler_skipped_optional: 26
+  scanner_noise_excluded:         3           # buttons + file inputs
+
+composite_layout:
+  panels_total: 6                             # only comboboxes + radios
+  dom_match_count: 8
+  ...
+```
+
+### Follow-ups filed by this slice
+
+| ID | Severity | What | Why |
+|---|---|---|---|
+| **S26-follow-up-O** | P1 | Extend `screening_pipeline.resolve` (or `field_mapper`) to handle introspection / consent / agreement question categories so scanner-seen required fields like "Have you added your full legal name and surname?" stop landing in `scanner_saw_filler_skipped_required`. | N-1 makes the gap auditable; O fixes it. |
+| **S26-follow-up-N-1** | P2 | Wire `verified_fills.prune()` into the daemon's hourly optimize tick if cache size starts growing past a few thousand rows per user. | TTL-only with no scheduled pruning is fine for weeks; this is a defensive follow-up. |
+| **S26-follow-up-N-2** | P2 | Add `page_hash` to the verified_fills cache key so same-domain same-label collisions across pages disappear entirely. | Filler's DOM re-check protects against the collision in practice, but the key shape is the principled fix. |
