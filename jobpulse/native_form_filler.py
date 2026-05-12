@@ -392,7 +392,12 @@ def _log_field_trajectory(
     strategy: str, value: str, confidence: float, time_ms: int,
     page_index: int = 0,
 ) -> None:
-    """Log a field fill to the TrajectoryStore. Non-blocking."""
+    """Log a field fill to the TrajectoryStore. Non-blocking.
+
+    Failures are logged at WARNING (not DEBUG) so the operator notices
+    when trajectory.db isn't getting rows — silent debug logs were the
+    reason field_trajectories sat at 0 rows for weeks (Bug #6).
+    """
     try:
         from jobpulse.trajectory_store import get_trajectory_store
         get_trajectory_store().log_field(
@@ -402,7 +407,10 @@ def _log_field_trajectory(
             time_ms=time_ms, page_index=page_index,
         )
     except Exception as exc:
-        logger.debug("trajectory log_field failed: %s", exc)
+        logger.warning(
+            "trajectory log_field failed (job=%s domain=%s label=%r): %s",
+            job_id, domain, field_label, exc,
+        )
 
 
 def _load_field_overrides(domain: str) -> dict[str, dict]:
@@ -1531,18 +1539,172 @@ class NativeFormFiller:
             logger.debug("verified_fills_skip failed for %r: %s", label[:60], exc)
             return None
 
-    async def _fill_by_label(self, label: str, value: str) -> dict:
-        page = self._page
+    async def _verify_fill_immediate(
+        self, label: str, value: str,
+    ) -> bool | None:
+        """S26-follow-up-O-2: per-field DOM verification.
 
-        # S26-follow-up-N-3: verified-fills cache short-circuit. If a
-        # previous run already verified this (domain, label, value)
-        # AND the DOM still shows that value, we don't need to re-issue
-        # the fill at all. ``_try_verified_fills_skip`` returns the
-        # success-skipped dict on hit, or None to proceed with the
-        # normal fill path.
+        Returns True (DOM matches the claim), False (DOM mismatch), or
+        None (type isn't DOM-readable — combobox / custom_dropdown /
+        multiselect — so end-of-page vision handles it).
+        """
+        from jobpulse.form_engine._field_crop import (
+            read_dom_value, dom_value_matches_claim,
+        )
+        meta = (
+            getattr(self, "_fields_by_label", {}).get(label)
+            or getattr(self, "_fields_by_label", {}).get(
+                _strip_required_marker(label)
+            )
+        )
+        if not isinstance(meta, dict):
+            return None
+        ftype = str(meta.get("type") or "").lower()
+        locator = meta.get("locator")
+        if locator is None and meta.get("selector"):
+            try:
+                locator = self._page.locator(meta["selector"]).first
+            except Exception:
+                return None
+        if locator is None:
+            return None
+        try:
+            observed = await read_dom_value(locator, ftype)
+        except Exception:
+            return None
+        if observed is None:
+            return None
+        matched = dom_value_matches_claim(observed, value, ftype)
+        if matched:
+            logger.info(
+                "✓ verified_via=dom label=%r value=%r ftype=%s",
+                label[:60], str(value)[:30], ftype,
+            )
+        else:
+            logger.info(
+                "✗ verified_via=dom_mismatch label=%r expected=%r observed=%r ftype=%s",
+                label[:60], str(value)[:30], str(observed)[:30], ftype,
+            )
+        return matched
+
+    async def _llm_regen_alternate(
+        self, label: str, original_value: str,
+    ) -> str | None:
+        """S26-follow-up-O-2: ask LLM for an alternate value when DOM
+        verification keeps rejecting the filler's claim. Bounded to one
+        regen per field per session.
+        """
+        try:
+            from shared.agents import smart_llm_call
+        except Exception:
+            return None
+        prompt = (
+            f"A form field labelled '{label}' rejected the value "
+            f"'{original_value}'. Suggest a single alternate value that "
+            f"the field is more likely to accept. Reply with the value "
+            f"alone, no explanation."
+        )
+        try:
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    smart_llm_call, prompt, model="claude-haiku-4-5",
+                ),
+                timeout=15,
+            )
+            text = (resp or "").strip()
+            return text or None
+        except Exception as exc:
+            logger.debug("_llm_regen_alternate failed: %s", exc)
+            return None
+
+    def _record_session_fill(
+        self, label: str, value: str, verified: bool,
+    ) -> None:
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            return
+        meta = (
+            getattr(self, "_fields_by_label", {}).get(label, {}) or {}
+        )
+        ftype = str(meta.get("type") or "").lower()
+        state.record_fill(label, value, field_type=ftype, verified=verified)
+
+    async def _fill_with_validation(
+        self, label: str, value: str,
+    ) -> dict:
+        """S26-follow-up-O-2: 3-strike fill+verify loop.
+
+          1. fill raw → verify DOM → True/None → return success
+          2. fill raw again (transient hydration race) → verify
+          3. LLM-regen alternate value → fill → verify
+          4. bail with deferred_to_vision (end-of-page vision handles)
+        """
+        # Strike 1
+        result = await self._fill_raw(label, value)
+        if not result.get("success"):
+            return result
+        verified = await self._verify_fill_immediate(label, value)
+        if verified is True:
+            self._record_session_fill(label, value, verified=True)
+            return {**result, "verified": True, "verified_via": "dom"}
+        if verified is None:
+            self._record_session_fill(label, value, verified=False)
+            return {
+                **result, "verified": None,
+                "verified_via": "deferred_to_vision",
+            }
+
+        # Strike 2: re-fill same
+        result = await self._fill_raw(label, value)
+        verified = await self._verify_fill_immediate(label, value)
+        if verified is True:
+            self._record_session_fill(label, value, verified=True)
+            return {
+                **result, "verified": True,
+                "verified_via": "dom_after_retry",
+            }
+
+        # Strike 3: LLM-regen alternate
+        alternate = await self._llm_regen_alternate(label, value)
+        if alternate and alternate != value:
+            result = await self._fill_raw(label, alternate)
+            verified = await self._verify_fill_immediate(label, alternate)
+            if verified is True:
+                self._record_session_fill(label, alternate, verified=True)
+                return {
+                    **result, "verified": True,
+                    "verified_via": "dom_after_llm_regen",
+                    "value_set": alternate,
+                    "original_value_rejected": value,
+                }
+
+        # Bail to vision
+        return {
+            "success": False,
+            "error_class": "wrong_value_after_retries",
+            "deferred_to_vision": True,
+            "value_set": value,
+        }
+
+    async def _fill_by_label(self, label: str, value: str) -> dict:
+        # S26-follow-up-N-3: cross-run cache short-circuit (file-backed).
         skip_result = await self._try_verified_fills_skip(label, value)
         if skip_result is not None:
             return skip_result
+
+        # S26-follow-up-O-2: fill primitive + per-field DOM validation
+        # + 3-strike retry. The retry loop is owned at THIS level so
+        # _fill_raw stays a single-shot primitive (easier to test).
+        return await self._fill_with_validation(label, value)
+
+    async def _fill_raw(self, label: str, value: str) -> dict:
+        """Raw single-shot fill primitive (no validation, no in-run cache).
+
+        Pre-O-2 this was the body of _fill_by_label. Verification + retry
+        moved out to _fill_with_validation so this method is small enough
+        to reason about and test in isolation.
+        """
+        page = self._page
 
         if not os.environ.get("FAST_FILL"):
             await asyncio.sleep(_get_field_gap(label))

@@ -216,6 +216,25 @@ async def read_dom_value(
     selectors; we leave those to vision) or when the read itself fails.
     """
     ftype = (ftype or "").lower()
+    # O-2 follow-up (live-run finding 2026-05-12): when field_metadata
+    # misclassifies a react-select / aria-haspopup combobox as ``text``,
+    # the DOM input.value is "" even though the visible widget shows
+    # the selected option in a sibling. Without this check, the 3-strike
+    # retry loops forever on a structurally undetectable element. Defer
+    # to vision when the locator presents combobox-style ARIA so vision
+    # is the source of truth for these widgets.
+    if ftype in _DOM_READABLE_TEXT_TYPES:
+        try:
+            aria_haspopup = await input_locator.get_attribute(
+                "aria-haspopup", timeout=500,
+            )
+            aria_role = await input_locator.get_attribute("role", timeout=500)
+            if (aria_haspopup and aria_haspopup.lower() in {
+                "listbox", "true", "menu",
+            }) or (aria_role and aria_role.lower() == "combobox"):
+                return None
+        except Exception:
+            pass
     try:
         if ftype in _DOM_READABLE_TEXT_TYPES:
             return await input_locator.input_value(timeout=1500)
