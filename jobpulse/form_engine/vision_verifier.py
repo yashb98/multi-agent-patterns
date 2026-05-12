@@ -108,6 +108,10 @@ class VerifierResult:
     vision_unavailable: bool = False
     error: str | None = None
     artifact_path: str | None = None
+    # S26-follow-up-M-4: scanner-seen required fields the filler didn't
+    # fill (no_mapping / screening-pipeline gap). Surfaced for audit
+    # purposes — these are FILLER-coverage gaps, not verifier failures.
+    scanner_unfilled_required: list[dict] = dataclass_field(default_factory=list)
 
 
 # Kimi vision docs (https://platform.kimi.ai/docs/guide/use-kimi-vision-model)
@@ -589,6 +593,7 @@ def _save_artifact(
     elapsed_ms: float,
     chunks_used: int,
     composite_layout: dict | None,
+    scanner_unfilled_required: list[dict] | None = None,
 ) -> str | None:
     """Persist the image + verdicts JSON for replayable human spot-check.
 
@@ -659,6 +664,11 @@ def _save_artifact(
                 }
                 for v in verdicts
             ],
+            # M-4: silent-drop required fields the scanner saw but the
+            # filler didn't attempt (no_mapping / screening-pipeline gap).
+            # These are FILLER-coverage gaps; surfacing here lets the
+            # cross-adapter audit flag them without re-scraping logs.
+            "scanner_unfilled_required": scanner_unfilled_required or [],
         }
         with open(f"{base}.json", "w") as fh:
             json.dump(payload, fh, indent=2)
@@ -1143,6 +1153,41 @@ async def verify_form_page(
         result.elapsed_ms = (time.monotonic() - started) * 1000
         return result
 
+    # S26-follow-up-M-4: scanner ↔ filler coverage gap surfacing.
+    # The verifier only verifies fields the filler claimed to fill. If the
+    # scanner saw a required field but the filler skipped it (no_mapping
+    # / screening-pipeline gap), the user has no way to know without
+    # reading filler logs. Compute the gap here and surface it in the
+    # sidecar JSON so cross-adapter audits can flag silent-drop required
+    # fields without re-scraping logs.
+    scanner_unfilled_required: list[dict] = []
+    if field_metadata:
+        claimed_labels = set(filled_mapping.keys())
+        claimed_stripped = {_strip_required_marker(lbl) for lbl in claimed_labels}
+        for label, meta in field_metadata.items():
+            if not isinstance(meta, dict):
+                continue
+            if label in claimed_labels:
+                continue
+            if _strip_required_marker(label) in claimed_stripped:
+                continue
+            if not meta.get("required"):
+                continue
+            ftype = meta.get("type", "")
+            if ftype in ("button", "file"):
+                continue
+            scanner_unfilled_required.append({
+                "label": label,
+                "type": ftype,
+                "reason": "scanner_saw_filler_skipped",
+            })
+    if scanner_unfilled_required:
+        logger.warning(
+            "vision_verifier: %d required field(s) visible to scanner but not filled — page=%d domain=%s labels=%s",
+            len(scanner_unfilled_required), page_num, domain,
+            [e["label"][:50] for e in scanner_unfilled_required[:5]],
+        )
+
     # 2-3) Resolve locators + capture per-field crops (S26-follow-up-M).
     #      Uses ElementHandle.screenshot() on a dynamically-resolved
     #      form-row container — no coordinate math, no full-page crop.
@@ -1226,6 +1271,7 @@ async def verify_form_page(
                 trajectory_id=trajectory_id,
             )
         result.elapsed_ms = (time.monotonic() - started) * 1000
+        result.scanner_unfilled_required = list(scanner_unfilled_required)
         result.artifact_path = _save_artifact(
             composite=composite_bytes,
             fallback_screenshot=None if used_composite else vision_input,
@@ -1239,6 +1285,7 @@ async def verify_form_page(
             elapsed_ms=result.elapsed_ms,
             chunks_used=1,
             composite_layout=composite_layout,
+            scanner_unfilled_required=scanner_unfilled_required,
         )
         return result
 
@@ -1412,6 +1459,7 @@ async def verify_form_page(
         )
 
     result.elapsed_ms = (time.monotonic() - started) * 1000
+    result.scanner_unfilled_required = list(scanner_unfilled_required)
     result.artifact_path = _save_artifact(
         composite=composite_bytes,
         fallback_screenshot=None if used_composite else vision_input,
@@ -1423,6 +1471,7 @@ async def verify_form_page(
         platform=platform,
         cost_usd=result.cost_usd,
         elapsed_ms=result.elapsed_ms,
+        scanner_unfilled_required=scanner_unfilled_required,
         chunks_used=1,
         composite_layout=composite_layout,
     )
