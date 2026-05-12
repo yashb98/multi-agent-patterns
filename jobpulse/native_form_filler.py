@@ -1445,8 +1445,105 @@ class NativeFormFiller:
 
         return {"success": False, "error": f"unsupported input_type {input_type!r}"}
 
+    async def _try_verified_fills_skip(
+        self, label: str, value: str,
+    ) -> dict | None:
+        """Return a success-skipped dict if cache + DOM say the field is
+        already correctly filled, or None to proceed with the fill.
+
+        Two gates: the verified-fills cache must have a row for
+        ``(domain, label_norm, value)`` AND the DOM must currently show
+        that same value. The DOM re-check protects against
+        cross-page/cross-session drift (the cached value's option may
+        have been removed, the field may have been reset, etc.).
+
+        Types where DOM state is unreliable (combobox, custom_dropdown,
+        multiselect) bypass the short-circuit entirely; ``read_dom_value``
+        returns None for those and we fall through to the normal fill.
+        """
+        if os.environ.get("VERIFIED_FILLS_CACHE_ENABLED", "1").lower() in {
+            "0", "false", "no",
+        }:
+            return None
+        try:
+            url = getattr(self._page, "url", "") or ""
+            if not url:
+                return None
+            from jobpulse.form_experience_db import FormExperienceDB
+            from jobpulse.form_engine.verified_fills_db import VerifiedFillsDB
+            from jobpulse.form_engine._field_crop import (
+                read_dom_value, dom_value_matches_claim,
+            )
+            domain = FormExperienceDB.normalize_domain(url)
+            if not domain:
+                return None
+            db = VerifiedFillsDB()
+            hit = db.lookup(domain, label, value)
+            if hit is None:
+                return None
+
+            meta = (
+                getattr(self, "_fields_by_label", {}).get(label)
+                or getattr(self, "_fields_by_label", {}).get(
+                    _strip_required_marker(label)
+                )
+            )
+            ftype = ""
+            if isinstance(meta, dict):
+                ftype = str(meta.get("type") or "")
+            if not ftype:
+                ftype = hit.get("field_type") or ""
+
+            attached = None
+            if isinstance(meta, dict):
+                attached = meta.get("locator")
+                if attached is None and meta.get("selector"):
+                    try:
+                        attached = self._page.locator(meta["selector"]).first
+                    except Exception:
+                        attached = None
+            if attached is None:
+                stripped = _strip_required_marker(label)
+                attached = self._page.get_by_label(stripped, exact=False).first
+            try:
+                if not await attached.count():
+                    return None
+            except Exception:
+                return None
+
+            observed = await read_dom_value(attached, ftype)
+            if not dom_value_matches_claim(observed, value, ftype):
+                return None
+
+            logger.info(
+                "fill ⊘ %r reason=already_verified (cache hit, DOM confirms)",
+                label[:60],
+            )
+            return {
+                "success": True,
+                "skipped": "already_verified",
+                "value_set": value,
+                "value_verified": True,
+                "actual_value": observed,
+                "expected_value": value,
+            }
+        except Exception as exc:
+            logger.debug("verified_fills_skip failed for %r: %s", label[:60], exc)
+            return None
+
     async def _fill_by_label(self, label: str, value: str) -> dict:
         page = self._page
+
+        # S26-follow-up-N-3: verified-fills cache short-circuit. If a
+        # previous run already verified this (domain, label, value)
+        # AND the DOM still shows that value, we don't need to re-issue
+        # the fill at all. ``_try_verified_fills_skip`` returns the
+        # success-skipped dict on hit, or None to proceed with the
+        # normal fill path.
+        skip_result = await self._try_verified_fills_skip(label, value)
+        if skip_result is not None:
+            return skip_result
+
         if not os.environ.get("FAST_FILL"):
             await asyncio.sleep(_get_field_gap(label))
 

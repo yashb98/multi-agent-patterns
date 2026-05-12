@@ -757,3 +757,57 @@ def test_dom_mismatch_still_calls_vision(_enable_verifier, tmp_path, monkeypatch
     assert mock_client.return_value.chat.completions.create.call_count == 1
     assert len(result.verdicts) == 1
     assert result.verdicts[0].tier_reached == "mismatch_detected"
+
+
+# ───────────────────────── S26-follow-up-N-3 ─────────────────────────
+
+
+def test_verified_fills_cache_short_circuits_filler(tmp_path, monkeypatch):
+    """N-3: pre-populated cache + DOM-still-matches → filler returns
+    success-skipped without touching page.fill().
+    """
+    monkeypatch.setenv("VERIFIED_FILLS_DB_PATH", str(tmp_path / "vf.db"))
+    monkeypatch.setenv("VERIFIED_FILLS_CACHE_ENABLED", "1")
+
+    from jobpulse.form_engine.verified_fills_db import VerifiedFillsDB
+    from jobpulse.native_form_filler import NativeFormFiller
+
+    db = VerifiedFillsDB()
+    db.record(
+        domain="job-boards.greenhouse.io",
+        label="Email",
+        field_type="email",
+        verified_value="yash@example.com",
+        method="dom_match",
+    )
+
+    attached = _dom_locator(input_value="yash@example.com")
+    page = MagicMock()
+    page.url = "https://job-boards.greenhouse.io/x"
+    page.fill = AsyncMock()
+    page.get_by_label = MagicMock()
+    page.get_by_label.return_value.first = attached
+
+    filler = NativeFormFiller.__new__(NativeFormFiller)
+    filler._page = page
+    filler._fields_by_label = {
+        "Email": {"type": "email", "locator": attached},
+    }
+
+    result = asyncio.run(
+        filler._try_verified_fills_skip("Email", "yash@example.com"),
+    )
+    assert result is not None
+    assert result["success"] is True
+    assert result["skipped"] == "already_verified"
+    # No production fill methods were invoked.
+    assert page.fill.call_count == 0
+
+    # Drift case: DOM now shows a different value → cache hit but
+    # short-circuit declines, filler proceeds.
+    attached2 = _dom_locator(input_value="different@example.com")
+    filler._fields_by_label["Email"]["locator"] = attached2
+    drifted = asyncio.run(
+        filler._try_verified_fills_skip("Email", "yash@example.com"),
+    )
+    assert drifted is None

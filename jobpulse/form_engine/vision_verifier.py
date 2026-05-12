@@ -579,6 +579,50 @@ def _domain_from_url(url: str) -> str:
         return ""
 
 
+def _persist_verified_fills_cache(
+    verdicts: list[FieldVerdict],
+    field_metadata: dict[str, dict] | None,
+    domain: str,
+    dom_match_labels: set[str],
+) -> None:
+    """Write/invalidate verified_fills rows from the verifier's verdicts.
+
+    Only ``passed`` records a row (strong-evidence verdict tier).
+    ``mismatch_detected`` invalidates any existing row for the label so
+    the next dry-run does not trust a stale cache hit. Other tiers
+    (``correction_succeeded``, ``vision_unavailable``,
+    ``skipped_no_expected_value``) are intentionally skipped — a
+    correction means the original claim was wrong, and the other tiers
+    don't constitute evidence of correctness.
+
+    ``dom_match_labels`` provides the provenance: passed verdicts whose
+    label is in this set were confirmed by DOM read, the rest by vision.
+    """
+    if not domain:
+        return
+    try:
+        from jobpulse.form_engine.verified_fills_db import VerifiedFillsDB
+        db = VerifiedFillsDB()
+    except Exception as exc:
+        logger.debug("verified_fills: DB init failed: %s", exc)
+        return
+    for v in verdicts:
+        meta = None
+        if field_metadata:
+            meta = (
+                field_metadata.get(v.label)
+                or field_metadata.get(_strip_required_marker(v.label))
+            )
+        ftype = ""
+        if isinstance(meta, dict):
+            ftype = str(meta.get("type") or "")
+        if v.tier_reached == "passed":
+            method = "dom_match" if v.label in dom_match_labels else "vision"
+            db.record(domain, v.label, ftype, v.claimed_value, method)
+        elif v.tier_reached == "mismatch_detected":
+            db.invalidate(domain, v.label)
+
+
 def _compute_scanner_coverage(
     field_metadata: dict[str, dict] | None,
     verdicts: list[FieldVerdict],
@@ -1312,6 +1356,9 @@ async def verify_form_page(
             "dom_match_count": len(dom_match_by_ordinal),
             "fallback_reason": "all_fields_dom_matched",
         }
+        _persist_verified_fills_cache(
+            result.verdicts, field_metadata, domain, dom_match_labels,
+        )
         result.artifact_path = _save_artifact(
             composite=None,
             fallback_screenshot=None,
@@ -1634,6 +1681,9 @@ async def verify_form_page(
 
     result.elapsed_ms = (time.monotonic() - started) * 1000
     result.scanner_unfilled_required = list(scanner_unfilled_required)
+    _persist_verified_fills_cache(
+        result.verdicts, field_metadata, domain, dom_match_labels,
+    )
     result.artifact_path = _save_artifact(
         composite=composite_bytes,
         fallback_screenshot=None if used_composite else vision_input,
