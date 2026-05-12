@@ -1259,15 +1259,89 @@ async def verify_form_page(
     #      Uses ElementHandle.screenshot() on a dynamically-resolved
     #      form-row container — no coordinate math, no full-page crop.
     field_crops = await _extract_field_crops(page, claim_rows, field_metadata)
-    captured = sum(1 for c in field_crops if c.crop_bytes is not None)
+
+    # S26-follow-up-N-2: split crops into DOM-matched (short-circuit to
+    # passed without a vision call) and the residue that still needs a
+    # vision verdict. ``_capture_field_crop`` flags DOM-matched crops
+    # with ``resolve_method='dom_match'`` and leaves ``crop_bytes=None``
+    # so the composite naturally excludes them.
+    dom_match_by_ordinal: dict[int, FieldCrop] = {
+        c.ordinal: c for c in field_crops if c.resolve_method == "dom_match"
+    }
+    dom_match_labels: set[str] = {
+        c.label for c in field_crops if c.resolve_method == "dom_match"
+    }
+    non_dom_match_crops = [
+        c for c in field_crops if c.resolve_method != "dom_match"
+    ]
+    captured = sum(1 for c in non_dom_match_crops if c.crop_bytes is not None)
     logger.info(
-        "vision_verifier: per-field crops %d/%d  page=%d domain=%s",
-        captured, len(field_crops), page_num, domain,
+        "vision_verifier: per-field crops %d/%d (dom_match=%d)  page=%d domain=%s",
+        captured, len(non_dom_match_crops), len(dom_match_by_ordinal),
+        page_num, domain,
     )
+
+    # If every filled field was DOM-matched, vision has nothing to do.
+    if not non_dom_match_crops:
+        for label, value in claim_rows:
+            verdict = FieldVerdict(
+                label=label,
+                claimed_value=value,
+                observed_value=value,
+                matches_claim=True,
+                contradicts_help_text=False,
+                reason="DOM input value matched claim (no vision needed)",
+                tier_reached="passed",
+            )
+            result.verdicts.append(verdict)
+            _record_verdict_row(
+                verdict,
+                page_url=page_url,
+                platform=platform,
+                confidence=1.0,
+                elapsed_ms=0.0,
+                trajectory_id=trajectory_id,
+            )
+        result.elapsed_ms = (time.monotonic() - started) * 1000
+        result.scanner_unfilled_required = list(scanner_unfilled_required)
+        composite_layout = {
+            "panels_total": 0,
+            "claims_collapsed_via_dedup": 0,
+            "claims_unresolved": 0,
+            "image_bytes": 0,
+            "dom_match_count": len(dom_match_by_ordinal),
+            "fallback_reason": "all_fields_dom_matched",
+        }
+        result.artifact_path = _save_artifact(
+            composite=None,
+            fallback_screenshot=None,
+            domain=domain,
+            page_num=page_num,
+            verdicts=result.verdicts,
+            panels=[],
+            page_url=page_url,
+            platform=platform,
+            cost_usd=result.cost_usd,
+            elapsed_ms=result.elapsed_ms,
+            chunks_used=0,
+            composite_layout=composite_layout,
+            scanner_unfilled_required=scanner_unfilled_required,
+            scanner_coverage=_compute_scanner_coverage(
+                field_metadata, result.verdicts,
+                scanner_unfilled_required,
+                scanner_unfilled_optional,
+                scanner_noise_excluded,
+            ),
+        )
+        logger.info(
+            "vision_verifier: page %d (%s) — all %d field(s) DOM-matched, vision skipped",
+            page_num, domain, len(claim_rows),
+        )
+        return result
 
     # 4) Build the composite. If no crop could be captured, fall back to
     #    the whole-page screenshot (still single-shot).
-    composite_bytes, panels = _build_composite(field_crops)
+    composite_bytes, panels = _build_composite(non_dom_match_crops)
     used_composite = composite_bytes is not None
     if used_composite:
         vision_input = composite_bytes
@@ -1278,24 +1352,34 @@ async def verify_form_page(
         # duplicate-labeled widgets). They ARE represented in the
         # composite, sharing a panel — not failed captures.
         collapsed = sum(len(p.get("dedup_with") or []) for p in panels)
-        unresolved_count = len(claim_rows) - len(panels) - collapsed
+        unresolved_count = (
+            len(claim_rows) - len(panels) - collapsed
+            - len(dom_match_by_ordinal)
+        )
         composite_layout = {
             "panels_total": len(panels),
             "claims_collapsed_via_dedup": collapsed,
             "claims_unresolved": max(0, unresolved_count),
             "image_bytes": len(composite_bytes),
+            "dom_match_count": len(dom_match_by_ordinal),
         }
     else:
         # Fallback: whole page, no ordinals — same shape as pre-K verifier
         # but still single-call. Vision keys verdicts by label text.
         vision_input = _compress_for_vision(screenshot_png)
-        ordered_for_prompt = list(claim_rows)
+        # The DOM-matched fields don't need vision; only ask vision about
+        # the residue so the prompt list matches what's visible.
+        ordered_for_prompt = [
+            (label, value) for label, value in claim_rows
+            if label not in dom_match_labels
+        ] or list(claim_rows)
         prompt = _build_prompt(ordered_for_prompt, ordinals=False)
         composite_layout = {
             "panels_total": 0,
             "claims_collapsed_via_dedup": 0,
-            "claims_unresolved": len(field_crops),
+            "claims_unresolved": len(non_dom_match_crops),
             "image_bytes": len(vision_input),
+            "dom_match_count": len(dom_match_by_ordinal),
             "fallback_reason": "no_field_crops_captured",
         }
         panels = []
@@ -1410,6 +1494,23 @@ async def verify_form_page(
     verdicts: list[FieldVerdict] = []
     correction_queue: list[int] = []
     for claim_idx, (label, claimed) in enumerate(claim_rows, start=1):
+        # S26-follow-up-N-2: DOM pre-check short-circuit. When
+        # ``_capture_field_crop`` already confirmed via the DOM that the
+        # rendered value matches the claim, vision was never asked about
+        # this field — emit a passed verdict directly so the row stays
+        # in the sidecar and decision log.
+        if claim_idx in dom_match_by_ordinal:
+            verdict = FieldVerdict(
+                label=label,
+                claimed_value=claimed,
+                observed_value=claimed,
+                matches_claim=True,
+                contradicts_help_text=False,
+                reason="DOM input value matched claim (no vision needed)",
+                tier_reached="passed",
+            )
+            verdicts.append(verdict)
+            continue
         entry: dict | None = None
         if used_composite:
             panel_pos = panel_pos_by_claim_ordinal.get(claim_idx)

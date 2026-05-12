@@ -176,9 +176,109 @@ class FieldCrop:
     label: str
     value: str
     crop_bytes: bytes | None
-    resolve_method: str  # option_label | fieldset | role_group | form_row | form_row_relaxed | element_fallback | unresolved
+    resolve_method: str  # option_label | fieldset | role_group | form_row | form_row_relaxed | element_fallback | unresolved | dom_match
     dedup_with: list[int] = dataclass_field(default_factory=list)
     bbox: tuple[float, float, float, float] | None = None
+
+
+# S26-follow-up-N-2: DOM-level pre-check.
+#
+# For deterministic field types the browser already knows the rendered
+# value at fill time — vision is unnecessary. Reading the DOM costs
+# <10 ms vs ~25-90 s for a vision call. We escalate to vision only when
+# DOM state is unreliable (combobox, custom_dropdown, multiselect).
+#
+# Tiers (per type):
+#   text/textarea/email/tel/url/number/password/search → input_value()
+#   checkbox                                            → is_checked()
+#   radio                                               → is_checked() + value attr
+#   select / native_select                              → selectedOptions[0].textContent
+#   file                                                → files[0]?.name
+#   combobox / custom_dropdown / multiselect / unknown  → return None (vision)
+_DOM_READABLE_TEXT_TYPES = frozenset({
+    "text", "textarea", "email", "tel", "url",
+    "number", "password", "search",
+})
+_CHECKBOX_TRUTHY = frozenset({
+    "true", "yes", "on", "1", "checked",
+})
+
+
+async def read_dom_value(
+    input_locator: "Locator", ftype: str,
+) -> str | None:
+    """Read the rendered value of a form input directly from the DOM.
+
+    Returns the rendered value as a string for deterministic types
+    (text/textarea/checkbox/radio/native select/file), or None when DOM
+    state is unreliable for this widget kind (combobox-style widgets
+    store the displayed text in a sibling element via platform-specific
+    selectors; we leave those to vision) or when the read itself fails.
+    """
+    ftype = (ftype or "").lower()
+    try:
+        if ftype in _DOM_READABLE_TEXT_TYPES:
+            return await input_locator.input_value(timeout=1500)
+        if ftype == "checkbox":
+            checked = await input_locator.is_checked(timeout=1500)
+            return "true" if checked else "false"
+        if ftype == "radio":
+            checked = await input_locator.is_checked(timeout=1500)
+            if not checked:
+                return None
+            try:
+                value_attr = await input_locator.get_attribute(
+                    "value", timeout=1500,
+                )
+            except Exception:
+                value_attr = None
+            return value_attr or "true"
+        if ftype in ("select", "native_select"):
+            return await input_locator.evaluate(
+                "el => el && el.selectedOptions && el.selectedOptions[0]"
+                " ? el.selectedOptions[0].textContent : null",
+            )
+        if ftype == "file":
+            return await input_locator.evaluate(
+                "el => (el && el.files && el.files.length > 0)"
+                " ? el.files[0].name : null",
+            )
+    except Exception as exc:
+        logger.debug(
+            "read_dom_value: %s for ftype=%r: %s",
+            exc.__class__.__name__, ftype, exc,
+        )
+        return None
+    return None
+
+
+def dom_value_matches_claim(
+    observed: str | None, claim: str, ftype: str,
+) -> bool:
+    """Compare a DOM-read value against the filler's claim.
+
+    Match semantics per type:
+      - checkbox: truthy-set equality (handles "true"/"yes"/"1" interop)
+      - file: basename equality (input.files[0].name vs path the filler
+        used)
+      - everything else: whitespace-stripped, case-insensitive equality
+
+    Empty / None observations never match (caller falls through to
+    vision so the user gets a real verdict).
+    """
+    if observed is None:
+        return False
+    o = str(observed).strip().lower()
+    c = str(claim or "").strip().lower()
+    if not c:
+        return False
+    ftype = (ftype or "").lower()
+    if ftype == "checkbox":
+        return (o in _CHECKBOX_TRUTHY) == (c in _CHECKBOX_TRUTHY)
+    if ftype == "file":
+        import os as _os
+        return _os.path.basename(o) == _os.path.basename(c)
+    return o == c
 
 
 async def _try_locator_cascade(ctx, stripped: str):
@@ -325,6 +425,25 @@ async def _capture_field_crop(
     if resolved is None:
         return crop
     input_locator, _owner_frame = resolved
+
+    # S26-follow-up-N-2: DOM-level pre-check. For deterministic field
+    # types we can read the rendered value off the input directly; if
+    # it matches the claim, there is nothing for vision to do. We mark
+    # the crop ``dom_match`` and leave ``crop_bytes=None`` so the
+    # composite-build step filters it out cleanly.
+    ftype = ""
+    if field_metadata:
+        meta = (
+            field_metadata.get(label)
+            or field_metadata.get(_strip_required_marker(label))
+        )
+        if isinstance(meta, dict):
+            ftype = (meta.get("type") or "").lower()
+    if ftype:
+        observed_dom = await read_dom_value(input_locator, ftype)
+        if dom_value_matches_claim(observed_dom, value, ftype):
+            crop.resolve_method = "dom_match"
+            return crop
 
     row_handle, method = await _resolve_row_handle(input_locator, label)
     crop.resolve_method = method

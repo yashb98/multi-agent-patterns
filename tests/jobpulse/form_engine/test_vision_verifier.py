@@ -675,3 +675,85 @@ def test_decision_rows_written(_enable_verifier):
     assert rows[0].field_label == "Email"
     assert rows[0].tier_reached == "passed"
     assert rows[0].mechanism == "llm"
+
+
+# ───────────────────────── S26-follow-up-N-2 ─────────────────────────
+
+
+def _dom_locator(input_value: str, ftype_specific: dict | None = None) -> MagicMock:
+    """Build a mock Playwright locator whose DOM-read methods return
+    canned values. ``ftype_specific`` lets a test override ``is_checked``
+    / ``evaluate`` / ``get_attribute`` for non-text types.
+    """
+    loc = MagicMock()
+    loc.count = AsyncMock(return_value=1)
+    loc.input_value = AsyncMock(return_value=input_value)
+    loc.is_checked = AsyncMock(return_value=False)
+    loc.get_attribute = AsyncMock(return_value=None)
+    loc.evaluate = AsyncMock(return_value=None)
+    if ftype_specific:
+        for attr, val in ftype_specific.items():
+            setattr(loc, attr, AsyncMock(return_value=val))
+    return loc
+
+
+def test_dom_match_skips_vision_call(_enable_verifier, tmp_path, monkeypatch):
+    """N-2: text field whose DOM value matches the claim — no vision call."""
+    monkeypatch.setenv("VERIFIED_FILLS_DB_PATH", str(tmp_path / "vf.db"))
+    page = _fake_page_with_screenshot()
+    attached = _dom_locator(input_value="yash@example.com")
+    field_metadata = {"Email*": {"type": "email", "locator": attached, "required": True}}
+    with patch.object(vv, "get_openai_client") as mock_client:
+        mock_client.return_value.chat.completions.create = MagicMock(
+            return_value=_vision_response({"verdicts": []})
+        )
+        result = asyncio.run(
+            vv.verify_form_page(
+                page, {"Email*": "yash@example.com"},
+                page_url="https://job-boards.greenhouse.io/x",
+                platform="greenhouse",
+                field_metadata=field_metadata,
+            )
+        )
+    # Vision must not have been called at all.
+    assert mock_client.return_value.chat.completions.create.call_count == 0
+    assert len(result.verdicts) == 1
+    v = result.verdicts[0]
+    assert v.tier_reached == "passed"
+    assert "DOM input value matched claim" in v.reason
+
+
+def test_dom_mismatch_still_calls_vision(_enable_verifier, tmp_path, monkeypatch):
+    """N-2: DOM value differs from claim → vision is consulted."""
+    monkeypatch.setenv("VERIFIED_FILLS_DB_PATH", str(tmp_path / "vf.db"))
+    page = _fake_page_with_screenshot()
+    attached = _dom_locator(input_value="someone-else@example.com")
+    field_metadata = {"Email*": {"type": "email", "locator": attached, "required": True}}
+    vision_payload = {
+        "verdicts": [
+            {
+                "label": "Email*",
+                "ordinal": 1,
+                "observed_value": "someone-else@example.com",
+                "matches_claim": False,
+                "contradicts_help_text": False,
+                "reason": "rendered value differs",
+            }
+        ]
+    }
+    with patch.object(vv, "get_openai_client") as mock_client:
+        mock_client.return_value.chat.completions.create = MagicMock(
+            return_value=_vision_response(vision_payload)
+        )
+        result = asyncio.run(
+            vv.verify_form_page(
+                page, {"Email*": "yash@example.com"},
+                page_url="https://job-boards.greenhouse.io/x",
+                platform="greenhouse",
+                field_metadata=field_metadata,
+            )
+        )
+    # Vision IS called because DOM read disagrees with the claim.
+    assert mock_client.return_value.chat.completions.create.call_count == 1
+    assert len(result.verdicts) == 1
+    assert result.verdicts[0].tier_reached == "mismatch_detected"
