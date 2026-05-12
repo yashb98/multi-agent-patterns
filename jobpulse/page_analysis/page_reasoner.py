@@ -567,7 +567,15 @@ class PageReasoner:
             # "Never rely on markdown stripping to extract JSON". Live
             # verified twice on Graphcore: first parse failed every time,
             # safety net (Fix D) was load-bearing.
-            base_llm = get_llm(temperature=0, max_tokens=500, agent_name="page_reasoner")
+            # Live evidence 2026-05-12: Moonshot returned LengthFinishReasonError
+            # with `completion_tokens=500` because Kimi's reasoning trace +
+            # JSON response together exceed the 500-token budget on long ATS
+            # pages (Graphcore had 53 fields). Raising to 4046 covers the
+            # reasoning-trace overhead while staying well under Kimi's 8k
+            # cap. The system prompt also instructs the model to be terse
+            # so the JSON itself stays small — semantic analysis only needs
+            # the action + targets, not prose.
+            base_llm = get_llm(temperature=0, max_tokens=4046, agent_name="page_reasoner")
             llm = base_llm.bind(response_format={"type": "json_object"})
             try:
                 response = smart_llm_call(llm, msgs)
@@ -578,7 +586,7 @@ class PageReasoner:
                     cloud_llm = get_llm(
                         model="gpt-4o-mini",
                         temperature=0,
-                        max_tokens=500,
+                        max_tokens=4046,
                         timeout=30,
                         agent_name="page_reasoner",
                         force_cloud=True,
@@ -663,6 +671,10 @@ class PageReasoner:
             "You see a web page's content, fields, buttons, and any overlays/CAPTCHAs.\n\n"
             "Your job: decide EXACTLY what to do on this page — which fields to fill, "
             "which checkboxes to check, which overlays to dismiss, and which button to click to advance.\n\n"
+            "BE CONCISE: keep every string value short (≤80 chars). "
+            "page_understanding + reasoning must each be ONE short sentence. "
+            "Do not pad. Semantic analysis only needs action + targets; "
+            "verbose prose wastes tokens and risks truncation.\n\n"
             "Return ONLY a JSON object:\n"
             "{\n"
             '  "page_understanding": "one sentence describing what you see",\n'

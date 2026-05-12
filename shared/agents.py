@@ -213,9 +213,18 @@ _FALLBACK_MODELS = {
 _ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
 _GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
-# Provider fallback chain (when LLM_PROVIDER=auto and cloud)
-# Order: openai → anthropic → gemini
-_PROVIDER_FALLBACK_CHAIN = ["openai", "anthropic", "gemini"]
+# Provider fallback chain (when LLM_PROVIDER=auto and cloud).
+# Order: openai (= Kimi via Moonshot's OpenAI-compatible endpoint in
+# production) → ollama (local fallback). Anthropic and Gemini are
+# intentionally REMOVED per the "Kimi mandatory" rule in
+# `.claude/rules/jobs.md` + `shared/CLAUDE.md`. Live evidence
+# 2026-05-12: Anthropic returned 401 on the page-reasoner fallback
+# because ANTHROPIC_API_KEY isn't set in prod, which then propagated to
+# the orchestrator as "all providers failed" and aborted the apply
+# before reaching form fill. Ollama (local) is the correct next-tier
+# fallback: it's already running for the embedder / local-mode primary,
+# costs nothing, and survives cloud outages.
+_PROVIDER_FALLBACK_CHAIN = ["openai", "ollama"]
 
 
 def _probe_ollama() -> bool:
@@ -627,6 +636,27 @@ def get_llm(temperature: float = 0.7, model: str = "gpt-5-mini",
             llm = _make_anthropic_llm(temperature, timeout, max_tokens)
         elif provider_name == "gemini":
             llm = _make_gemini_llm(temperature, timeout, max_tokens)
+        elif provider_name == "ollama":
+            # Local Ollama as next-tier fallback when the primary
+            # (Kimi via OpenAI-compatible endpoint) errors. Cost-free,
+            # survives cloud outages, and the embedder already requires
+            # it to be running. Uses the existing _make_local_llm
+            # factory (Ollama's OpenAI-compatible endpoint).
+            try:
+                local_model = os.environ.get(
+                    "OLLAMA_FALLBACK_MODEL", "qwen3:32b",
+                )
+                llm = _make_local_llm(
+                    temperature,
+                    local_model,
+                    timeout * _LOCAL_TIMEOUT_MULTIPLIER,
+                    max_tokens,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Ollama fallback unavailable (%s) — skipping", exc,
+                )
+                llm = None
         else:
             continue
         if llm is not None:
@@ -1178,8 +1208,20 @@ def _direct_llm_call(
     # reasoning model. ``max_tokens`` lets a caller (e.g. field_analyzer
     # with 40+ fields to enrich) request a larger budget; default 2000
     # keeps cost bounded for the bulk of calls.
+    #
+    # Per-domain timeout: form_recovery runs inside the orchestrator's
+    # outer fill loop, where a 180s hang appears as a complete pipeline
+    # stall to operators (live evidence 2026-05-12, runs 1+2). Cap it at
+    # 30s — recovery LLM calls that take longer than that are signaling
+    # provider issues, not legitimate slow inference, and the orchestrator
+    # is better off skipping the field and deferring to vision verifier.
+    _PER_DOMAIN_TIMEOUTS = {
+        "form_recovery":  30.0,
+        "form_field_mapping": 30.0,
+    }
+    client_timeout = _PER_DOMAIN_TIMEOUTS.get(domain or "", 180.0)
     try:
-        client = get_openai_client()
+        client = get_openai_client(timeout=client_timeout)
         model = _model_for_domain(domain) or get_model_name()
         requested = max_tokens if max_tokens is not None else 2000
         kwargs: dict = {

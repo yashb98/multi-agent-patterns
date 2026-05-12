@@ -568,18 +568,44 @@ class ScreeningPipeline:
         # The downstream OptionAligner remains as a safety net for near-misses.
         options = field.get("options") if field else None
         field_type = (field.get("type") or "").lower() if field else ""
-        is_option_field = bool(options) and field_type in {
-            "select", "radio", "checkbox", "combobox", "custom_dropdown",
-            "multiselect",
-        }
+
+        # Live evidence 2026-05-12 (Graphcore School*): when a combobox
+        # surfaces a TRUNCATED alphabetical list (Greenhouse's School
+        # combo returns the first 100 options; Country returns 244 etc.),
+        # the right answer ("University of Dundee") sits far below the
+        # visible head. Forcing the LLM to pick from those visible options
+        # makes it choose the closest-looking match ("Abertay University"
+        # — same city, different uni). Solution: for combobox / custom_
+        # dropdown with a long option list, switch off option-constraint
+        # and let the LLM emit the canonical profile value (free text).
+        # The filler's ``combobox_type_to_search`` technique then types
+        # that value into the input, the widget filters server-side, and
+        # the correct option surfaces for selection. Threshold 50 keeps
+        # short closed-set comboboxes (Yes/No, 5-option gender pickers)
+        # on the option-constrained path.
+        _COMBOBOX_TRUNCATED_THRESHOLD = 50
+        is_combobox_long_list = (
+            bool(options)
+            and field_type in {"combobox", "custom_dropdown"}
+            and len(options) > _COMBOBOX_TRUNCATED_THRESHOLD
+        )
+        is_option_field = (
+            bool(options)
+            and field_type in {
+                "select", "radio", "checkbox", "combobox", "custom_dropdown",
+                "multiselect",
+            }
+            and not is_combobox_long_list
+        )
         logger.info(
             "DIAG _llm_answer: question=%r field_type=%r has_options=%s n_options=%d "
-            "is_option_field=%s",
+            "is_option_field=%s long_list=%s",
             (question or "")[:80],
             field_type,
             bool(options),
             len(options) if options else 0,
             is_option_field,
+            is_combobox_long_list,
         )
 
         if is_option_field:
