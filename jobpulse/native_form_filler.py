@@ -532,6 +532,12 @@ class NativeFormFiller:
                 self._signal_interpreter = SignalInterpreter()
             except Exception:
                 pass
+        # S26-follow-up-O-3: in-memory session fill tracking. Records
+        # every fill the current run has issued so subsequent
+        # _fill_by_label calls for the same (label, value) can short-
+        # circuit. Cleared at NativeFormFiller construction.
+        from jobpulse.screening_session_state import SessionFillState
+        self._session_state: SessionFillState = SessionFillState()
 
     # ── Platform Strategy + Domain Knowledge ──
 
@@ -1539,6 +1545,32 @@ class NativeFormFiller:
             logger.debug("verified_fills_skip failed for %r: %s", label[:60], exc)
             return None
 
+    async def _try_in_run_skip(self, label: str, value: str) -> dict | None:
+        """S26-follow-up-O-3: in-memory short-circuit. If this run has
+        already filled+verified this label with this value, skip the
+        fill entirely. Cheaper than the N-3 file-backed cache because
+        nothing is read from disk.
+        """
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            return None
+        if not state.has_filled(label):
+            return None
+        if not state.was_verified(label):
+            return None
+        rec = state.get(label)
+        if rec is None or rec.value != value:
+            return None
+        logger.info(
+            "fill ⊘ %r reason=already_verified_in_run", label[:60],
+        )
+        return {
+            "success": True,
+            "skipped": "already_verified_in_run",
+            "value_set": value,
+            "verified": True,
+        }
+
     async def _verify_fill_immediate(
         self, label: str, value: str,
     ) -> bool | None:
@@ -1687,6 +1719,11 @@ class NativeFormFiller:
         }
 
     async def _fill_by_label(self, label: str, value: str) -> dict:
+        # S26-follow-up-O-3: in-memory short-circuit (cheapest).
+        in_run = await self._try_in_run_skip(label, value)
+        if in_run is not None:
+            return in_run
+
         # S26-follow-up-N-3: cross-run cache short-circuit (file-backed).
         skip_result = await self._try_verified_fills_skip(label, value)
         if skip_result is not None:
