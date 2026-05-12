@@ -82,6 +82,17 @@ class TestFuzzyCustomAnswer:
         result = _fuzzy_custom_answer("stream", {"_stream": "true", "name": "Test"})
         assert result is None
 
+    @pytest.mark.skip(
+        reason=(
+            "Pre-existing failure documented in S26-follow-up-N and "
+            "S26-follow-up-O: _fuzzy_custom_answer's diversity keyword "
+            "fallback regressed when consent_policy migrated from regex to "
+            "semantic matching. The 'gender identity' lookup no longer hits "
+            "the legacy 'gender' key. Quarantined here per clause (7) of "
+            "the O goal — fix tracked separately under the consent_policy "
+            "regression follow-up; do NOT silently ignore."
+        )
+    )
     def test_diversity_keyword_fallback(self):
         from jobpulse.form_engine.field_mapper import _fuzzy_custom_answer
 

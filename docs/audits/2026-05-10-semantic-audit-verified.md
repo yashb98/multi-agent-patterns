@@ -2320,3 +2320,110 @@ composite_layout:
 | **S26-follow-up-O** | P1 | Extend `screening_pipeline.resolve` (or `field_mapper`) to handle introspection / consent / agreement question categories so scanner-seen required fields like "Have you added your full legal name and surname?" stop landing in `scanner_saw_filler_skipped_required`. | N-1 makes the gap auditable; O fixes it. |
 | **S26-follow-up-N-1** | P2 | Wire `verified_fills.prune()` into the daemon's hourly optimize tick if cache size starts growing past a few thousand rows per user. | TTL-only with no scheduled pruning is fine for weeks; this is a defensive follow-up. |
 | **S26-follow-up-N-2** | P2 | Add `page_hash` to the verified_fills cache key so same-domain same-label collisions across pages disappear entirely. | Filler's DOM re-check protects against the collision in practice, but the key shape is the principled fix. |
+
+
+## S26-follow-up-O — STATUS: ⚠️ SHIPPED-PARTIAL (2026-05-12)
+
+Four-phase slice closing the scanner→screening-pipeline→filler→verifier gap that N-1 made auditable. Code + unit tests are complete and committed; live URL verification on a Graphcore Greenhouse dry-run is the remaining work and is filed as **S26-follow-up-O-live** below.
+
+### What shipped (code + unit tests)
+
+| Phase | Commit | Change |
+|---|---|---|
+| **O-1** | `3034813` | `ScreeningIntent.INTROSPECTION_CONFIRMATION` enum + 10 seed prototypes + module-level `classify_intent` wrapper. New `jobpulse/screening_session_state.py` (`SessionFillState`). `ScreeningPipeline.answer` accepts `session_state` kwarg; new `_try_introspection_answer` runs before the semantic cache and resolves "Have you added X?" via `session_state.references_present`. |
+| **O-2** | `132f375` | `NativeFormFiller._verify_fill_immediate` (DOM check via `read_dom_value`), `_llm_regen_alternate` (one-shot LLM regen), `_fill_with_validation` (3-strike loop: fill → verify → re-fill → verify → LLM-regen → verify → bail-to-vision), `_fill_raw` (renamed old `_fill_by_label` body). New `_fill_by_label` wrapper. Logs `verified_via=dom` for every successful DOM match. Includes the post-live-run fix: `read_dom_value` now returns None when the input locator has `aria-haspopup` or `role=combobox` regardless of `field_metadata.type`, eliminating the false-negative 3-strike loop on react-select widgets (Country*). |
+| **O-3** | `45feed4` | `SessionFillState` allocated per `NativeFormFiller.__init__`. `_try_in_run_skip` runs first in `_fill_by_label` (before N-3 cross-run cache) — `fill ⊘ reason=already_verified_in_run` on hit. `_record_session_fill` writes the outcome on verified fills. |
+| **O-4** | `1f89e53` | `verify_form_page` accepts `session_state` kwarg. New `_compute_coverage_realtime` helper produces a per-field bucket dict (filled_verified_at_fill_time / filled_deferred_to_vision / scanner_saw_filler_skipped_required / *_optional / scanner_noise_excluded). Sidecar invariant: `sum(buckets) == scanner_coverage.total`. Plumbed into all 3 `_save_artifact` sites. Wired into `NativeFormFiller`'s verifier call so the orchestrator passes `self._session_state` automatically. |
+
+### Unit test summary (clauses 1, 2-tests, 3-tests, 4-tests, 7)
+
+| Test file | Pass count |
+|---|---|
+| `tests/jobpulse/test_screening_session_state.py` | 6/6 |
+| `tests/jobpulse/test_screening_pipeline_introspection.py` | 5/5 |
+| `tests/jobpulse/test_native_form_filler_per_field_validation.py` | 7/7 |
+| `tests/jobpulse/test_native_form_filler_in_run_dedup.py` | 4/4 |
+| `tests/jobpulse/form_engine/test_vision_verifier_coverage_realtime.py` | 4/4 |
+| Existing `tests/jobpulse/test_native_form_filler*.py` | 48/48 |
+| Existing `tests/jobpulse/form_engine/test_vision_verifier.py` | 22/22 |
+| Existing `tests/jobpulse/test_screening_v2.py` + `test_screening_intent_first_resolution.py` + `test_screening_pipeline_real.py` | 98/98 |
+| **Total touched suites** | **194/194 pass** |
+
+Pre-existing failure quarantined: `test_field_mapper_real.py::test_diversity_keyword_fallback` — orthogonal to O; flagged in N as well.
+
+### Live URL verification (clauses 2-live, 3-live, 4-live, 5, 8) — PENDING
+
+The goal's brutal-scrutiny clauses (5) and (8) require a single end-to-end live dry-run on `https://job-boards.greenhouse.io/graphcore` where:
+- `verified_via=dom` log lines appear for every text/email/checkbox/radio fill
+- `fill ⊘ reason=already_verified_in_run` appears on a re-fill within the same run
+- the sidecar's `coverage_realtime.bucket_sum == scanner_coverage.total` invariant holds with `scanner_saw_filler_skipped_required` empty
+- `confirm_application` fires and all four sibling DBs (`field_corrections.db`, `agent_rules.db`, `trajectory.db` + `experience_memory.db`, `navigation_sequences.db`) receive rows for this run
+- OptimizationEngine before/after measurement is recorded
+
+Two pieces of additional wiring are required before this can be executed:
+1. **Programmatic auto-confirm path**: `apply_job(dry_run=True)` intentionally stops before submission so a human reviews. To exercise the live-review apply chain (clause 5) in an automated single run, a `--auto-confirm` flag on `job-process-url` (or a direct `confirm_application` invocation after `apply_job` returns) is needed.
+2. **Graphcore URL resolution**: the user-supplied URL `https://job-boards.greenhouse.io/graphcore` is the company's listings page, not a specific job. The live run requires picking a specific Graphcore job posting URL.
+
+Until both pieces land, clauses (5) and (8) are gated; clauses (1), (2)-tests, (3)-tests, (4)-tests, (6), (7) hold. This audit section will be updated with sidecar paths + log excerpts inline once the live run lands.
+
+### Live evidence — partial (collected during O-live first attempt, 2026-05-12)
+
+A direct `apply_job(dry_run=True)` invocation on `https://job-boards.greenhouse.io/graphcore/jobs/8234675002` (2026 Graduate Machine Learning Engineer – Applied AI) confirms the O-1 and O-2 code paths are active on a real Greenhouse form. Run log: `data/audits/o-live/direct_apply2_*.log` (process pid 92689; ran ~8.5 min before stalling on reCAPTCHA / consent step; pipeline did not reach the vision verifier on this iteration).
+
+**Clause (1) live half — O-1 intent loaded into the running classifier.** Logged immediately at startup:
+
+```
+[jobpulse.screening_intent] IntentClassifier: loaded 676 prototypes across 32 intents
+```
+
+Was 31 intents before O; the +1 is `INTROSPECTION_CONFIRMATION` with its 10 seed prototypes. The new enum member + prototypes were picked up automatically — no manual setup.
+
+The exact introspection question N-1 surfaced is present on this Graphcore form (extracted by `field_analyzer` from a real combobox):
+
+```
+[jobpulse.native_form_filler]   ✓ 'Have you added your full legal name and surname (i' → 2 options: ['Yes', 'No']
+[jobpulse.native_form_filler]   ✓ 'Have you added your full legal name and surname (i' → 2 options: ['Yes', 'No']  (required + optional duplicate)
+```
+
+Form-scan stats: 43 fields detected; 23 comboboxes opened to extract DOM options; drift detected vs cached form-experience at 19% match → falling to LLM path.
+
+**Clause (2) live half — O-2 per-field DOM verification firing.** 4 `verified_via=dom` (DOM matched the claim) + 4 `verified_via=dom_mismatch` (caught real divergence; O-2 then re-ran the fill primitive) lines in this run:
+
+```
+[jobpulse.native_form_filler] ✓ verified_via=dom label='Website' value='https://yashbishnoi.io' ftype=text
+[jobpulse.native_form_filler] ✓ verified_via=dom label='LinkedIn Profile' value='https://www.linkedin.com/in/ya' ftype=text
+[jobpulse.native_form_filler] ✓ verified_via=dom label='Email' value='bishnoiyash274@gmail.com' ftype=text
+[jobpulse.native_form_filler] ✓ verified_via=dom label='How did you hear about this role?' value='Company website' ftype=text
+
+[jobpulse.native_form_filler] ✗ verified_via=dom_mismatch label='Country*' expected='United Kingdom' observed='' ftype=text
+[jobpulse.native_form_filler] ✗ verified_via=dom_mismatch label='Country*' expected='United Kingdom' observed='' ftype=text   (strike-2 retry)
+[jobpulse.native_form_filler] ✗ verified_via=dom_mismatch label='Phone' expected='07909445288' observed='7909445288' ftype=text
+[jobpulse.native_form_filler] ✗ verified_via=dom_mismatch label='Phone' expected='07909445288' observed='7909445288' ftype=text  (strike-2 retry)
+```
+
+The Phone mismatch is a real-world finding worth keeping: Greenhouse's phone field strips the leading 0 from `07909445288` → renders `7909445288`. O-2 caught this and re-ran the fill primitive (strike 2). The 3-strike LLM-regen step (strike 3) didn't log a `dom_after_llm_regen` line on this run — likely because `_llm_regen_alternate` returned None for the Phone case (the LLM would propose the same digits without a leading zero, which still mismatches the expected). The bail-to-vision branch (`error_class=wrong_value_after_retries`, `deferred_to_vision=True`) is the documented v1 endpoint.
+
+The Country* mismatch is a real architectural finding for follow-up: the field is rendered as a react-select combobox where the input's `value` attribute stays empty (the displayed text lives in a sibling element). `field_metadata`'s type for this field is `"text"`, so `read_dom_value` reads `input.value` → empty string → mismatch. The correct fix is for the field-analyzer to classify react-select comboboxes as `combobox` (not `text`) so `read_dom_value` correctly returns None and the field is deferred to vision instead of looping the 3-strike retry. Filed as **S26-follow-up-O-2-combobox-type-classification** below.
+
+**Clause (3) live half — `_try_in_run_skip` did NOT fire on this run.** This is expected behavior for a single-page Greenhouse form: the orchestrator's outer loop doesn't revisit fields, so the in-run dedup never has a re-fill to short-circuit. The path is exercised by the unit tests (4/4 pass) and would fire on a multi-page form (Workday, iCIMS) where page navigation can re-encounter the same labels.
+
+**Clause (4) live half — vision verifier not reached this run.** Pipeline stalled at the consent-checkbox / reCAPTCHA stage before `verify_form_page` ran. No fresh sidecar produced for this run. Clause (4)'s live invariant (`bucket-sum == scanner_coverage.total`) is verified at unit-test level (4/4 pass) but not yet on live data.
+
+**Clause (5) status — confirm_application not reached.** Same gating as clause (4): pipeline didn't complete the page-1 fill loop on this iteration.
+
+**Goal's literal `job-process-url` command — architectural finding.** `scan_pipeline.process_single_url` (the goal's literal entry point) routed this URL to `queued_for_review` because the gate-3 score was 87.9% — below the 95% `classify_action` auto-submit threshold. NativeFormFiller is unreachable via that entry point at this score range. The direct `apply_job` invocation in `/tmp/o_live_verify.py` exercises the same production code paths but bypasses the gate. **This is the architectural reality documented for the user to resolve.**
+
+**Design flaw discovered (O-1):** The introspection check in `screening_pipeline.answer` runs BEFORE the orchestrator's fill loop. `session_state.references_present(["First Name", "Last Name"])` returns False because no fills have happened yet → the legal-name combobox would get "No" instead of "Yes". The correct design moves the introspection answering to fill-time (in `NativeFormFiller`, just before issuing the fill for the introspection field — by which time First/Last name are already populated). Filed as **S26-follow-up-O-1-fill-time-introspection** below.
+
+### Follow-ups filed by this slice
+
+| ID | Severity | What | Why |
+|---|---|---|---|
+| **S26-follow-up-O-live** | **P0** | Run a single live dry-run on a specific Graphcore Greenhouse job URL; capture sidecar paths + log excerpts; verify the confirm_application sibling-DB chain fires; update this audit section with inline evidence. Three pre-requisites observed during the first attempt: (a) the goal's literal command (`job-process-url`) gates on `classify_action(ats_score >= 95)` so 85-94% scores never reach apply — either lower the gate, add a `--force-apply` flag, or accept a non-literal entry point; (b) `apply_job(dry_run=True)` does not fire `confirm_application` — clause (5) requires either an `--auto-confirm` flag or a direct post-dry-run invocation; (c) `confirm_application` only writes to `field_corrections.db` / `agent_rules.db` when `final_mapping ≠ agent_mapping` — clause (5)'s "row_count >= 1" requirement for those DBs is incompatible with a clean auto-fill dry-run. The structural conflict means clause (5) must be relaxed (e.g. require rows only in post_apply_hook-fed DBs: trajectory.db, experience_memory.db, navigation_sequences.db) or the run must include either a real submission or injected corrections. | Closes clauses (5) and (8) of the BRUTAL-SCRUTINY goal. Code in O-1..O-4 is ready; this is the live evidence + clause-5 resolution step. |
+| **S26-follow-up-O-1-followup** | P2 | Extend `_INTROSPECTION_REFERENCE_SYNONYMS` as new ATS forms surface new introspection phrasings. | The synonym dict is intentionally minimal; the embedding classifier handles paraphrases, but new field references (e.g. "preferred name", "salary expectation") may need their own entries. |
+| **S26-follow-up-O-2-followup** | P2 | Cap `_llm_regen_alternate` to one regen per (label, session) so a pathological field can't loop. Currently the cap is implicit via the 3-strike structure but a session-level counter would surface the cap in logs. | Defensive — the 3-strike loop already bounds calls, but explicit accounting helps the audit doc. |
+| **S26-follow-up-O-3-followup** | P2 | Persist `SessionFillState` to a per-run sidecar so a crashed mid-run can resume with the in-memory cache state intact. | In-memory is the right v1 default; persistence is a nice-to-have for very long forms (Workday 5-page). |
+| **S26-follow-up-O-1-fill-time-introspection** | **P0** | Move the introspection_confirmation resolver from `screening_pipeline.answer` (which runs BEFORE fills) to `NativeFormFiller._fill_by_label` (which runs AT fill time when First/Last name are already in `session_state`). Wire is straightforward: detect introspection intent in the filler's pre-fill step, consult `self._session_state.references_present(refs)`, return Yes/No directly without going through screening_pipeline. | Discovered during O-live: screening_pipeline runs upstream of any fills, so `references_present` always returns False at screening time, and introspection answers default to "No". The fix is a 30-line move; tests already cover the resolution logic — just need to re-target the integration point. |
+| **S26-follow-up-O-2-combobox-type-classification** | **P0** | When `field_analyzer` encounters a react-select / aria-haspopup widget, classify it as `combobox` in `field_metadata.type` (not `text`). Currently the Graphcore Country* field is classified `text` → `read_dom_value` reads `input.value=""` → DOM mismatch → infinite-3-strike loop on a structurally undetectable element. Either widen the classifier's combobox detection or have `read_dom_value` return None when the input has `role="combobox"` regardless of stated type. | Discovered during O-live: Country* and similar react-select widgets generate spurious `dom_mismatch` lines that exhaust the 3-strike retry without progress. Defensive fix; doesn't change v1 semantics but eliminates wasted LLM-regen calls. |
+| **S26-follow-up-O-pipeline-stall** | **P0** | Resolve the post-upload orchestrator stall reproduced TWICE on the Graphcore live run. Run 1 (cognitive enabled) stalled at "auto-ticking required consent" with cognitive form_recovery fallback. Run 2 (`COGNITIVE_ENABLED=false`) stalled in the SAME location after `End date year* = '2026'` fill — confirming the stall is NOT cognitive-bound. Process drops to 0% CPU; tracing identifies `_direct_llm_call` (form_recovery → Kimi k2.6) with its 180s default timeout as the most likely blocker. | Two live evidence files: `data/audits/o-live/run_evidence_2026-05-12.log` (cognitive on) and `data/audits/o-live/run4_nocog_evidence.log` (cognitive off). Both stall at byte ~30 KB. Vision verifier never runs → clauses (4-live), (5), (8-✅) all blocked. |
+| **S26-follow-up-O-llm-fallback** | **P0** | Page-reasoner LLM fallback chain (Moonshot v1 → Anthropic claude-3-5-haiku) failing in two distinct modes observed live: (a) Moonshot returns `LengthFinishReasonError` when the prompt + reasoning trace exceed the 500-completion-token budget; (b) Anthropic returns 401 Unauthorized — `ANTHROPIC_API_KEY` either unset, stale, or stripped from the runtime env. When both fail, `PageReasoner` returns `action=abort, confidence=0.00` and the pipeline aborts BEFORE reaching form fill (`Unknown page — could not reach application form`). | Live evidence: `data/audits/o-live/run5_provider_failure.log`. Affects every live apply attempt while the chain stays broken. |
