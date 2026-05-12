@@ -637,7 +637,8 @@ def _save_artifact(
             "composite_layout": composite_layout,
             "panels": [
                 {
-                    "ordinal": p.get("ordinal"),
+                    "ordinal": p.get("ordinal"),  # contiguous panel position (post-M-5)
+                    "original_ordinal": p.get("original_ordinal"),  # original claim-row index
                     "label": p.get("label"),
                     "value": p.get("value"),
                     "bbox": p.get("bbox"),
@@ -1160,9 +1161,16 @@ async def verify_form_page(
         vision_input = composite_bytes
         ordered_for_prompt = [(p["label"], p["value"]) for p in panels]
         prompt = _build_prompt(ordered_for_prompt, ordinals=True)
+        # M-5 naming: `claims_collapsed_via_dedup` is the count of claim
+        # rows that share a panel with another claim row (Greenhouse-style
+        # duplicate-labeled widgets). They ARE represented in the
+        # composite, sharing a panel — not failed captures.
+        collapsed = sum(len(p.get("dedup_with") or []) for p in panels)
+        unresolved_count = len(claim_rows) - len(panels) - collapsed
         composite_layout = {
             "panels_total": len(panels),
-            "panels_unresolved": len(claim_rows) - len(panels),
+            "claims_collapsed_via_dedup": collapsed,
+            "claims_unresolved": max(0, unresolved_count),
             "image_bytes": len(composite_bytes),
         }
     else:
@@ -1173,7 +1181,8 @@ async def verify_form_page(
         prompt = _build_prompt(ordered_for_prompt, ordinals=False)
         composite_layout = {
             "panels_total": 0,
-            "panels_unresolved": len(field_crops),
+            "claims_collapsed_via_dedup": 0,
+            "claims_unresolved": len(field_crops),
             "image_bytes": len(vision_input),
             "fallback_reason": "no_field_crops_captured",
         }
