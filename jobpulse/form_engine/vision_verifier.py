@@ -579,6 +579,57 @@ def _domain_from_url(url: str) -> str:
         return ""
 
 
+def _compute_scanner_coverage(
+    field_metadata: dict[str, dict] | None,
+    verdicts: list[FieldVerdict],
+    scanner_unfilled_required: list[dict],
+    scanner_unfilled_optional: list[dict],
+    scanner_noise_excluded: list[dict],
+) -> dict | None:
+    """Build the sidecar's scanner_coverage block (S26-follow-up-N-1).
+
+    Enumerates every scanner-discovered field in exactly one bucket so a
+    cross-adapter audit can check ``sum(buckets) == total`` without
+    re-reading filler logs. Returns None when the verifier had no
+    field_metadata to bucket (fallback / non-scanner code paths) so
+    callers can emit ``scanner_coverage: null``.
+    """
+    if not field_metadata:
+        return None
+    filled_passed: list[dict] = []
+    filled_mismatch: list[dict] = []
+    filled_vision_unavailable: list[dict] = []
+    for v in verdicts:
+        bucket_entry = {"label": v.label, "claimed_value": v.claimed_value}
+        if v.tier_reached == "passed":
+            filled_passed.append(bucket_entry)
+        elif v.tier_reached == "correction_succeeded":
+            # Treat correction_succeeded as a passed-after-fix; sidecar
+            # already records the original mismatch via the verdict list.
+            filled_passed.append(bucket_entry)
+        elif v.tier_reached in ("mismatch_detected", "correction_failed"):
+            filled_mismatch.append(bucket_entry)
+        elif v.tier_reached in (
+            "vision_unavailable", "skipped_no_expected_value",
+        ):
+            filled_vision_unavailable.append(bucket_entry)
+        else:
+            # Future tiers fall here — surface so coverage isn't lost.
+            filled_vision_unavailable.append(
+                {**bucket_entry, "tier_reached": v.tier_reached},
+            )
+    total = len(field_metadata)
+    return {
+        "total": total,
+        "filled_verified_passed": filled_passed,
+        "filled_verified_mismatch": filled_mismatch,
+        "filled_vision_unavailable": filled_vision_unavailable,
+        "scanner_saw_filler_skipped_required": list(scanner_unfilled_required),
+        "scanner_saw_filler_skipped_optional": list(scanner_unfilled_optional),
+        "scanner_noise_excluded": list(scanner_noise_excluded),
+    }
+
+
 def _save_artifact(
     *,
     composite: bytes | None,
@@ -594,6 +645,7 @@ def _save_artifact(
     chunks_used: int,
     composite_layout: dict | None,
     scanner_unfilled_required: list[dict] | None = None,
+    scanner_coverage: dict | None = None,
 ) -> str | None:
     """Persist the image + verdicts JSON for replayable human spot-check.
 
@@ -669,6 +721,11 @@ def _save_artifact(
             # These are FILLER-coverage gaps; surfacing here lets the
             # cross-adapter audit flag them without re-scraping logs.
             "scanner_unfilled_required": scanner_unfilled_required or [],
+            # N-1: full scanner-field coverage report. Every scanner field
+            # lands in exactly one bucket; ``total`` matches the scanner's
+            # field count so the assertion ``sum(buckets) == total``
+            # machine-checks coverage from the sidecar alone.
+            "scanner_coverage": scanner_coverage,
         }
         with open(f"{base}.json", "w") as fh:
             json.dump(payload, fh, indent=2)
@@ -1153,14 +1210,17 @@ async def verify_form_page(
         result.elapsed_ms = (time.monotonic() - started) * 1000
         return result
 
-    # S26-follow-up-M-4: scanner ↔ filler coverage gap surfacing.
-    # The verifier only verifies fields the filler claimed to fill. If the
-    # scanner saw a required field but the filler skipped it (no_mapping
-    # / screening-pipeline gap), the user has no way to know without
-    # reading filler logs. Compute the gap here and surface it in the
-    # sidecar JSON so cross-adapter audits can flag silent-drop required
-    # fields without re-scraping logs.
+    # S26-follow-up-M-4 + N-1: scanner ↔ filler coverage surfacing.
+    # The verifier only sends to vision the fields the filler claimed to
+    # fill. Scanner-discovered fields that weren't claimed are bucketed
+    # here so the sidecar JSON enumerates every scanner field in exactly
+    # one of: scanner_saw_filler_skipped_required, *_optional, or
+    # scanner_noise_excluded (button/file). The verdict-derived buckets
+    # (filled_*) are assembled at sidecar-write time from the final
+    # verdicts list.
     scanner_unfilled_required: list[dict] = []
+    scanner_unfilled_optional: list[dict] = []
+    scanner_noise_excluded: list[dict] = []
     if field_metadata:
         claimed_labels = set(filled_mapping.keys())
         claimed_stripped = {_strip_required_marker(lbl) for lbl in claimed_labels}
@@ -1171,16 +1231,23 @@ async def verify_form_page(
                 continue
             if _strip_required_marker(label) in claimed_stripped:
                 continue
-            if not meta.get("required"):
-                continue
             ftype = meta.get("type", "")
             if ftype in ("button", "file"):
+                scanner_noise_excluded.append({
+                    "label": label,
+                    "type": ftype,
+                    "reason": "noise_excluded",
+                })
                 continue
-            scanner_unfilled_required.append({
+            entry = {
                 "label": label,
                 "type": ftype,
                 "reason": "scanner_saw_filler_skipped",
-            })
+            }
+            if meta.get("required"):
+                scanner_unfilled_required.append(entry)
+            else:
+                scanner_unfilled_optional.append(entry)
     if scanner_unfilled_required:
         logger.warning(
             "vision_verifier: %d required field(s) visible to scanner but not filled — page=%d domain=%s labels=%s",
@@ -1286,6 +1353,12 @@ async def verify_form_page(
             chunks_used=1,
             composite_layout=composite_layout,
             scanner_unfilled_required=scanner_unfilled_required,
+            scanner_coverage=_compute_scanner_coverage(
+                field_metadata, result.verdicts,
+                scanner_unfilled_required,
+                scanner_unfilled_optional,
+                scanner_noise_excluded,
+            ),
         )
         return result
 
@@ -1474,6 +1547,12 @@ async def verify_form_page(
         scanner_unfilled_required=scanner_unfilled_required,
         chunks_used=1,
         composite_layout=composite_layout,
+        scanner_coverage=_compute_scanner_coverage(
+            field_metadata, result.verdicts,
+            scanner_unfilled_required,
+            scanner_unfilled_optional,
+            scanner_noise_excluded,
+        ),
     )
     logger.info(
         "vision_verifier: page %d (%s) — verified=%d mismatches=%d "
